@@ -11,6 +11,8 @@ The pipeline:
 
 ## Dashboard (skeleton)
 
+Live: https://matanravitsky-crypto.github.io/assignment-checker/
+
 `docs/` holds a static, Hebrew (RTL) dashboard prototype: the pipeline overview, the submissions table, a submission view with red-pen comments and a score breakdown, the rubric editor, a run log and the connection settings. All data is demo data from `docs/data.js`; the buttons simulate the pipeline.
 
 Run it locally by opening `docs/index.html` through any static server, for example:
