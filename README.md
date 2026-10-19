@@ -1,21 +1,31 @@
 # Assignment Checker
 
-A university project for checking student assignments.
+A university project for checking student assignments automatically.
 
-**Current stage:** a basic Hello World skeleton in Python.
+The pipeline:
 
-## Requirements
+1. **Pull** submissions and student details from the university course site.
+2. **Grade** each submission with Claude, using the assignment's rubric and grading notes.
+3. **Mark & approve**: comments are marked on the submission, a TA reviews and approves.
+4. **Return** the grade, comments and marked file back to the university site.
+
+## Dashboard (skeleton)
+
+`docs/` holds a static, Hebrew (RTL) dashboard prototype: the pipeline overview, the submissions table, a submission view with red-pen comments and a score breakdown, the rubric editor, a run log and the connection settings. All data is demo data from `docs/data.js`; the buttons simulate the pipeline.
+
+Run it locally by opening `docs/index.html` through any static server, for example:
+
+```bash
+npx http-server docs
+```
+
+## Python
+
+**Current stage:** a basic Hello World skeleton.
 
 - Python 3.10+
 
-## Run
-
 ```bash
 python main.py
-```
-
-## Tests
-
-```bash
 python test_main.py
 ```

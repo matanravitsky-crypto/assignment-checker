@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>בודק העבודות</title>
+  <meta name="description" content="לוח הבקרה של מערכת הבדיקה האוטומטית: משיכת עבודות, בדיקה וציון, סימון הערות והחזרה לאתר האוניברסיטה.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Frank+Ruhl+Libre:wght@500;700;900&family=IBM+Plex+Sans+Hebrew:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232340A8'/%3E%3Cpath d='M9 17l5 5 9-12' stroke='%23fff' stroke-width='3.2' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+</head>
+<body>
+  <a class="skip" href="#main">דלג לתוכן</a>
+
+  <div class="shell">
+    <aside class="sidebar" aria-label="ניווט ראשי">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 32 32"><path d="M8 17l5 5 11-13" /></svg>
+        </span>
+        <span class="brand-text">
+          <strong>בודק העבודות</strong>
+          <small>בדיקה אוטומטית של מטלות</small>
+        </span>
+      </div>
+
+      <nav class="nav">
+        <a href="#/" data-route="/">
+          <svg viewBox="0 0 24 24"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>
+          לוח בקרה
+        </a>
+        <a href="#/submissions" data-route="/submissions">
+          <svg viewBox="0 0 24 24"><path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5M9 13h7M9 17h5"/></svg>
+          עבודות
+          <span class="nav-count" id="nav-count-review"></span>
+        </a>
+        <a href="#/students" data-route="/students">
+          <svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.6 3.4-5.5 6.5-5.5s5.7 1.9 6.5 5.5"/><path d="M16 4.5a3.5 3.5 0 0 1 0 7M18 14.8c1.8.7 3 2.5 3.5 5.2"/></svg>
+          סטודנטים
+        </a>
+        <a href="#/rubric" data-route="/rubric">
+          <svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/><path d="M17 16l2 2 3-4"/></svg>
+          מחוון ודגשים
+        </a>
+        <a href="#/runs" data-route="/runs">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7v5l3 2"/></svg>
+          יומן ריצות
+        </a>
+        <a href="#/settings" data-route="/settings">
+          <svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>
+          חיבורים והגדרות
+        </a>
+      </nav>
+
+      <div class="sidebar-foot">
+        <div class="conn">
+          <span class="dot ok"></span>
+          <span>מערכת האוניברסיטה</span>
+          <em>מחובר</em>
+        </div>
+        <div class="conn">
+          <span class="dot ok"></span>
+          <span>Claude</span>
+          <em>פעיל</em>
+        </div>
+        <p class="proto-note">אב טיפוס. הנתונים במסך לדוגמה בלבד.</p>
+      </div>
+    </aside>
+
+    <div class="main-col">
+      <header class="topbar">
+        <button class="icon-btn menu-btn" id="menu-btn" aria-label="פתח תפריט">
+          <svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+        </button>
+
+        <label class="course-picker">
+          <span class="sr">קורס ומטלה</span>
+          <select id="course-select"></select>
+        </label>
+
+        <div class="search">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>
+          <input type="search" id="search" placeholder="חיפוש לפי שם או תעודת זהות" aria-label="חיפוש סטודנט">
+        </div>
+
+        <div class="top-actions">
+          <button class="btn ghost" id="theme-btn" aria-label="החלף ערכת צבעים">
+            <svg viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></svg>
+          </button>
+          <div class="avatar" title="מתן רביצקי">מר</div>
+        </div>
+      </header>
+
+      <main id="main" tabindex="-1"></main>
+    </div>
+  </div>
+
+  <div class="scrim" id="scrim" hidden></div>
+  <aside class="drawer" id="drawer" aria-hidden="true" aria-label="פרטי עבודה"></aside>
+  <div class="toast-wrap" id="toasts" role="status" aria-live="polite"></div>
+
+  <script src="data.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
