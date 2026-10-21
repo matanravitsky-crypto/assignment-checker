@@ -72,7 +72,12 @@
           <span>Claude</span>
           <em>לא מחובר</em>
         </a>
-        <p class="proto-note">מצב הדגמה: הנתונים והפעולות במסך מדומים, עד שיחוברו המפתחות.</p>
+        <a class="conn" href="#/settings" id="conn-db">
+          <span class="dot warn"></span>
+          <span>מסד נתונים</span>
+          <em>לא מחובר</em>
+        </a>
+        <p class="proto-note" id="proto-note">מצב הדגמה: הנתונים והפעולות במסך מדומים, עד שיחוברו המפתחות.</p>
       </div>
     </aside>
 
@@ -94,11 +99,12 @@
         </div>
 
         <div class="top-actions">
-          <span class="demo-badge" title="אין עדיין חיבור אמיתי למודל או ל-Claude">מצב הדגמה</span>
+          <div class="presence" id="presence" aria-label="מי מחובר עכשיו"></div>
+          <span class="demo-badge" id="mode-badge">מצב הדגמה</span>
           <button class="btn ghost" id="theme-btn" aria-label="החלף ערכת צבעים">
             <svg viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></svg>
           </button>
-          <div class="avatar" title="מתן רביצקי">מר</div>
+          <div class="account" id="account"></div>
         </div>
       </header>
 
@@ -111,8 +117,11 @@
   <div class="toast-wrap" id="toasts" role="status" aria-live="polite"></div>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.2/dist/umd/supabase.js"></script>
+  <script src="config.js"></script>
   <script src="data.js"></script>
   <script src="api.js"></script>
+  <script src="db.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
