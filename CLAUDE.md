@@ -84,10 +84,11 @@ There is **no Moodle API**. Claude in Chrome works in the user's own logged-in C
   The assignment id is the `id=` in that URL (the number at the end of the ZIP name too).
 - Download: Actions (פעולות) → "הורדת כל ההגשות (השתמש ב 7ZIP לפתיחה)". Keep "organize submissions in folders per student" checked.
   The ZIP lands in Downloads as `<course>-<assignment>-<id>.zip`. Open with 7-Zip, not Python's zipfile (it garbles some Hebrew names).
-- Feedback upload: Actions → "העלאת מספר קובצי משוב כקובץ 7Zip אחד" → `upload/feedback-N.zip`.
-  A TA uploads these in Moodle and checks Moodle's confirmation list (file → student) before importing.
-  The scripts split ZIPs at 9 MB, the limit for uploading through Claude in Chrome; if a TA uploads by hand,
-  the limit is Moodle's own ("maximum size for new files" on that page), not yet checked.
+- Feedback upload: Actions → "העלאת מספר קובצי משוב כקובץ 7Zip אחד" → `upload/feedback-N.zip`, one at a time.
+  A person (TA or lecturer) uploads them and checks Moodle's confirmation list (file → student) before importing;
+  `upload/הוראות העלאה.txt` has the steps and a checklist of ZIPs. That page takes .zip only, up to **31 MB**
+  ("הגודל המירבי לקבצים חדשים", checked on assignment 3438636), so ZIPs are split at 30 MB (`--max-mb` to change).
+  A higher limit would mean fewer ZIPs: the course's max upload size is a course setting, capped by the site.
 - Grades upload needs **"Offline grading worksheet"** turned on in the assignment settings (not on yet in assignment 3438636).
   Then: Actions → download the grading worksheet, run `python -m moodle upload <id>`, upload `upload/grades.csv`.
 
@@ -120,6 +121,10 @@ written on the page where each mistake is (say, at the determinant step that wen
 and a line in a spreadsheet. So per submission the grader writes:
 - `marked/0001.pdf`: the student's whole submission with comments added in place.
   Many submissions are phone scans of handwriting, so comments go on top of the page images.
+  **Keep each marked PDF around 1–2 MB** (pages as JPEG at ~150 dpi). BGU Moodle takes 31 MB per upload:
+  at the scans' own size (avg 4.7 MB, up to 56 MB) one assignment of 285 needs 45 ZIPs and 6 files don't fit
+  at all; at ~1.5 MB it's about 15 ZIPs. Compress in the grading code: on Ori's computer, Windows Smart App
+  Control blocks PyMuPDF's DLLs, so check what runs on the grading machine.
 - a row in `results.csv`: `number,grade,feedback`, where `feedback` is a short summary.
 
 `python -m moodle upload` takes it from there.

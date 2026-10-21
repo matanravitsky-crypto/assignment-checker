@@ -41,7 +41,7 @@ It takes the newest `…-<assignment id>.zip` from Downloads, keeps it in `raw/`
 python -m moodle upload <assignment id>
 ```
 
-It writes `upload/grades.csv` (Actions → *Upload grading worksheet*) and `upload/feedback-1.zip …` (Actions → *Upload multiple feedback files in a zip*). Grades are matched by number, never by row order. Uploading to Moodle is a separate step a TA approves.
+It writes `upload/grades.csv` (Actions → *Upload grading worksheet*), `upload/feedback-1.zip …` (Actions → *Upload multiple feedback files in a zip*; each under Moodle's 31 MB limit) and `upload/הוראות העלאה.txt`, the steps for whoever uploads. Grades are matched by number, never by row order. Uploading to Moodle is done by a person, who confirms Moodle's file-to-student list.
 
 **Check** — `python -m moodle status <assignment id>` shows what's done and flags file names OneDrive would refuse.
 

@@ -30,6 +30,8 @@ def main() -> None:
     upload_cmd = commands.add_parser("upload", help="build grades.csv and feedback.zip")
     upload_cmd.add_argument("assignment_id")
     upload_cmd.add_argument("--worksheet", type=Path, help="default: newest matching CSV in Downloads")
+    upload_cmd.add_argument("--max-mb", type=int, default=upload.MAX_ZIP_BYTES // 1_000_000,
+                            help="largest ZIP Moodle takes (default: %(default)s)")
 
     args = parser.parse_args()
     target = paths.assignment_dir(args.assignment_id)
@@ -57,7 +59,7 @@ def main() -> None:
         print(f"{students} submissions, {len(rows)} files -> {target / 'anon'}")
     else:
         worksheet = args.worksheet or upload.find_worksheet(args.assignment_id)
-        report = upload.prepare_upload(target, worksheet)
+        report = upload.prepare_upload(target, worksheet, args.max_mb * 1_000_000)
         print(f"Submissions: {report['submissions']}, results: {report['results']}")
         if report["missing_results"]:
             print(f"No result yet for {len(report['missing_results'])}: {', '.join(report['missing_results'][:20])}")
@@ -69,8 +71,8 @@ def main() -> None:
             print(f"grades.csv: {report['grades_filled']} grades filled")
         print(f"feedback ZIPs: {', '.join(z.name for z in report['feedback_zips']) or 'none'}")
         if report["too_big"]:
-            print(f"Too big for the extension, upload by hand: {', '.join(report['too_big'])}")
-        print(f"-> {target / 'upload'}")
+            print(f"Too big for Moodle ({args.max_mb} MB), save smaller: {', '.join(report['too_big'])}")
+        print(f"-> {target / 'upload'} (steps in '{upload.INSTRUCTIONS_FILE}')")
 
 
 if __name__ == "__main__":

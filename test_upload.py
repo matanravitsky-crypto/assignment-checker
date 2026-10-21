@@ -3,7 +3,7 @@ import tempfile
 import zipfile
 from pathlib import Path
 
-from moodle.upload import build_feedback_zips, participant_from_identifier, prepare_upload
+from moodle.upload import INSTRUCTIONS_FILE, build_feedback_zips, participant_from_identifier, prepare_upload
 
 MAPPING = [
     ["number", "anon_file", "participant_id", "original_folder", "original_file"],
@@ -48,6 +48,9 @@ def test_prepare_upload_matches_by_number_not_order():
         assert rows[2][2] == "70"
         assert rows[3][2] == ""
         assert [z.name for z in report["feedback_zips"]] == ["feedback-1.zip"]
+        instructions = (assignment / "upload" / INSTRUCTIONS_FILE).read_text(encoding="utf-8-sig")
+        assert "feedback-1.zip" in instructions
+        assert "grades.csv מוכן (2 ציונים)" in instructions
         with zipfile.ZipFile(assignment / "upload" / "feedback-1.zip") as archive:
             assert archive.namelist() == ["בת_200_assignsubmission_file/feedback.pdf"]
 
