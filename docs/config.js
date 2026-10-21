@@ -1,12 +1,18 @@
 // חיבור האתר למסד הנתונים המשותף ב-Supabase.
 //
-// ממלאים את שני הערכים מ-Supabase → Project Settings → API (ראו SETUP.md).
-// שניהם ציבוריים בכוונה, ומותר שיופיעו בקוד: ההגנה על הנתונים היא בהרשאות שבמסד
-// (supabase/schema.sql), ורק מי שברשימת הצוות יכול לקרוא או לכתוב.
-// את מפתח ה-service_role אסור לשים כאן או בשום מקום אחר בריפו.
+// מי שממלא את הקובץ הזה: כל חבר צוות עם הרשאת כתיבה בריפו, אחרי שהקים פרויקט
+// ב-Supabase לפי המדריך באתר (#/setup) או לפי SETUP.md.
 //
-// כל עוד הערכים ריקים, האתר עובד במצב הדגמה בלבד.
+// supabaseUrl      ה-Project URL מ-Supabase → Project Settings → API Keys / Data API
+// supabaseAnonKey  ה-Publishable key (מתחיל ב-sb_publishable_) או ה-anon public key הישן
+//
+// שני הערכים ציבוריים בכוונה, ומותר שיופיעו בקוד: ההגנה על הנתונים היא בהרשאות שבמסד
+// (supabase/schema.sql), ורק מי שברשימת הצוות יכול לקרוא או לכתוב.
+// אסור לשים כאן את ה-secret / service_role key או את סיסמת המסד.
+//
+// כשהערכים ריקים, האתר עובד במצב הדגמה בלבד.
 window.APP_CONFIG = {
+  repo: "matanravitsky-crypto/assignment-checker",
   supabaseUrl: "",
   supabaseAnonKey: "",
 };

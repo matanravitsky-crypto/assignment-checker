@@ -149,6 +149,18 @@
     setTimeout(() => el.remove(), 3400);
   }
 
+  function copyText(text, msg = "הועתק") {
+    const fallback = () => {
+      const ta = document.createElement("textarea");
+      ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.append(ta); ta.select();
+      try { document.execCommand("copy"); toast(msg); } catch { toast("ההעתקה נכשלה. אפשר לסמן את הטקסט ולהעתיק ידנית", ICON.warn); }
+      ta.remove();
+    };
+    if (navigator.clipboard?.writeText) navigator.clipboard.writeText(text).then(() => toast(msg), fallback);
+    else fallback();
+  }
+
   // LaTeX בתוך טקסט: $...$ בשורה, $$...$$ כתצוגה
   function tex(str) {
     return String(str).split(/(\$\$[\s\S]+?\$\$|\$[^$]+?\$)/g).map((part) => {
@@ -820,7 +832,8 @@
         <div class="panel-head"><h2>צוות ומסד משותף</h2><span class="end tag warn">עוד לא חובר</span></div>
         <div class="panel-body">
           <p class="lead">כרגע כל מה שמשנים באתר נשמר רק בדפדפן של מי ששינה. אחרי חיבור המסד ב-Supabase, כל חברי הצוות מתחברים עם GitHub ורואים ועורכים את אותם נתונים, בזמן אמת.</p>
-          <p class="hint" style="margin:0">ההוראות להקמה נמצאות בקובץ <code dir="ltr">SETUP.md</code> בריפו.</p>
+          <p class="lead">כל חבר צוות עם הרשאת כתיבה בריפו יכול להקים את המסד. לוקח בערך 10 דקות.</p>
+          <a class="btn primary small" href="#/setup">${ICON.db}למדריך ההקמה</a>
         </div>
       </section>`;
     }
@@ -882,7 +895,192 @@
     </section>`;
   }
 
+  // ---------- מדריך הקמת המסד: כל חבר צוות יכול להקים ----------
+  const REPO = window.APP_CONFIG?.repo || "matanravitsky-crypto/assignment-checker";
+  const [REPO_OWNER, REPO_NAME] = REPO.split("/");
+  const SITE_URL = `https://${REPO_OWNER.toLowerCase()}.github.io/${REPO_NAME}/`;
+  const SCHEMA_RAW = `https://raw.githubusercontent.com/${REPO}/main/supabase/schema.sql`;
+  const setup = { url: store.get("setup.url", ""), key: store.get("setup.key", ""), schema: null, schemaError: false, testing: false, results: null };
+
+  function keyKind(k) {
+    if (!k) return "";
+    if (k.startsWith("sb_publishable_")) return "publishable";
+    if (k.startsWith("sb_secret_")) return "secret";
+    if (/^eyJ[\w-]+\.[\w-]+\.[\w-]+$/.test(k)) {
+      try {
+        const b = k.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
+        const role = JSON.parse(atob(b + "===".slice((b.length + 3) % 4))).role;
+        return role === "anon" ? "anon" : role === "service_role" ? "secret" : "unknown";
+      } catch { return "unknown"; }
+    }
+    return "unknown";
+  }
+
+  function setupValues() {
+    const url = setup.url.trim().replace(/\/+$/, "");
+    const key = setup.key.trim();
+    const urlOk = /^https:\/\/[a-z0-9-]+\.supabase\.co$/i.test(url);
+    const kind = keyKind(key);
+    return { url, key, urlOk, kind, keyOk: kind === "publishable" || kind === "anon", callback: urlOk ? `${url}/auth/v1/callback` : "" };
+  }
+
+  function configFileText(url, key) {
+    return `// חיבור האתר למסד הנתונים המשותף ב-Supabase.
+//
+// מי שממלא את הקובץ הזה: כל חבר צוות עם הרשאת כתיבה בריפו, אחרי שהקים פרויקט
+// ב-Supabase לפי המדריך באתר (#/setup) או לפי SETUP.md.
+//
+// supabaseUrl      ה-Project URL מ-Supabase → Project Settings → API Keys / Data API
+// supabaseAnonKey  ה-Publishable key (מתחיל ב-sb_publishable_) או ה-anon public key הישן
+//
+// שני הערכים ציבוריים בכוונה, ומותר שיופיעו בקוד: ההגנה על הנתונים היא בהרשאות שבמסד
+// (supabase/schema.sql), ורק מי שברשימת הצוות יכול לקרוא או לכתוב.
+// אסור לשים כאן את ה-secret / service_role key או את סיסמת המסד.
+//
+// כשהערכים ריקים, האתר עובד במצב הדגמה בלבד.
+window.APP_CONFIG = {
+  repo: "${REPO}",
+  supabaseUrl: "${url}",
+  supabaseAnonKey: "${key}",
+};
+`;
+  }
+
+  function loadSchemaText() {
+    if (setup.schema || setup.schemaError || setup.loadingSchema) return;
+    setup.loadingSchema = true;
+    fetch(SCHEMA_RAW).then((r) => (r.ok ? r.text() : Promise.reject())).then((t) => { setup.schema = t; })
+      .catch(() => { setup.schemaError = true; }).finally(() => { setup.loadingSchema = false; schedule(); });
+  }
+
+  function copyField(label, value, { mono = true } = {}) {
+    return `<div class="copy-field">
+      <span class="cf-label">${label}</span>
+      <span class="cf-value ${mono ? "mono" : ""}" ${mono ? 'dir="ltr"' : ""}>${value ? esc(value) : `<span class="muted">יופיע אחרי שתמלאו את שלב 3</span>`}</span>
+      ${value ? `<button class="btn ghost small" data-copy="${esc(value)}">העתק</button>` : ""}
+    </div>`;
+  }
+
+  async function testSetup() {
+    const v = setupValues(), res = [];
+    const ok = (t) => ({ ok: true, t }), bad = (t) => ({ ok: false, t });
+    setup.testing = true; setup.results = null; render();
+    let settings = null;
+    try {
+      const r = await fetch(`${v.url}/auth/v1/settings`, { headers: { apikey: v.key } });
+      if (r.ok) { settings = await r.json(); res.push(ok("הכתובת והמפתח תקינים")); }
+      else res.push(bad(`Supabase ענה ${r.status}. כנראה שהמפתח לא נכון: כדאי להעתיק אותו שוב (שלב 3).`));
+    } catch {
+      res.push(bad("אין תשובה מהכתובת. כדאי לבדוק את ה-Project URL (שלב 3)."));
+    }
+    if (settings) {
+      res.push(settings.external?.github ? ok("התחברות עם GitHub מופעלת") : bad("התחברות עם GitHub עוד לא מופעלת ב-Supabase (שלב 4)."));
+      try {
+        const client = window.supabase.createClient(v.url, v.key, { auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false, storageKey: "ac-setup-test" } });
+        const { error } = await client.rpc("is_member");
+        if (!error) res.push(ok("הטבלאות וההרשאות מותקנות"));
+        else if (/could not find|does not exist|PGRST202/i.test(`${error.message} ${error.code}`)) res.push(bad("הסכמה עוד לא הורצה ב-SQL Editor (שלב 2)."));
+        else res.push(bad(`בדיקת הטבלאות נכשלה: ${error.message}`));
+      } catch (e) {
+        res.push(bad(`בדיקת הטבלאות נכשלה: ${e.message}`));
+      }
+    }
+    setup.results = res; setup.testing = false; render();
+  }
+
+  function setupView() {
+    loadSchemaText();
+    const v = setupValues();
+    const ready = v.urlOk && v.keyOk;
+    const allGood = setup.results && setup.results.length === 3 && setup.results.every((r) => r.ok);
+    const step = (n, title, why, body) => `
+      <li class="sstep">
+        <span class="sstep-no">${n}</span>
+        <div class="sstep-body">
+          <h2>${title}</h2>
+          <p class="why">${why}</p>
+          ${body}
+        </div>
+      </li>`;
+    const already = DB.configured ? `<div class="banner ok">${ICON.check}<div><b>המסד כבר מחובר לאתר.</b> <span dir="ltr">${esc(DB.url)}</span>. אין צורך לעבור שוב על המדריך, אלא אם מעבירים את המסד לפרויקט אחר.</div></div>` : "";
+
+    return `
+      <div class="page-head"><div>
+        <h1>הקמת המסד המשותף</h1>
+        <p>כל חבר צוות עם הרשאת כתיבה בריפו יכול לעשות את זה, בערך 10 דקות. מי שמקים את הפרויקט ב-Supabase הוא הבעלים שלו, ובסוף מזמין אליו את שאר הצוות. הערכים להעתקה מתמלאים כאן לבד.</p>
+      </div></div>
+      ${already}
+      <ol class="setup-steps">
+        ${step(1, "פותחים פרויקט ב-Supabase", "Supabase הוא השירות שמחזיק את מסד הנתונים ואת ההתחברות. המסלול החינמי מספיק לפרויקט.", `
+          <ul class="todo">
+            <li>נכנסים ל-<a href="https://supabase.com/dashboard/new" target="_blank" rel="noopener">supabase.com</a> ובוחרים <b>Continue with GitHub</b>.</li>
+            <li>יוצרים פרויקט חדש: שם <code dir="ltr">assignment-checker</code>, אזור <b>Central EU (Frankfurt)</b>, מסלול <b>Free</b>.</li>
+            <li>ממציאים סיסמה למסד ושומרים אותה אצלכם. לא שולחים אותה לאף אחד ולא שמים אותה בריפו.</li>
+          </ul>`)}
+        ${step(2, "יוצרים את הטבלאות וההרשאות", "הקובץ יוצר את כל הטבלאות, וקובע שרק משתמשי GitHub שברשימת הצוות יכולים לקרוא ולכתוב. אפשר להריץ אותו שוב בלי חשש.", `
+          <ul class="todo">
+            <li>ב-Supabase פותחים את <b>SQL Editor</b>, ואז <b>New query</b>.</li>
+            <li>מעתיקים את הסכמה, מדביקים ולוחצים <b>Run</b>. אמור להופיע <code dir="ltr">Success. No rows returned</code>.</li>
+          </ul>
+          <div class="row-start">
+            <button class="btn secondary small" data-copy-schema ${setup.schema ? "" : "disabled"}>${setup.schema ? `${ICON.file}העתק את הסכמה` : setup.schemaError ? "לא הצלחתי לטעון את הסכמה" : `${ICON.spin}טוען את הסכמה…`}</button>
+            <a class="link" href="https://github.com/${REPO}/blob/main/supabase/schema.sql" target="_blank" rel="noopener">לצפייה בקובץ ב-GitHub</a>
+          </div>`)}
+        ${step(3, "מעתיקים לכאן את הכתובת והמפתח", "מהם המדריך מחשב את שאר הערכים, ובודק בסוף שהכל מחובר. הם נשמרים רק בדפדפן שלכם עד שמפרסמים אותם בשלב 7.", `
+          <ul class="todo"><li>ב-Supabase פותחים את <b>Project Settings</b>, ואז <b>API Keys</b> (או <b>Data API</b>).</li></ul>
+          <div class="form-grid">
+            <div class="field full"><label for="su-url">Project URL</label>
+              <input id="su-url" dir="ltr" data-setup="url" value="${esc(setup.url)}" placeholder="https://abcd1234.supabase.co" autocomplete="off">
+              ${setup.url && !v.urlOk ? `<p class="hint bad">הכתובת צריכה להיראות כך: https://abcd1234.supabase.co</p>` : ""}</div>
+            <div class="field full"><label for="su-key">Publishable key</label>
+              <input id="su-key" dir="ltr" data-setup="key" value="${esc(setup.key)}" placeholder="sb_publishable_..." autocomplete="off">
+              ${v.kind === "secret" ? `<p class="hint bad">זה המפתח הסודי. מוחקים אותו מכאן ומעתיקים במקומו את ה-Publishable key (או את ה-anon key).</p>`
+                : v.kind === "unknown" ? `<p class="hint bad">זה לא נראה כמו Publishable key. הוא מתחיל ב-sb_publishable_ (או, במפתח הישן, ב-eyJ).</p>`
+                : `<p class="hint">ה-Publishable key ציבורי בכוונה. את ה-secret key לא מעתיקים לשום מקום.</p>`}</div>
+          </div>`)}
+        ${step(4, "מפעילים התחברות עם GitHub", "כך חברי הצוות נכנסים לאתר עם החשבון שלהם ב-GitHub, והמסד יודע מי הם. אפשר ליצור את האפליקציה בחשבון ה-GitHub האישי של מי שמקים.", `
+          <ul class="todo">
+            <li>פותחים <a href="https://github.com/settings/applications/new" target="_blank" rel="noopener">New OAuth App ב-GitHub</a> וממלאים:</li>
+          </ul>
+          ${copyField("Application name", "בודק העבודות", { mono: false })}
+          ${copyField("Homepage URL", SITE_URL)}
+          ${copyField("Authorization callback URL", v.callback)}
+          <ul class="todo">
+            <li>לוחצים <b>Register application</b>, מעתיקים את ה-<b>Client ID</b>, ואז <b>Generate a new client secret</b>.</li>
+            <li>ב-Supabase פותחים את <b>Authentication</b>, <b>Sign In / Providers</b>, <b>GitHub</b>. מפעילים, מדביקים את ה-Client ID וה-Client Secret ושומרים.</li>
+          </ul>`)}
+        ${step(5, "מאשרים את כתובות האתר", "אחרי ההתחברות, Supabase מחזיר רק לכתובות שאושרו מראש. בלי זה ההתחברות נכשלת.", `
+          <ul class="todo"><li>ב-Supabase פותחים את <b>Authentication</b>, ואז <b>URL Configuration</b>.</li></ul>
+          ${copyField("Site URL", SITE_URL)}
+          ${copyField("Redirect URL", `${SITE_URL}**`)}
+          ${copyField("Redirect URL לבדיקות מקומיות", "http://localhost:5173/**")}`)}
+        ${step(6, "בודקים שהכל מחובר", "הבדיקה מתחברת לפרויקט עם הערכים משלב 3, ובודקת את שלבים 2 ו-4. את שלב 5 בודקים בהתחברות הראשונה.", `
+          <button class="btn primary small" data-act="setup-test" ${ready && !setup.testing ? "" : "disabled"}>${setup.testing ? ICON.spin : ICON.check}בדוק חיבור</button>
+          ${!ready ? `<p class="hint">צריך קודם למלא כתובת ומפתח תקינים בשלב 3.</p>` : ""}
+          ${setup.results ? `<ul class="checks">${setup.results.map((r) => `<li class="${r.ok ? "ok" : "bad"}">${r.ok ? ICON.check : ICON.warn}${esc(r.t)}</li>`).join("")}</ul>` : ""}`)}
+        ${step(7, "מפרסמים לכל הצוות", "הקובץ docs/config.js אומר לאתר לאיזה מסד להתחבר. אחרי שמעדכנים אותו ב-GitHub, האתר מתעדכן לכולם תוך דקה-שתיים. לא צריך להתקין כלום.", `
+          ${ready ? `<pre class="code-block" dir="ltr">${esc(configFileText(v.url, v.key))}</pre>
+          <div class="row-start">
+            <button class="btn secondary small" data-copy="${esc(configFileText(v.url, v.key))}">${ICON.file}העתק את תוכן הקובץ</button>
+            <a class="btn ${allGood ? "primary" : "secondary"} small" href="https://github.com/${REPO}/edit/main/docs/config.js" target="_blank" rel="noopener">${ICON.github}פתח את docs/config.js לעריכה</a>
+          </div>
+          <ul class="todo">
+            <li>ב-GitHub: מוחקים את כל התוכן של הקובץ, מדביקים את התוכן שהעתקתם, ולוחצים <b>Commit changes</b>.</li>
+            ${allGood ? "" : `<li class="warn-li">כדאי לעבור את הבדיקה בשלב 6 לפני הפרסום.</li>`}
+          </ul>` : `<p class="hint">יופיע אחרי שתמלאו כתובת ומפתח תקינים בשלב 3.</p>`}`)}
+        ${step(8, "אחרי הפרסום", "הצעדים האחרונים, כדי שכל הצוות יוכל לעבוד.", `
+          <ul class="todo">
+            <li>נכנסים ל<a href="${SITE_URL}" target="_blank" rel="noopener">אתר</a>, לוחצים <b>התחברות עם GitHub</b>, ואז <b>טען נתוני דוגמה למסד</b>.</li>
+            <li>מי שהקים את הפרויקט מזמין את שאר הצוות ל-Supabase: <b>Organization settings</b>, <b>Team</b>, <b>Invite</b>. כך גם אחרים יוכלו לנהל את המסד.</li>
+            <li>חברי צוות שעוד לא ברשימה מוסיפים מדף <a href="#/settings">חיבורים והגדרות</a>. זה דורש מנהל.</li>
+            <li>כדי להפוך מישהו למנהל (או להוסיף את עצמכם, אם אתם לא ברשימה), מריצים ב-SQL Editor:</li>
+          </ul>
+          ${copyField("SQL", "insert into public.members (github_username, role) values ('your-github-name', 'admin') on conflict (github_username) do update set role = 'admin';")}`)}
+      </ol>`;
+  }
+
   const views = {
+    "/setup": setupView,
     "/"() {
       const A = cur(), I = info(A);
       return `
@@ -1105,6 +1303,7 @@
 
   function renderNav() {
     $$(".nav a").forEach((a) => (a.dataset.route === route() ? a.setAttribute("aria-current", "page") : a.removeAttribute("aria-current")));
+    $("#nav-setup").hidden = DB.configured && route() !== "/setup";
     const A = cur();
     if (!A) { $$(".nav-badge").forEach((b) => (b.textContent = "")); return; }
     const I = info(A), run = state.run[A.id];
@@ -1143,7 +1342,7 @@
 
     let html;
     if (state.loading && !booted) html = `<div class="loading">${ICON.spin}טוען את הנתונים המשותפים…</div>`;
-    else if (state.shared && (state.sharedEmpty || !cur()) && route() !== "/settings") html = emptySharedHTML();
+    else if (state.shared && (state.sharedEmpty || !cur()) && route() !== "/settings" && route() !== "/setup") html = emptySharedHTML();
     else html = views[route()]();
     $("#main").innerHTML = bannerHTML() + html;
     renderNav();
@@ -1183,12 +1382,17 @@
       if (a === "signout") DB.signOut();
       if (a === "account") { $("#account-menu")?.toggleAttribute("hidden"); }
       if (a === "seed") seedShared();
+      if (a === "setup-test") testSetup();
       if (a === "open-solution") {
         const w = window.open("", "_blank");
         DB.solutionUrl(cur().solutionPath).then((url) => { if (w) { w.opener = null; w.location = url; } }).catch((err) => { w?.close(); dbError(err); });
       }
       return;
     }
+
+    const copy = t.closest("[data-copy]");
+    if (copy) { copyText(copy.dataset.copy); return; }
+    if (t.closest("[data-copy-schema]") && setup.schema) { copyText(setup.schema, "הסכמה הועתקה. מדביקים ב-SQL Editor ולוחצים Run"); return; }
 
     const conf = t.closest("[data-confirm]");
     if (conf) {
@@ -1255,6 +1459,12 @@
   document.addEventListener("input", (e) => {
     const t = e.target;
     if (t.dataset.query) { state.query[t.dataset.query] = t.value; render(); return; }
+    if (t.dataset.setup) {
+      setup[t.dataset.setup] = t.value;
+      setup.results = null;
+      store.set(`setup.${t.dataset.setup}`, t.value);
+      render(); return;
+    }
     if (t.dataset.instr) {
       const st = t.dataset.instr;
       state.instr[st] = t.value;
