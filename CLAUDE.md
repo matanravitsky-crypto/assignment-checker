@@ -28,6 +28,8 @@ This repo is **public**. Submissions, names, ID numbers (ת"ז), emails and grad
 data folder: shared (the lecturer's OneDrive)      ASSIGNMENT_DATA, default ~/assignment-data
   raw/<assignment id>-<timestamp>.zip      ZIP exactly as Moodle gave it
   submissions/<assignment id>/
+    assignment.json  course, name, due date, which questions, submission rules, max grade, rubric
+    materials/  the questions and official solutions (from the course page in Moodle)
     anon/       0001.pdf, 0002.pdf, ... (0001-2.pdf for a second file)  ← the grader reads only these
     mapping.csv number → participant id → original folder               ← the one "key"
     results.csv number,grade,feedback                                   ← grading output
@@ -98,6 +100,18 @@ There is **no Moodle API**. Claude in Chrome works in the user's own logged-in C
 | Chrome left the ZIP as "Unconfirmed *.crdownload" | Chrome was asking where to save. Turn off "Ask where to save each file" in Chrome settings for unattended runs |
 | Re-running ingest failed deleting folders 7-Zip extracted as read-only | `ingest.remove_tree` clears read-only and retries |
 | Moodle skips a feedback file identical in name/content to the submission | Feedback files are named `feedback.pdf` inside each student's folder |
+
+## What grading gets
+
+For each assignment, in its folder in the shared data folder:
+- `anon/0001.pdf ...`: the submissions. Mostly phone scans of handwriting. For "הגשה 0" (3438636) the rules say
+  one PDF, each question on its own page, so a page usually maps to a question (students don't always follow it).
+- `assignment.json`: which questions were asked (sheet and number), the rules, and `max_grade` / `rubric`
+  (null until the lecturer gives them).
+- `materials/`: the exercise booklet and the solutions booklet the questions come from.
+
+To start on the grading bot: open the shared folder (see "Connecting the lecturer's OneDrive"), read
+`assignment.json`, and try a handful of `anon/` files before running on all of them.
 
 ## What grading must return
 

@@ -37,6 +37,8 @@ def main() -> None:
     if args.command == "status":
         report = status.status(target)
         print(f"Folder: {target}")
+        print(f"Assignment details (assignment.json): {'yes' if report['assignment_info'] else 'missing'}")
+        print(f"Questions and solutions (materials/): {report['materials']} files")
         print(f"Numbered submissions (anon/): {report['anon_files']}")
         mapping_rows, results_rows = report["mapping_rows"], report["results_rows"]
         print(f"Key (mapping.csv): {'missing' if mapping_rows is None else f'{mapping_rows} rows'}")

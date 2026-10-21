@@ -38,6 +38,8 @@ def count_rows(path: Path) -> int | None:
 
 def status(assignment_dir: Path) -> dict:
     return {
+        "assignment_info": (assignment_dir / "assignment.json").exists(),
+        "materials": count_files(assignment_dir / "materials"),
         "anon_files": count_files(assignment_dir / "anon"),
         "mapping_rows": count_rows(assignment_dir / "mapping.csv"),
         "results_rows": count_rows(assignment_dir / "results.csv"),
