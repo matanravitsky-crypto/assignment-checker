@@ -1,51 +1,113 @@
-# Assignment Checker
+# בודק העבודות
 
-A university project for checking homework in Discrete Math and Linear Algebra automatically.
+מערכת לבדיקה אוטומטית של תרגילי בית במתמטיקה בדידה ובאלגברה לינארית.
 
-The pipeline has three stages:
+יש לה שלושה שלבים:
+1. **משיכה:** ההגשות של המטלה נמשכות ממודל, עם פרטי הסטודנטים והקבצים, ישר לתיקיית OneDrive של הקורס.
+2. **בדיקה:** כל עבודה נשלחת ל-Claude עם המחוון, הדגשים והפתרון הרשמי. Claude מסמן טעויות, נותן ניקוד לכל שאלה וכותב משוב. *(עוד לא מחובר)*
+3. **החזרה:** הציון, המשוב וה-PDF המסומן עולים חזרה למודל. *(עוד לא מחובר)*
 
-1. **Pull**: fetch every submission of an assignment from Moodle, with the student's details and files.
-2. **Grade**: send each submission to Claude with the rubric, grading notes and official solution. Claude marks mistakes on the page, scores each question and writes feedback.
-3. **Return**: upload the grade, feedback and the marked PDF back to Moodle.
+## שתי גרסאות של האתר
 
-## Dashboard (skeleton)
+| | איפה | מה עושה |
+|---|---|---|
+| **הדגמה** | https://matanravitsky-crypto.github.io/assignment-checker/ | מציגה את המערכת עם נתונים לדוגמה. אפשר לשלוח לכל אחד. |
+| **מחוברת** | `http://localhost:8765`, אחרי הפעלת `start.bat` | עובדת עם תיקיית OneDrive האמיתית. "משוך הגשות" מושך באמת. |
 
-Live: https://matanravitsky-crypto.github.io/assignment-checker/
+## הפעלה (הגרסה המחוברת)
 
-`docs/` holds a static, Hebrew (RTL) dashboard prototype. Everything runs in demo mode: no Moodle or Claude keys are connected yet.
+פעם אחת במחשב:
+1. **מחברים את OneDrive של האוניברסיטה:** באפליקציית OneDrive (הענן ליד השעון): הגדרות ← חשבון ← הוסף חשבון. מתחברים עם חשבון האוניברסיטה.
+2. **מוסיפים את תיקיית הקורס:** בדפדפן, על התיקייה `YallaLinearit`, לוחצים **Add shortcut to My files**. אחרי דקה היא מופיעה במחשב.
+3. **מתקינים Python** 3.10 ומעלה, מ-https://www.python.org/downloads/ (אם עוד לא מותקן).
 
-| File | What it is |
+בכל פעם: לוחצים פעמיים על **`start.bat`**. האתר נפתח מחובר לתיקייה. בהפעלה הראשונה ההתקנה לוקחת כדקה.
+
+## איך מכניסים הגשות
+
+- **עם טוקן של מודל (אוטומטי לגמרי):** לוחצים "משוך הגשות". המערכת מביאה ממודל את רשימת המטלות, יוצרת תיקייה לכל אחת ומושכת את ההגשות. בשביל זה צריך טוקן (ראו בהמשך).
+- **בלי טוקן:** במודל, במטלה: "הצגת כל ההגשות" ← "הורדת כל ההגשות". שמים את קובץ ה-ZIP בתיקייה `YallaLinearit/0-קליטה` ולוחצים "משוך הגשות". המערכת מזהה לפי שם הקובץ לאיזו מטלה הוא שייך.
+
+הגשה שלא השתנתה לא נכתבת שוב. סטודנט שהגיש מחדש אחרי שכבר נבדק חוזר ל"ממתינה לבדיקה", עם הערה.
+
+## איך התיקייה מאורגנת
+
+המערכת יוצרת את המבנה לבד:
+
+```
+YallaLinearit/
+  איך זה עובד.txt        הסבר לכל מי שנכנס לתיקייה
+  הגדרות.json            קורסים, מטלות ומזהים במודל (בלי סיסמאות)
+  0-קליטה/               קובצי ZIP ממודל, לכל מטלה
+  <קורס>/
+    <מטלה>/
+      0-קליטה/           ZIP של המטלה הזו. אחרי הקליטה עוברים ל-"נקלטו"
+      1-הגשות/           תיקייה לכל סטודנט: "<שם> (<מזהה במודל>)"
+      2-נבדקו/           PDF מסומן אחרי הבדיקה
+      3-הוחזרו/          מה שכבר עלה חזרה למודל
+      ציונים.xlsx        שורה לכל סטודנט
+      יומן.txt           כל פעולה, עם תאריך ושעה
+```
+
+**`ציונים.xlsx`** הוא המקום שבו הצוות עובד. פותחים אותו ב-Excel Online (כמה אנשים יכולים לערוך יחד) ומעדכנים את העמודות ש1, ש2..., ציון, משוב ומאושר. המערכת לא דורסת את העמודות האלה. עדיף לא לערוך את הקובץ בזמן שמושכים הגשות.
+
+## הגדרות
+
+**`הגדרות.json`** נמצא בתיקיית OneDrive ומשותף לצוות. כדי שהמשיכה ממודל תהיה אוטומטית, מוסיפים לקורס את `moodle_course_id`, המספר שמופיע בכתובת של הקורס במודל (`course/view.php?id=12345`):
+
+```json
+{
+  "moodle_url": "https://moodle.bgu.ac.il",
+  "courses": [
+    { "name": "אלגברה לינארית 1", "moodle_course_id": 12345, "assignments": [] }
+  ]
+}
+```
+
+**`.env`** נמצא בתיקיית הריפו במחשב בלבד. הוא לא עולה ל-GitHub ולא ל-OneDrive:
+
+```
+MOODLE_TOKEN=...
+ANTHROPIC_API_KEY=...
+```
+
+את הטוקן של מודל מבקשים מהמרצה, או ממחלקת המחשוב, עבור משתמש עם הרשאת בודק בקורס. סטודנט רגיל לא יכול לקבל גישה להגשות של אחרים.
+
+## מבנה הקוד
+
+| קובץ | מה הוא עושה |
 |---|---|
-| `docs/index.html` | Page shell and navigation |
-| `docs/app.js` | Screens: dashboard, one page per stage (works, instructions, connection), marked-submission view |
-| `docs/api.js` | The connection layer. Today it simulates the pipeline; later each function becomes a call to the backend (`/api/pull`, `/api/grade`, `/api/return`) without changing the screens |
-| `docs/data.js` | Demo courses, assignments, rubrics and sample submissions |
-| `docs/db.js` | Shared database (Supabase): GitHub sign-in, load, save, live updates, who is online |
-| `docs/config.js` | Supabase project URL and publishable key. Empty means demo mode |
-| `docs/styles.css` | Styles, light and dark |
-| `supabase/schema.sql` | Tables, team-only access rules, live updates and file storage |
+| `start.bat` | הפעלה בלחיצה כפולה |
+| `pipeline/config.py` | איפה תיקיית OneDrive ואיך קוראים לתיקיות |
+| `pipeline/settings.py` | `הגדרות.json` ו-`.env` |
+| `pipeline/moodle_api.py` | משיכה ממודל עם טוקן |
+| `pipeline/moodle_zip.py` | קריאת ZIP של "הורדת כל ההגשות" |
+| `pipeline/pull.py` | קליטת הגשות, בדיקת תקינות ועדכון טבלת הציונים |
+| `pipeline/gradebook.py` | `ציונים.xlsx` |
+| `pipeline/service.py` | הפעולות של המערכת, לאתר ולשורת הפקודה |
+| `pipeline/server.py` | השרת המקומי שמחבר את האתר לתיקייה |
+| `pipeline/demo.py` | הגשות לדוגמה בפורמט של מודל |
+| `docs/` | האתר: `app.js` (המסכים), `data.js` (נתוני ההדגמה), `api.js` (הדמיית השלבים בגרסת ההדגמה) |
+| `tests/` | בדיקות אוטומטיות |
 
-## Shared database
-
-Team members sign in with GitHub and see and edit the same data, live. Only GitHub users on the team list can read or write; the rule is enforced in the database itself (Row Level Security), not just in the site. Visitors who don't sign in see the demo data.
-
-Setup steps (Hebrew): [SETUP.md](SETUP.md).
-
-Each stage page has a free-text "instructions" tab: that text is the spec for what the backend should do in that stage.
-
-Run it locally through any static server, for example:
+## פקודות שימושיות
 
 ```bash
-npx http-server docs
+python -m pipeline where
 ```
-
-## Python
-
-**Current stage:** a basic Hello World skeleton.
-
-- Python 3.10+
+מראה איפה נמצאת תיקיית הקורס במחשב.
 
 ```bash
-python main.py
-python test_main.py
+python -m pipeline pull "אלגברה לינארית 1" "תרגיל בית 1"
 ```
+מושך הגשות בלי האתר.
+
+```bash
+python -m pipeline demo
+```
+יוצר קורס "הדגמה" עם הגשות לדוגמה. כדאי להריץ את זה כדי לראות איך הכל עובד.
+
+```bash
+python -m pytest
+```
+מריץ את הבדיקות.
