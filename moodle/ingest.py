@@ -51,11 +51,12 @@ def ingest(assignment_id: str, zip_path: Path | None = None) -> list[dict]:
     kept = paths.raw_dir() / f"{assignment_id}-{stamp}.zip"
     shutil.move(zip_path, kept)
 
-    target = paths.assignment_dir(assignment_id)
-    original = target / "original"
+    original = paths.original_dir(assignment_id)
     if original.exists():
         remove_tree(original)
     original.mkdir(parents=True)
     subprocess.run([seven_zip(), "x", str(kept), f"-o{original}", "-y", "-bso0", "-bsp0"], check=True)
 
-    return anonymize.prepare(target)
+    target = paths.assignment_dir(assignment_id)
+    target.mkdir(parents=True, exist_ok=True)
+    return anonymize.prepare(original, target)

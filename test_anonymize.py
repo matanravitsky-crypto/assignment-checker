@@ -32,7 +32,7 @@ def test_prepare_numbers_by_participant_id():
         make_submission(original, "בת_200_assignsubmission_file", {"‎⁨הגשה⁩.PDF": "b"})
         make_submission(original, "אב_100_assignsubmission_file", {"a.pdf": "a", "b.pdf": "a2"})
 
-        rows = prepare(assignment)
+        rows = prepare(original, assignment)
 
         assert [row["anon_file"] for row in rows] == ["0001.pdf", "0001-2.pdf", "0002.pdf"]
         assert [row["participant_id"] for row in rows] == ["100", "100", "200"]

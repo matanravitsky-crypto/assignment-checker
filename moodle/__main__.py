@@ -1,5 +1,8 @@
 """Command line for the Moodle steps.
 
+    python -m moodle status <assignment id>
+        What's done for the assignment, and any file names OneDrive would refuse.
+
     python -m moodle ingest <assignment id> [--zip PATH]
         Downloads ZIP -> data folder, extracted and numbered for grading.
 
@@ -10,12 +13,15 @@
 import argparse
 from pathlib import Path
 
-from moodle import ingest, paths, upload
+from moodle import ingest, paths, status, upload
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="python -m moodle")
     commands = parser.add_subparsers(dest="command", required=True)
+
+    status_cmd = commands.add_parser("status", help="show what's done for an assignment")
+    status_cmd.add_argument("assignment_id")
 
     ingest_cmd = commands.add_parser("ingest", help="prepare a downloaded submissions ZIP")
     ingest_cmd.add_argument("assignment_id")
@@ -27,6 +33,21 @@ def main() -> None:
 
     args = parser.parse_args()
     target = paths.assignment_dir(args.assignment_id)
+
+    if args.command == "status":
+        report = status.status(target)
+        print(f"Folder: {target}")
+        print(f"Numbered submissions (anon/): {report['anon_files']}")
+        mapping_rows, results_rows = report["mapping_rows"], report["results_rows"]
+        print(f"Key (mapping.csv): {'missing' if mapping_rows is None else f'{mapping_rows} rows'}")
+        print(f"Grades (results.csv): {'not yet' if results_rows is None else f'{results_rows} rows'}")
+        print(f"Marked files (marked/): {report['marked_files']}")
+        print(f"Ready to upload (upload/): {report['upload_files']} files")
+        if report["unsafe_names"]:
+            print(f"OneDrive may refuse {len(report['unsafe_names'])} names: {', '.join(report['unsafe_names'][:10])}")
+        else:
+            print("All file names are safe to sync")
+        return
 
     if args.command == "ingest":
         rows = ingest.ingest(args.assignment_id, args.zip)

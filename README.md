@@ -23,7 +23,7 @@ npx http-server docs
 
 ## Moodle in and out (`moodle/`)
 
-There is no Moodle API, so Claude in Chrome does the clicking and these scripts do the rest. Student files never enter this repo (it is public); they live in `~/assignment-data` (see `moodle/paths.py`).
+There is no Moodle API, so Claude in Chrome does the clicking and these scripts do the rest. Student files never enter this repo (it is public). They live in a shared data folder (the lecturer's OneDrive; `ASSIGNMENT_DATA`) plus a local work folder for the extracted originals (`ASSIGNMENT_WORK`); see `moodle/paths.py`.
 
 Needs Python 3.10+ and 7-Zip (`winget install 7zip.7zip`).
 
@@ -43,7 +43,9 @@ python -m moodle upload <assignment id>
 
 It writes `upload/grades.csv` (Actions → *Upload grading worksheet*) and `upload/feedback-1.zip …` (Actions → *Upload multiple feedback files in a zip*). Grades are matched by number, never by row order. Uploading to Moodle is a separate step a TA approves.
 
-One person downloads and uploads, so there is one `mapping.csv` per assignment; the team gets the numbered files from them (see `CLAUDE.md`).
+**Check** — `python -m moodle status <assignment id>` shows what's done and flags file names OneDrive would refuse.
+
+One person downloads and uploads, so there is one `mapping.csv` per assignment; the team works from the shared folder (see `CLAUDE.md`).
 
 `CLAUDE.md` has the full picture for working on this with Claude.
 
@@ -59,4 +61,5 @@ python test_main.py
 python test_anonymize.py
 python test_ingest.py
 python test_upload.py
+python test_status.py
 ```

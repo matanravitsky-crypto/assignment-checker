@@ -8,7 +8,8 @@ Courses are large (up to ~1,000 students per assignment). The team works in Hebr
 
 | Path | What |
 |---|---|
-| `moodle/` | Moving files between Moodle and the grader. `python -m moodle ingest <id>`, `upload <id>` |
+| `moodle/` | Moving files between Moodle and the grader. `python -m moodle status|ingest|upload <id>` |
+| `moodle/status.py` | What's done for an assignment; file names OneDrive would refuse |
 | `moodle/paths.py` | Where student data lives on the machine (see below) |
 | `moodle/anonymize.py` | Numbers submissions 0001..N and writes `mapping.csv` |
 | `moodle/ingest.py` | Downloads ZIP → extracted → numbered |
@@ -20,19 +21,25 @@ Courses are large (up to ~1,000 students per assignment). The team works in Hebr
 ## Student data: never in the repo
 
 This repo is **public**. Submissions, names, ID numbers (ת"ז), emails and grades never go into git.
-`.gitignore` blocks `data/` and `*.zip` as a safety net, but the data folder is outside the repo anyway:
+`.gitignore` blocks `data/` and `*.zip` as a safety net, but student data lives in two folders outside the repo
+(see `moodle/paths.py`):
 
 ```
-~/assignment-data/                       (ASSIGNMENT_DATA overrides it)
+data folder: shared (the lecturer's OneDrive)      ASSIGNMENT_DATA, default ~/assignment-data
   raw/<assignment id>-<timestamp>.zip      ZIP exactly as Moodle gave it
   submissions/<assignment id>/
-    original/   one folder per student: "<full name>_<participant id>_assignsubmission_file"
     anon/       0001.pdf, 0002.pdf, ... (0001-2.pdf for a second file)  ← the grader reads only these
-    mapping.csv number → participant id → original folder               ← private, the "key"
+    mapping.csv number → participant id → original folder               ← the one "key"
     results.csv number,grade,feedback                                   ← grading output
     marked/     0001.pdf, ... marked files by number
-    upload/     grades.csv, feedback.zip                                ← what goes back to Moodle
+    upload/     grades.csv, feedback-N.zip                              ← what goes back to Moodle
+
+work folder: the downloader's computer only          ASSIGNMENT_WORK, default ~/assignment-work
+  <assignment id>/original/   one folder per student: "<full name>_<participant id>_assignsubmission_file"
 ```
+
+`original/` never goes to OneDrive: students' file names break its sync (see below). It can be rebuilt from the ZIP in `raw/`.
+`python -m moodle status <id>` shows what's done and flags any file name OneDrive would refuse.
 
 The **key** that links a number back to a student is the Moodle *participant id* in the folder name
 (not the ת"ז). It lives only in `mapping.csv`.
@@ -43,14 +50,25 @@ Numbers are assigned in participant-id order, so re-downloading gives everyone t
 There is **one** `mapping.csv` per assignment, and it belongs to the one person who downloads from Moodle
 and uploads back to it. Today that is Ori (orimes-source). Everyone else gets only the numbered files and
 never downloads from Moodle themselves: a second download would make a second key, and the two could disagree.
-- Ori: download (when he asks) → `python -m moodle ingest <id>` → share `anon/` with the team.
-- Team: grade from `anon/`, return `results.csv` and `marked/` to Ori.
+- Ori: download (when he asks) → `python -m moodle ingest <id>` → it lands in the shared data folder.
+- Team: grade from `anon/` there, write `results.csv` and `marked/` next to it.
 - Ori: `python -m moodle upload <id>` → a TA uploads to Moodle.
 
-Where `anon/` is shared is not decided yet. It can't be this repo (public, and a single assignment is ~1.3 GB).
+The shared data folder is the lecturer's OneDrive (5 TB), not this repo (public, and one assignment is ~2.5 GB).
+
+## Connecting the lecturer's OneDrive
+
+Once the lecturer shares the folder with Ori's university account:
+1. In OneDrive on the web, open the shared folder → "Add shortcut to My files", so it syncs to this computer
+   (OneDrive signed in with the university account; it shows up under `C:\Users\<user>\OneDrive - <university>\`).
+2. Move everything in `~/assignment-data` into that folder, then point the scripts at it:
+   `setx ASSIGNMENT_DATA "<that folder>"` (new terminals pick it up).
+3. Run `python -m moodle status <id>` for each assignment: counts must match and all names must be safe.
+4. Teammates add the same shortcut on their computers and set `ASSIGNMENT_DATA` the same way; they don't need `ASSIGNMENT_WORK`.
 
 When working with this data:
 - Grade from `anon/` only. Don't open `original/` or print names, ת"ז or emails into chat, commits or logs.
+- `mapping.csv` sits in the shared folder, so everyone with access to it can link numbers to students. Don't open it while grading.
 - Some students write their name or ת"ז inside the PDF or its filename; the team accepted that. Don't copy it anywhere.
 - Match results to students **by number, never by row order**: one shifted row would give 1,000 students the wrong grade.
 
@@ -75,7 +93,7 @@ There is **no Moodle API**. Claude in Chrome works in the user's own logged-in C
 
 | Problem | Fix |
 |---|---|
-| OneDrive refused to sync files whose names had invisible RTL marks (U+200E/2068/2069), a broken char (U+FFFD) or emoji, which phones add | Data lives in `~/assignment-data`, outside OneDrive. The grader uses clean names `0001.pdf` |
+| OneDrive refused to sync files whose names had invisible RTL marks (U+200E/2068/2069), a broken char (U+FFFD) or emoji, which phones add | Extracted originals stay in the local work folder; the shared folder only has clean names (`0001.pdf`). `status` checks it |
 | Students name files anything ("Untitled (7).pdf", their own name, ...) | Ignore filenames. Only the folder's participant id matters |
 | Chrome left the ZIP as "Unconfirmed *.crdownload" | Chrome was asking where to save. Turn off "Ask where to save each file" in Chrome settings for unattended runs |
 | Re-running ingest failed deleting folders 7-Zip extracted as read-only | `ingest.remove_tree` clears read-only and retries |

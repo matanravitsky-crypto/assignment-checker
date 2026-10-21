@@ -1,7 +1,7 @@
 """Number Moodle submissions 0001..N so grading never sees student names.
 
-Reads <assignment>/original/ (one folder per student, as Moodle's
-"Download all submissions" gives them) and writes:
+Reads original/ (one folder per student, as Moodle's "Download all
+submissions" gives them) and writes into the assignment folder:
     anon/0001.pdf, anon/0002.pdf, ...   the files the grader gets
     mapping.csv                         number -> Moodle participant id and
                                         original folder; it stays private and
@@ -27,8 +27,7 @@ def parse_folder(folder_name: str) -> str:
     return match.group("participant")
 
 
-def prepare(assignment_dir: Path) -> list[dict]:
-    original = assignment_dir / "original"
+def prepare(original: Path, assignment_dir: Path) -> list[dict]:
     anon = assignment_dir / "anon"
     if anon.exists():
         shutil.rmtree(anon)
