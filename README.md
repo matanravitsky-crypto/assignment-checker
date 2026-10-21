@@ -21,6 +21,14 @@ Run it locally by opening `docs/index.html` through any static server, for examp
 npx http-server docs
 ```
 
+## Preparing submissions from Moodle
+
+1. In the assignment's Submissions page, use **Download all submissions** (open the ZIP with 7-Zip).
+2. Extract it to `~/assignment-data/submissions/<assignment id>/original/` (one folder per student).
+3. Run `python prepare_submissions.py <assignment id>`.
+
+This writes `anon/0001.pdf ... anon/NNNN.pdf` for grading and a private `mapping.csv` (number → Moodle participant id and original folder) used to rebuild Moodle's names for the upload. The data folder lives outside the repo and OneDrive; set `ASSIGNMENT_DATA` to move it. Student files never go into this repo: it is public.
+
 ## Python
 
 **Current stage:** a basic Hello World skeleton.
