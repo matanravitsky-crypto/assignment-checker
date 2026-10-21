@@ -21,13 +21,29 @@ Run it locally by opening `docs/index.html` through any static server, for examp
 npx http-server docs
 ```
 
-## Preparing submissions from Moodle
+## Moodle in and out (`moodle/`)
 
-1. In the assignment's Submissions page, use **Download all submissions** (open the ZIP with 7-Zip).
-2. Extract it to `~/assignment-data/submissions/<assignment id>/original/` (one folder per student).
-3. Run `python prepare_submissions.py <assignment id>`.
+There is no Moodle API, so Claude in Chrome does the clicking and these scripts do the rest. Student files never enter this repo (it is public); they live in `~/assignment-data` (see `moodle/paths.py`).
 
-This writes `anon/0001.pdf ... anon/NNNN.pdf` for grading and a private `mapping.csv` (number → Moodle participant id and original folder) used to rebuild Moodle's names for the upload. The data folder lives outside the repo and OneDrive; set `ASSIGNMENT_DATA` to move it. Student files never go into this repo: it is public.
+Needs Python 3.10+ and 7-Zip (`winget install 7zip.7zip`).
+
+**In** — after the due date, in the assignment's Submissions page: Actions → *Download all submissions*, then:
+
+```bash
+python -m moodle ingest <assignment id>
+```
+
+It takes the newest `…-<assignment id>.zip` from Downloads, keeps it in `raw/`, extracts it, and writes `anon/0001.pdf …` for grading plus a private `mapping.csv` (number → Moodle participant id). The numbers follow the participant id, so a second download gives every student the same number.
+
+**Out** — put grades in `results.csv` (`number,grade,feedback`) and marked files in `marked/0001.pdf …`, download the grading worksheet from Moodle, then:
+
+```bash
+python -m moodle upload <assignment id>
+```
+
+It writes `upload/grades.csv` (Actions → *Upload grading worksheet*) and `upload/feedback.zip` (Actions → *Upload multiple feedback files in a zip*). Grades are matched by number, never by row order. Uploading to Moodle is a separate step a TA approves.
+
+`CLAUDE.md` has the full picture for working on this with Claude.
 
 ## Python
 
@@ -38,4 +54,7 @@ This writes `anon/0001.pdf ... anon/NNNN.pdf` for grading and a private `mapping
 ```bash
 python main.py
 python test_main.py
+python test_anonymize.py
+python test_ingest.py
+python test_upload.py
 ```

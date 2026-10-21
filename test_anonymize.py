@@ -2,7 +2,7 @@ import csv
 import tempfile
 from pathlib import Path
 
-from prepare_submissions import parse_folder, prepare
+from moodle.anonymize import parse_folder, prepare, read_mapping
 
 
 def make_submission(original: Path, folder: str, files: dict[str, str]) -> None:
@@ -40,6 +40,7 @@ def test_prepare_numbers_by_participant_id():
         with open(assignment / "mapping.csv", encoding="utf-8-sig") as f:
             saved = list(csv.DictReader(f))
         assert saved[2]["original_folder"] == "בת_200_assignsubmission_file"
+        assert read_mapping(assignment)["0001"]["anon_file"] == "0001.pdf"
 
 
 if __name__ == "__main__":

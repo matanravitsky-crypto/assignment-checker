@@ -1,0 +1,71 @@
+import csv
+import tempfile
+import zipfile
+from pathlib import Path
+
+from moodle.upload import participant_from_identifier, prepare_upload
+
+MAPPING = [
+    ["number", "anon_file", "participant_id", "original_folder", "original_file"],
+    ["0001", "0001.pdf", "100", "אב_100_assignsubmission_file", "a.pdf"],
+    ["0002", "0002.pdf", "200", "בת_200_assignsubmission_file", "b.pdf"],
+]
+
+WORKSHEET = [
+    ["מזהה", "שם מלא", "ציון", "ציון מירבי", "הערות למשוב"],
+    ["משתתף 200", "בת", "", "100", ""],
+    ["משתתף 100", "אב", "", "100", ""],
+    ["משתתף 300", "לא הגיש", "", "100", ""],
+]
+
+
+def write_csv(path: Path, rows: list[list[str]]) -> None:
+    with open(path, "w", encoding="utf-8-sig", newline="") as f:
+        csv.writer(f).writerows(rows)
+
+
+def test_participant_from_identifier():
+    assert participant_from_identifier("Participant 13464355") == "13464355"
+    assert participant_from_identifier("משתתף 13464355") == "13464355"
+
+
+def test_prepare_upload_matches_by_number_not_order():
+    with tempfile.TemporaryDirectory() as tmp:
+        assignment = Path(tmp)
+        write_csv(assignment / "mapping.csv", MAPPING)
+        write_csv(assignment / "results.csv", [["number", "grade", "feedback"], ["2", "90", "טוב"], ["0001", "70", ""]])
+        write_csv(assignment / "worksheet.csv", WORKSHEET)
+        (assignment / "marked").mkdir()
+        (assignment / "marked" / "0002.pdf").write_bytes(b"marked")
+
+        report = prepare_upload(assignment, assignment / "worksheet.csv")
+
+        assert report["grades_filled"] == 2
+        assert report["missing_results"] == []
+        with open(assignment / "upload" / "grades.csv", encoding="utf-8-sig") as f:
+            rows = list(csv.reader(f))
+        assert rows[1][2:5:2] == ["90", "טוב"]
+        assert rows[2][2] == "70"
+        assert rows[3][2] == ""
+        with zipfile.ZipFile(assignment / "upload" / "feedback.zip") as archive:
+            assert archive.namelist() == ["בת_200_assignsubmission_file/feedback.pdf"]
+
+
+def test_prepare_upload_reports_missing_results():
+    with tempfile.TemporaryDirectory() as tmp:
+        assignment = Path(tmp)
+        write_csv(assignment / "mapping.csv", MAPPING)
+        write_csv(assignment / "results.csv", [["number", "grade", "feedback"], ["0001", "70", ""], ["0009", "50", ""]])
+
+        report = prepare_upload(assignment)
+
+        assert report["missing_results"] == ["0002"]
+        assert report["unknown_numbers"] == ["0009"]
+        assert report["grades_filled"] is None
+
+
+if __name__ == "__main__":
+    test_participant_from_identifier()
+    test_prepare_upload_matches_by_number_not_order()
+    test_prepare_upload_reports_missing_results()
+    print("All tests passed.")

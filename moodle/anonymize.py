@@ -1,32 +1,22 @@
 """Number Moodle submissions 0001..N so grading never sees student names.
 
-Input: a "Download all submissions" ZIP extracted (one folder per student) into
-    <data>/submissions/<assignment id>/original/
-Output, next to it:
+Reads <assignment>/original/ (one folder per student, as Moodle's
+"Download all submissions" gives them) and writes:
     anon/0001.pdf, anon/0002.pdf, ...   the files the grader gets
     mapping.csv                         number -> Moodle participant id and
                                         original folder; it stays private and
                                         is used to rebuild names for the upload
-
-The data folder defaults to ~/assignment-data, outside the repo and OneDrive.
-Set ASSIGNMENT_DATA to use another one.
-
-Usage: python prepare_submissions.py <assignment id>
 """
 
 import csv
-import os
 import re
 import shutil
-import sys
 from pathlib import Path
 
 # Moodle names each folder "<full name>_<participant id>_assignsubmission_file"
 FOLDER_PATTERN = re.compile(r"^(?P<name>.+)_(?P<participant>\d+)_assignsubmission_file_?$")
 
-
-def data_dir() -> Path:
-    return Path(os.environ.get("ASSIGNMENT_DATA", Path.home() / "assignment-data"))
+MAPPING_FIELDS = ["number", "anon_file", "participant_id", "original_folder", "original_file"]
 
 
 def parse_folder(folder_name: str) -> str:
@@ -67,20 +57,16 @@ def prepare(assignment_dir: Path) -> list[dict]:
             })
 
     with open(assignment_dir / "mapping.csv", "w", newline="", encoding="utf-8-sig") as f:
-        writer = csv.DictWriter(f, fieldnames=list(rows[0]) if rows else ["number"])
+        writer = csv.DictWriter(f, fieldnames=MAPPING_FIELDS)
         writer.writeheader()
         writer.writerows(rows)
     return rows
 
 
-def main() -> None:
-    if len(sys.argv) != 2:
-        sys.exit("Usage: python prepare_submissions.py <assignment id>")
-    assignment_dir = data_dir() / "submissions" / sys.argv[1]
-    rows = prepare(assignment_dir)
-    students = len({row["number"] for row in rows})
-    print(f"{students} submissions, {len(rows)} files -> {assignment_dir / 'anon'}")
-
-
-if __name__ == "__main__":
-    main()
+def read_mapping(assignment_dir: Path) -> dict[str, dict]:
+    """Return mapping.csv as {number: first row for that number}."""
+    with open(assignment_dir / "mapping.csv", encoding="utf-8-sig") as f:
+        mapping = {}
+        for row in csv.DictReader(f):
+            mapping.setdefault(row["number"], row)
+        return mapping
