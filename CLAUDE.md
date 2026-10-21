@@ -8,14 +8,11 @@ Courses are large (up to ~1,000 students per assignment). The team works in Hebr
 
 | Path | What |
 |---|---|
-| `moodle/` | Moving files between Moodle and the grader. `python -m moodle pending`, `ingest <id>`, `upload <id>` |
+| `moodle/` | Moving files between Moodle and the grader. `python -m moodle ingest <id>`, `upload <id>` |
 | `moodle/paths.py` | Where student data lives on the machine (see below) |
 | `moodle/anonymize.py` | Numbers submissions 0001..N and writes `mapping.csv` |
 | `moodle/ingest.py` | Downloads ZIP → extracted → numbered |
 | `moodle/upload.py` | `results.csv` + `marked/` → `upload/grades.csv` + `upload/feedback-N.zip` |
-| `moodle/schedule.py` | Which assignments in `assignments.json` are due for download |
-| `moodle/download_task.md` | The scheduled download task's prompt |
-| `assignments.json` | The team's assignments and due dates (no student data) |
 | `docs/` | Static Hebrew (RTL) dashboard prototype on GitHub Pages; demo data only |
 | `main.py` | Python skeleton |
 | `test_*.py` | Tests; run each with `python test_<name>.py` |
@@ -38,8 +35,19 @@ This repo is **public**. Submissions, names, ID numbers (ת"ז), emails and grad
 ```
 
 The **key** that links a number back to a student is the Moodle *participant id* in the folder name
-(not the ת"ז). It lives only in `mapping.csv` on the machine that downloaded the submissions.
+(not the ת"ז). It lives only in `mapping.csv`.
 Numbers are assigned in participant-id order, so re-downloading gives everyone the same number.
+
+## One downloader, one key
+
+There is **one** `mapping.csv` per assignment, and it belongs to the one person who downloads from Moodle
+and uploads back to it. Today that is Ori (orimes-source). Everyone else gets only the numbered files and
+never downloads from Moodle themselves: a second download would make a second key, and the two could disagree.
+- Ori: download (when he asks) → `python -m moodle ingest <id>` → share `anon/` with the team.
+- Team: grade from `anon/`, return `results.csv` and `marked/` to Ori.
+- Ori: `python -m moodle upload <id>` → a TA uploads to Moodle.
+
+Where `anon/` is shared is not decided yet. It can't be this repo (public, and a single assignment is ~1.3 GB).
 
 When working with this data:
 - Grade from `anon/` only. Don't open `original/` or print names, ת"ז or emails into chat, commits or logs.
@@ -50,8 +58,8 @@ When working with this data:
 
 There is **no Moodle API**. Claude in Chrome works in the user's own logged-in Chrome.
 - The user logs in themselves. Claude never types Moodle passwords.
-- Downloads run when the user asks, or from the scheduled task they set up on their computer (below).
-  Every **upload** to Moodle (grades or feedback) is a separate step that a person approves. Never upload on your own.
+- Download only when the downloader (see above) asks. No scheduled downloads: Moodle sessions expire, and
+  downloading per schedule wastes runs. Every **upload** to Moodle (grades or feedback) is a separate step that a person approves. Never upload on your own.
 - Submissions page: `https://moodle.bgu.ac.il/moodle/mod/assign/view.php?id=<assignment id>&action=grading`.
   The assignment id is the `id=` in that URL (the number at the end of the ZIP name too).
 - Download: Actions (פעולות) → "הורדת כל ההגשות (השתמש ב 7ZIP לפתיחה)". Keep "organize submissions in folders per student" checked.
@@ -83,27 +91,6 @@ and a line in a spreadsheet. So per submission the grader writes:
 - a row in `results.csv`: `number,grade,feedback`, where `feedback` is a short summary.
 
 `python -m moodle upload` takes it from there.
-
-## Assignments and automatic download
-
-`assignments.json` lists the team's assignments: Moodle id, course, name, due date (ISO with offset).
-It has no student data, so it lives in git: add an assignment there and every computer picks it up.
-`python -m moodle pending` lists the ones past due that this computer hasn't downloaded since the due date.
-
-`moodle/download_task.md` is the scheduled task that does the rest: for each pending assignment it confirms in
-Moodle that the assignment is closed, downloads it with Claude in Chrome, runs `ingest`, and notifies.
-
-## Setting up a computer
-
-When a team member asks to set up their computer ("תגדיר לי את המחשב"), do this:
-1. Install what's missing: `winget install Git.Git GitHub.cli Python.Python.3.12 7zip.7zip`, then `gh auth login` (they log in themselves).
-2. Clone this repo and run all `test_*.py`.
-3. They install the Claude in Chrome extension, connect it to the same Claude organization as this app, and log in to Moodle in that Chrome.
-4. They turn off "Ask where to save each file" in Chrome settings (otherwise downloads stall on a Save As window).
-5. Create a Claude desktop scheduled task from `moodle/download_task.md` with `<REPO>` replaced by the clone's absolute path,
-   schedule `0 8,20 * * *`. Tell them it only runs while the Claude app is open, and catches up when it next opens.
-
-Every computer that downloads also holds `mapping.csv`, the key from numbers to students. Keep that in mind when choosing who downloads.
 
 ## Working in git
 
