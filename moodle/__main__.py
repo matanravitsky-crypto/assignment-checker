@@ -32,6 +32,8 @@ def main() -> None:
     upload_cmd.add_argument("--worksheet", type=Path, help="default: newest matching CSV in Downloads")
     upload_cmd.add_argument("--max-mb", type=int, default=upload.MAX_ZIP_BYTES // 1_000_000,
                             help="largest ZIP Moodle takes (default: %(default)s)")
+    upload_cmd.add_argument("--for-claude", action="store_true",
+                            help="split for Claude in Chrome, which uploads up to 10 MB per file")
 
     args = parser.parse_args()
     target = paths.assignment_dir(args.assignment_id)
@@ -59,6 +61,8 @@ def main() -> None:
         print(f"{students} submissions, {len(rows)} files -> {target / 'anon'}")
     else:
         worksheet = args.worksheet or upload.find_worksheet(args.assignment_id)
+        if args.for_claude:
+            args.max_mb = upload.CLAUDE_MAX_ZIP_BYTES // 1_000_000
         report = upload.prepare_upload(target, worksheet, args.max_mb * 1_000_000)
         print(f"Submissions: {report['submissions']}, results: {report['results']}")
         if report["missing_results"]:
@@ -71,7 +75,8 @@ def main() -> None:
             print(f"grades.csv: {report['grades_filled']} grades filled")
         print(f"feedback ZIPs: {', '.join(z.name for z in report['feedback_zips']) or 'none'}")
         if report["too_big"]:
-            print(f"Too big for Moodle ({args.max_mb} MB), save smaller: {', '.join(report['too_big'])}")
+            limit = "Claude in Chrome" if args.for_claude else "Moodle"
+            print(f"Too big for {limit} ({args.max_mb} MB), save smaller: {', '.join(report['too_big'])}")
         print(f"-> {target / 'upload'} (steps in '{upload.INSTRUCTIONS_FILE}')")
 
 

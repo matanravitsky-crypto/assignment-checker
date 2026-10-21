@@ -92,6 +92,37 @@ There is **no Moodle API**. Claude in Chrome works in the user's own logged-in C
 - Grades upload needs **"Offline grading worksheet"** turned on in the assignment settings (not on yet in assignment 3438636).
   Then: Actions → download the grading worksheet, run `python -m moodle upload <id>`, upload `upload/grades.csv`.
 
+## Uploading to Moodle with Claude
+
+Claude uploads the marked files itself through Claude in Chrome, as much as it can. A person can always do
+the same by hand with the 30 MB ZIPs (see `upload/הוראות העלאה.txt`).
+
+**Before the first real upload:** do it once on a test assignment (ask the lecturer for one). Never try the
+steps for the first time on an assignment with real students.
+
+1. Build ZIPs Claude can carry: `python -m moodle upload <id> --for-claude`. Each ZIP is under 9 MB
+   (Claude in Chrome's `file_upload` takes up to 10 MB per call). Files over 9 MB on their own are listed as
+   too big; they need to be saved smaller first (see "What grading must return").
+2. The upload folder must be readable by this session: if it's not under the working directory, ask for access to it.
+3. **Ask the user once for the whole batch**, saying the assignment, how many ZIPs, and how many students.
+   Their yes covers uploading those ZIPs and confirming Moodle's import screens for this assignment only.
+4. For each ZIP, in order:
+   a. Open `https://moodle.bgu.ac.il/moodle/mod/assign/view.php?id=<id>&plugin=file&pluginsubtype=assignfeedback&action=viewpluginpage&pluginaction=uploadzip`.
+   b. Open the file picker → "העלאת קובץ" → find the `input[type=file]` with `find`/`read_page` and use
+      `file_upload` with the ZIP's path. Don't click the file input (it opens a native dialog Claude can't see).
+      Then click "העלאת קובץ זה" and submit the form.
+   c. Moodle shows a confirmation list (file → student). Check its row count equals the number of files in the ZIP
+      (`python -c "import zipfile,sys; print(len(zipfile.ZipFile(sys.argv[1]).namelist()))" <zip>`).
+      If it differs, stop and tell the user. Don't print the student names from that screen.
+   d. Confirm, read the result ("N files imported"), and append `<zip name> <N>` to `upload/uploaded.txt`.
+5. If anything fails mid-way, `upload/uploaded.txt` says where to resume. Re-uploading a ZIP replaces the same
+   students' feedback file, so a retry is safe.
+6. Grades (`upload/grades.csv`) go the same way through Actions → "העלאת גיליון ציונים", with Moodle's preview
+   checked before confirming. That needs "Offline grading worksheet" on in the assignment.
+
+Never upload without the user's yes for that batch, never to a different assignment than the ZIPs were built for,
+and never change assignment settings.
+
 ## Problems already solved (don't re-solve)
 
 | Problem | Fix |

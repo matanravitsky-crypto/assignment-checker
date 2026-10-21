@@ -33,6 +33,8 @@ FEEDBACK_HEADERS = {"Feedback comments", "הערות למשוב", "משוב"}
 
 # BGU Moodle takes up to 31 MB per upload on the feedback ZIP page; leave some room
 MAX_ZIP_BYTES = 30_000_000
+# When Claude uploads through Claude in Chrome, each file can be at most 10 MB
+CLAUDE_MAX_ZIP_BYTES = 9_000_000
 
 INSTRUCTIONS_FILE = "הוראות העלאה.txt"
 
