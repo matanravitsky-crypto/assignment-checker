@@ -1,21 +1,30 @@
 # Assignment Checker
 
-A university project for checking student assignments automatically.
+A university project for checking homework in Discrete Math and Linear Algebra automatically.
 
-The pipeline:
+The pipeline has three stages:
 
-1. **Pull** submissions and student details from the university course site.
-2. **Grade** each submission with Claude, using the assignment's rubric and grading notes.
-3. **Mark & approve**: comments are marked on the submission, a TA reviews and approves.
-4. **Return** the grade, comments and marked file back to the university site.
+1. **Pull**: fetch every submission of an assignment from Moodle, with the student's details and files.
+2. **Grade**: send each submission to Claude with the rubric, grading notes and official solution. Claude marks mistakes on the page, scores each question and writes feedback.
+3. **Return**: upload the grade, feedback and the marked PDF back to Moodle.
 
 ## Dashboard (skeleton)
 
 Live: https://matanravitsky-crypto.github.io/assignment-checker/
 
-`docs/` holds a static, Hebrew (RTL) dashboard prototype: the pipeline overview, the submissions table, a submission view with red-pen comments and a score breakdown, the rubric editor, a run log and the connection settings. All data is demo data from `docs/data.js`; the buttons simulate the pipeline.
+`docs/` holds a static, Hebrew (RTL) dashboard prototype. Everything runs in demo mode: no Moodle or Claude keys are connected yet.
 
-Run it locally by opening `docs/index.html` through any static server, for example:
+| File | What it is |
+|---|---|
+| `docs/index.html` | Page shell and navigation |
+| `docs/app.js` | Screens: dashboard, one page per stage (works, instructions, connection), marked-submission view |
+| `docs/api.js` | The connection layer. Today it simulates the pipeline; later each function becomes a call to the backend (`/api/pull`, `/api/grade`, `/api/return`) without changing the screens |
+| `docs/data.js` | Demo courses, assignments, rubrics and sample submissions |
+| `docs/styles.css` | Styles, light and dark |
+
+Each stage page has a free-text "instructions" tab: that text is the spec for what the backend should do in that stage.
+
+Run it locally through any static server, for example:
 
 ```bash
 npx http-server docs
