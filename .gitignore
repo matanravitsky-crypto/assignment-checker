@@ -7,3 +7,7 @@ venv/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Student submissions and grades from Moodle: never commit (the repo is public)
+data/
+*.zip
