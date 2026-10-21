@@ -3,7 +3,7 @@ import tempfile
 import zipfile
 from pathlib import Path
 
-from moodle.upload import participant_from_identifier, prepare_upload
+from moodle.upload import build_feedback_zips, participant_from_identifier, prepare_upload
 
 MAPPING = [
     ["number", "anon_file", "participant_id", "original_folder", "original_file"],
@@ -47,7 +47,26 @@ def test_prepare_upload_matches_by_number_not_order():
         assert rows[1][2:5:2] == ["90", "טוב"]
         assert rows[2][2] == "70"
         assert rows[3][2] == ""
-        with zipfile.ZipFile(assignment / "upload" / "feedback.zip") as archive:
+        assert [z.name for z in report["feedback_zips"]] == ["feedback-1.zip"]
+        with zipfile.ZipFile(assignment / "upload" / "feedback-1.zip") as archive:
+            assert archive.namelist() == ["בת_200_assignsubmission_file/feedback.pdf"]
+
+
+def test_feedback_zips_split_under_the_size_limit():
+    with tempfile.TemporaryDirectory() as tmp:
+        assignment = Path(tmp)
+        marked = assignment / "marked"
+        marked.mkdir()
+        (marked / "0001.pdf").write_bytes(b"x" * 600)
+        (marked / "0002.pdf").write_bytes(b"y" * 600)
+        (marked / "0002-2.pdf").write_bytes(b"z" * 2000)
+        mapping = {row[0]: dict(zip(MAPPING[0], row)) for row in MAPPING[1:]}
+
+        zips, too_big = build_feedback_zips(marked, assignment, mapping, max_bytes=1000)
+
+        assert [z.name for z in zips] == ["feedback-1.zip", "feedback-2.zip"]
+        assert too_big == ["0002-2.pdf"]
+        with zipfile.ZipFile(zips[1]) as archive:
             assert archive.namelist() == ["בת_200_assignsubmission_file/feedback.pdf"]
 
 
@@ -68,4 +87,5 @@ if __name__ == "__main__":
     test_participant_from_identifier()
     test_prepare_upload_matches_by_number_not_order()
     test_prepare_upload_reports_missing_results()
+    test_feedback_zips_split_under_the_size_limit()
     print("All tests passed.")

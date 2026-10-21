@@ -9,7 +9,9 @@ Inputs in <assignment>/:
 Outputs in <assignment>/upload/:
     grades.csv    the worksheet with grades and feedback filled in
                   -> Moodle: Actions > Upload grading worksheet
-    feedback.zip  one folder per student, named as in Moodle's download
+    feedback-1.zip, feedback-2.zip, ...
+                  one folder per student, named as in Moodle's download,
+                  each ZIP under 10 MB
                   -> Moodle: Actions > Upload multiple feedback files in a zip
 
 Nothing here talks to Moodle: uploading is a separate, approved step.
@@ -25,6 +27,9 @@ from moodle import anonymize
 # The worksheet's headers follow the Moodle language the user downloaded it in
 GRADE_HEADERS = {"Grade", "ציון"}
 FEEDBACK_HEADERS = {"Feedback comments", "הערות למשוב", "משוב"}
+
+# Claude in Chrome's file upload takes up to 10 MB per call; leave some room
+MAX_ZIP_BYTES = 9_000_000
 
 
 def find_worksheet(assignment_id: str, downloads: Path | None = None) -> Path | None:
@@ -78,22 +83,49 @@ def fill_worksheet(worksheet: Path, out: Path, results: dict, mapping: dict) -> 
     return filled
 
 
-def build_feedback_zip(marked: Path, out: Path, mapping: dict) -> int:
-    """Zip marked files under each student's original Moodle folder name."""
-    count = 0
-    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as archive:
-        for file in sorted(marked.iterdir()):
-            match = re.match(r"^(\d{4})(-\d+)?$", file.stem)
-            if not file.is_file() or not match:
-                continue
-            row = mapping.get(match.group(1))
-            if row is None:
-                raise ValueError(f"{file.name}: number {match.group(1)} is not in mapping.csv")
-            # Moodle skips files identical to the submission, so give them a new name
-            name = f"feedback{match.group(2) or ''}{file.suffix.lower()}"
-            archive.write(file, f"{row['original_folder']}/{name}")
-            count += 1
-    return count
+def build_feedback_zips(
+    marked: Path, upload: Path, mapping: dict, max_bytes: int = MAX_ZIP_BYTES
+) -> tuple[list[Path], list[str]]:
+    """Zip marked files under each student's original Moodle folder name.
+
+    Claude in Chrome uploads at most 10 MB at a time, so the files are split
+    into feedback-1.zip, feedback-2.zip, ... each under max_bytes. Moodle adds
+    each upload to the earlier ones. Files too big for any ZIP are returned by
+    name to be uploaded by hand.
+    """
+    for old in upload.glob("feedback-*.zip"):
+        old.unlink()
+
+    parts: list[list[tuple[Path, str]]] = [[]]
+    too_big = []
+    size = 0
+    for file in sorted(marked.iterdir()):
+        match = re.match(r"^(\d{4})(-\d+)?$", file.stem)
+        if not file.is_file() or not match:
+            continue
+        row = mapping.get(match.group(1))
+        if row is None:
+            raise ValueError(f"{file.name}: number {match.group(1)} is not in mapping.csv")
+        file_size = file.stat().st_size
+        if file_size > max_bytes:
+            too_big.append(file.name)
+            continue
+        if parts[-1] and size + file_size > max_bytes:
+            parts.append([])
+            size = 0
+        # Moodle skips files identical to the submission, so give them a new name
+        name = f"feedback{match.group(2) or ''}{file.suffix.lower()}"
+        parts[-1].append((file, f"{row['original_folder']}/{name}"))
+        size += file_size
+
+    zips = []
+    for index, files in enumerate(p for p in parts if p):
+        out = upload / f"feedback-{index + 1}.zip"
+        with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as archive:
+            for file, arcname in files:
+                archive.write(file, arcname)
+        zips.append(out)
+    return zips, too_big
 
 
 def prepare_upload(assignment_dir: Path, worksheet: Path | None = None) -> dict:
@@ -108,11 +140,12 @@ def prepare_upload(assignment_dir: Path, worksheet: Path | None = None) -> dict:
         "missing_results": sorted(set(mapping) - set(results)),
         "unknown_numbers": sorted(set(results) - set(mapping)),
         "grades_filled": None,
-        "feedback_files": 0,
+        "feedback_zips": [],
+        "too_big": [],
     }
     if worksheet:
         report["grades_filled"] = fill_worksheet(worksheet, upload / "grades.csv", results, mapping)
     marked = assignment_dir / "marked"
     if marked.is_dir():
-        report["feedback_files"] = build_feedback_zip(marked, upload / "feedback.zip", mapping)
+        report["feedback_zips"], report["too_big"] = build_feedback_zips(marked, upload, mapping)
     return report

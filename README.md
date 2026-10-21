@@ -41,7 +41,9 @@ It takes the newest `…-<assignment id>.zip` from Downloads, keeps it in `raw/`
 python -m moodle upload <assignment id>
 ```
 
-It writes `upload/grades.csv` (Actions → *Upload grading worksheet*) and `upload/feedback.zip` (Actions → *Upload multiple feedback files in a zip*). Grades are matched by number, never by row order. Uploading to Moodle is a separate step a TA approves.
+It writes `upload/grades.csv` (Actions → *Upload grading worksheet*) and `upload/feedback-1.zip …` (Actions → *Upload multiple feedback files in a zip*). Grades are matched by number, never by row order. Uploading to Moodle is a separate step a TA approves.
+
+**Automatic** — `assignments.json` lists the assignments and due dates. `python -m moodle pending` shows which are due for download on this computer, and a Claude desktop scheduled task (`moodle/download_task.md`) downloads and ingests them after the due date.
 
 `CLAUDE.md` has the full picture for working on this with Claude.
 
@@ -57,4 +59,5 @@ python test_main.py
 python test_anonymize.py
 python test_ingest.py
 python test_upload.py
+python test_schedule.py
 ```
