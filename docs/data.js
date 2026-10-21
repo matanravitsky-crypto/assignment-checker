@@ -234,7 +234,8 @@ window.DEMO = (() => {
     const now = Date.now(), due = new Date(A.due).getTime();
     return free.map((name, j) => {
       const at = now > due ? due + Math.random() * (now - due) : now - Math.random() * 72 * H;
-      return makeSubmission(A, Math.random, name, A.subs.length + j + 1, at);
+      // מזהה ייחודי, כדי ששני חברי צוות שמושכים באותו זמן לא ידרסו זה את זה
+      return makeSubmission(A, Math.random, name, `${Date.now().toString(36)}${j}${Math.floor(Math.random() * 1e4)}`, at);
     });
   }
 

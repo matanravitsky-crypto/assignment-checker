@@ -1,6 +1,9 @@
 (() => {
   const D = window.DEMO;
   const API = window.PipelineAPI;
+  const DB = window.DB;
+  // עותק נקי של נתוני ההדגמה, לטעינה למסד ריק
+  const DEMO_SEED = structuredClone({ courses: D.courses, assignments: D.assignments, rubrics: D.rubrics, runs: D.runs, instructions: D.instructions });
   const $ = (sel, root = document) => root.querySelector(sel);
   const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -28,6 +31,27 @@
     claude: store.get("claude", { model: "claude-opus-5-5", parallel: 5, auto: false, sendSolution: true, lowConfidence: true }),
     moodle: store.get("moodle", { url: "https://moodle.bgu.ac.il", sync: "manual", late: true, types: "pdf,jpg,png" }),
     solution: { "la-hw3": "solution-hw3.pdf", "dm-hw3": "solution-hw3.pdf" },
+    // מסד משותף
+    shared: false,      // הנתונים במסך מגיעים מהמסד המשותף
+    loading: false,
+    sharedEmpty: false,
+    members: [],
+    online: [],
+    instrMeta: {},
+    confirm: null,      // כפתור שמחכה ללחיצה שנייה לאישור
+  };
+
+  // ---------- שמירה למסד המשותף ----------
+  const dbError = (e) => toast(`השמירה למסד נכשלה: ${e.message}`, ICON.warn);
+  const timers = {};
+  const later = (key, fn, ms = 600) => { clearTimeout(timers[key]); timers[key] = setTimeout(fn, ms); };
+  const save = {
+    subs: (A, subs) => state.shared && subs.length && DB.saveSubmissions(A, subs).catch(dbError),
+    assignment: (A) => state.shared && DB.saveAssignment(A).catch(dbError),
+    instr: (stage) => state.shared && later(`instr.${stage}`, () => DB.saveInstruction(stage, state.instr[stage]).then(() => flashSaved(stage)).catch(dbError)),
+    rubric: () => { const c = state.courseId; state.shared && later(`rubric.${c}`, () => DB.saveRubric(c, D.rubrics[c]).catch(dbError)); },
+    setting: (key) => state.shared && later(`setting.${key}`, () => DB.saveSetting(key, state[key]).catch(dbError)),
+    run: (run) => state.shared && DB.addRun(run).then((r) => { run.id = r.id; run.actor = r.actor; }).catch(dbError),
   };
 
   const STAGES = {
@@ -71,6 +95,8 @@
     lock: '<svg viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>',
     upload: '<svg viewBox="0 0 24 24"><path d="M12 16V5M7 10l5-5 5 5M5 19h14"/></svg>',
     search: '<svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>',
+    github: '<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" stroke="none" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>',
+    db: '<svg viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v12c0 1.7 3.1 3 7 3s7-1.3 7-3V6M5 12c0 1.7 3.1 3 7 3s7-1.3 7-3"/></svg>',
   };
   // סימן V שמצויר (stroke-dashoffset) כששלב מסתיים
   const CHECK_DRAW = '<svg class="check-draw" viewBox="0 0 24 24"><path pathLength="1" d="M5 12.5l4.5 4.5L19 7.5"/></svg>';
@@ -135,7 +161,11 @@
   }
 
   // ---------- Pipeline runs ----------
-  function log(kind, text, A) { D.runs.unshift({ at: new Date().toISOString(), kind, text, where: D.where(A) }); }
+  function log(kind, text, A) {
+    const run = { at: new Date().toISOString(), kind, text, where: D.where(A), actor: DB.login };
+    D.runs.unshift(run);
+    save.run(run);
+  }
 
   async function runStage(stage) {
     const A = cur();
@@ -145,7 +175,7 @@
     if (stage === "ret" && !I.toReturn.length) return;
     const run = (state.run[A.id] = { stage, steps: STAGES[stage].steps.map(() => "pending") });
     const onStep = (i, st) => { run.steps[i] = st; render(); };
-    const onItem = (s) => { s.fresh = true; render(); };
+    const onItem = (s) => { s.fresh = true; save.subs(A, [s]); render(); };
     render();
 
     if (stage === "pull") {
@@ -154,6 +184,8 @@
       A.subs.push(...fresh);
       A.pulledAt = new Date().toISOString();
       A.lastFresh = fresh.length;
+      save.subs(A, fresh);
+      save.assignment(A);
       log("pull", fresh.length ? `נמשכו ${fresh.length} הגשות חדשות ממודל` : "אין הגשות חדשות במודל", A);
       delete state.run[A.id];
       toast(fresh.length ? `המשיכה הסתיימה: ${plural(fresh.length, "הגשה חדשה אחת", "הגשות חדשות")}` : "המשיכה הסתיימה: אין הגשות חדשות");
@@ -166,6 +198,7 @@
       const subs = I.toGrade;
       await API.grade(A, subs, { instructions: state.instr.grade, rubric: rubric(), claude: state.claude }, onStep, onItem);
       A.gradedAt = new Date().toISOString();
+      save.assignment(A);
       log("grade", `Claude בדק ${subs.length} עבודות. ממוצע ${avg(subs.map((s) => s.score))}`, A);
       delete state.run[A.id];
       toast(`הבדיקה הסתיימה: ${plural(subs.length, "עבודה אחת נבדקה", "עבודות נבדקו")}`);
@@ -176,6 +209,7 @@
     const subs = I.toReturn;
     await API.returnGrades(A, subs, { instructions: state.instr.ret, format: state.retFormat }, onStep, onItem);
     A.returnedAt = new Date().toISOString();
+    save.assignment(A);
     log("return", `הוחזרו ${subs.length} ציונים וקבצים מסומנים למודל`, A);
     delete state.run[A.id];
     toast(`ההחזרה הסתיימה: ${plural(subs.length, "עבודה אחת עלתה", "עבודות עלו")} למודל`);
@@ -430,7 +464,9 @@
   function instrBox(stage, title, help) {
     return `
       <section class="panel instr">
-        <div class="panel-head"><h2>${title}</h2><span class="saved" id="saved-${stage}">נשמר במכשיר הזה</span></div>
+        <div class="panel-head"><h2>${title}</h2>
+          ${state.shared && state.instrMeta[stage]?.by ? `<span class="meta">עודכן ע״י ${esc(state.instrMeta[stage].by)}, ${when(state.instrMeta[stage].at)}</span>` : ""}
+          <span class="saved" id="saved-${stage}">${state.shared ? "נשמר במסד המשותף" : "נשמר במכשיר הזה"}</span></div>
         <div class="panel-body">
           <p class="lead">${help}</p>
           <label class="sr" for="instr-${stage}">${title}</label>
@@ -568,7 +604,8 @@
         <section class="panel">
           <div class="panel-head"><h3>פתרון רשמי</h3></div>
           <div class="panel-body">
-            ${state.solution[A.id] ? `<div class="file big">${ICON.file}<span dir="ltr">${esc(state.solution[A.id])}</span><em>הועלה</em></div>` : `<p class="muted" style="margin:0 0 10px">עוד לא הועלה פתרון רשמי למטלה הזו.</p>`}
+            ${state.solution[A.id] ? `<div class="file big">${ICON.file}<span dir="ltr">${esc(state.solution[A.id])}</span>${A.solutionPath && state.shared ? `<button class="btn ghost small" data-act="open-solution">פתח</button>` : `<em>הועלה</em>`}</div>` : `<p class="muted" style="margin:0 0 10px">עוד לא הועלה פתרון רשמי למטלה הזו.</p>`}
+            ${state.shared ? `<p class="hint" style="margin:0 0 10px">הקובץ נשמר במסד, וכל הצוות יכול לפתוח אותו.</p>` : ""}
             <label class="btn secondary small upload">${ICON.upload}${state.solution[A.id] ? "החלף קובץ" : "העלה פתרון רשמי"}<input type="file" id="solution-file" accept=".pdf" data-solution></label>
           </div>
         </section>
@@ -730,9 +767,10 @@
 
   function logHTML(limit, onlyHere) {
     const icon = { pull: ICON.pull, grade: ICON.grade, return: ICON.ret, error: ICON.warn };
-    const list = D.runs.filter((r) => !onlyHere || r.where.startsWith(course().name)).slice(0, limit);
+    const list = D.runs.filter((r) => !onlyHere || (r.where || "").startsWith(course()?.name || "")).slice(0, limit);
+    if (!list.length) return `<p class="muted empty-line" style="padding:12px 0">עוד אין פעילות.</p>`;
     return `<ul class="log">${list.map((r) => `
-      <li><span class="ic ${r.kind}">${icon[r.kind]}</span><div>${esc(r.text)}<small>${esc(r.where)}<time class="num">${when(r.at)}</time></small></div></li>`).join("")}</ul>`;
+      <li><span class="ic ${r.kind}">${icon[r.kind]}</span><div>${esc(r.text)}<small>${esc(r.where || "")}<time class="num">${when(r.at)}</time>${r.actor ? `<span dir="ltr">${esc(r.actor)}</span>` : ""}</small></div></li>`).join("")}</ul>`;
   }
 
   function overviewHTML() {
@@ -760,6 +798,88 @@
     return `
       <ul class="criteria">${R.questions.map((q) => `<li><span>שאלה ${q.n}</span><span class="track"><i style="width:${q.pts}%"></i></span><b class="num">${q.pts}</b></li>`).join("")}</ul>
       <ul class="emph">${R.emphases.slice(0, 3).map((e) => `<li>${esc(e)}</li>`).join("")}</ul>`;
+  }
+
+  // ---------- מסד משותף: צוות, מצב ונתוני דוגמה ----------
+  function dbTag() {
+    if (DB.mode === "off") return ["עוד לא חובר", "warn"];
+    if (DB.mode === "team") return ["פעיל", "ok"];
+    return ["מחובר, דורש התחברות", "warn"];
+  }
+
+  const ghAvatar = (login, size = 64) => `https://github.com/${encodeURIComponent(login)}.png?size=${size}`;
+
+  function confirmBtn(key, label, sure, cls = "secondary") {
+    const armed = state.confirm === key;
+    return `<button class="btn ${armed ? "danger" : cls} small" data-confirm="${key}">${armed ? sure : label}</button>`;
+  }
+
+  function teamPanelHTML() {
+    if (DB.mode === "off") {
+      return `<section class="panel" style="margin-top:24px">
+        <div class="panel-head"><h2>צוות ומסד משותף</h2><span class="end tag warn">עוד לא חובר</span></div>
+        <div class="panel-body">
+          <p class="lead">כרגע כל מה שמשנים באתר נשמר רק בדפדפן של מי ששינה. אחרי חיבור המסד ב-Supabase, כל חברי הצוות מתחברים עם GitHub ורואים ועורכים את אותם נתונים, בזמן אמת.</p>
+          <p class="hint" style="margin:0">ההוראות להקמה נמצאות בקובץ <code dir="ltr">SETUP.md</code> בריפו.</p>
+        </div>
+      </section>`;
+    }
+    if (DB.mode !== "team") {
+      return `<section class="panel" style="margin-top:24px">
+        <div class="panel-head"><h2>צוות ומסד משותף</h2></div>
+        <div class="panel-body"><p class="lead" style="margin:0">רשימת הצוות והנתונים המשותפים זמינים רק לחברי צוות מחוברים.</p></div>
+      </section>`;
+    }
+    const online = new Set(state.online.map((p) => (p.login || "").toLowerCase()));
+    return `<section class="panel" style="margin-top:24px">
+      <div class="panel-head"><h2>צוות</h2><span class="meta">${state.members.length} חברים, ${online.size} מחוברים עכשיו</span><span class="end tag ok">מסד משותף פעיל</span></div>
+      <div class="panel-body">
+        <p class="lead">מי שברשימה מתחבר עם GitHub ורואה ועורך את אותם נתונים. כל שינוי מגיע לכולם מיד.</p>
+        <ul class="team">
+          ${state.members.map((m) => {
+            const me = m.github_username.toLowerCase() === (DB.login || "").toLowerCase();
+            return `<li>
+              <img src="${ghAvatar(m.github_username)}" alt="" width="32" height="32" loading="lazy">
+              <span class="tm-name"><b dir="ltr">${esc(m.github_username)}</b><small>${m.role === "admin" ? "מנהל" : "צוות"}${me ? ", זה את/ה" : ""}</small></span>
+              ${online.has(m.github_username.toLowerCase()) ? `<span class="tm-online">מחובר עכשיו</span>` : ""}
+              ${DB.admin && !me ? confirmBtn(`rm:${m.github_username}`, "הסר", "ללחוץ שוב להסרה", "ghost") : ""}
+            </li>`;
+          }).join("")}
+        </ul>
+        ${DB.admin ? `
+          <form class="add-member" id="add-member">
+            <label for="new-member">הוספת חבר צוות לפי שם משתמש ב-GitHub</label>
+            <div class="am-row"><input id="new-member" dir="ltr" placeholder="github-username" autocomplete="off" required><button class="btn primary small" type="submit">הוסף</button></div>
+          </form>` : `<p class="hint">רק מנהל יכול להוסיף או להסיר חברי צוות.</p>`}
+      </div>
+    </section>
+    ${DB.admin ? `<section class="panel" style="margin-top:24px">
+      <div class="panel-head"><h2>נתוני דוגמה</h2></div>
+      <div class="panel-body">
+        <p class="lead">מחיקה של כל הנתונים במסד וטעינה מחדש של נתוני הדוגמה. שימושי לפני הצגה. רשימת הצוות נשארת.</p>
+        ${confirmBtn("reset", "אפס לנתוני הדוגמה", "ללחוץ שוב: כל הנתונים יימחקו")}
+      </div>
+    </section>` : ""}`;
+  }
+
+  function bannerHTML() {
+    if (DB.mode === "outsider") {
+      return `<div class="banner warn">${ICON.lock}<div><b>התחברת בתור <span dir="ltr">${esc(DB.login || "")}</span>, אבל עוד לא נוספת לצוות.</b> מנהל יכול להוסיף אותך בדף "חיבורים והגדרות". בינתיים מוצגים נתוני הדגמה.</div><button class="btn ghost small" data-act="signout">התנתקות</button></div>`;
+    }
+    if (DB.mode === "guest") {
+      return `<div class="banner">${ICON.lock}<div><b>אלה נתוני הדגמה.</b> חברי הצוות מתחברים עם GitHub כדי לראות ולערוך את הנתונים המשותפים.</div><button class="btn primary small" data-act="signin">${ICON.github}התחברות עם GitHub</button></div>`;
+    }
+    return "";
+  }
+
+  function emptySharedHTML() {
+    return `<section class="panel setup">
+      <div class="empty">
+        <strong>המסד המשותף מחובר, ועדיין ריק</strong>
+        אפשר להתחיל מנתוני הדוגמה: שני קורסים, שמונה תרגילי בית והגשות לדוגמה. כל הצוות יראה אותם מיד, וכל שינוי יישמר במסד.
+        <div class="empty-act"><button class="btn primary" data-act="seed" ${state.loading ? "disabled" : ""}>${state.loading ? ICON.spin : ICON.upload}טען נתוני דוגמה למסד</button></div>
+      </div>
+    </section>`;
   }
 
   const views = {
@@ -815,12 +935,13 @@
                 ${node("Claude", "בדיקה, סימון וציון", "לא מחובר")}
               </div>
               <span class="arch-v" aria-hidden="true">⇅</span>
-              <div class="arch-row center">${node("מסד נתונים והתחברות", "Supabase: הגשות, ציונים וקבצים", "עוד לא הוקם")}</div>
+              <div class="arch-row center">${node("מסד נתונים והתחברות", "Supabase: הגשות, ציונים וקבצים", ...dbTag())}</div>
               <span class="arch-v" aria-hidden="true">⇅</span>
               <div class="arch-row center">${node("האתר הזה", "GitHub Pages", "פעיל", "ok")}</div>
             </div>
           </div>
         </section>
+        ${teamPanelHTML()}
         <div class="grid-2">
           <section class="panel">
             <div class="panel-head"><h2>מפתחות שצריך להגדיר</h2><span class="meta">כולם נשמרים ב-GitHub Secrets</span></div>
@@ -972,9 +1093,9 @@
 
   async function gradeOne(id) {
     const A = cur(), s = A.subs.find((x) => x.id === id);
-    s.status = "grading"; render(); refreshDrawer();
+    s.status = "grading"; save.subs(A, [s]); render(); refreshDrawer();
     await new Promise((r) => setTimeout(r, 1400));
-    D.gradeSubmission(s); s.fresh = true;
+    D.gradeSubmission(s); s.fresh = true; save.subs(A, [s]);
     render(); refreshDrawer();
     toast(`העבודה של ${s.name} נבדקה`);
   }
@@ -983,8 +1104,10 @@
   const route = () => { const r = (location.hash.replace(/^#/, "") || "/").split("?")[0]; return views[r] ? r : "/"; };
 
   function renderNav() {
-    const A = cur(), I = info(A), run = state.run[A.id];
     $$(".nav a").forEach((a) => (a.dataset.route === route() ? a.setAttribute("aria-current", "page") : a.removeAttribute("aria-current")));
+    const A = cur();
+    if (!A) { $$(".nav-badge").forEach((b) => (b.textContent = "")); return; }
+    const I = info(A), run = state.run[A.id];
     $$(".nav-stage").forEach((a) => {
       const st = a.dataset.stage, done = I.done[st];
       a.classList.toggle("done", done);
@@ -1018,8 +1141,13 @@
       });
     });
 
-    $("#main").innerHTML = views[route()]();
+    let html;
+    if (state.loading && !booted) html = `<div class="loading">${ICON.spin}טוען את הנתונים המשותפים…</div>`;
+    else if (state.shared && (state.sharedEmpty || !cur()) && route() !== "/settings") html = emptySharedHTML();
+    else html = views[route()]();
+    $("#main").innerHTML = bannerHTML() + html;
     renderNav();
+    renderAccount();
 
     if (keep) {
       const el = document.getElementById(keep.id);
@@ -1047,11 +1175,40 @@
         s.score = s.q.reduce((x, y) => x + y, 0);
         s.feedback = $("#fb-text").value;
         s.fresh = true;
+        save.subs(cur(), [s]);
         closeDrawer(); render();
         toast(`השינויים בעבודה של ${s.name} נשמרו`);
       }
+      if (a === "signin") DB.signIn().catch((err) => toast(`ההתחברות נכשלה: ${err.message}`, ICON.warn));
+      if (a === "signout") DB.signOut();
+      if (a === "account") { $("#account-menu")?.toggleAttribute("hidden"); }
+      if (a === "seed") seedShared();
+      if (a === "open-solution") {
+        const w = window.open("", "_blank");
+        DB.solutionUrl(cur().solutionPath).then((url) => { if (w) { w.opener = null; w.location = url; } }).catch((err) => { w?.close(); dbError(err); });
+      }
       return;
     }
+
+    const conf = t.closest("[data-confirm]");
+    if (conf) {
+      const key = conf.dataset.confirm;
+      if (state.confirm !== key) {
+        state.confirm = key; render();
+        clearTimeout(timers.confirm);
+        timers.confirm = setTimeout(() => { state.confirm = null; render(); }, 4000);
+        return;
+      }
+      state.confirm = null;
+      if (key === "reset") resetShared();
+      if (key.startsWith("rm:")) {
+        const name = key.slice(3);
+        DB.removeMember(name).then(() => { toast(`${name} הוסר מהצוות`); refreshMembers(); }).catch(dbError);
+      }
+      render();
+      return;
+    }
+    if (!t.closest("#account")) $("#account-menu")?.setAttribute("hidden", "");
 
     const goto = t.closest("[data-goto-tab]");
     if (goto) { const [st, tab] = goto.dataset.gotoTab.split(":"); state.tab[st] = tab; if (goto.getAttribute("href") === "#" + route()) render(); }
@@ -1063,7 +1220,12 @@
     if (chip) { state.filter = chip.dataset.filter; render(); return; }
 
     const reset = t.closest("[data-reset]");
-    if (reset) { const st = reset.dataset.reset; state.instr[st] = D.instructions[st]; store.set(`instr.${st}`, state.instr[st]); render(); toast("ההנחיות חזרו לברירת המחדל"); return; }
+    if (reset) {
+      const st = reset.dataset.reset;
+      state.instr[st] = D.instructions[st];
+      if (state.shared) save.instr(st); else store.set(`instr.${st}`, state.instr[st]);
+      render(); toast("ההנחיות חזרו לברירת המחדל"); return;
+    }
 
     const as = t.closest("[data-assign]");
     if (as) { state.assignmentId = as.dataset.assign; state.filter = "all"; renderPickers(); render(); window.scrollTo({ top: 0, behavior: "smooth" }); return; }
@@ -1093,19 +1255,24 @@
   document.addEventListener("input", (e) => {
     const t = e.target;
     if (t.dataset.query) { state.query[t.dataset.query] = t.value; render(); return; }
-    if (t.dataset.instr) { state.instr[t.dataset.instr] = t.value; store.set(`instr.${t.dataset.instr}`, t.value); flashSaved(t.dataset.instr); updatePrompt(); return; }
+    if (t.dataset.instr) {
+      const st = t.dataset.instr;
+      state.instr[st] = t.value;
+      if (state.shared) save.instr(st); else { store.set(`instr.${st}`, t.value); flashSaved(st); }
+      updatePrompt(); return;
+    }
     if (t.dataset.rpts !== undefined) {
       rubric().questions[+t.dataset.rpts].pts = Math.max(0, Number(t.value) || 0);
       const total = rubric().questions.reduce((a, q) => a + q.pts, 0);
       const line = $("#total-line");
       line.classList.toggle("bad", total !== 100);
       line.lastElementChild.textContent = `${total} נק׳`;
-      updatePrompt(); return;
+      save.rubric(); updatePrompt(); return;
     }
-    if (t.dataset.rreq !== undefined) { rubric().questions[+t.dataset.rreq].req = t.value; updatePrompt(); return; }
-    if (t.dataset.emph !== undefined) { rubric().emphases = t.value.split("\n").filter((x) => x.trim()); updatePrompt(); return; }
+    if (t.dataset.rreq !== undefined) { rubric().questions[+t.dataset.rreq].req = t.value; save.rubric(); updatePrompt(); return; }
+    if (t.dataset.emph !== undefined) { rubric().emphases = t.value.split("\n").filter((x) => x.trim()); save.rubric(); updatePrompt(); return; }
     if (t.dataset.pattern !== undefined) {
-      state.retFormat.pattern = t.value; store.set("retFormat", state.retFormat);
+      state.retFormat.pattern = t.value; persistSetting("retFormat");
       const ex = info().graded[0];
       if (ex && $("#pattern-example")) $("#pattern-example").textContent = fileNameFor(ex);
       return;
@@ -1124,15 +1291,33 @@
   document.addEventListener("change", (e) => {
     const t = e.target;
     if (t.dataset.set && (t.type === "checkbox" || t.tagName === "SELECT")) { setPath(t.dataset.set, t.type === "checkbox" ? t.checked : t.value); updatePrompt(); }
-    if (t.dataset.inc) { state.retFormat.include[t.dataset.inc] = t.checked; store.set("retFormat", state.retFormat); }
-    if (t.dataset.method !== undefined) { state.retFormat.method = t.value; store.set("retFormat", state.retFormat); }
-    if (t.dataset.solution !== undefined && t.files[0]) { state.solution[state.assignmentId] = t.files[0].name; render(); toast("הפתרון הרשמי נשמר למטלה"); }
+    if (t.dataset.inc) { state.retFormat.include[t.dataset.inc] = t.checked; persistSetting("retFormat"); }
+    if (t.dataset.method !== undefined) { state.retFormat.method = t.value; persistSetting("retFormat"); }
+    if (t.dataset.solution !== undefined && t.files[0]) {
+      const A = cur(), file = t.files[0];
+      if (!state.shared) { state.solution[A.id] = file.name; render(); toast("הפתרון הרשמי נשמר למטלה"); return; }
+      toast("מעלה את הפתרון הרשמי…", ICON.upload);
+      DB.uploadSolution(A, file).then((path) => {
+        A.solutionFile = file.name; A.solutionPath = path; state.solution[A.id] = file.name;
+        save.assignment(A); render(); toast("הפתרון הרשמי נשמר במסד המשותף");
+      }).catch(dbError);
+    }
   });
 
+  document.addEventListener("submit", async (e) => {
+    if (e.target.id !== "add-member") return;
+    e.preventDefault();
+    const name = $("#new-member").value.trim().replace(/^@/, "");
+    if (!/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(name)) { toast("שם משתמש ב-GitHub כולל רק אותיות באנגלית, ספרות ומקפים", ICON.warn); return; }
+    try { await DB.addMember(name); toast(`${name} נוסף לצוות`); await refreshMembers(); }
+    catch (err) { toast(`ההוספה נכשלה: ${err.message}`, ICON.warn); }
+  });
+
+  function persistSetting(key) { if (state.shared) save.setting(key); else store.set(key, state[key]); }
   function setPath(path, value) {
     const [root, key] = path.split(".");
     state[root][key] = value;
-    store.set(root, state[root]);
+    persistSetting(root);
   }
   function updatePrompt() { const el = $("#prompt-preview"); if (el) el.textContent = promptPreview(); }
 
@@ -1159,8 +1344,175 @@
 
   window.addEventListener("hashchange", () => { closeDrawer(); render(); window.scrollTo(0, 0); $("#main").focus({ preventScroll: true }); });
 
+  // ---------- מסד משותף: טעינה, עדכונים חיים וחשבון ----------
+  const DEFAULTS = {
+    moodle: { url: "https://moodle.bgu.ac.il", sync: "manual", late: true, types: "pdf,jpg,png" },
+    claude: { model: "claude-opus-5-5", parallel: 5, auto: false, sendSolution: true, lowConfidence: true },
+  };
+
+  // setTimeout ולא requestAnimationFrame: גם לשונית ברקע צריכה להתעדכן
+  const schedule = () => later("render", render, 40);
+  const scheduleReload = () => later("reload", loadShared, 800);
+  const isMe = (name) => !!name && !!DB.login && name.toLowerCase() === DB.login.toLowerCase();
+
+  async function loadShared() {
+    state.loading = true;
+    try {
+      const data = await DB.loadAll();
+      state.sharedEmpty = !data.courses.length;
+      D.courses.splice(0, D.courses.length, ...data.courses);
+      D.assignments.splice(0, D.assignments.length, ...data.assignments);
+      Object.keys(D.rubrics).forEach((k) => delete D.rubrics[k]);
+      data.courses.forEach((c) => {
+        const r = data.rubrics[c.id] || DEMO_SEED.rubrics[c.id] || { questions: [], emphases: [] };
+        D.rubrics[c.id] = { questions: r.questions, emphases: r.emphases, mistakes: DEMO_SEED.rubrics[c.id]?.mistakes || [] };
+      });
+      D.runs.splice(0, D.runs.length, ...data.runs);
+      ["pull", "grade", "ret"].forEach((st) => {
+        const row = data.instructions[st];
+        if (row) { state.instr[st] = row.body; state.instrMeta[st] = { by: row.by, at: row.at }; }
+      });
+      ["moodle", "claude", "retFormat"].forEach((k) => { if (data.settings[k]) state[k] = { ...state[k], ...data.settings[k] }; });
+      state.solution = Object.fromEntries(D.assignments.filter((a) => a.solutionFile).map((a) => [a.id, a.solutionFile]));
+      state.members = data.members;
+      if (D.courses.length && !D.assignments.some((a) => a.id === state.assignmentId)) {
+        const c = D.courses.find((x) => x.id === state.courseId) || D.courses[0];
+        state.courseId = c?.id;
+        const list = D.assignments.filter((a) => a.courseId === state.courseId);
+        state.assignmentId = (list.find((a) => a.phase === "current") || list[0])?.id;
+      }
+    } catch (e) {
+      toast(`טעינת המסד נכשלה: ${e.message}`, ICON.warn);
+    }
+    state.loading = false;
+    renderPickers();
+    render();
+  }
+
+  async function seedShared() {
+    state.loading = true; render();
+    try {
+      await DB.seed({ ...DEMO_SEED, instructions: D.instructions, settings: { ...DEFAULTS, retFormat: D.returnFormat } });
+      toast("נתוני הדוגמה נטענו למסד המשותף");
+    } catch (e) {
+      toast(`הטעינה נכשלה: ${e.message}`, ICON.warn);
+    }
+    await loadShared();
+  }
+
+  async function resetShared() {
+    state.loading = true; render();
+    try { await DB.wipe(); } catch (e) { toast(`המחיקה נכשלה: ${e.message}`, ICON.warn); state.loading = false; render(); return; }
+    await seedShared();
+  }
+
+  async function refreshMembers() {
+    try { state.members = await DB.listMembers(); schedule(); } catch (e) { dbError(e); }
+  }
+
+  // שינוי שמישהו אחר מהצוות עשה: מעדכנים רק את מה שהשתנה
+  function applyChange({ table, type, row }) {
+    if (!state.shared) return;
+    if (type === "DELETE" || state.sharedEmpty) { scheduleReload(); return; }
+    if (table === "members") { refreshMembers(); return; }
+    if (table === "runs") {
+      if (isMe(row.actor) || D.runs.some((r) => r.id === row.id)) return;
+      D.runs.unshift(DB.toRun(row));
+      return schedule();
+    }
+    if (table === "stage_instructions") {
+      state.instrMeta[row.stage] = { by: row.updated_by, at: row.updated_at };
+      const typing = document.activeElement?.dataset?.instr === row.stage;
+      if (!isMe(row.updated_by) && !typing) state.instr[row.stage] = row.body;
+      if (!typing) schedule();
+      return;
+    }
+    if (isMe(row.updated_by)) return;
+    if (table === "courses") {
+      const c = D.courses.find((x) => x.id === row.id);
+      if (c) c.name = row.name; else D.courses.push({ id: row.id, name: row.name });
+      renderPickers();
+    }
+    if (table === "assignments") {
+      const next = DB.toAssignment(row), A = D.assignments.find((a) => a.id === row.id);
+      if (A) Object.assign(A, next, { subs: A.subs }); else D.assignments.push(next);
+      if (next.solutionFile) state.solution[next.id] = next.solutionFile;
+      renderPickers();
+    }
+    if (table === "submissions") {
+      const A = D.assignments.find((a) => a.id === row.assignment_id);
+      if (!A) return scheduleReload();
+      const s = DB.toSub(row), i = A.subs.findIndex((x) => x.id === s.id);
+      s.fresh = true;
+      if (i >= 0) Object.assign(A.subs[i], s); else A.subs.push(s);
+      if (state.openId === s.id) refreshDrawer();
+    }
+    if (table === "rubrics") {
+      if (document.activeElement?.matches?.("[data-rpts],[data-rreq],[data-emph]")) return;
+      const prev = D.rubrics[row.course_id] || {};
+      D.rubrics[row.course_id] = { questions: row.questions, emphases: row.emphases, mistakes: prev.mistakes || [] };
+    }
+    if (table === "settings" && state[row.key] && !document.activeElement?.dataset?.set) state[row.key] = { ...state[row.key], ...row.value };
+    schedule();
+  }
+
+  function renderAccount() {
+    const mode = DB.mode;
+    const badge = $("#mode-badge");
+    badge.textContent = mode === "team" ? "מסד משותף" : "מצב הדגמה";
+    badge.className = `demo-badge ${mode === "team" ? "ok" : ""}`;
+    badge.title = mode === "team" ? "הנתונים משותפים לכל הצוות ומתעדכנים בזמן אמת" : "הנתונים במסך לדוגמה בלבד";
+
+    const others = state.online.filter((p) => !isMe(p.login));
+    $("#presence").innerHTML = mode === "team" && others.length
+      ? others.slice(0, 4).map((p) => `<img src="${esc(p.avatar || ghAvatar(p.login))}" alt="${esc(p.login)}" title="${esc(p.login)} מחובר עכשיו" width="30" height="30">`).join("") + (others.length > 4 ? `<span class="more">+${others.length - 4}</span>` : "")
+      : "";
+
+    const acc = $("#account");
+    if (mode === "off") acc.innerHTML = "";
+    else if (mode === "guest") acc.innerHTML = `<button class="btn secondary small" data-act="signin">${ICON.github}התחברות עם GitHub</button>`;
+    else {
+      const open = !$("#account-menu")?.hasAttribute("hidden") && !!$("#account-menu");
+      acc.innerHTML = `
+        <button class="avatar-btn" data-act="account" aria-haspopup="true" aria-label="החשבון שלי"><img src="${esc(DB.avatar)}" alt="" width="36" height="36"></button>
+        <div class="account-menu" id="account-menu" ${open ? "" : "hidden"}>
+          <b dir="ltr">${esc(DB.login || "")}</b>
+          <small>${mode === "team" ? (DB.admin ? "מנהל צוות" : "חבר צוות") : "לא ברשימת הצוות"}</small>
+          <button class="btn secondary small" data-act="signout">התנתקות</button>
+        </div>`;
+    }
+
+    const conn = $("#conn-db");
+    const [txt, ok] = mode === "team" ? ["מחובר", true] : mode === "off" ? ["לא מחובר", false] : ["דורש התחברות", false];
+    conn.classList.toggle("ok", ok);
+    $(".dot", conn).className = `dot ${ok ? "ok" : "warn"}`;
+    $("em", conn).textContent = txt;
+    $("#proto-note").textContent = mode === "team"
+      ? "הנתונים משותפים לכל הצוות. המשיכה ממודל והבדיקה עם Claude עדיין מדומות."
+      : "מצב הדגמה: הנתונים והפעולות במסך מדומים, עד שיחוברו המפתחות.";
+  }
+
+  DB.on((type, data) => {
+    if (type === "auth") location.reload();
+    if (type === "change") applyChange(data);
+    if (type === "presence") { state.online = data; renderAccount(); if (route() === "/settings") schedule(); }
+  });
+
   let booted = false;
-  renderPickers();
-  render();
-  booted = true;
+  (async () => {
+    if (DB.configured) {
+      state.loading = true;
+      render();
+      try { await DB.init(); } catch (e) { toast(`החיבור למסד נכשל: ${e.message}`, ICON.warn); }
+    }
+    if (DB.mode === "team") {
+      state.shared = true;
+      await loadShared();
+    } else {
+      state.loading = false;
+      renderPickers();
+      render();
+    }
+    booted = true;
+  })();
 })();

@@ -602,3 +602,51 @@ textarea:focus, .field input:focus, .field select:focus, .rreq:focus, .rpts inpu
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
+
+/* ---------- Shared database: account, presence, team ---------- */
+.demo-badge.ok { color: var(--ok); background: var(--ok-soft); }
+.presence { display: flex; align-items: center; }
+.presence img, .presence .more { width: 30px; height: 30px; border-radius: 50%; border: 2px solid var(--paper); margin-inline-start: -8px; background: var(--sheet-2); }
+.presence img:first-child { margin-inline-start: 0; }
+.presence .more { display: grid; place-items: center; font-size: 11.5px; font-weight: 600; color: var(--ink-2); }
+.account { position: relative; display: flex; }
+.account .btn svg { width: 16px; height: 16px; }
+.avatar-btn { border: 0; padding: 0; background: none; border-radius: 50%; display: flex; }
+.avatar-btn img { width: 36px; height: 36px; border-radius: 50%; background: var(--sheet-2); box-shadow: 0 0 0 2px var(--sheet), 0 0 0 3.5px var(--ok); }
+.account-menu {
+  position: absolute; top: calc(100% + 10px); inset-inline-end: 0; z-index: 30; min-width: 210px;
+  display: flex; flex-direction: column; gap: 4px; padding: 14px;
+  background: var(--sheet); border: 1px solid var(--rule); border-radius: var(--r-md); box-shadow: var(--lift);
+}
+.account-menu[hidden] { display: none; }
+.account-menu b { font-weight: 600; text-align: start; }
+.account-menu small { color: var(--ink-3); font-size: 12.5px; margin-bottom: 8px; }
+.conn.ok em { color: var(--ok); }
+.btn.danger { background: var(--red); color: var(--on-blue); }
+.btn.danger:hover { background: color-mix(in srgb, var(--red) 86%, var(--ink)); }
+
+.banner { display: flex; align-items: center; gap: 12px; padding: 12px 16px; margin-bottom: 20px; border-radius: var(--r-md); background: var(--blue-soft); font-size: 14px; flex-wrap: wrap; }
+.banner > div { flex: 1; min-width: 220px; }
+.banner > svg { color: var(--blue); }
+.banner.warn { background: var(--warn-soft); }
+.banner.warn > svg { color: var(--warn); }
+.banner .btn svg { width: 16px; height: 16px; }
+
+.loading { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 120px 20px; color: var(--ink-2); font-weight: 500; }
+.panel.setup { max-width: 640px; margin: 40px auto 0; }
+.panel.setup .empty { padding: 56px 32px; }
+
+.team { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; }
+.team li { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--rule); border-radius: var(--r-md); min-width: 0; }
+.team img { width: 32px; height: 32px; border-radius: 50%; background: var(--sheet-2); flex: none; }
+.tm-name { flex: 1; min-width: 0; display: flex; flex-direction: column; line-height: 1.3; }
+.tm-name b { font-weight: 600; font-size: 14px; overflow: hidden; text-overflow: ellipsis; text-align: start; }
+.tm-name small { color: var(--ink-3); font-size: 12px; }
+.tm-online { font-size: 12px; font-weight: 600; color: var(--ok); white-space: nowrap; }
+.tm-online::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); margin-inline-end: 5px; vertical-align: 1px; }
+.add-member { margin-top: 18px; padding-top: 16px; border-top: 1px dashed var(--rule); }
+.add-member label { display: block; font-size: 13px; font-weight: 500; color: var(--ink-2); margin-bottom: 6px; }
+.am-row { display: flex; gap: 8px; max-width: 420px; }
+.am-row input { flex: 1; min-width: 0; border: 1px solid var(--rule); border-radius: var(--r-md); background: var(--sheet-2); padding: 7px 12px; }
+.am-row input:focus { outline: none; border-color: var(--blue); box-shadow: 0 0 0 3px var(--blue-soft); }
+@media (max-width: 560px) { .presence { display: none; } }
