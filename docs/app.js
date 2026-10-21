@@ -1,9 +1,9 @@
 (() => {
   const D = window.DEMO;
   const API = window.PipelineAPI;
-  const DB = window.DB;
-  // עותק נקי של נתוני ההדגמה, לטעינה למסד ריק
-  const DEMO_SEED = structuredClone({ courses: D.courses, assignments: D.assignments, rubrics: D.rubrics, runs: D.runs, instructions: D.instructions });
+  // מצב מחובר: כשהאתר רץ דרך השרת המקומי (start.bat), הנתונים מגיעים מתיקיית OneDrive של הקורס
+  const LOCAL = { on: false, health: null, report: null };
+  const DEMO_RUBRICS = structuredClone(D.rubrics);
   const $ = (sel, root = document) => root.querySelector(sel);
   const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -31,27 +31,7 @@
     claude: store.get("claude", { model: "claude-opus-5-5", parallel: 5, auto: false, sendSolution: true, lowConfidence: true }),
     moodle: store.get("moodle", { url: "https://moodle.bgu.ac.il", sync: "manual", late: true, types: "pdf,jpg,png" }),
     solution: { "la-hw3": "solution-hw3.pdf", "dm-hw3": "solution-hw3.pdf" },
-    // מסד משותף
-    shared: false,      // הנתונים במסך מגיעים מהמסד המשותף
     loading: false,
-    sharedEmpty: false,
-    members: [],
-    online: [],
-    instrMeta: {},
-    confirm: null,      // כפתור שמחכה ללחיצה שנייה לאישור
-  };
-
-  // ---------- שמירה למסד המשותף ----------
-  const dbError = (e) => toast(`השמירה למסד נכשלה: ${e.message}`, ICON.warn);
-  const timers = {};
-  const later = (key, fn, ms = 600) => { clearTimeout(timers[key]); timers[key] = setTimeout(fn, ms); };
-  const save = {
-    subs: (A, subs) => state.shared && subs.length && DB.saveSubmissions(A, subs).catch(dbError),
-    assignment: (A) => state.shared && DB.saveAssignment(A).catch(dbError),
-    instr: (stage) => state.shared && later(`instr.${stage}`, () => DB.saveInstruction(stage, state.instr[stage]).then(() => flashSaved(stage)).catch(dbError)),
-    rubric: () => { const c = state.courseId; state.shared && later(`rubric.${c}`, () => DB.saveRubric(c, D.rubrics[c]).catch(dbError)); },
-    setting: (key) => state.shared && later(`setting.${key}`, () => DB.saveSetting(key, state[key]).catch(dbError)),
-    run: (run) => state.shared && DB.addRun(run).then((r) => { run.id = r.id; run.actor = r.actor; }).catch(dbError),
   };
 
   const STAGES = {
@@ -95,8 +75,7 @@
     lock: '<svg viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>',
     upload: '<svg viewBox="0 0 24 24"><path d="M12 16V5M7 10l5-5 5 5M5 19h14"/></svg>',
     search: '<svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>',
-    github: '<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" stroke="none" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>',
-    db: '<svg viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v12c0 1.7 3.1 3 7 3s7-1.3 7-3V6M5 12c0 1.7 3.1 3 7 3s7-1.3 7-3"/></svg>',
+    folder: '<svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>',
   };
   // סימן V שמצויר (stroke-dashoffset) כששלב מסתיים
   const CHECK_DRAW = '<svg class="check-draw" viewBox="0 0 24 24"><path pathLength="1" d="M5 12.5l4.5 4.5L19 7.5"/></svg>';
@@ -116,7 +95,7 @@
     if (diff === 1) return `אתמול ב-${hhmm(d)}`;
     return `${d.toLocaleDateString("he-IL", { day: "numeric", month: "short" })}, ${hhmm(d)}`;
   }
-  const dueText = (A) => new Date(A.due).toLocaleString("he-IL", { day: "numeric", month: "long", hour: "2-digit", minute: "2-digit" });
+  const dueText = (A) => (A.due ? new Date(A.due).toLocaleString("he-IL", { day: "numeric", month: "long", hour: "2-digit", minute: "2-digit" }) : "לא נקבע");
   const initials = (name) => name.split(" ").map((p) => p[0]).slice(0, 2).join("");
   const avg = (arr) => (arr.length ? Math.round(arr.reduce((a, b) => a + b, 0) / arr.length) : null);
   const plural = (n, one, many) => (n === 1 ? one : `${n} ${many}`);
@@ -149,18 +128,6 @@
     setTimeout(() => el.remove(), 3400);
   }
 
-  function copyText(text, msg = "הועתק") {
-    const fallback = () => {
-      const ta = document.createElement("textarea");
-      ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
-      document.body.append(ta); ta.select();
-      try { document.execCommand("copy"); toast(msg); } catch { toast("ההעתקה נכשלה. אפשר לסמן את הטקסט ולהעתיק ידנית", ICON.warn); }
-      ta.remove();
-    };
-    if (navigator.clipboard?.writeText) navigator.clipboard.writeText(text).then(() => toast(msg), fallback);
-    else fallback();
-  }
-
   // LaTeX בתוך טקסט: $...$ בשורה, $$...$$ כתצוגה
   function tex(str) {
     return String(str).split(/(\$\$[\s\S]+?\$\$|\$[^$]+?\$)/g).map((part) => {
@@ -174,12 +141,11 @@
 
   // ---------- Pipeline runs ----------
   function log(kind, text, A) {
-    const run = { at: new Date().toISOString(), kind, text, where: D.where(A), actor: DB.login };
-    D.runs.unshift(run);
-    save.run(run);
+    D.runs.unshift({ at: new Date().toISOString(), kind, text, where: D.where(A) });
   }
 
   async function runStage(stage) {
+    if (LOCAL.on) { if (stage === "pull") runLocalPull(); return; }
     const A = cur();
     if (state.run[A.id]) return;
     const I = info(A);
@@ -187,7 +153,7 @@
     if (stage === "ret" && !I.toReturn.length) return;
     const run = (state.run[A.id] = { stage, steps: STAGES[stage].steps.map(() => "pending") });
     const onStep = (i, st) => { run.steps[i] = st; render(); };
-    const onItem = (s) => { s.fresh = true; save.subs(A, [s]); render(); };
+    const onItem = (s) => { s.fresh = true; render(); };
     render();
 
     if (stage === "pull") {
@@ -196,8 +162,6 @@
       A.subs.push(...fresh);
       A.pulledAt = new Date().toISOString();
       A.lastFresh = fresh.length;
-      save.subs(A, fresh);
-      save.assignment(A);
       log("pull", fresh.length ? `נמשכו ${fresh.length} הגשות חדשות ממודל` : "אין הגשות חדשות במודל", A);
       delete state.run[A.id];
       toast(fresh.length ? `המשיכה הסתיימה: ${plural(fresh.length, "הגשה חדשה אחת", "הגשות חדשות")}` : "המשיכה הסתיימה: אין הגשות חדשות");
@@ -210,7 +174,6 @@
       const subs = I.toGrade;
       await API.grade(A, subs, { instructions: state.instr.grade, rubric: rubric(), claude: state.claude }, onStep, onItem);
       A.gradedAt = new Date().toISOString();
-      save.assignment(A);
       log("grade", `Claude בדק ${subs.length} עבודות. ממוצע ${avg(subs.map((s) => s.score))}`, A);
       delete state.run[A.id];
       toast(`הבדיקה הסתיימה: ${plural(subs.length, "עבודה אחת נבדקה", "עבודות נבדקו")}`);
@@ -221,7 +184,6 @@
     const subs = I.toReturn;
     await API.returnGrades(A, subs, { instructions: state.instr.ret, format: state.retFormat }, onStep, onItem);
     A.returnedAt = new Date().toISOString();
-    save.assignment(A);
     log("return", `הוחזרו ${subs.length} ציונים וקבצים מסומנים למודל`, A);
     delete state.run[A.id];
     toast(`ההחזרה הסתיימה: ${plural(subs.length, "עבודה אחת עלתה", "עבודות עלו")} למודל`);
@@ -236,7 +198,13 @@
     if (stage === "pull") { label = "משוך הגשות"; primary = !I.subs.length; }
     if (stage === "grade") { n = I.toGrade.length; label = n ? `בדוק ${n} עבודות` : "הכל נבדק"; primary = n > 0; }
     if (stage === "ret") { n = I.toReturn.length; label = n ? `החזר ${n} עבודות` : I.done.ret ? "הכל הוחזר" : "אין מה להחזיר"; primary = n > 0 && !I.toGrade.length; }
-    const disabled = busy || (stage !== "pull" && !n);
+    let disabled = busy || (stage !== "pull" && !n);
+    if (LOCAL.on && stage !== "pull") {
+      // בגרסה המחוברת יש כרגע רק משיכה. בדיקה והחזרה יופעלו עם מפתח Claude
+      label = stage === "grade" ? "יופעל עם מפתח Claude" : "יופעל אחרי הבדיקה";
+      disabled = true;
+      primary = false;
+    }
     const icon = mine ? ICON.spin : ICON[stage === "ret" ? "ret" : stage];
     return `<button class="btn ${primary ? "primary" : "secondary"} ${big ? "lg" : ""}" data-run="${stage}" ${disabled ? "disabled" : ""}>${icon}${mine ? "רץ עכשיו…" : label}</button>`;
   }
@@ -369,14 +337,31 @@
   const matches = (s, q) => !q.trim() || s.name.includes(q.trim()) || s.studentId.includes(q.trim());
 
   function emptyPulled() {
+    if (LOCAL.on) {
+      return `<div class="empty"><strong>עוד אין הגשות במטלה הזו</strong>${LOCAL.health?.moodle
+        ? "לחיצה על \"משוך הגשות\" תביא ממודל את כל מה שהוגש עד עכשיו, ישר לתיקיית OneDrive."
+        : "במודל: \"הצגת כל ההגשות\" ← \"הורדת כל ההגשות\". שמים את קובץ ה-ZIP בתיקיית הקליטה ולוחצים \"משוך הגשות\"."}
+        <div class="empty-act">${stageButton("pull")}<button class="btn secondary" data-act="open-inbox">${ICON.folder}פתח את תיקיית הקליטה</button></div></div>`;
+    }
     return `<div class="empty"><strong>עוד לא נמשכו הגשות למטלה הזו</strong>לחיצה על "משוך הגשות" תביא ממודל את כל מה שהוגש עד עכשיו.<div class="empty-act">${stageButton("pull")}</div></div>`;
+  }
+
+  // מה קרה במשיכה האחרונה (בגרסה המחוברת)
+  function pullReportHTML() {
+    const r = LOCAL.report;
+    if (!LOCAL.on || !r || r.assignmentId !== state.assignmentId) return "";
+    const lines = [...(r.notes || []), ...(r.result?.problems || []).map((p) => `דורשת טיפול: ${p}`)];
+    return `<section class="panel report">
+      <div class="panel-head"><h3>המשיכה האחרונה</h3><span class="meta">${when(r.pulled_at)}</span><span class="end tag ${r.result?.total ? "ok" : ""}">${esc(r.summary)}</span></div>
+      ${lines.length ? `<ul class="report-lines">${lines.map((l) => `<li>${esc(l)}</li>`).join("")}</ul>` : ""}
+    </section>`;
   }
 
   function pullList() {
     const A = cur(), I = info(A);
-    if (!I.subs.length) return `<section class="panel">${emptyPulled()}</section>`;
-    const rows = I.subs.filter((s) => matches(s, state.query.pull)).sort((a, b) => b.submittedAt.localeCompare(a.submittedAt));
-    return `
+    if (!I.subs.length) return `${pullReportHTML()}<section class="panel">${emptyPulled()}</section>`;
+    const rows = I.subs.filter((s) => matches(s, state.query.pull)).sort((a, b) => (b.submittedAt || "").localeCompare(a.submittedAt || ""));
+    return `${pullReportHTML()}
       <section class="panel">
         <div class="panel-head">
           <div class="stats">
@@ -476,9 +461,7 @@
   function instrBox(stage, title, help) {
     return `
       <section class="panel instr">
-        <div class="panel-head"><h2>${title}</h2>
-          ${state.shared && state.instrMeta[stage]?.by ? `<span class="meta">עודכן ע״י ${esc(state.instrMeta[stage].by)}, ${when(state.instrMeta[stage].at)}</span>` : ""}
-          <span class="saved" id="saved-${stage}">${state.shared ? "נשמר במסד המשותף" : "נשמר במכשיר הזה"}</span></div>
+        <div class="panel-head"><h2>${title}</h2><span class="saved" id="saved-${stage}">נשמר במכשיר הזה</span></div>
         <div class="panel-body">
           <p class="lead">${help}</p>
           <label class="sr" for="instr-${stage}">${title}</label>
@@ -494,8 +477,8 @@
     return `<div class="switch-row"><div><b id="${id}-l">${label}</b><small>${desc}</small></div><span class="switch"><input type="checkbox" id="${id}" ${on ? "checked" : ""} aria-labelledby="${id}-l" ${key ? `data-set="${key}"` : ""}><i></i></span></div>`;
   }
 
-  function secretField(name, where) {
-    return `<div class="secret">${ICON.lock}<div><b dir="ltr">${name}</b><small>${where}</small></div><span class="tag warn">לא הוגדר</span></div>`;
+  function secretField(name, where, isSet = false) {
+    return `<div class="secret">${ICON.lock}<div><b dir="ltr">${name}</b><small>${where}</small></div><span class="tag ${isSet ? "ok" : "warn"}">${isSet ? "מוגדר" : "לא הוגדר"}</span></div>`;
   }
 
   function pullInstr() {
@@ -536,7 +519,7 @@
         <section class="panel">
           <div class="panel-head"><h3>מפתחות</h3></div>
           <div class="panel-body">
-            ${secretField("MOODLE_TOKEN", "טוקן של שירותי הרשת של מודל. נשמר ב-GitHub Secrets, לא בדפדפן.")}
+            ${secretField("MOODLE_TOKEN", "טוקן של שירותי הרשת של מודל. נשמר בקובץ .env במחשב שמריץ את המערכת, לא בדפדפן ולא ב-GitHub.", LOCAL.health?.moodle)}
             <p class="hint">את הטוקן מקבלים מהאוניברסיטה עבור משתמש הבודק של הקורס.</p>
           </div>
         </section>
@@ -616,8 +599,7 @@
         <section class="panel">
           <div class="panel-head"><h3>פתרון רשמי</h3></div>
           <div class="panel-body">
-            ${state.solution[A.id] ? `<div class="file big">${ICON.file}<span dir="ltr">${esc(state.solution[A.id])}</span>${A.solutionPath && state.shared ? `<button class="btn ghost small" data-act="open-solution">פתח</button>` : `<em>הועלה</em>`}</div>` : `<p class="muted" style="margin:0 0 10px">עוד לא הועלה פתרון רשמי למטלה הזו.</p>`}
-            ${state.shared ? `<p class="hint" style="margin:0 0 10px">הקובץ נשמר במסד, וכל הצוות יכול לפתוח אותו.</p>` : ""}
+            ${state.solution[A.id] ? `<div class="file big">${ICON.file}<span dir="ltr">${esc(state.solution[A.id])}</span><em>הועלה</em></div>` : `<p class="muted" style="margin:0 0 10px">עוד לא הועלה פתרון רשמי למטלה הזו.</p>`}
             <label class="btn secondary small upload">${ICON.upload}${state.solution[A.id] ? "החלף קובץ" : "העלה פתרון רשמי"}<input type="file" id="solution-file" accept=".pdf" data-solution></label>
           </div>
         </section>
@@ -652,7 +634,7 @@
       <div class="stack">
         <section class="panel">
           <div class="panel-head"><h3>מפתחות</h3></div>
-          <div class="panel-body">${secretField("ANTHROPIC_API_KEY", "מפתח ה-API של Claude. נשמר ב-GitHub Secrets, לא בדפדפן.")}</div>
+          <div class="panel-body">${secretField("ANTHROPIC_API_KEY", "מפתח ה-API של Claude. נשמר בקובץ .env במחשב שמריץ את המערכת, לא בדפדפן ולא ב-GitHub.", LOCAL.health?.claude)}</div>
         </section>
         <section class="panel">
           <div class="panel-head"><h3>מה Claude מחזיר על כל עבודה</h3></div>
@@ -769,7 +751,7 @@
   }
 
   function mistakesHTML(I) {
-    if (!I.graded.length) return `<p class="muted empty-line">יופיע אחרי שיהיו עבודות בדוקות.</p>`;
+    if (!I.graded.length || !rubric().mistakes.length) return `<p class="muted empty-line">יופיע אחרי שיהיו עבודות בדוקות.</p>`;
     const n = I.graded.length;
     return `<ul class="mistakes">${rubric().mistakes.map((m) => {
       const c = Math.max(1, Math.round(m.pct * n));
@@ -795,7 +777,7 @@
         const sel = A.id === state.assignmentId;
         return `<tr class="clickable ${sel ? "sel" : ""}" data-assign="${A.id}" tabindex="0" ${sel ? 'aria-current="true"' : ""}>
           <td><b>${A.title}</b></td>
-          <td class="col-hide muted num">${new Date(A.due).toLocaleDateString("he-IL", { day: "numeric", month: "short" })}</td>
+          <td class="col-hide muted num">${A.due ? new Date(A.due).toLocaleDateString("he-IL", { day: "numeric", month: "short" }) : "—"}</td>
           <td>${I.subs.length ? mark(I.done.pull, `${I.subs.length}`) : `<span class="muted">—</span>`}</td>
           <td>${I.subs.length ? mark(I.done.grade, `${I.graded.length}/${I.ok.length}`) : `<span class="muted">—</span>`}</td>
           <td>${I.subs.length ? mark(I.done.ret, `${I.returned.length}/${I.ok.length}`) : `<span class="muted">—</span>`}</td>
@@ -812,275 +794,68 @@
       <ul class="emph">${R.emphases.slice(0, 3).map((e) => `<li>${esc(e)}</li>`).join("")}</ul>`;
   }
 
-  // ---------- מסד משותף: צוות, מצב ונתוני דוגמה ----------
-  function dbTag() {
-    if (DB.mode === "off") return ["עוד לא חובר", "warn"];
-    if (DB.mode === "team") return ["פעיל", "ok"];
-    return ["מחובר, דורש התחברות", "warn"];
-  }
-
-  const ghAvatar = (login, size = 64) => `https://github.com/${encodeURIComponent(login)}.png?size=${size}`;
-
-  function confirmBtn(key, label, sure, cls = "secondary") {
-    const armed = state.confirm === key;
-    return `<button class="btn ${armed ? "danger" : cls} small" data-confirm="${key}">${armed ? sure : label}</button>`;
-  }
-
-  function teamPanelHTML() {
-    if (DB.mode === "off") {
-      return `<section class="panel" style="margin-top:24px">
-        <div class="panel-head"><h2>צוות ומסד משותף</h2><span class="end tag warn">עוד לא חובר</span></div>
-        <div class="panel-body">
-          <p class="lead">כרגע כל מה שמשנים באתר נשמר רק בדפדפן של מי ששינה. אחרי חיבור המסד ב-Supabase, כל חברי הצוות מתחברים עם GitHub ורואים ועורכים את אותם נתונים, בזמן אמת.</p>
-          <p class="lead">כל חבר צוות עם הרשאת כתיבה בריפו יכול להקים את המסד. לוקח בערך 10 דקות.</p>
-          <a class="btn primary small" href="#/setup">${ICON.db}למדריך ההקמה</a>
-        </div>
-      </section>`;
-    }
-    if (DB.mode !== "team") {
-      return `<section class="panel" style="margin-top:24px">
-        <div class="panel-head"><h2>צוות ומסד משותף</h2></div>
-        <div class="panel-body"><p class="lead" style="margin:0">רשימת הצוות והנתונים המשותפים זמינים רק לחברי צוות מחוברים.</p></div>
-      </section>`;
-    }
-    const online = new Set(state.online.map((p) => (p.login || "").toLowerCase()));
-    return `<section class="panel" style="margin-top:24px">
-      <div class="panel-head"><h2>צוות</h2><span class="meta">${state.members.length} חברים, ${online.size} מחוברים עכשיו</span><span class="end tag ok">מסד משותף פעיל</span></div>
-      <div class="panel-body">
-        <p class="lead">מי שברשימה מתחבר עם GitHub ורואה ועורך את אותם נתונים. כל שינוי מגיע לכולם מיד.</p>
-        <ul class="team">
-          ${state.members.map((m) => {
-            const me = m.github_username.toLowerCase() === (DB.login || "").toLowerCase();
-            return `<li>
-              <img src="${ghAvatar(m.github_username)}" alt="" width="32" height="32" loading="lazy">
-              <span class="tm-name"><b dir="ltr">${esc(m.github_username)}</b><small>${m.role === "admin" ? "מנהל" : "צוות"}${me ? ", זה את/ה" : ""}</small></span>
-              ${online.has(m.github_username.toLowerCase()) ? `<span class="tm-online">מחובר עכשיו</span>` : ""}
-              ${DB.admin && !me ? confirmBtn(`rm:${m.github_username}`, "הסר", "ללחוץ שוב להסרה", "ghost") : ""}
-            </li>`;
-          }).join("")}
-        </ul>
-        ${DB.admin ? `
-          <form class="add-member" id="add-member">
-            <label for="new-member">הוספת חבר צוות לפי שם משתמש ב-GitHub</label>
-            <div class="am-row"><input id="new-member" dir="ltr" placeholder="github-username" autocomplete="off" required><button class="btn primary small" type="submit">הוסף</button></div>
-          </form>` : `<p class="hint">רק מנהל יכול להוסיף או להסיר חברי צוות.</p>`}
-      </div>
-    </section>
-    ${DB.admin ? `<section class="panel" style="margin-top:24px">
-      <div class="panel-head"><h2>נתוני דוגמה</h2></div>
-      <div class="panel-body">
-        <p class="lead">מחיקה של כל הנתונים במסד וטעינה מחדש של נתוני הדוגמה. שימושי לפני הצגה. רשימת הצוות נשארת.</p>
-        ${confirmBtn("reset", "אפס לנתוני הדוגמה", "ללחוץ שוב: כל הנתונים יימחקו")}
-      </div>
-    </section>` : ""}`;
-  }
-
+  // ---------- הגרסה המחוברת: תיקיית OneDrive דרך השרת המקומי ----------
   function bannerHTML() {
-    if (DB.mode === "outsider") {
-      return `<div class="banner warn">${ICON.lock}<div><b>התחברת בתור <span dir="ltr">${esc(DB.login || "")}</span>, אבל עוד לא נוספת לצוות.</b> מנהל יכול להוסיף אותך בדף "חיבורים והגדרות". בינתיים מוצגים נתוני הדגמה.</div><button class="btn ghost small" data-act="signout">התנתקות</button></div>`;
-    }
-    if (DB.mode === "guest") {
-      return `<div class="banner">${ICON.lock}<div><b>אלה נתוני הדגמה.</b> חברי הצוות מתחברים עם GitHub כדי לראות ולערוך את הנתונים המשותפים.</div><button class="btn primary small" data-act="signin">${ICON.github}התחברות עם GitHub</button></div>`;
+    if (LOCAL.on && !LOCAL.health?.root) {
+      return `<div class="banner warn">${ICON.warn}<div><b>המערכת פועלת, אבל תיקיית OneDrive של הקורס עוד לא נמצאה במחשב.</b><pre class="banner-pre">${esc(LOCAL.health?.error || "")}</pre></div><button class="btn secondary small" data-act="recheck">בדוק שוב</button></div>`;
     }
     return "";
   }
 
-  function emptySharedHTML() {
-    return `<section class="panel setup">
-      <div class="empty">
-        <strong>המסד המשותף מחובר, ועדיין ריק</strong>
-        אפשר להתחיל מנתוני הדוגמה: שני קורסים, שמונה תרגילי בית והגשות לדוגמה. כל הצוות יראה אותם מיד, וכל שינוי יישמר במסד.
-        <div class="empty-act"><button class="btn primary" data-act="seed" ${state.loading ? "disabled" : ""}>${state.loading ? ICON.spin : ICON.upload}טען נתוני דוגמה למסד</button></div>
+  function drivePanelHTML() {
+    if (LOCAL.on) {
+      const h = LOCAL.health || {};
+      return `<section class="panel" style="margin-top:24px">
+        <div class="panel-head"><h2>תיקיית OneDrive</h2><span class="end tag ${h.root ? "ok" : "warn"}">${h.root ? "מחובר" : "לא נמצאה"}</span></div>
+        <div class="panel-body">
+          ${h.root ? `<p class="lead">ההגשות, טבלאות הציונים והיומן נשמרים בתיקייה הזו, ו-OneDrive מסנכרן אותה לכל מי שיש לו גישה.</p>
+            <div class="path-line" dir="ltr">${esc(h.root)}</div>
+            <div class="row-start">
+              <button class="btn secondary small" data-act="open-folder">${ICON.folder}פתח את תיקיית המטלה</button>
+              <button class="btn secondary small" data-act="open-inbox">${ICON.upload}פתח את תיקיית הקליטה</button>
+            </div>` : `<pre class="prompt">${esc(h.error || "")}</pre>`}
+        </div>
+      </section>`;
+    }
+    return `<section class="panel" style="margin-top:24px">
+      <div class="panel-head"><h2>תיקיית OneDrive</h2><span class="end tag warn">מצב הדגמה</span></div>
+      <div class="panel-body">
+        <p class="lead">האתר הזה מציג נתוני הדגמה. כדי שהכפתורים יעבדו באמת ויכתבו לתיקיית OneDrive של הקורס, מפעילים את המערכת במחשב שמסנכרן את התיקייה:</p>
+        <ol class="todo">
+          <li>באפליקציית OneDrive מחברים את חשבון האוניברסיטה. בדפדפן, על התיקייה YallaLinearit, לוחצים Add shortcut to My files.</li>
+          <li>מורידים את הריפו מ-GitHub ולוחצים פעמיים על <code dir="ltr">start.bat</code>.</li>
+          <li>האתר נפתח בכתובת <code dir="ltr">http://localhost:8765</code>, מחובר לתיקייה.</li>
+        </ol>
       </div>
     </section>`;
   }
 
-  // ---------- מדריך הקמת המסד: כל חבר צוות יכול להקים ----------
-  const REPO = window.APP_CONFIG?.repo || "matanravitsky-crypto/assignment-checker";
-  const [REPO_OWNER, REPO_NAME] = REPO.split("/");
-  const SITE_URL = `https://${REPO_OWNER.toLowerCase()}.github.io/${REPO_NAME}/`;
-  const SCHEMA_RAW = `https://raw.githubusercontent.com/${REPO}/main/supabase/schema.sql`;
-  const setup = { url: store.get("setup.url", ""), key: store.get("setup.key", ""), schema: null, schemaError: false, testing: false, results: null };
-
-  function keyKind(k) {
-    if (!k) return "";
-    if (k.startsWith("sb_publishable_")) return "publishable";
-    if (k.startsWith("sb_secret_")) return "secret";
-    if (/^eyJ[\w-]+\.[\w-]+\.[\w-]+$/.test(k)) {
-      try {
-        const b = k.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
-        const role = JSON.parse(atob(b + "===".slice((b.length + 3) % 4))).role;
-        return role === "anon" ? "anon" : role === "service_role" ? "secret" : "unknown";
-      } catch { return "unknown"; }
-    }
-    return "unknown";
-  }
-
-  function setupValues() {
-    const url = setup.url.trim().replace(/\/+$/, "");
-    const key = setup.key.trim();
-    const urlOk = /^https:\/\/[a-z0-9-]+\.supabase\.co$/i.test(url);
-    const kind = keyKind(key);
-    return { url, key, urlOk, kind, keyOk: kind === "publishable" || kind === "anon", callback: urlOk ? `${url}/auth/v1/callback` : "" };
-  }
-
-  function configFileText(url, key) {
-    return `// חיבור האתר למסד הנתונים המשותף ב-Supabase.
-//
-// מי שממלא את הקובץ הזה: כל חבר צוות עם הרשאת כתיבה בריפו, אחרי שהקים פרויקט
-// ב-Supabase לפי המדריך באתר (#/setup) או לפי SETUP.md.
-//
-// supabaseUrl      ה-Project URL מ-Supabase → Project Settings → API Keys / Data API
-// supabaseAnonKey  ה-Publishable key (מתחיל ב-sb_publishable_) או ה-anon public key הישן
-//
-// שני הערכים ציבוריים בכוונה, ומותר שיופיעו בקוד: ההגנה על הנתונים היא בהרשאות שבמסד
-// (supabase/schema.sql), ורק מי שברשימת הצוות יכול לקרוא או לכתוב.
-// אסור לשים כאן את ה-secret / service_role key או את סיסמת המסד.
-//
-// כשהערכים ריקים, האתר עובד במצב הדגמה בלבד.
-window.APP_CONFIG = {
-  repo: "${REPO}",
-  supabaseUrl: "${url}",
-  supabaseAnonKey: "${key}",
-};
-`;
-  }
-
-  function loadSchemaText() {
-    if (setup.schema || setup.schemaError || setup.loadingSchema) return;
-    setup.loadingSchema = true;
-    fetch(SCHEMA_RAW).then((r) => (r.ok ? r.text() : Promise.reject())).then((t) => { setup.schema = t; })
-      .catch(() => { setup.schemaError = true; }).finally(() => { setup.loadingSchema = false; schedule(); });
-  }
-
-  function copyField(label, value, { mono = true } = {}) {
-    return `<div class="copy-field">
-      <span class="cf-label">${label}</span>
-      <span class="cf-value ${mono ? "mono" : ""}" ${mono ? 'dir="ltr"' : ""}>${value ? esc(value) : `<span class="muted">יופיע אחרי שתמלאו את שלב 3</span>`}</span>
-      ${value ? `<button class="btn ghost small" data-copy="${esc(value)}">העתק</button>` : ""}
-    </div>`;
-  }
-
-  async function testSetup() {
-    const v = setupValues(), res = [];
-    const ok = (t) => ({ ok: true, t }), bad = (t) => ({ ok: false, t });
-    setup.testing = true; setup.results = null; render();
-    let settings = null;
-    try {
-      const r = await fetch(`${v.url}/auth/v1/settings`, { headers: { apikey: v.key } });
-      if (r.ok) { settings = await r.json(); res.push(ok("הכתובת והמפתח תקינים")); }
-      else res.push(bad(`Supabase ענה ${r.status}. כנראה שהמפתח לא נכון: כדאי להעתיק אותו שוב (שלב 3).`));
-    } catch {
-      res.push(bad("אין תשובה מהכתובת. כדאי לבדוק את ה-Project URL (שלב 3)."));
-    }
-    if (settings) {
-      res.push(settings.external?.github ? ok("התחברות עם GitHub מופעלת") : bad("התחברות עם GitHub עוד לא מופעלת ב-Supabase (שלב 4)."));
-      try {
-        const client = window.supabase.createClient(v.url, v.key, { auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false, storageKey: "ac-setup-test" } });
-        const { error } = await client.rpc("is_member");
-        if (!error) res.push(ok("הטבלאות וההרשאות מותקנות"));
-        else if (/could not find|does not exist|PGRST202/i.test(`${error.message} ${error.code}`)) res.push(bad("הסכמה עוד לא הורצה ב-SQL Editor (שלב 2)."));
-        else res.push(bad(`בדיקת הטבלאות נכשלה: ${error.message}`));
-      } catch (e) {
-        res.push(bad(`בדיקת הטבלאות נכשלה: ${e.message}`));
-      }
-    }
-    setup.results = res; setup.testing = false; render();
-  }
-
-  function setupView() {
-    loadSchemaText();
-    const v = setupValues();
-    const ready = v.urlOk && v.keyOk;
-    const allGood = setup.results && setup.results.length === 3 && setup.results.every((r) => r.ok);
-    const step = (n, title, why, body) => `
-      <li class="sstep">
-        <span class="sstep-no">${n}</span>
-        <div class="sstep-body">
-          <h2>${title}</h2>
-          <p class="why">${why}</p>
-          ${body}
+  // עבודה אמיתית: מציגים את הקובץ עצמו, בלי סימונים מדומים
+  function localDrawerHTML(s, head) {
+    const url = (f) => `api/file?path=${encodeURIComponent(f.path)}`;
+    const pdf = s.files.find((f) => f.name.toLowerCase().endsWith(".pdf") && f.pages);
+    return `${head}
+      <div class="drawer-body">
+        <div class="doc-col">
+          ${pdf ? `<iframe class="pdf-view" src="${url(pdf)}" title="${esc(pdf.name)}"></iframe>`
+            : `<div class="panel"><div class="empty"><strong>${esc(s.issue || "אין קובץ PDF לתצוגה")}</strong>אפשר לפתוח את הקבצים מהרשימה.</div></div>`}
         </div>
-      </li>`;
-    const already = DB.configured ? `<div class="banner ok">${ICON.check}<div><b>המסד כבר מחובר לאתר.</b> <span dir="ltr">${esc(DB.url)}</span>. אין צורך לעבור שוב על המדריך, אלא אם מעבירים את המסד לפרויקט אחר.</div></div>` : "";
-
-    return `
-      <div class="page-head"><div>
-        <h1>הקמת המסד המשותף</h1>
-        <p>כל חבר צוות עם הרשאת כתיבה בריפו יכול לעשות את זה, בערך 10 דקות. מי שמקים את הפרויקט ב-Supabase הוא הבעלים שלו, ובסוף מזמין אליו את שאר הצוות. הערכים להעתקה מתמלאים כאן לבד.</p>
-      </div></div>
-      ${already}
-      <ol class="setup-steps">
-        ${step(1, "פותחים פרויקט ב-Supabase", "Supabase הוא השירות שמחזיק את מסד הנתונים ואת ההתחברות. המסלול החינמי מספיק לפרויקט.", `
-          <ul class="todo">
-            <li>נכנסים ל-<a href="https://supabase.com/dashboard/new" target="_blank" rel="noopener">supabase.com</a> ובוחרים <b>Continue with GitHub</b>.</li>
-            <li>יוצרים פרויקט חדש: שם <code dir="ltr">assignment-checker</code>, אזור <b>Central EU (Frankfurt)</b>, מסלול <b>Free</b>.</li>
-            <li>ממציאים סיסמה למסד ושומרים אותה אצלכם. לא שולחים אותה לאף אחד ולא שמים אותה בריפו.</li>
-          </ul>`)}
-        ${step(2, "יוצרים את הטבלאות וההרשאות", "הקובץ יוצר את כל הטבלאות, וקובע שרק משתמשי GitHub שברשימת הצוות יכולים לקרוא ולכתוב. אפשר להריץ אותו שוב בלי חשש.", `
-          <ul class="todo">
-            <li>ב-Supabase פותחים את <b>SQL Editor</b>, ואז <b>New query</b>.</li>
-            <li>מעתיקים את הסכמה, מדביקים ולוחצים <b>Run</b>. אמור להופיע <code dir="ltr">Success. No rows returned</code>.</li>
-          </ul>
-          <div class="row-start">
-            <button class="btn secondary small" data-copy-schema ${setup.schema ? "" : "disabled"}>${setup.schema ? `${ICON.file}העתק את הסכמה` : setup.schemaError ? "לא הצלחתי לטעון את הסכמה" : `${ICON.spin}טוען את הסכמה…`}</button>
-            <a class="link" href="https://github.com/${REPO}/blob/main/supabase/schema.sql" target="_blank" rel="noopener">לצפייה בקובץ ב-GitHub</a>
-          </div>`)}
-        ${step(3, "מעתיקים לכאן את הכתובת והמפתח", "מהם המדריך מחשב את שאר הערכים, ובודק בסוף שהכל מחובר. הם נשמרים רק בדפדפן שלכם עד שמפרסמים אותם בשלב 7.", `
-          <ul class="todo"><li>ב-Supabase פותחים את <b>Project Settings</b>, ואז <b>API Keys</b> (או <b>Data API</b>).</li></ul>
-          <div class="form-grid">
-            <div class="field full"><label for="su-url">Project URL</label>
-              <input id="su-url" dir="ltr" data-setup="url" value="${esc(setup.url)}" placeholder="https://abcd1234.supabase.co" autocomplete="off">
-              ${setup.url && !v.urlOk ? `<p class="hint bad">הכתובת צריכה להיראות כך: https://abcd1234.supabase.co</p>` : ""}</div>
-            <div class="field full"><label for="su-key">Publishable key</label>
-              <input id="su-key" dir="ltr" data-setup="key" value="${esc(setup.key)}" placeholder="sb_publishable_..." autocomplete="off">
-              ${v.kind === "secret" ? `<p class="hint bad">זה המפתח הסודי. מוחקים אותו מכאן ומעתיקים במקומו את ה-Publishable key (או את ה-anon key).</p>`
-                : v.kind === "unknown" ? `<p class="hint bad">זה לא נראה כמו Publishable key. הוא מתחיל ב-sb_publishable_ (או, במפתח הישן, ב-eyJ).</p>`
-                : `<p class="hint">ה-Publishable key ציבורי בכוונה. את ה-secret key לא מעתיקים לשום מקום.</p>`}</div>
-          </div>`)}
-        ${step(4, "מפעילים התחברות עם GitHub", "כך חברי הצוות נכנסים לאתר עם החשבון שלהם ב-GitHub, והמסד יודע מי הם. אפשר ליצור את האפליקציה בחשבון ה-GitHub האישי של מי שמקים.", `
-          <ul class="todo">
-            <li>פותחים <a href="https://github.com/settings/applications/new" target="_blank" rel="noopener">New OAuth App ב-GitHub</a> וממלאים:</li>
-          </ul>
-          ${copyField("Application name", "בודק העבודות", { mono: false })}
-          ${copyField("Homepage URL", SITE_URL)}
-          ${copyField("Authorization callback URL", v.callback)}
-          <ul class="todo">
-            <li>לוחצים <b>Register application</b>, מעתיקים את ה-<b>Client ID</b>, ואז <b>Generate a new client secret</b>.</li>
-            <li>ב-Supabase פותחים את <b>Authentication</b>, <b>Sign In / Providers</b>, <b>GitHub</b>. מפעילים, מדביקים את ה-Client ID וה-Client Secret ושומרים.</li>
-          </ul>`)}
-        ${step(5, "מאשרים את כתובות האתר", "אחרי ההתחברות, Supabase מחזיר רק לכתובות שאושרו מראש. בלי זה ההתחברות נכשלת.", `
-          <ul class="todo"><li>ב-Supabase פותחים את <b>Authentication</b>, ואז <b>URL Configuration</b>.</li></ul>
-          ${copyField("Site URL", SITE_URL)}
-          ${copyField("Redirect URL", `${SITE_URL}**`)}
-          ${copyField("Redirect URL לבדיקות מקומיות", "http://localhost:5173/**")}`)}
-        ${step(6, "בודקים שהכל מחובר", "הבדיקה מתחברת לפרויקט עם הערכים משלב 3, ובודקת את שלבים 2 ו-4. את שלב 5 בודקים בהתחברות הראשונה.", `
-          <button class="btn primary small" data-act="setup-test" ${ready && !setup.testing ? "" : "disabled"}>${setup.testing ? ICON.spin : ICON.check}בדוק חיבור</button>
-          ${!ready ? `<p class="hint">צריך קודם למלא כתובת ומפתח תקינים בשלב 3.</p>` : ""}
-          ${setup.results ? `<ul class="checks">${setup.results.map((r) => `<li class="${r.ok ? "ok" : "bad"}">${r.ok ? ICON.check : ICON.warn}${esc(r.t)}</li>`).join("")}</ul>` : ""}`)}
-        ${step(7, "מפרסמים לכל הצוות", "הקובץ docs/config.js אומר לאתר לאיזה מסד להתחבר. אחרי שמעדכנים אותו ב-GitHub, האתר מתעדכן לכולם תוך דקה-שתיים. לא צריך להתקין כלום.", `
-          ${ready ? `<pre class="code-block" dir="ltr">${esc(configFileText(v.url, v.key))}</pre>
-          <div class="row-start">
-            <button class="btn secondary small" data-copy="${esc(configFileText(v.url, v.key))}">${ICON.file}העתק את תוכן הקובץ</button>
-            <a class="btn ${allGood ? "primary" : "secondary"} small" href="https://github.com/${REPO}/edit/main/docs/config.js" target="_blank" rel="noopener">${ICON.github}פתח את docs/config.js לעריכה</a>
+        <aside class="grade-col">
+          <div class="grade-card">
+            <h3 class="gc-title">קבצים</h3>
+            <ul class="file-list">${s.files.map((f) => `<li>${ICON.file}<a href="${url(f)}" target="_blank" rel="noopener" dir="ltr">${esc(f.name)}</a>${f.pages ? `<span class="muted">${f.pages} עמ׳</span>` : ""}</li>`).join("") || `<li class="muted">אין קבצים</li>`}</ul>
           </div>
-          <ul class="todo">
-            <li>ב-GitHub: מוחקים את כל התוכן של הקובץ, מדביקים את התוכן שהעתקתם, ולוחצים <b>Commit changes</b>.</li>
-            ${allGood ? "" : `<li class="warn-li">כדאי לעבור את הבדיקה בשלב 6 לפני הפרסום.</li>`}
-          </ul>` : `<p class="hint">יופיע אחרי שתמלאו כתובת ומפתח תקינים בשלב 3.</p>`}`)}
-        ${step(8, "אחרי הפרסום", "הצעדים האחרונים, כדי שכל הצוות יוכל לעבוד.", `
-          <ul class="todo">
-            <li>נכנסים ל<a href="${SITE_URL}" target="_blank" rel="noopener">אתר</a>, לוחצים <b>התחברות עם GitHub</b>, ואז <b>טען נתוני דוגמה למסד</b>.</li>
-            <li>מי שהקים את הפרויקט מזמין את שאר הצוות ל-Supabase: <b>Organization settings</b>, <b>Team</b>, <b>Invite</b>. כך גם אחרים יוכלו לנהל את המסד.</li>
-            <li>חברי צוות שעוד לא ברשימה מוסיפים מדף <a href="#/settings">חיבורים והגדרות</a>. זה דורש מנהל.</li>
-            <li>כדי להפוך מישהו למנהל (או להוסיף את עצמכם, אם אתם לא ברשימה), מריצים ב-SQL Editor:</li>
-          </ul>
-          ${copyField("SQL", "insert into public.members (github_username, role) values ('your-github-name', 'admin') on conflict (github_username) do update set role = 'admin';")}`)}
-      </ol>`;
+          <div class="grade-card">
+            <h3 class="gc-title">ציון</h3>
+            ${s.score != null ? `<div class="grade-top"><span class="big num">${s.score}</span><span class="lbl"><b>${s.approved ? "מאושר" : "עוד לא אושר"}</b>מתוך 100</span></div>` : `<p class="muted" style="margin:0">עוד לא נבדקה.</p>`}
+            <p class="hint">ציונים ומשוב עורכים בקובץ ציונים.xlsx שבתיקיית המטלה.</p>
+          </div>
+        </aside>
+      </div>
+      <div class="drawer-foot"><span class="grow">${s.issue ? esc(s.issue) : "הקבצים שמורים בתיקיית OneDrive של המטלה."}</span><button class="btn secondary" data-act="open-folder">${ICON.folder}פתח את התיקייה</button></div>`;
   }
 
   const views = {
-    "/setup": setupView,
     "/"() {
       const A = cur(), I = info(A);
       return `
@@ -1126,28 +901,26 @@ window.APP_CONFIG = {
           <div class="panel-body">
             <div class="arch">
               <div class="arch-row">
-                ${node("מודל", "אתר הקורסים של האוניברסיטה", "לא מחובר")}
+                ${node("מודל", "אתר הקורסים של האוניברסיטה", ...(LOCAL.health?.moodle ? ["מחובר עם טוקן", "ok"] : ["דרך קובצי ZIP", "warn"]))}
                 <span class="arch-link" aria-hidden="true">⇄</span>
-                ${node("הפייפליין", "סקריפט פייתון ב-GitHub Actions", "עוד לא נבנה")}
+                ${node("המערכת", "פייתון במחשב שמסנכרן את התיקייה (start.bat)", ...(LOCAL.on ? ["פועלת", "ok"] : ["לא פועלת כרגע", "warn"]))}
                 <span class="arch-link" aria-hidden="true">⇄</span>
                 ${node("Claude", "בדיקה, סימון וציון", "לא מחובר")}
               </div>
               <span class="arch-v" aria-hidden="true">⇅</span>
-              <div class="arch-row center">${node("מסד נתונים והתחברות", "Supabase: הגשות, ציונים וקבצים", ...dbTag())}</div>
+              <div class="arch-row center">${node("תיקיית OneDrive", "YallaLinearit: הגשות, ציונים ויומן", ...(LOCAL.health?.root ? ["מחוברת", "ok"] : ["לא מחוברת", "warn"]))}</div>
               <span class="arch-v" aria-hidden="true">⇅</span>
-              <div class="arch-row center">${node("האתר הזה", "GitHub Pages", "פעיל", "ok")}</div>
+              <div class="arch-row center">${node("האתר הזה", LOCAL.on ? "דרך המערכת במחשב" : "GitHub Pages, מצב הדגמה", "פעיל", "ok")}</div>
             </div>
           </div>
         </section>
-        ${teamPanelHTML()}
+        ${drivePanelHTML()}
         <div class="grid-2">
           <section class="panel">
-            <div class="panel-head"><h2>מפתחות שצריך להגדיר</h2><span class="meta">כולם נשמרים ב-GitHub Secrets</span></div>
+            <div class="panel-head"><h2>מפתחות שצריך להגדיר</h2><span class="meta">נשמרים בקובץ .env במחשב שמריץ את המערכת</span></div>
             <div class="panel-body">
-              ${secretField("MOODLE_TOKEN", "משיכת הגשות והחזרת ציונים")}
-              ${secretField("ANTHROPIC_API_KEY", "בדיקת העבודות עם Claude")}
-              ${secretField("SUPABASE_URL", "כתובת מסד הנתונים")}
-              ${secretField("SUPABASE_SERVICE_KEY", "כתיבה למסד הנתונים מהפייפליין")}
+              ${secretField("MOODLE_TOKEN", "משיכת הגשות והחזרת ציונים", LOCAL.health?.moodle)}
+              ${secretField("ANTHROPIC_API_KEY", "בדיקת העבודות עם Claude", LOCAL.health?.claude)}
             </div>
           </section>
           <section class="panel">
@@ -1206,6 +979,8 @@ window.APP_CONFIG = {
         </div>
         <button class="btn ghost close" data-act="close" aria-label="סגור">${ICON.close}</button>
       </div>`;
+
+    if (LOCAL.on) return localDrawerHTML(s, head);
 
     if (!s.q) {
       const msg = {
@@ -1291,9 +1066,9 @@ window.APP_CONFIG = {
 
   async function gradeOne(id) {
     const A = cur(), s = A.subs.find((x) => x.id === id);
-    s.status = "grading"; save.subs(A, [s]); render(); refreshDrawer();
+    s.status = "grading"; render(); refreshDrawer();
     await new Promise((r) => setTimeout(r, 1400));
-    D.gradeSubmission(s); s.fresh = true; save.subs(A, [s]);
+    D.gradeSubmission(s); s.fresh = true;
     render(); refreshDrawer();
     toast(`העבודה של ${s.name} נבדקה`);
   }
@@ -1303,7 +1078,6 @@ window.APP_CONFIG = {
 
   function renderNav() {
     $$(".nav a").forEach((a) => (a.dataset.route === route() ? a.setAttribute("aria-current", "page") : a.removeAttribute("aria-current")));
-    $("#nav-setup").hidden = DB.configured && route() !== "/setup";
     const A = cur();
     if (!A) { $$(".nav-badge").forEach((b) => (b.textContent = "")); return; }
     const I = info(A), run = state.run[A.id];
@@ -1341,12 +1115,11 @@ window.APP_CONFIG = {
     });
 
     let html;
-    if (state.loading && !booted) html = `<div class="loading">${ICON.spin}טוען את הנתונים המשותפים…</div>`;
-    else if (state.shared && (state.sharedEmpty || !cur()) && route() !== "/settings" && route() !== "/setup") html = emptySharedHTML();
+    if (state.loading && !booted) html = `<div class="loading">${ICON.spin}טוען…</div>`;
     else html = views[route()]();
     $("#main").innerHTML = bannerHTML() + html;
     renderNav();
-    renderAccount();
+    renderStatus();
 
     if (keep) {
       const el = document.getElementById(keep.id);
@@ -1374,45 +1147,14 @@ window.APP_CONFIG = {
         s.score = s.q.reduce((x, y) => x + y, 0);
         s.feedback = $("#fb-text").value;
         s.fresh = true;
-        save.subs(cur(), [s]);
         closeDrawer(); render();
         toast(`השינויים בעבודה של ${s.name} נשמרו`);
       }
-      if (a === "signin") DB.signIn().catch((err) => toast(`ההתחברות נכשלה: ${err.message}`, ICON.warn));
-      if (a === "signout") DB.signOut();
-      if (a === "account") { $("#account-menu")?.toggleAttribute("hidden"); }
-      if (a === "seed") seedShared();
-      if (a === "setup-test") testSetup();
-      if (a === "open-solution") {
-        const w = window.open("", "_blank");
-        DB.solutionUrl(cur().solutionPath).then((url) => { if (w) { w.opener = null; w.location = url; } }).catch((err) => { w?.close(); dbError(err); });
-      }
+      if (a === "open-folder") openFolder("folder");
+      if (a === "open-inbox") openFolder("inbox");
+      if (a === "recheck") location.reload();
       return;
     }
-
-    const copy = t.closest("[data-copy]");
-    if (copy) { copyText(copy.dataset.copy); return; }
-    if (t.closest("[data-copy-schema]") && setup.schema) { copyText(setup.schema, "הסכמה הועתקה. מדביקים ב-SQL Editor ולוחצים Run"); return; }
-
-    const conf = t.closest("[data-confirm]");
-    if (conf) {
-      const key = conf.dataset.confirm;
-      if (state.confirm !== key) {
-        state.confirm = key; render();
-        clearTimeout(timers.confirm);
-        timers.confirm = setTimeout(() => { state.confirm = null; render(); }, 4000);
-        return;
-      }
-      state.confirm = null;
-      if (key === "reset") resetShared();
-      if (key.startsWith("rm:")) {
-        const name = key.slice(3);
-        DB.removeMember(name).then(() => { toast(`${name} הוסר מהצוות`); refreshMembers(); }).catch(dbError);
-      }
-      render();
-      return;
-    }
-    if (!t.closest("#account")) $("#account-menu")?.setAttribute("hidden", "");
 
     const goto = t.closest("[data-goto-tab]");
     if (goto) { const [st, tab] = goto.dataset.gotoTab.split(":"); state.tab[st] = tab; if (goto.getAttribute("href") === "#" + route()) render(); }
@@ -1427,7 +1169,7 @@ window.APP_CONFIG = {
     if (reset) {
       const st = reset.dataset.reset;
       state.instr[st] = D.instructions[st];
-      if (state.shared) save.instr(st); else store.set(`instr.${st}`, state.instr[st]);
+      store.set(`instr.${st}`, state.instr[st]);
       render(); toast("ההנחיות חזרו לברירת המחדל"); return;
     }
 
@@ -1459,16 +1201,11 @@ window.APP_CONFIG = {
   document.addEventListener("input", (e) => {
     const t = e.target;
     if (t.dataset.query) { state.query[t.dataset.query] = t.value; render(); return; }
-    if (t.dataset.setup) {
-      setup[t.dataset.setup] = t.value;
-      setup.results = null;
-      store.set(`setup.${t.dataset.setup}`, t.value);
-      render(); return;
-    }
     if (t.dataset.instr) {
       const st = t.dataset.instr;
       state.instr[st] = t.value;
-      if (state.shared) save.instr(st); else { store.set(`instr.${st}`, t.value); flashSaved(st); }
+      store.set(`instr.${st}`, t.value);
+      flashSaved(st);
       updatePrompt(); return;
     }
     if (t.dataset.rpts !== undefined) {
@@ -1477,10 +1214,10 @@ window.APP_CONFIG = {
       const line = $("#total-line");
       line.classList.toggle("bad", total !== 100);
       line.lastElementChild.textContent = `${total} נק׳`;
-      save.rubric(); updatePrompt(); return;
+      updatePrompt(); return;
     }
-    if (t.dataset.rreq !== undefined) { rubric().questions[+t.dataset.rreq].req = t.value; save.rubric(); updatePrompt(); return; }
-    if (t.dataset.emph !== undefined) { rubric().emphases = t.value.split("\n").filter((x) => x.trim()); save.rubric(); updatePrompt(); return; }
+    if (t.dataset.rreq !== undefined) { rubric().questions[+t.dataset.rreq].req = t.value; updatePrompt(); return; }
+    if (t.dataset.emph !== undefined) { rubric().emphases = t.value.split("\n").filter((x) => x.trim()); updatePrompt(); return; }
     if (t.dataset.pattern !== undefined) {
       state.retFormat.pattern = t.value; persistSetting("retFormat");
       const ex = info().graded[0];
@@ -1504,26 +1241,13 @@ window.APP_CONFIG = {
     if (t.dataset.inc) { state.retFormat.include[t.dataset.inc] = t.checked; persistSetting("retFormat"); }
     if (t.dataset.method !== undefined) { state.retFormat.method = t.value; persistSetting("retFormat"); }
     if (t.dataset.solution !== undefined && t.files[0]) {
-      const A = cur(), file = t.files[0];
-      if (!state.shared) { state.solution[A.id] = file.name; render(); toast("הפתרון הרשמי נשמר למטלה"); return; }
-      toast("מעלה את הפתרון הרשמי…", ICON.upload);
-      DB.uploadSolution(A, file).then((path) => {
-        A.solutionFile = file.name; A.solutionPath = path; state.solution[A.id] = file.name;
-        save.assignment(A); render(); toast("הפתרון הרשמי נשמר במסד המשותף");
-      }).catch(dbError);
+      state.solution[cur().id] = t.files[0].name;
+      render();
+      toast("הפתרון הרשמי נשמר למטלה");
     }
   });
 
-  document.addEventListener("submit", async (e) => {
-    if (e.target.id !== "add-member") return;
-    e.preventDefault();
-    const name = $("#new-member").value.trim().replace(/^@/, "");
-    if (!/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(name)) { toast("שם משתמש ב-GitHub כולל רק אותיות באנגלית, ספרות ומקפים", ICON.warn); return; }
-    try { await DB.addMember(name); toast(`${name} נוסף לצוות`); await refreshMembers(); }
-    catch (err) { toast(`ההוספה נכשלה: ${err.message}`, ICON.warn); }
-  });
-
-  function persistSetting(key) { if (state.shared) save.setting(key); else store.set(key, state[key]); }
+  function persistSetting(key) { store.set(key, state[key]); }
   function setPath(path, value) {
     const [root, key] = path.split(".");
     state[root][key] = value;
@@ -1554,175 +1278,139 @@ window.APP_CONFIG = {
 
   window.addEventListener("hashchange", () => { closeDrawer(); render(); window.scrollTo(0, 0); $("#main").focus({ preventScroll: true }); });
 
-  // ---------- מסד משותף: טעינה, עדכונים חיים וחשבון ----------
-  const DEFAULTS = {
-    moodle: { url: "https://moodle.bgu.ac.il", sync: "manual", late: true, types: "pdf,jpg,png" },
-    claude: { model: "claude-opus-5-5", parallel: 5, auto: false, sendSolution: true, lowConfidence: true },
-  };
+  // ---------- הגרסה המחוברת: טעינה ומשיכה דרך השרת המקומי ----------
+  function api(path, opts = {}) {
+    return fetch(path, { cache: "no-store", ...opts, headers: { "Content-Type": "application/json", "X-Assignment-Checker": "1" } })
+      .then(async (r) => {
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(data.error || `השרת המקומי החזיר שגיאה ${r.status}`);
+        return data;
+      });
+  }
 
-  // setTimeout ולא requestAnimationFrame: גם לשונית ברקע צריכה להתעדכן
-  const schedule = () => later("render", render, 40);
-  const scheduleReload = () => later("reload", loadShared, 800);
-  const isMe = (name) => !!name && !!DB.login && name.toLowerCase() === DB.login.toLowerCase();
-
-  async function loadShared() {
-    state.loading = true;
+  // השרת המקומי עונה ב-api/health. באתר הציבורי (GitHub Pages) אין לו תשובה, ולכן נשארים בהדגמה
+  async function detectLocal() {
+    if (!["localhost", "127.0.0.1"].includes(location.hostname)) return false;
     try {
-      const data = await DB.loadAll();
-      state.sharedEmpty = !data.courses.length;
-      D.courses.splice(0, D.courses.length, ...data.courses);
-      D.assignments.splice(0, D.assignments.length, ...data.assignments);
-      Object.keys(D.rubrics).forEach((k) => delete D.rubrics[k]);
-      data.courses.forEach((c) => {
-        const r = data.rubrics[c.id] || DEMO_SEED.rubrics[c.id] || { questions: [], emphases: [] };
-        D.rubrics[c.id] = { questions: r.questions, emphases: r.emphases, mistakes: DEMO_SEED.rubrics[c.id]?.mistakes || [] };
-      });
-      D.runs.splice(0, D.runs.length, ...data.runs);
-      ["pull", "grade", "ret"].forEach((st) => {
-        const row = data.instructions[st];
-        if (row) { state.instr[st] = row.body; state.instrMeta[st] = { by: row.by, at: row.at }; }
-      });
-      ["moodle", "claude", "retFormat"].forEach((k) => { if (data.settings[k]) state[k] = { ...state[k], ...data.settings[k] }; });
-      state.solution = Object.fromEntries(D.assignments.filter((a) => a.solutionFile).map((a) => [a.id, a.solutionFile]));
-      state.members = data.members;
-      if (D.courses.length && !D.assignments.some((a) => a.id === state.assignmentId)) {
-        const c = D.courses.find((x) => x.id === state.courseId) || D.courses[0];
-        state.courseId = c?.id;
-        const list = D.assignments.filter((a) => a.courseId === state.courseId);
-        state.assignmentId = (list.find((a) => a.phase === "current") || list[0])?.id;
-      }
-    } catch (e) {
-      toast(`טעינת המסד נכשלה: ${e.message}`, ICON.warn);
+      const ctrl = new AbortController();
+      setTimeout(() => ctrl.abort(), 1500);
+      const r = await fetch("api/health", { cache: "no-store", signal: ctrl.signal });
+      if (!r.ok) return false;
+      LOCAL.health = await r.json();
+      return LOCAL.health?.ok === true;
+    } catch {
+      return false;
     }
-    state.loading = false;
+  }
+
+  const GENERIC_RUBRIC = { questions: [1, 2, 3, 4].map((n) => ({ n, pts: 25, req: "" })), emphases: [] };
+  function rubricFor(name) {
+    const base = /לינארית/.test(name) ? DEMO_RUBRICS.la : /בדידה/.test(name) ? DEMO_RUBRICS.dm : GENERIC_RUBRIC;
+    return { questions: structuredClone(base.questions), emphases: [...base.emphases], mistakes: [] };
+  }
+
+  async function loadLocal() {
+    try {
+      const data = await api("api/state");
+      D.courses.splice(0, D.courses.length, ...data.courses);
+      D.assignments.splice(0, D.assignments.length, ...data.assignments.map((a) => ({
+        ...a, phase: a.subs.length ? "current" : "new", gradedAt: null, returnedAt: null, lastFresh: null,
+      })));
+      Object.keys(D.rubrics).forEach((k) => delete D.rubrics[k]);
+      data.courses.forEach((c) => (D.rubrics[c.id] = rubricFor(c.name)));
+      D.runs.splice(0, D.runs.length, ...data.assignments
+        .flatMap((a) => (a.log || []).map((l) => ({ ...l, where: `${a.course}, ${a.title}` })))
+        .sort((x, y) => (y.at || "").localeCompare(x.at || "")));
+      LOCAL.health = { ...LOCAL.health, root: data.root, moodle: data.moodle, claude: data.claude };
+      if (!D.assignments.some((a) => a.id === state.assignmentId)) {
+        const first = D.assignments.find((a) => a.subs.length) || D.assignments[0];
+        state.assignmentId = first?.id;
+      }
+      state.courseId = D.assignments.find((a) => a.id === state.assignmentId)?.courseId || D.courses[0]?.id;
+    } catch (e) {
+      toast(`הטעינה מתיקיית OneDrive נכשלה: ${e.message}`, ICON.warn);
+    }
     renderPickers();
     render();
   }
 
-  async function seedShared() {
-    state.loading = true; render();
+  // "משוך הגשות" אמיתי: השרת מושך ממודל (אם יש טוקן) ומקובצי ZIP בקליטה, ישר לתיקיית OneDrive
+  async function runLocalPull() {
+    const A = cur();
+    if (!A || state.run[A.id] || !LOCAL.health?.root) return;
+    const run = (state.run[A.id] = { stage: "pull", steps: STAGES.pull.steps.map(() => "pending") });
+    let i = 0;
+    run.steps[0] = "running";
+    render();
+    const timer = setInterval(() => {
+      if (i < run.steps.length - 1) { run.steps[i] = "done"; i += 1; run.steps[i] = "running"; render(); }
+    }, 700);
     try {
-      await DB.seed({ ...DEMO_SEED, instructions: D.instructions, settings: { ...DEFAULTS, retFormat: D.returnFormat } });
-      toast("נתוני הדוגמה נטענו למסד המשותף");
+      const rep = await api("api/pull", { method: "POST", body: JSON.stringify({ course: A.course, assignment: A.title }) });
+      LOCAL.report = { ...rep, assignmentId: A.id };
+      clearInterval(timer);
+      delete state.run[A.id];
+      await loadLocal();
+      // ה-ZIP היה של מטלה אחרת: עוברים אליה, כדי לראות את מה שנקלט
+      const other = !rep.result.total && rep.routed?.find((x) => x.total);
+      const target = other && D.assignments.find((a) => a.course === other.course && a.title === other.assignment);
+      if (target) {
+        state.assignmentId = target.id;
+        state.courseId = target.courseId;
+        LOCAL.report.assignmentId = target.id;
+        renderPickers();
+        render();
+        toast(`ה-ZIP שייך ל${other.assignment}, אז עברתי אליה: ${plural(other.total, "הגשה אחת נקלטה", "הגשות נקלטו")}`);
+      } else {
+        toast(rep.result.total ? `המשיכה הסתיימה: ${rep.summary}` : "המשיכה הסתיימה: לא נמצאו הגשות חדשות");
+      }
     } catch (e) {
-      toast(`הטעינה נכשלה: ${e.message}`, ICON.warn);
+      clearInterval(timer);
+      delete state.run[A.id];
+      render();
+      toast(e.message, ICON.warn);
     }
-    await loadShared();
   }
 
-  async function resetShared() {
-    state.loading = true; render();
-    try { await DB.wipe(); } catch (e) { toast(`המחיקה נכשלה: ${e.message}`, ICON.warn); state.loading = false; render(); return; }
-    await seedShared();
+  function openFolder(which) {
+    const A = cur();
+    if (!LOCAL.on || !A) return;
+    api("api/open", { method: "POST", body: JSON.stringify({ course: A.course, assignment: A.title, which }) })
+      .then(() => toast(which === "inbox" ? "תיקיית הקליטה נפתחה בסייר הקבצים" : "תיקיית המטלה נפתחה בסייר הקבצים", ICON.folder))
+      .catch((e) => toast(e.message, ICON.warn));
   }
 
-  async function refreshMembers() {
-    try { state.members = await DB.listMembers(); schedule(); } catch (e) { dbError(e); }
-  }
-
-  // שינוי שמישהו אחר מהצוות עשה: מעדכנים רק את מה שהשתנה
-  function applyChange({ table, type, row }) {
-    if (!state.shared) return;
-    if (type === "DELETE" || state.sharedEmpty) { scheduleReload(); return; }
-    if (table === "members") { refreshMembers(); return; }
-    if (table === "runs") {
-      if (isMe(row.actor) || D.runs.some((r) => r.id === row.id)) return;
-      D.runs.unshift(DB.toRun(row));
-      return schedule();
-    }
-    if (table === "stage_instructions") {
-      state.instrMeta[row.stage] = { by: row.updated_by, at: row.updated_at };
-      const typing = document.activeElement?.dataset?.instr === row.stage;
-      if (!isMe(row.updated_by) && !typing) state.instr[row.stage] = row.body;
-      if (!typing) schedule();
-      return;
-    }
-    if (isMe(row.updated_by)) return;
-    if (table === "courses") {
-      const c = D.courses.find((x) => x.id === row.id);
-      if (c) c.name = row.name; else D.courses.push({ id: row.id, name: row.name });
-      renderPickers();
-    }
-    if (table === "assignments") {
-      const next = DB.toAssignment(row), A = D.assignments.find((a) => a.id === row.id);
-      if (A) Object.assign(A, next, { subs: A.subs }); else D.assignments.push(next);
-      if (next.solutionFile) state.solution[next.id] = next.solutionFile;
-      renderPickers();
-    }
-    if (table === "submissions") {
-      const A = D.assignments.find((a) => a.id === row.assignment_id);
-      if (!A) return scheduleReload();
-      const s = DB.toSub(row), i = A.subs.findIndex((x) => x.id === s.id);
-      s.fresh = true;
-      if (i >= 0) Object.assign(A.subs[i], s); else A.subs.push(s);
-      if (state.openId === s.id) refreshDrawer();
-    }
-    if (table === "rubrics") {
-      if (document.activeElement?.matches?.("[data-rpts],[data-rreq],[data-emph]")) return;
-      const prev = D.rubrics[row.course_id] || {};
-      D.rubrics[row.course_id] = { questions: row.questions, emphases: row.emphases, mistakes: prev.mistakes || [] };
-    }
-    if (table === "settings" && state[row.key] && !document.activeElement?.dataset?.set) state[row.key] = { ...state[row.key], ...row.value };
-    schedule();
-  }
-
-  function renderAccount() {
-    const mode = DB.mode;
+  function renderStatus() {
+    const live = LOCAL.on && !!LOCAL.health?.root;
     const badge = $("#mode-badge");
-    badge.textContent = mode === "team" ? "מסד משותף" : "מצב הדגמה";
-    badge.className = `demo-badge ${mode === "team" ? "ok" : ""}`;
-    badge.title = mode === "team" ? "הנתונים משותפים לכל הצוות ומתעדכנים בזמן אמת" : "הנתונים במסך לדוגמה בלבד";
-
-    const others = state.online.filter((p) => !isMe(p.login));
-    $("#presence").innerHTML = mode === "team" && others.length
-      ? others.slice(0, 4).map((p) => `<img src="${esc(p.avatar || ghAvatar(p.login))}" alt="${esc(p.login)}" title="${esc(p.login)} מחובר עכשיו" width="30" height="30">`).join("") + (others.length > 4 ? `<span class="more">+${others.length - 4}</span>` : "")
-      : "";
-
-    const acc = $("#account");
-    if (mode === "off") acc.innerHTML = "";
-    else if (mode === "guest") acc.innerHTML = `<button class="btn secondary small" data-act="signin">${ICON.github}התחברות עם GitHub</button>`;
-    else {
-      const open = !$("#account-menu")?.hasAttribute("hidden") && !!$("#account-menu");
-      acc.innerHTML = `
-        <button class="avatar-btn" data-act="account" aria-haspopup="true" aria-label="החשבון שלי"><img src="${esc(DB.avatar)}" alt="" width="36" height="36"></button>
-        <div class="account-menu" id="account-menu" ${open ? "" : "hidden"}>
-          <b dir="ltr">${esc(DB.login || "")}</b>
-          <small>${mode === "team" ? (DB.admin ? "מנהל צוות" : "חבר צוות") : "לא ברשימת הצוות"}</small>
-          <button class="btn secondary small" data-act="signout">התנתקות</button>
-        </div>`;
-    }
-
-    const conn = $("#conn-db");
-    const [txt, ok] = mode === "team" ? ["מחובר", true] : mode === "off" ? ["לא מחובר", false] : ["דורש התחברות", false];
-    conn.classList.toggle("ok", ok);
-    $(".dot", conn).className = `dot ${ok ? "ok" : "warn"}`;
-    $("em", conn).textContent = txt;
-    $("#proto-note").textContent = mode === "team"
-      ? "הנתונים משותפים לכל הצוות. המשיכה ממודל והבדיקה עם Claude עדיין מדומות."
-      : "מצב הדגמה: הנתונים והפעולות במסך מדומים, עד שיחוברו המפתחות.";
+    badge.textContent = live ? "מחובר ל-OneDrive" : LOCAL.on ? "OneDrive לא נמצא" : "מצב הדגמה";
+    badge.className = `demo-badge ${live ? "ok" : ""}`;
+    badge.title = live ? LOCAL.health.root : "הנתונים במסך לדוגמה בלבד";
+    const set = (id, ok, text) => {
+      const el = $(id);
+      el.classList.toggle("ok", ok);
+      $(".dot", el).className = `dot ${ok ? "ok" : "warn"}`;
+      $("em", el).textContent = text;
+    };
+    set("#conn-moodle", !!LOCAL.health?.moodle, LOCAL.health?.moodle ? "מחובר" : LOCAL.on ? "דרך ZIP" : "לא מחובר");
+    set("#conn-claude", !!LOCAL.health?.claude, LOCAL.health?.claude ? "מחובר" : "לא מחובר");
+    set("#conn-drive", live, live ? "מחובר" : "לא מחובר");
+    $("#proto-note").textContent = live
+      ? "ההגשות נשמרות בתיקיית OneDrive של הקורס. הבדיקה עם Claude עוד לא מחוברת."
+      : "מצב הדגמה: הנתונים והפעולות במסך מדומים. כדי לעבוד עם OneDrive מפעילים את start.bat.";
   }
-
-  DB.on((type, data) => {
-    if (type === "auth") location.reload();
-    if (type === "change") applyChange(data);
-    if (type === "presence") { state.online = data; renderAccount(); if (route() === "/settings") schedule(); }
-  });
 
   let booted = false;
   (async () => {
-    if (DB.configured) {
-      state.loading = true;
-      render();
-      try { await DB.init(); } catch (e) { toast(`החיבור למסד נכשל: ${e.message}`, ICON.warn); }
+    state.loading = true;
+    render();
+    if (await detectLocal()) {
+      LOCAL.on = true;
+      if (LOCAL.health.root) await loadLocal();
     }
-    if (DB.mode === "team") {
-      state.shared = true;
-      await loadShared();
-    } else {
-      state.loading = false;
-      renderPickers();
-      render();
-    }
+    state.loading = false;
+    renderPickers();
+    render();
     booted = true;
   })();
 })();
