@@ -1180,10 +1180,16 @@
     const withQ = I.graded.filter((s) => Array.isArray(s.q) && s.q.length === qs.length);
     if (noRubric()) return `<p class="muted empty-line">אין מחוון, אז אין ניקוד לפי שאלה.</p>`;
     if (!withQ.length) return `<p class="muted empty-line">יופיע אחרי שיהיה ניקוד לכל שאלה.</p>`;
-    const rates = qs.map((q, i) => avg(withQ.map((s) => Math.round((s.q[i] / q.pts) * 100))));
+    // עבודה שהניקוד בה עובר את המחוון נבדקה לפי חלוקה אחרת: לא נספרת, אחרת יוצאים אחוזים מעל 100
+    const fits = withQ.filter((s) => !overRubric(s.q).length), off = withQ.length - fits.length;
+    const offNote = off ? `<p class="hint">${off === 1
+      ? "עבודה אחת לא נספרת כאן: הניקוד בה עובר את המחוון (היא נבדקה לפי חלוקה אחרת), וצריך לבדוק אותה מחדש."
+      : `${off} עבודות לא נספרות כאן: הניקוד בהן עובר את המחוון (הן נבדקו לפי חלוקה אחרת), וצריך לבדוק אותן מחדש.`}</p>` : "";
+    if (!fits.length) return `<p class="muted empty-line">אין עדיין עבודות שנבדקו לפי המחוון.</p>${offNote}`;
+    const rates = qs.map((q, i) => Math.min(100, avg(fits.map((s) => Math.round((s.q[i] / q.pts) * 100)))));
     const worst = rates.indexOf(Math.min(...rates));
     return `<ul class="qbars">${qs.map((q, i) => `
-      <li class="${i === worst ? "worst" : ""}"><span>שאלה ${q.n}</span><span class="track"><i style="width:${rates[i]}%"></i></span><b class="num">${rates[i]}%</b></li>`).join("")}</ul>`;
+      <li class="${i === worst ? "worst" : ""}"><span>שאלה ${q.n}</span><span class="track"><i style="width:${rates[i]}%"></i></span><b class="num">${rates[i]}%</b></li>`).join("")}</ul>${offNote}`;
   }
 
   function logHTML(limit, onlyHere) {
@@ -1328,7 +1334,7 @@
             <h3 class="gc-title">ציון</h3>
             ${busy ? `<p class="muted" style="margin:0">Claude בודק את העבודה עכשיו.</p>`
               : s.score != null ? `<div class="grade-top"><span class="big num">${s.score}</span><span class="lbl"><b>${s.approved ? "מאושר" : "עוד לא אושר"}</b>מתוך ${cur().maxGrade || 100}</span></div>
-                ${s.q && s.q.length === qs.length && !noRubric() ? `<ul class="breakdown">${qs.map((q, i) => `<li><label>${esc(q.req || `שאלה ${q.n}`)}</label><span class="num">${s.q[i]} / ${q.pts}</span><span class="track"><i class="${s.q[i] < q.pts ? "short" : ""}" style="width:${Math.min(100, (s.q[i] / q.pts) * 100)}%"></i></span></li>`).join("")}</ul>` : ""}
+                ${s.q && s.q.length === qs.length && !noRubric() ? `<ul class="breakdown">${qs.map((q, i) => `<li><label>${esc(q.req || `שאלה ${q.n}`)}</label><span class="num ${s.q[i] > q.pts ? "over" : ""}" ${s.q[i] > q.pts ? `title="יותר מהניקוד של השאלה במחוון: צריך לבדוק מחדש"` : ""}>${s.q[i]} / ${q.pts}</span><span class="track"><i class="${s.q[i] < q.pts ? "short" : ""}" style="width:${Math.min(100, (s.q[i] / q.pts) * 100)}%"></i></span></li>`).join("")}</ul>` : ""}
                 ${s.review ? `<p class="hint"><span class="flag" style="white-space: normal">${s.approved ? "נבדקה ידנית" : "לבדיקה ידנית"}: ${esc(s.review)}</span></p>` : ""}`
               : `<p class="muted" style="margin:0">עוד לא נבדקה.</p>`}
             <p class="hint">אחרי הבדיקה, העבודה עם ההערות נשמרת ב-"2 - Graded with comments" באותו מספר, והציון ב-Grades.csv.</p>
