@@ -19,6 +19,7 @@ import pytest
 from moodle import claude_driver, paths
 from dashboard import actions, folder_view
 from grading import grade as grading
+from grading import placement
 from tests.sample_files import homework_pdf
 
 COURSE, HW = "Linear Algebra", "Assignment 0 - Sets and Complex Numbers"
@@ -203,7 +204,9 @@ def test_grading_writes_grades_csv_and_marked_pdfs(root):
         assert red, "לא צויר מלבן אדום"
         r = red[0]["rect"]
         w, h = doc[1].rect.width, doc[1].rect.height
-        assert abs(r.x0 - 0.1 * w) < 2 and abs(r.y0 - 0.1 * h) < 2 and abs(r.x1 - 0.9 * w) < 2 and abs(r.y1 - 0.16 * h) < 2
+        # המלבן מורחב לגבולות המשבצות של placement: לכל היותר משבצת לכל צד
+        near = lambda a, b: abs(a - b) <= placement.CELL + 2
+        assert near(r.x0, 0.1 * w) and near(r.y0, 0.1 * h) and near(r.x1, 0.9 * w) and near(r.y1, 0.16 * h)
     assert rep.summary() == "נבדקו 3 מתוך 3"
 
 
