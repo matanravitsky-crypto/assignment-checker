@@ -13,7 +13,7 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 
-from .workspace import Submission, SubmittedFile
+from .types import Submission, SubmittedFile
 
 _ENTRY = re.compile(r"^(?P<name>.+?)_(?P<pid>\d+)_assignsubmission_(?P<plugin>file|onlinetext)(?:_(?P<fname>.+))?$")
 
@@ -28,23 +28,24 @@ def _decode(info: zipfile.ZipInfo) -> str:
         return info.filename
 
 
-def read_zip(path: Path) -> list[Submission]:
+def read_zip(zf: zipfile.ZipFile) -> list[Submission]:
+    """מפענח את רשימת ההגשות ב-ZIP. התוכן נקרא רק כשמבקשים אותו, ולכן ה-ZIP צריך להישאר פתוח."""
     by_id: dict[str, Submission] = {}
-    with zipfile.ZipFile(path) as zf:
-        for info in zf.infolist():
-            if info.is_dir():
-                continue
-            parts = _decode(info).replace("\\", "/").split("/")
-            # הרכיב הראשון בנתיב שנראה כמו הגשה של מודל (לפעמים הכל עטוף בתיקייה נוספת)
-            hit = next(((i, m) for i, p in enumerate(parts) if (m := _ENTRY.match(p))), None)
-            if not hit:
-                continue
-            i, m = hit
-            rest = parts[i + 1:]
-            file_name = "_".join(rest) if rest else (m.group("fname") or "onlinetext.html")
-            sub = by_id.setdefault(m.group("pid"), Submission(moodle_id=m.group("pid"), name=m.group("name").strip(), files=[]))
-            sub.files.append(SubmittedFile(name=file_name, data=zf.read(info)))
-            stamp = datetime(*info.date_time)
-            if sub.submitted_at is None or stamp > sub.submitted_at:
-                sub.submitted_at = stamp
+    for info in zf.infolist():
+        if info.is_dir():
+            continue
+        parts = _decode(info).replace("\\", "/").split("/")
+        # הרכיב הראשון בנתיב שנראה כמו הגשה של מודל (לפעמים הכל עטוף בתיקייה נוספת)
+        hit = next(((i, m) for i, p in enumerate(parts) if (m := _ENTRY.match(p))), None)
+        if not hit:
+            continue
+        i, m = hit
+        rest = parts[i + 1:]
+        file_name = "_".join(rest) if rest else (m.group("fname") or "onlinetext.html")
+        folder = parts[i] if m.group("fname") is None else f"{m.group('name')}_{m.group('pid')}_assignsubmission_{m.group('plugin')}"
+        sub = by_id.setdefault(m.group("pid"), Submission(moodle_id=m.group("pid"), name=m.group("name").strip(), files=[], folder=folder))
+        sub.files.append(SubmittedFile(name=file_name, read=lambda info=info: zf.read(info)))
+        stamp = datetime(*info.date_time)
+        if sub.submitted_at is None or stamp > sub.submitted_at:
+            sub.submitted_at = stamp
     return sorted(by_id.values(), key=lambda s: s.name)

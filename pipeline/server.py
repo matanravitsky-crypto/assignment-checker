@@ -20,7 +20,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import config, service, settings as cfg
+from . import service, settings as cfg, team
 
 DOCS = cfg.REPO_DIR / "docs"
 HEADER = "X-Assignment-Checker"
@@ -89,7 +89,10 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             rel = parse_qs(url.query).get("path", [""])[0]
             target = (root / rel).resolve()
-            if not target.is_file() or not target.is_relative_to(root.resolve()):
+            # רק קובצי PDF של הגשות (תיקיות 1-2-3). טבלת המפתח, עם השמות, לא יוצאת מהתיקייה
+            allowed = (team.SUBMISSIONS, team.GRADED, team.READY)
+            if (not target.is_file() or not target.is_relative_to(root.resolve())
+                    or target.suffix.lower() != ".pdf" or target.parent.name not in allowed):
                 return self.send_error(HTTPStatus.NOT_FOUND)
             data = target.read_bytes()
             self.send_response(HTTPStatus.OK)
@@ -119,6 +122,8 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json({"error": "משיכה אחרת כבר רצה. כדאי לנסות שוב בעוד רגע."}, HTTPStatus.CONFLICT)
             try:
                 rep = service.pull(root, course, assignment)
+            except FileNotFoundError as e:
+                return self._json({"error": str(e)}, HTTPStatus.NOT_FOUND)
             except Exception as e:  # השגיאה מוצגת באתר במקום שהשרת ייפול
                 return self._json({"error": f"המשיכה נכשלה: {e}"}, HTTPStatus.INTERNAL_SERVER_ERROR)
             finally:
@@ -127,11 +132,16 @@ class Handler(SimpleHTTPRequestHandler):
             out["summary"] = rep.result.summary()
             return self._json(out)
         if url.path == "/api/open":
-            # פותח בסייר הקבצים את תיקיית המטלה או את תיקיית הקליטה שלה
-            from .workspace import Workspace
-            ws = Workspace(root, body.get("course", ""), body.get("assignment", ""))
-            ws.ensure()
-            target = ws.inbox if body.get("which") == "inbox" else ws.dir
+            # פותח בסייר הקבצים את תיקיית המטלה, או את תיקיית ההורדה ממודל שלה
+            try:
+                asg = service.find_assignment(root, body.get("course", ""), body.get("assignment", ""))
+            except FileNotFoundError as e:
+                return self._json({"error": str(e)}, HTTPStatus.NOT_FOUND)
+            if body.get("which") == "inbox":
+                asg.inbox.mkdir(exist_ok=True)
+                target = asg.inbox
+            else:
+                target = asg.dir
             if hasattr(os, "startfile"):
                 os.startfile(target)  # noqa: S606 - נתיב בתוך תיקיית הקורס בלבד
             return self._json({"opened": str(target)})
@@ -142,8 +152,7 @@ def serve(port: int = 8765, open_browser: bool = True) -> None:
     cfg.load_env()
     root, err = service.root_info()
     if root:
-        service.init(root)
-        print(f"תיקיית הקורס: {root}")
+        print(f"תיקיית המערכת: {root}")
     else:
         print(err)
         print("\nהאתר יעלה בכל זאת, ויציג את ההסבר הזה עד שהתיקייה תסתנכרן.")
