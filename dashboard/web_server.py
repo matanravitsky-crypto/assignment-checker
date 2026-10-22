@@ -103,6 +103,19 @@ class Handler(SimpleHTTPRequestHandler):
             return self._json(actions.send_status())
         if url.path == "/api/moodle":
             return self._json(actions.moodle_status())
+        if url.path == "/api/ready":
+            # מהירה: לא מפעילה בדיקת כרום. מי שרוצה בדיקה קורא ל-POST /api/ready/check
+            root = self._root()
+            if not root:
+                return
+            query = parse_qs(url.query)
+            course, assignment = query.get("course", [""])[0], query.get("assignment", [""])[0]
+            if not course or not assignment:
+                return self._json({"error": "חסרים קורס ומטלה"}, HTTPStatus.BAD_REQUEST)
+            try:
+                return self._json(actions.readiness(root, course, assignment))
+            except FileNotFoundError as e:
+                return self._json({"error": str(e)}, HTTPStatus.NOT_FOUND)
         if url.path == "/api/state":
             root = self._root()
             return root and self._json(actions.state(root))
@@ -175,16 +188,23 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json({"error": str(e)}, HTTPStatus.CONFLICT)
         if url.path == "/api/upload/stop":
             return self._json(actions.stop_send())
-        if url.path == "/api/moodle/check":
+        if url.path in ("/api/moodle/check", "/api/ready/check"):
             course, assignment = body.get("course"), body.get("assignment")
             if not course or not assignment:
                 return self._json({"error": "חסרים קורס ומטלה"}, HTTPStatus.BAD_REQUEST)
+            check = actions.check_moodle if url.path == "/api/moodle/check" else actions.check_ready
             try:
-                return self._json(actions.check_moodle(root, course, assignment))
+                return self._json(check(root, course, assignment))
             except FileNotFoundError as e:
                 return self._json({"error": str(e)}, HTTPStatus.NOT_FOUND)
+            except RuntimeError as e:  # העלאה רצה עכשיו: הבדיקה וההעלאה היו מפעילות את אותו כרום
+                return self._json({"error": str(e)}, HTTPStatus.CONFLICT)
             except Exception as e:
                 return self._json({"error": f"הבדיקה נכשלה: {e}"}, HTTPStatus.INTERNAL_SERVER_ERROR)
+        if url.path == "/api/claude/login":
+            return self._json(actions.start_claude_login(restart=body.get("restart") is True))
+        if url.path == "/api/claude/install":
+            return self._json(actions.start_claude_install())
         if url.path == "/api/grade":
             course, assignment = body.get("course"), body.get("assignment")
             if not course or not assignment:

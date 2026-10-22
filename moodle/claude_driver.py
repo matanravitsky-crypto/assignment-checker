@@ -93,6 +93,21 @@ DEFAULT_MESSAGES = {
 }
 
 
+def find_claude() -> str | None:
+    """The `claude` command: on the PATH, or where the official installer puts it (~/.local/bin).
+
+    A fresh install is often not on the PATH of a server that was already running.
+    """
+    found = shutil.which("claude")
+    if found:
+        return found
+    for name in ("claude.exe", "claude"):
+        candidate = Path.home() / ".local" / "bin" / name
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
 def assignment_id(info: dict) -> str:
     """The Moodle id from Assignment details.json. Digits only: it goes into the prompt and the address."""
     value = str(info["id"])
@@ -226,7 +241,7 @@ class ClaudeChromeDriver:
                         cwd=folder, stdin=subprocess.DEVNULL)
 
     def upload_zip(self, info: dict, zip_path: Path, expected: int, dry_run: bool) -> UploadResult:
-        claude = self.claude or shutil.which("claude")
+        claude = self.claude or find_claude()
         if not claude:
             return UploadResult("error", message=NOT_INSTALLED)
         try:
@@ -242,7 +257,7 @@ class ClaudeChromeDriver:
 
     def check(self, info: dict) -> dict:
         """Are Chrome and Moodle ready? {"chrome": bool, "moodle": bool, "message": str}. Never raises."""
-        claude = self.claude or shutil.which("claude")
+        claude = self.claude or find_claude()
         if not claude:
             return {"chrome": False, "moodle": False, "message": NOT_INSTALLED}
         timeout_s = min(self.timeout_s, CHECK_TIMEOUT_S)
@@ -273,7 +288,7 @@ def auth_status(run=subprocess.run, claude: str | None = None) -> dict:
     `claude auth status --json` prints {"loggedIn": ..., ...} (and exits non-zero when logged out). Nothing of
     that output is passed on but the yes or no: it holds the account's details.
     """
-    claude = claude or shutil.which("claude")
+    claude = claude or find_claude()
     if not claude:
         return {"logged_in": False, "message": NOT_INSTALLED}
     try:

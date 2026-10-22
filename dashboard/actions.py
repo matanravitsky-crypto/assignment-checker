@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
 import threading
 import time
 from dataclasses import asdict, dataclass, field
@@ -317,6 +318,8 @@ def start_send(root: Path, course: str, assignment: str, batch_id: str,
     with _send_lock:
         if _send.running:
             raise RuntimeError("העלאה אחרת כבר רצה.")
+        if _checking:  # הבדיקה וההעלאה היו מפעילות את אותו כרום
+            raise RuntimeError("בדיקת החיבור למודל רצה עכשיו. אפשר להתחיל בעוד רגע.")
         batch = moodle_send.current_batch(a.dir, batch_id)
         if batch is None:
             raise ValueError("stale")
@@ -359,27 +362,200 @@ def start_send(root: Path, course: str, assignment: str, batch_id: str,
     return send_status()
 
 
-# ---------- התחברות למודל ----------
+# ---------- התחברות למודל, ומוכנות המחשב להעלאה ----------
+# כל אחד בצוות מעלה מהמחשב שלו. לפני ההעלאה האתר בודק שהמחשב הזה מוכן: Claude Code מותקן, מחובר לחשבון של האדם,
+# והכרום והמודל מחוברים. מה שחסר מחברים כמה שאפשר אוטומטית: ההתקנה וההתחברות רצות ברקע (ההתחברות פותחת דפדפן,
+# והאדם מאשר שם), ובדיקת הכרום היא ריצה קצרה של Claude. את התוצאה של בדיקת הכרום זוכרים 30 דקות לכל מטלה.
 MOODLE_STATUS_SECONDS = 60
+READY_MINUTES = 30  # כמה זמן תוצאה של בדיקת הכרום נחשבת טרייה
+BACKGROUND_MINUTES = 10  # התחברות או התקנה שלא נגמרו אחרי זמן הזה נהרגות
+LOGIN_STARTED = "נפתח דף התחברות בדפדפן. אחרי ההתחברות המערכת תזהה לבד שזה הסתיים."
+INSTALL_COMMAND = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "irm https://claude.ai/install.ps1 | iex"]
+SIM_LOGIN_SECONDS = 2.0  # MOODLE_READY=simulate: כמה זמן "ההתחברות" נמשכת
+
 _moodle_cache: tuple[float, dict] | None = None
+_ready_cache: dict[tuple[str, str], tuple[float, dict, str]] = {}  # (קורס, מטלה) → (מתי, התשובה של check, מתי בשעון)
+_checking = False  # בדיקת כרום רצה עכשיו (תחת _send_lock): היא והעלאה היו מפעילות את אותו כרום
+_sim_login_at: float | None = None
+
+
+class _Background:
+    """תהליך רקע של האתר (`claude auth login` או ההתקנה): אחד בכל פעם, ונהרג אחרי BACKGROUND_MINUTES."""
+
+    def __init__(self) -> None:
+        self.proc: subprocess.Popen | None = None
+        self.timer: threading.Timer | None = None
+        self.lock = threading.Lock()
+
+    def running(self) -> bool:
+        return self.proc is not None and self.proc.poll() is None
+
+    def stop(self) -> None:
+        proc, self.proc = self.proc, None
+        if self.timer:
+            self.timer.cancel()
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+
+    def start(self, cmd: list[str], restart: bool = False) -> bool:
+        """False אם כבר רץ אחד (ו-restart כבוי). זורק OSError אם התהליך לא עלה."""
+        with self.lock:
+            if self.running():
+                if not restart:
+                    return False
+                self.stop()
+            # stdin סגור, והפלט לא נשמר: ההתחברות נעשית בדפדפן, והתהליך נגמר לבד כשהיא הסתיימה
+            self.proc = proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self.timer = threading.Timer(BACKGROUND_MINUTES * 60, self._kill, args=(proc,))
+            self.timer.daemon = True
+            self.timer.start()
+            return True
+
+    @staticmethod
+    def _kill(proc: subprocess.Popen) -> None:
+        if proc.poll() is None:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+
+
+_login = _Background()
+_install = _Background()
+
+
+def _simulated_ready() -> bool:
+    """הדגמה (tests/serve_demo): התחברות מדומה, בלי `claude` אמיתי. רק יחד עם MOODLE_DRIVER=simulate."""
+    return os.environ.get("MOODLE_READY") == "simulate" and os.environ.get("MOODLE_DRIVER") == "simulate"
+
+
+def _sim_logged_in() -> bool:
+    return _sim_login_at is not None and time.monotonic() - _sim_login_at >= SIM_LOGIN_SECONDS
+
+
+class _SimChecker:
+    def check(self, info: dict) -> dict:
+        time.sleep(1.0)
+        return {"chrome": True, "moodle": True, "message": "Chrome ו-Moodle מוכנים."}
+
+
+def _make_checker():
+    return _SimChecker() if _simulated_ready() else claude_driver.ClaudeChromeDriver()
 
 
 def moodle_status() -> dict:
-    """האם Claude Code מחובר במחשב הזה. נשמר דקה: הבדיקה מפעילה תהליך, והאתר שואל לעיתים קרובות."""
+    """האם Claude Code מחובר במחשב הזה. נשמר דקה: הבדיקה מפעילה תהליך, והאתר שואל לעיתים קרובות.
+
+    בזמן התחברות או התקנה (ואחרי שההתקנה הסתיימה) שואלים מחדש כל פעם, כדי שהאתר יראה את השינוי מהר."""
     global _moodle_cache
     cached = _moodle_cache
     if cached and time.monotonic() - cached[0] < MOODLE_STATUS_SECONDS:
-        return cached[1]
+        installed_since = cached[1].get("message") == claude_driver.NOT_INSTALLED and claude_driver.find_claude() is not None
+        if not (_login.running() or _install.running() or installed_since):
+            return cached[1]
     status = claude_driver.auth_status()
     _moodle_cache = (time.monotonic(), status)
     return status
 
 
+def _fresh_check(course: str, assignment: str) -> tuple[dict, str] | None:
+    hit = _ready_cache.get((course, assignment))
+    if hit and time.monotonic() - hit[0] < READY_MINUTES * 60:
+        return hit[1], hit[2]
+    return None
+
+
+def readiness(root: Path, course: str, assignment: str) -> dict:
+    """האם המחשב הזה מוכן להעלות את המטלה. מהירה: לא מפעילה בדיקת כרום, רק קוראת את התוצאה האחרונה (אם טרייה)."""
+    find_assignment(root, course, assignment)
+    if _simulated_ready():
+        installed, status = True, {"logged_in": _sim_logged_in(), "message": "Claude Code מחובר." if _sim_logged_in() else claude_driver.NOT_LOGGED_IN}
+        login_running = _sim_login_at is not None and not status["logged_in"]
+        installing = False
+    else:
+        installed = claude_driver.find_claude() is not None
+        status = moodle_status() if installed else {"logged_in": False, "message": claude_driver.NOT_INSTALLED}
+        login_running, installing = _login.running(), _install.running()
+    out = {"installed": installed, "logged_in": bool(status["logged_in"]), "chrome": None, "moodle": None,
+           "checked_at": None, "message": status["message"], "login_running": login_running, "installing": installing}
+    fresh = _fresh_check(course, assignment) if installed and out["logged_in"] else None
+    if fresh:
+        result, at = fresh
+        out.update(chrome=result.get("chrome"), moodle=result.get("moodle"), checked_at=at, message=result.get("message") or "")
+    elif out["logged_in"]:
+        out["message"] = "עוד לא נבדקו הכרום והמודל."
+    return out
+
+
 def check_moodle(root: Path, course: str, assignment: str) -> dict:
-    """האם Chrome ומודל מוכנים להעלאה של המטלה הזו (ריצה קצרה של Claude, בלי להעלות כלום)."""
+    """האם Chrome ומודל מוכנים להעלאה של המטלה הזו (ריצה קצרה של Claude, בלי להעלות כלום).
+
+    זורק RuntimeError בזמן העלאה (או בדיקה אחרת): היא והבדיקה היו מפעילות את אותו כרום."""
+    global _checking
     a = find_assignment(root, course, assignment)
     _moodle_id(a)
-    return claude_driver.ClaudeChromeDriver().check(paths.read_info(a.dir))
+    with _send_lock:
+        if _send.running:
+            raise RuntimeError("העלאה אחרת כבר רצה.")
+        if _checking:
+            raise RuntimeError("בדיקה אחרת של החיבור כבר רצה.")
+        _checking = True
+    try:
+        result = _make_checker().check(paths.read_info(a.dir))
+    finally:
+        with _send_lock:
+            _checking = False
+    stored = {k: result.get(k) for k in ("chrome", "moodle", "message")}
+    _ready_cache[(course, assignment)] = (time.monotonic(), stored, datetime.now().isoformat(timespec="seconds"))
+    return result
+
+
+def check_ready(root: Path, course: str, assignment: str) -> dict:
+    """בודק עכשיו את הכרום והמודל (עולה ריצה קצרה של Claude), מרענן את הזיכרון, ומחזיר את המוכנות."""
+    check_moodle(root, course, assignment)
+    return readiness(root, course, assignment)
+
+
+def start_claude_login(restart: bool = False) -> dict:
+    """פותח התחברות ל-Claude ברקע: `claude auth login` פותח דפדפן, האדם מתחבר עם החשבון שלו, והתהליך נגמר לבד.
+
+    בלי --email: כל אחד מתחבר לחשבון שלו. תהליך אחד בכל פעם; עם restart=True הקודם נהרג ומתחיל חדש."""
+    global _moodle_cache, _sim_login_at
+    if _simulated_ready():
+        if _sim_login_at is None or restart:
+            _sim_login_at = time.monotonic()
+        return {"started": True, "running": True, "message": LOGIN_STARTED}
+    claude = claude_driver.find_claude()
+    if not claude:
+        return {"started": False, "running": False, "message": claude_driver.NOT_INSTALLED}
+    try:
+        started = _login.start([claude, "auth", "login"], restart)
+    except OSError as e:
+        return {"started": False, "running": False, "message": f"ההתחברות לא התחילה: {e}"}
+    _moodle_cache = None  # הסטטוס ישתנה בקרוב
+    if not started:
+        return {"started": False, "running": True, "message": "דף ההתחברות כבר נפתח. אם הוא לא נראה, אפשר ללחוץ 'נסה שוב'."}
+    return {"started": True, "running": True, "message": LOGIN_STARTED}
+
+
+def start_claude_install() -> dict:
+    """מתקין את Claude Code ברקע, עם ההתקנה הרשמית של Anthropic. האתר שואל את האדם לפני שהוא קורא לזה."""
+    global _moodle_cache
+    if _simulated_ready():
+        return {"started": False, "running": False, "message": "Claude Code כבר מותקן."}
+    if claude_driver.find_claude():
+        return {"started": False, "running": False, "message": "Claude Code כבר מותקן."}
+    try:
+        started = _install.start(INSTALL_COMMAND)
+    except OSError as e:
+        return {"started": False, "running": False, "message": f"ההתקנה לא התחילה: {e}"}
+    _moodle_cache = None
+    if not started:
+        return {"started": False, "running": True, "message": "ההתקנה כבר רצה."}
+    return {"started": True, "running": True, "message": "ההתקנה התחילה ברקע. זה לוקח כדקה."}
 
 
 # ---------- הוחזרו: לפי יומן ההעלאה ----------

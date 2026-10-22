@@ -7,7 +7,7 @@
     batch: null,       // ההעלאה שהוכנה וממתינה ל"כן" של אדם: {...תשובת api/upload/prepare, assignmentId}
     sending: null,     // מצב ההעלאה למודל כפי שהשרת מדווח (GET api/upload)
     polling: false, starting: false, stopping: false,
-    auth: null, check: null,  // מצב Claude Code, ותוצאת "בדוק חיבור" ללשונית "חיבור למודל"
+    rd: null,          // מוכנות המחשב להעלאה (Claude Code, התחברות, כרום ומודל), למטלה הנוכחית
   };
   const DEMO_RUBRICS = structuredClone(D.rubrics);
   const $ = (sel, root = document) => root.querySelector(sel);
@@ -158,7 +158,7 @@
     if (LOCAL.on) {
       if (stage === "pull") runLocalPull();
       if (stage === "grade") runLocalGrade(info().toGrade.map((s) => s.id));
-      if (stage === "ret") prepareLocalSend();
+      if (stage === "ret") startSendFlow();
       return;
     }
     const A = cur();
@@ -223,10 +223,9 @@
     let text = mine ? (run.progress || "רץ עכשיו…") : label, spinning = mine;
     if (LOCAL.on && stage === "ret") {
       if (!mine) text = n ? `העלה ${n} למודל` : "אין עבודות להעלאה";
-      if (LOCAL.sending?.running) {  // העלאה אחת בכל פעם, גם אם היא של מטלה אחרת
-        disabled = true;
-        if (sendingHere()) { text = sendProgressText(); spinning = true; }
-      }
+      if (LOCAL.sending?.running || LOCAL.starting) disabled = true;  // העלאה אחת בכל פעם, גם אם היא של מטלה אחרת
+      if (LOCAL.sending?.running && sendingHere()) { text = sendProgressText(); spinning = true; }
+      if (LOCAL.rd?.flow && LOCAL.rd.assignmentId === A.id && !mine) { text = "בודק שהמחשב מוכן…"; spinning = true; disabled = true; }
     }
     const icon = spinning ? ICON.spin : ICON[stage === "ret" ? "ret" : stage];
     const why = LOCAL.on && stage === "grade" && !LOCAL.health?.claude ? ` title="${esc(NO_KEY)}"` : "";
@@ -438,8 +437,8 @@
           ${noteList}
           <p class="send-warn">${ICON.warn}<span>אחרי הלחיצה הקבצים נכנסים למודל מיד, בלי מסך אישור נוסף.</span></p>
           <div class="send-actions">
-            <button class="btn primary" data-act="send-confirm">${ICON.upload}העלה למודל</button>
-            <button class="btn secondary" data-act="send-cancel">ביטול</button>
+            <button class="btn primary" data-act="send-confirm" ${LOCAL.starting ? "disabled" : ""}>${LOCAL.starting ? ICON.spin : ICON.upload}העלה למודל</button>
+            <button class="btn secondary" data-act="send-cancel" ${LOCAL.starting ? "disabled" : ""}>ביטול</button>
           </div>
         </div>
       </section>`;
@@ -450,7 +449,7 @@
         <div class="panel-head"><h3>ההעלאה נעצרה</h3><span class="end tag warn">${S.done || 0} מתוך ${S.total} הועלו</span></div>
         <div class="panel-body">
           <p class="send-line">${ICON.warn}<span>${esc(message)}</span></p>
-          ${RESUMABLE.includes(S.stopped) ? `<div class="send-actions"><button class="btn primary" data-act="send-resume">${ICON.redo}המשך</button></div>` : ""}
+          ${RESUMABLE.includes(S.stopped) ? `<div class="send-actions"><button class="btn primary" data-act="send-resume" ${LOCAL.starting ? "disabled" : ""}>${ICON.redo}המשך</button></div>` : ""}
         </div>
       </section>`;
     }
@@ -484,6 +483,7 @@
     const A = cur();
     if (!A || !batchId || LOCAL.starting || LOCAL.sending?.running) return;
     LOCAL.starting = true;
+    render();
     try {
       LOCAL.sending = await api("api/upload/start", { method: "POST", body: JSON.stringify({ course: A.courseFolder, assignment: A.folder, batchId }) });
       LOCAL.batch = null;
@@ -494,6 +494,7 @@
       toast(e.message, ICON.warn);
     } finally {
       LOCAL.starting = false;
+      render();
     }
   }
 
@@ -533,28 +534,191 @@
     }
   }
 
-  // "בדוק חיבור": ריצה קצרה של Claude שבודקת שכרום ומודל מוכנים, בלי להעלות כלום
-  async function checkMoodle() {
+  // ---------- מוכנות המחשב להעלאה ----------
+  // כל אחד בצוות מעלה מהמחשב שלו. "העלה N למודל" בודק קודם שהמחשב הזה מוכן (Claude Code מותקן, מחובר לחשבון שלך,
+  // והכרום והמודל מחוברים), מחבר אוטומטית מה שאפשר, ורק אז עובר לחלון האישור. אותה רשימה מופיעה גם בלשונית "חיבור למודל".
+  const READY_POLL_MS = 3000;
+  const MOODLE_LOGIN_URL = "https://moodle.bgu.ac.il/moodle/login/index.php";
+  const CHROME_EXT_URL = "https://claude.ai/chrome";
+  const readyUrl = (A) => `api/ready?course=${encodeURIComponent(A.courseFolder)}&assignment=${encodeURIComponent(A.folder)}`;
+  const readyAssignment = (rd) => D.assignments.find((a) => a.id === rd.assignmentId);
+  const allReady = (d) => !!d && d.installed && d.logged_in && d.chrome === true && d.moodle === true;
+  const newReady = (A, flow) => ({
+    assignmentId: A.id, flow, data: null, looping: false, fetchedAt: 0, checking: false, checkTried: false, checkError: "",
+    loginTried: false, loginError: "", installAsk: false, installTried: false, installError: "",
+  });
+
+  // הלחיצה על "העלה N למודל". אם הכול כבר מוכן (גם לפי הזיכרון של 30 הדקות), ממשיכים ישר להכנה
+  async function startSendFlow() {
     const A = cur();
-    if (!A || LOCAL.check?.running || LOCAL.sending?.running) return;
-    LOCAL.check = { running: true };
+    if (!A || state.run[A.id] || LOCAL.sending?.running || LOCAL.starting || LOCAL.rd?.flow) return;
+    LOCAL.batch = null;
+    const rd = (LOCAL.rd = newReady(A, true));
+    state.run[A.id] = { stage: "ret", steps: RET_LOCAL_STEPS.map(() => "pending"), progress: "בודק שהמחשב מוכן…" };
     render();
     try {
-      LOCAL.check = await api("api/moodle/check", { method: "POST", body: JSON.stringify({ course: A.courseFolder, assignment: A.folder }) });
+      rd.data = await api(readyUrl(A));
     } catch (e) {
-      LOCAL.check = { chrome: false, moodle: false, message: e.message };
+      delete state.run[A.id];
+      LOCAL.rd = null;
+      render();
+      toast(e.message, ICON.warn);
+      return;
     }
+    delete state.run[A.id];
+    if (allReady(rd.data)) { rd.flow = false; prepareLocalSend(); return; }
     render();
+    readyLoop(rd);
   }
 
-  function refreshAuth() {
-    const a = LOCAL.auth;
-    if (a?.loading || (a && Date.now() - a.at < 30000)) return;
-    LOCAL.auth = { ...a, loading: true, at: Date.now() };
-    api("api/moodle")
-      .then((r) => { LOCAL.auth = { ...r, at: Date.now() }; })
-      .catch((e) => { LOCAL.auth = { logged_in: false, message: e.message, at: Date.now() }; })
-      .finally(() => { if (route() === "/return" && state.tab.ret === "conn") render(); });
+  // שואל את השרת על המוכנות כל 3 שניות כל עוד משהו קורה (התקנה, התחברות, בדיקה). בזרימה, גם מחבר את מה שחסר
+  async function readyLoop(rd) {
+    if (rd.looping) return;
+    rd.looping = true;
+    try {
+      while (LOCAL.rd === rd && rd.assignmentId === state.assignmentId) {
+        rd.fetchedAt = Date.now();
+        const d = (rd.data = await api(readyUrl(readyAssignment(rd))));
+        let acted = false;
+        if (rd.flow) {
+          if (allReady(d)) { rd.flow = false; render(); prepareLocalSend(); break; }
+          if (d.installed && !d.logged_in && !d.login_running && !rd.loginTried) { acted = true; await startReadyLogin(rd, false); }
+          if (d.installed && d.logged_in && d.chrome == null && !rd.checking && !rd.checkTried) { acted = true; rd.checkTried = true; checkReady(rd); }
+        }
+        render();
+        if (!(acted || d.installing || d.login_running || rd.checking)) break;
+        await sleep(READY_POLL_MS);
+      }
+    } catch (e) {
+      rd.flow = false;
+      toast(e.message, ICON.warn);
+    } finally {
+      rd.looping = false;
+      render();
+    }
+  }
+
+  // פותח התחברות ל-Claude בדפדפן (השרת מריץ `claude auth login`). restart: "נסה שוב"
+  async function startReadyLogin(rd, restart) {
+    rd.loginTried = true;
+    rd.loginError = "";
+    try {
+      const r = await api("api/claude/login", { method: "POST", body: JSON.stringify({ restart }) });
+      if (!r.started && !r.running) rd.loginError = r.message;
+      if (r.running && rd.data) rd.data = { ...rd.data, login_running: true };  // עד התשובה הבאה של השרת
+    } catch (e) {
+      rd.loginError = e.message;
+    }
+    render();
+    readyLoop(rd);
+  }
+
+  // רק אחרי שהאדם אישר בלחיצה
+  async function startReadyInstall(rd) {
+    rd.installAsk = false;
+    rd.installTried = true;
+    rd.installError = "";
+    try {
+      const r = await api("api/claude/install", { method: "POST", body: "{}" });
+      if (!r.started && !r.running) rd.installError = r.message;
+      if (r.running && rd.data) rd.data = { ...rd.data, installing: true };
+    } catch (e) {
+      rd.installError = e.message;
+    }
+    render();
+    readyLoop(rd);
+  }
+
+  // בדיקת כרום ומודל: ריצה קצרה של Claude (כחצי דקה), בלי להעלות כלום
+  async function checkReady(rd) {
+    if (rd.checking) return;
+    rd.checking = true;
+    rd.checkError = "";
+    render();
+    readyLoop(rd);
+    try {
+      const A = readyAssignment(rd);
+      rd.data = await api("api/ready/check", { method: "POST", body: JSON.stringify({ course: A.courseFolder, assignment: A.folder }) });
+    } catch (e) {
+      rd.checkError = e.message;
+    } finally {
+      rd.checking = false;
+      render();
+    }
+    readyLoop(rd);
+  }
+
+  // בלשונית "חיבור למודל": מצב המוכנות של המטלה הנוכחית, בלי לחבר שום דבר לבד
+  function ensureReady() {
+    const A = cur();
+    let rd = LOCAL.rd;
+    if (!rd || rd.assignmentId !== A.id) rd = LOCAL.rd = newReady(A, false);
+    if (!rd.looping && Date.now() - rd.fetchedAt > 20000) readyLoop(rd);
+    return rd;
+  }
+
+  // הרשימה עצמה: ✓ מוכן, ✗ חסר (עם כפתור), ⏳ בעבודה. משמשת גם את חלון ההכנה וגם את הלשונית
+  function readyChecklistHTML(rd) {
+    const d = rd.data;
+    if (!d) return `<p class="send-line">${ICON.spin}<span>בודק את המחשב…</span></p>`;
+    const uploading = !!LOCAL.sending?.running;
+    const row = (kind, title, body = "", actions = "") => `<li class="ready-row ${kind}">
+      <span class="ready-mark">${kind === "ok" ? ICON.check : kind === "bad" ? ICON.warn : kind === "busy" ? ICON.spin : "<i></i>"}</span>
+      <div class="ready-text"><b>${title}</b>${body ? `<div class="ready-body">${body}</div>` : ""}</div>
+      ${actions ? `<div class="ready-actions">${actions}</div>` : ""}</li>`;
+    const btn = (act, label, primary = false) => `<button class="btn ${primary ? "primary" : "secondary"} small" data-act="${act}" ${uploading ? "disabled" : ""}>${label}</button>`;
+    const link = (href, label) => `<a class="btn secondary small" href="${href}" target="_blank" rel="noopener">${label}</a>`;
+
+    let install;
+    if (d.installed) install = row("ok", "Claude Code מותקן");
+    else if (d.installing) install = row("busy", "Claude Code מותקן", "מתקין ברקע. זה לוקח בערך דקה.");
+    else if (rd.installAsk) {
+      install = row("bad", "Claude Code מותקן", "להתקין את Claude Code מהאתר הרשמי של Anthropic?",
+        `${btn("ready-install-yes", "כן, התקן", true)}${btn("ready-install-no", "לא")}`);
+    } else {
+      install = row("bad", "Claude Code מותקן",
+        esc(rd.installError || (rd.installTried ? "ההתקנה הסתיימה, אבל Claude Code עדיין לא נמצא. אפשר לנסות שוב." : "Claude Code לא נמצא במחשב הזה.")),
+        btn("ready-install-ask", "התקן את Claude Code", true));
+    }
+
+    let login;
+    if (!d.installed) login = row("wait", "מחובר ל-Claude", "אחרי ההתקנה.");
+    else if (d.logged_in) login = row("ok", "מחובר ל-Claude");
+    else if (d.login_running) {
+      login = row("busy", "מחובר ל-Claude",
+        `נפתח דף התחברות בדפדפן. התחבר עם החשבון שלך ב-Claude (של האוניברסיטה) ולחץ Authorize. המערכת תזהה לבד כשזה הסתיים.
+         <div class="ready-tip">אם הדף אומר שצריך מנוי Max או Pro, הדפדפן מחובר לחשבון Claude אחר: היכנס ל-claude.ai, התנתק, ולחץ 'נסה שוב'.</div>`,
+        btn("ready-login-retry", "נסה שוב"));
+    } else {
+      login = row("bad", "מחובר ל-Claude",
+        esc(rd.loginError || (rd.loginTried ? "ההתחברות לא הסתיימה. אפשר לנסות שוב." : "עוד לא מחוברים לחשבון Claude.")),
+        btn("ready-login-retry", rd.loginTried ? "נסה שוב" : "התחבר ל-Claude", true));
+    }
+
+    let chrome;
+    if (!d.installed || !d.logged_in) chrome = row("wait", "הכרום והמודל מחוברים", "אחרי ההתחברות ל-Claude.");
+    else if (rd.checking) chrome = row("busy", "הכרום והמודל מחוברים", "בודק את הכרום ואת המודל (כחצי דקה)…");
+    else if (d.chrome === true && d.moodle === true) chrome = row("ok", "הכרום והמודל מחוברים", d.checked_at ? `נבדק ${when(d.checked_at)}` : "");
+    else if (rd.checkError) chrome = row("bad", "הכרום והמודל מחוברים", esc(rd.checkError), btn("ready-check", "בדוק שוב", true));
+    else if (d.chrome === false) {
+      chrome = row("bad", "הכרום והמודל מחוברים", "צריך את התוסף Claude in Chrome בכרום. אחרי ההתקנה והחיבור שלו לוחצים 'בדוק שוב'.",
+        `${link(CHROME_EXT_URL, "פתח את claude.ai/chrome")}${btn("ready-check", "בדוק שוב", true)}`);
+    } else if (d.moodle === false) {
+      chrome = row("bad", "הכרום והמודל מחוברים", "צריך להתחבר למודל בכרום. אחרי ההתחברות לוחצים 'בדוק שוב'.",
+        `${link(MOODLE_LOGIN_URL, "פתח את מודל")}${btn("ready-check", "בדוק שוב", true)}`);
+    } else chrome = row("wait", "הכרום והמודל מחוברים", "עוד לא נבדק. הבדיקה לא מעלה כלום למודל.", btn("ready-check", "בדוק חיבור"));
+
+    return `<ul class="ready-list">${install}${login}${chrome}</ul>`;
+  }
+
+  // חלון ההכנה: מופיע אחרי הלחיצה על "העלה N למודל", ונעלם כשהכול ✓ (ואז עוברים להכנת האצווה)
+  function readyPanelHTML() {
+    const rd = LOCAL.rd;
+    if (!LOCAL.on || !rd?.flow || rd.assignmentId !== cur()?.id || !rd.data) return "";
+    return `<section class="panel report send-panel ready-panel" aria-live="polite">
+      <div class="panel-head"><h3>לפני ההעלאה: בודקים שהמחשב הזה מוכן</h3><button class="btn ghost small end" data-act="ready-close">ביטול</button></div>
+      <div class="panel-body">${readyChecklistHTML(rd)}</div>
+    </section>`;
   }
 
   function pullList() {
@@ -629,9 +793,9 @@
     if (LOCAL.on) {
       const list = [...I.toReturn, ...I.returned].filter((s) => matches(s, state.query.ret));
       if (!I.graded.length) {
-        return `${sendPanelHTML()}<section class="panel"><div class="empty"><strong>עוד אין עבודות בדוקות</strong>אחרי שלב הבדיקה, העבודות המסומנות יופיעו כאן מוכנות להעלאה למודל.<div class="empty-act">${stageButton("ret")}</div></div></section>`;
+        return `${readyPanelHTML()}${sendPanelHTML()}<section class="panel"><div class="empty"><strong>עוד אין עבודות בדוקות</strong>אחרי שלב הבדיקה, העבודות המסומנות יופיעו כאן מוכנות להעלאה למודל.<div class="empty-act">${stageButton("ret")}</div></div></section>`;
       }
-      return `${sendPanelHTML()}
+      return `${readyPanelHTML()}${sendPanelHTML()}
         <section class="panel">
           <div class="panel-head">
             <div class="stats">
@@ -916,36 +1080,14 @@
   }
 
   function retConnLocal() {
-    refreshAuth();
-    const au = LOCAL.auth, ck = LOCAL.check;
-    const known = au && au.logged_in !== undefined;
-    const authTag = !known ? `<span class="tag">בודק…</span>` : au.logged_in ? `<span class="tag ok">מחובר</span>` : `<span class="tag warn">לא מחובר</span>`;
-    const row = (ok, text) => ok === true ? `<li><span class="check ok">${ICON.check}${text}</span></li>`
-      : ok === false ? `<li><span class="check bad">${ICON.warn}${text}</span></li>`
-      : `<li><span class="check muted">${text}</span></li>`;
-    const tested = !!ck && !ck.running;
-    return `<div class="split">
-      <section class="panel">
-        <div class="panel-head"><h2>חיבור למודל</h2></div>
-        <div class="panel-body">
-          <p class="lead">ההעלאה למודל נעשית דרך Claude Code ו-Claude in Chrome, בכרום שלך. אף סיסמה לא נכנסת למערכת: מתחברים למודל בעצמך.</p>
-          <div class="secret">${ICON.lock}<div><b>Claude Code</b><small>${known ? esc(au.message) : "בודק אם Claude Code מחובר במחשב הזה…"}</small></div>${authTag}</div>
-          ${known && !au.logged_in ? `<p class="hint">להתחברות, מריצים בטרמינל: <code dir="ltr">claude auth login</code></p>` : ""}
-        </div>
-      </section>
-      <section class="panel">
-        <div class="panel-head"><h3>מה צריך להיות מוכן בכרום</h3></div>
-        <div class="panel-body">
-          <ul class="conn-list">
-            ${row(tested ? !!ck.chrome : null, "התוסף Claude in Chrome מותקן ומחובר")}
-            ${row(tested && ck.moodle ? true : null, "התוסף מורשה לעבוד באתר moodle.bgu.ac.il")}
-            ${row(tested ? !!ck.moodle : null, "מחוברים למודל בכרום")}
-          </ul>
-          ${ck?.running ? `<p class="hint">${ICON.spin} בודק מול כרום ומודל. זה יכול לקחת עד דקה.</p>` : tested ? `<p class="hint">${esc(ck.message)}</p>` : `<p class="hint">עוד לא נבדק. הבדיקה לא מעלה כלום למודל.</p>`}
-          <div class="row-end"><button class="btn secondary small" data-act="check-moodle" ${ck?.running || LOCAL.sending?.running ? "disabled" : ""}>${ck?.running ? ICON.spin : ICON.redo}בדוק חיבור</button></div>
-        </div>
-      </section>
-    </div>`;
+    const rd = ensureReady();
+    return `<section class="panel">
+      <div class="panel-head"><h2>חיבור למודל</h2>${allReady(rd.data) ? `<span class="end tag ok">מוכן להעלאה</span>` : ""}</div>
+      <div class="panel-body">
+        <p class="lead">ההעלאה למודל נעשית דרך Claude Code ו-Claude in Chrome, בכרום שלך ועם החשבון שלך. אף סיסמה לא נכנסת למערכת: מתחברים למודל בעצמך. כשלוחצים "העלה למודל", הבדיקה הזו רצה לבד ומחברת מה שחסר.</p>
+        ${readyChecklistHTML(rd)}
+      </div>
+    </section>`;
   }
 
   function retConn() {
@@ -1435,7 +1577,12 @@
       if (a === "send-cancel") { LOCAL.batch = null; render(); }
       if (a === "send-stop") stopLocalSend();
       if (a === "send-resume" && LOCAL.sending?.batch_id) startLocalSend(LOCAL.sending.batch_id);
-      if (a === "check-moodle") checkMoodle();
+      if (a === "ready-close" && LOCAL.rd) { LOCAL.rd.flow = false; render(); }
+      if (a === "ready-install-ask" && LOCAL.rd) { LOCAL.rd.installAsk = true; render(); }
+      if (a === "ready-install-no" && LOCAL.rd) { LOCAL.rd.installAsk = false; render(); }
+      if (a === "ready-install-yes" && LOCAL.rd) startReadyInstall(LOCAL.rd);
+      if (a === "ready-login-retry" && LOCAL.rd) startReadyLogin(LOCAL.rd, true);
+      if (a === "ready-check" && LOCAL.rd) checkReady(LOCAL.rd);
       return;
     }
 

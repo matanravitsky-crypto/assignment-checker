@@ -644,3 +644,21 @@ textarea:focus, .field input:focus, .field select:focus, .rreq:focus, .rpts inpu
 .conn-list { list-style: none; margin: 0 0 8px; padding: 0; display: flex; flex-direction: column; gap: 8px; font-size: 14px; }
 .check.muted { color: var(--ink-3); }
 .check.muted::before { content: "\2022"; margin-inline-end: 8px; }
+
+/* ---------- Is this computer ready to upload: the checklist ---------- */
+.ready-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.ready-row { display: flex; align-items: flex-start; gap: 12px; padding: 12px 14px; border: 1px solid var(--rule); border-radius: var(--r-md); background: var(--sheet); flex-wrap: wrap; }
+.ready-row.bad { border-color: var(--warn); background: var(--warn-soft); }
+.ready-row.busy { border-color: var(--blue); }
+.ready-mark { flex: none; width: 24px; height: 24px; display: grid; place-items: center; border-radius: 50%; border: 2px solid var(--rule-strong); color: var(--ink-3); }
+.ready-mark svg { width: 14px; height: 14px; stroke-width: 2.6; }
+.ready-mark i { width: 6px; height: 6px; border-radius: 50%; background: var(--ink-3); }
+.ready-row.ok .ready-mark { background: var(--ok); border-color: var(--ok); color: var(--sheet); }
+.ready-row.bad .ready-mark { border-color: var(--warn); color: var(--warn); }
+.ready-row.busy .ready-mark { border-color: var(--blue); color: var(--blue); }
+.ready-row.wait { color: var(--ink-3); }
+.ready-text { flex: 1; min-width: 200px; display: flex; flex-direction: column; gap: 4px; font-size: 14px; }
+.ready-body { font-size: 13.5px; color: var(--ink-2); line-height: 1.6; }
+.ready-tip { margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--rule-strong); color: var(--ink-2); }
+.ready-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.ready-actions a.btn { text-decoration: none; }

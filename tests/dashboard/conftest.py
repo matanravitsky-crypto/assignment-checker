@@ -21,6 +21,13 @@ def fresh_dashboard_state(monkeypatch):
     actions._stop.clear()
     actions._moodle_cache = None
     actions._hashes.clear()
+    actions._ready_cache.clear()
+    actions._checking = False
+    actions._sim_login_at = None
+    actions._login, actions._install = actions._Background(), actions._Background()
+    monkeypatch.delenv("MOODLE_READY", raising=False)
+    # no test starts a login or an installer, whatever is installed on this computer
+    monkeypatch.setattr(actions.subprocess, "Popen", lambda *a, **k: pytest.fail("a test started a real process"))
     monkeypatch.setattr(claude_driver, "auth_status", lambda *a, **k: {"logged_in": False, "message": "fake"})
 
 

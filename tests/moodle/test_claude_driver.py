@@ -204,7 +204,7 @@ def test_upload_zip_dry_run_is_in_the_prompt(tmp_path):
 
 
 def test_upload_zip_without_claude_installed(tmp_path, monkeypatch):
-    monkeypatch.setattr(claude_driver.shutil, "which", lambda name: None)
+    monkeypatch.setattr(claude_driver, "find_claude", lambda: None)
     fake = FakeRun(cli_output())
     r = ClaudeChromeDriver(run=fake).upload_zip(INFO, tmp_path / "z.zip", 1, False)
     assert r == UploadResult("error", message=NOT_INSTALLED) and fake.calls == []
@@ -297,7 +297,7 @@ def test_check_never_raises(run):
 
 
 def test_check_without_claude_installed(monkeypatch):
-    monkeypatch.setattr(claude_driver.shutil, "which", lambda name: None)
+    monkeypatch.setattr(claude_driver, "find_claude", lambda: None)
     assert ClaudeChromeDriver(run=FakeRun()).check(INFO) == {"chrome": False, "moodle": False, "message": NOT_INSTALLED}
 
 
@@ -319,5 +319,28 @@ def test_auth_status_never_raises(monkeypatch):
                 FakeRun("not json"), FakeRun("")):
         out = auth_status(run=run, claude="claude")
         assert out["logged_in"] is False and out["message"]
-    monkeypatch.setattr(claude_driver.shutil, "which", lambda name: None)
+    monkeypatch.setattr(claude_driver, "find_claude", lambda: None)
     assert auth_status(run=FakeRun()) == {"logged_in": False, "message": NOT_INSTALLED}
+
+
+def test_find_claude_falls_back_to_the_installers_folder(tmp_path, monkeypatch):
+    monkeypatch.setattr(claude_driver.shutil, "which", lambda name: None)
+    monkeypatch.setattr(claude_driver.Path, "home", lambda: tmp_path)
+    assert claude_driver.find_claude() is None
+    bin_dir = tmp_path / ".local" / "bin"
+    bin_dir.mkdir(parents=True)
+    (bin_dir / "claude").write_text("x")
+    assert claude_driver.find_claude() == str(bin_dir / "claude")
+    (bin_dir / "claude.exe").write_text("x")
+    assert claude_driver.find_claude() == str(bin_dir / "claude.exe")  # the Windows name comes first
+    monkeypatch.setattr(claude_driver.shutil, "which", lambda name: "C:/on/path/claude.exe")
+    assert claude_driver.find_claude() == "C:/on/path/claude.exe"  # the PATH wins
+
+
+def test_the_driver_and_auth_status_use_the_fallback(tmp_path, monkeypatch):
+    monkeypatch.setattr(claude_driver, "find_claude", lambda: "C:/home/.local/bin/claude.exe")
+    fake = FakeRun(cli_output())
+    ClaudeChromeDriver(run=fake).upload_zip(INFO, tmp_path / "z.zip", 1, False)
+    assert fake.calls[0][0][0] == "C:/home/.local/bin/claude.exe"
+    status = FakeRun(json.dumps({"loggedIn": True}))
+    assert auth_status(run=status)["logged_in"] is True and status.calls[0][0][0] == "C:/home/.local/bin/claude.exe"

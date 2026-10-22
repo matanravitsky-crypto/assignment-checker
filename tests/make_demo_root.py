@@ -26,6 +26,7 @@ from tests.sample_files import NAMES, homework_pdf
 
 COURSE = "Linear Algebra"
 ASSIGNMENT = "Assignment 0 - Sets and Complex Numbers"
+MARKER = "Demo root.txt"  # written into every demo folder: only a folder that has it is ever wiped
 MOODLE_ID = "3438636"
 TITLE = "הגשה 0 - קבוצות ומרוכבים"
 SUBMISSIONS = 4
@@ -38,10 +39,13 @@ MARKED = {  # number -> (grade, points, feedback, approved)
 def build(root: Path, pad_mb: float = 5.0) -> Path:
     """Create the demo folder at `root` (replacing an earlier demo there) and return the assignment folder."""
     if root.exists():
-        if any(child.name != COURSE for child in root.iterdir()):  # never wipe a folder that isn't an earlier demo
-            raise SystemExit(f"{root} exists and is not an earlier demo folder. Pick an empty or new folder.")
-        shutil.rmtree(root)
+        if any(root.iterdir()):
+            if not (root / MARKER).is_file():  # never wipe a folder this script did not make
+                raise SystemExit(f"{root} exists and is not an earlier demo folder (no {MARKER}). Pick an empty or new folder.")
+            shutil.rmtree(root)
     assignment = root / COURSE / ASSIGNMENT
+    root.mkdir(parents=True, exist_ok=True)
+    (root / MARKER).write_text("A fictional demo folder made by tests/make_demo_root.py. Safe to delete.\n", encoding="utf-8")
     for sub in (paths.TO_GRADE, paths.MARKED, paths.UPLOAD):
         (assignment / sub).mkdir(parents=True)
 
