@@ -143,6 +143,52 @@ def test_server_refuses_foreign_requests(root, server):
     assert call(server, "GET", f"/api/file?path={quote(COURSE + '/' + HW + '/' + paths.KEY)}")[0] == 404  # טבלת המפתח לא נשלחת לאתר
 
 
+
+SITE = "https://bodek-hacham.vercel.app"
+
+
+def _raw(port, method, path, headers):
+    import http.client
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
+    conn.request(method, path, headers={"Host": f"127.0.0.1:{port}", **headers})
+    r = conn.getresponse()
+    r.read()
+    return r.status, {k.lower(): v for k, v in r.getheaders()}
+
+
+def test_public_site_can_connect_and_others_cannot(root, server):
+    """האתר הציבורי (Vercel) מתחבר לשרת שבמחשב: preflight, קריאת תשובות ופעולות. אתר אחר לא."""
+    st, h = _raw(server, "OPTIONS", "/api/state", {"Origin": SITE, "Access-Control-Request-Method": "GET",
+                                                   "Access-Control-Request-Private-Network": "true"})
+    assert st == 204 and h["access-control-allow-origin"] == SITE and h["access-control-allow-private-network"] == "true"
+    assert "X-Assignment-Checker" in h["access-control-allow-headers"]
+    st, h = _raw(server, "GET", "/api/health", {"Origin": SITE})
+    assert st == 200 and h["access-control-allow-origin"] == SITE
+    assert call(server, "POST", "/api/open", {"course": COURSE, "assignment": "nope"},
+                {"X-Assignment-Checker": "1", "Origin": SITE})[0] == 404  # עבר את בדיקת המקור
+    for evil in ("https://evil.example", "https://bodek-hacham-git-x.vercel.app", "https://bodek-hacham.vercel.app.evil.example"):
+        assert _raw(server, "OPTIONS", "/api/state", {"Origin": evil})[0] == 403
+        assert "access-control-allow-origin" not in _raw(server, "GET", "/api/health", {"Origin": evil})[1]
+        assert call(server, "POST", "/api/pull", {"course": COURSE, "assignment": HW},
+                    {"X-Assignment-Checker": "1", "Origin": evil})[0] == 403
+
+
+def test_activity_log_comes_from_the_folder(root):
+    """היומן באתר: רק מה שבאמת קרה. משיכות (ה-ZIP-ים שנשמרו), Grades.csv, והעלאות מיומן ההעלאה."""
+    a_dir = root / COURSE / HW
+    assert [(x["kind"], x["at"]) for x in actions.state(root)["assignments"][0]["log"]] == [("pull", "2026-10-21T16:28")]
+    with (a_dir / paths.GRADES).open("w", encoding="utf-8", newline="") as fh:
+        fh.write("number,grade,feedback\n0001,90,טוב\n0002,,\n")
+    with (a_dir / paths.UPLOAD / "Upload log.csv").open("w", encoding="utf-8", newline="") as fh:
+        fh.write("number,file,sha256,zip,uploaded_at,by\n"
+                 "0001,0001.pdf,a,Graded - part 01.zip,2026-10-22T10:00:05,matan (PC)\n"
+                 "0003,0003.pdf,b,Graded - part 01.zip,2026-10-22T10:00:09,matan (PC)\n")
+    log = {x["kind"]: x for x in actions.state(root)["assignments"][0]["log"]}
+    assert log["grade"]["text"] == "Grades.csv עודכן: 1 ציונים"
+    assert log["return"]["text"] == "הועלו למודל 2 עבודות מסומנות (Graded - part 01.zip)"
+    assert log["return"]["actor"] == "matan (PC)" and log["return"]["at"] == "2026-10-22T10:00"
+    assert "נועה" not in json.dumps(log, ensure_ascii=False)
+
 # ---------- כל אחד יכול למשוך: נעילה והתנגשויות ----------
 def _ok_ingest(assignment_id, *a, **k):
     return folder_view.Assignment(paths.find_assignment(assignment_id)).key_rows()

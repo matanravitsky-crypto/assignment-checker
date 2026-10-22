@@ -1,15 +1,27 @@
 (() => {
-  const D = window.DEMO;
-  const API = window.PipelineAPI;
-  // מצב מחובר: כשהאתר רץ דרך השרת המקומי (start.bat), הנתונים מגיעים מתיקיית OneDrive של הקורס
+  // כל מה שהאתר מציג אמיתי: הנתונים מגיעים מהמערכת שרצה במחשב (start.bat, dashboard/web_server.py),
+  // שקוראת את תיקיית OneDrive של הקורס. בלי המערכת אין מספרים במסך
+  const D = { courses: [], assignments: [], rubrics: {}, runs: [] };
+  // באתר הציבורי (Vercel) פונים למערכת שבמחשב. כשהאתר נפתח מהמערכת עצמה, לאותה כתובת
+  const ON_LOCAL_HOST = ["localhost", "127.0.0.1"].includes(location.hostname);
+  const BASE = ON_LOCAL_HOST ? "" : "http://127.0.0.1:8765/";
+  const DEFAULT_GRADE_INSTR = [
+    "לבדוק כל שאלה בנפרד, לפי המחוון ולפי הפתרון הרשמי.",
+    "פתרון נכון בדרך אחרת מקבל ניקוד מלא.",
+    "טענה בלי הוכחה או נימוק לא מקבלת ניקוד.",
+    "לסמן על גבי העבודה את המקום המדויק של כל טעות, ולכתוב לידו הערה קצרה.",
+    "אם כתב היד לא קריא או שהביטחון בציון נמוך, לסמן את העבודה לבדיקה ידנית.",
+    "משוב בעברית, ענייני ומעודד. לפתוח במה שנעשה טוב.",
+  ].join("\n");
+  // המערכת במחשב: האם היא עונה, ומה היא יודעת
   const LOCAL = {
     on: false, health: null, report: null,
     batch: null,       // ההעלאה שהוכנה וממתינה ל"כן" של אדם: {...תשובת api/upload/prepare, assignmentId}
     sending: null,     // מצב ההעלאה למודל כפי שהשרת מדווח (GET api/upload)
     polling: false, starting: false, stopping: false,
     rd: null,          // מוכנות המחשב להעלאה (Claude Code, התחברות, כרום ומודל), למטלה הנוכחית
+    probing: false,    // מנסים עכשיו להתחבר למערכת במחשב
   };
-  const DEMO_RUBRICS = structuredClone(D.rubrics);
   const $ = (sel, root = document) => root.querySelector(sel);
   const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -20,50 +32,44 @@
 
   // ---------- State ----------
   const state = {
-    courseId: "la",
-    assignmentId: "la-hw3",
+    courseId: null,
+    assignmentId: null,
     tab: { pull: "list", grade: "list", ret: "list" },
     filter: "all",
     query: { pull: "", grade: "", ret: "" },
     run: {},          // assignmentId -> { stage, steps[] }
     seenDone: {},     // assignmentId:stage -> true, כדי להנפיש את ה-V רק ברגע ההשלמה
     openId: null,
-    instr: {
-      pull: store.get("instr.pull", D.instructions.pull),
-      grade: store.get("instr.grade", D.instructions.grade),
-      ret: store.get("instr.ret", D.instructions.ret),
-    },
-    retFormat: store.get("retFormat", D.returnFormat),
-    claude: store.get("claude", { model: "claude-opus-5-5", parallel: 5, auto: false, sendSolution: true, lowConfidence: true }),
-    moodle: store.get("moodle", { url: "https://moodle.bgu.ac.il", sync: "manual", late: true, types: "pdf,jpg,png" }),
-    solution: { "la-hw3": "solution-hw3.pdf", "dm-hw3": "solution-hw3.pdf" },
+    instr: { grade: store.get("instr.grade", DEFAULT_GRADE_INSTR) },  // נשלחות ל-Claude עם כל בדיקה
+    claude: store.get("claude", { model: "claude-opus-5-5", parallel: 5, sendSolution: true }),
     loading: false,
   };
 
+  // מה כל שלב עושה באמת (moodle/ingest.py, grading/grade.py, moodle/send.py)
   const STAGES = {
     pull: {
-      no: 1, route: "/pull", name: "משיכת הגשות", verb: "משוך הגשות",
-      desc: "מתחברים למודל ומושכים את כל ההגשות של המטלה: פרטי הסטודנט, זמן ההגשה וכל הקבצים. כל קובץ נבדק שהוא תקין לפני שהוא עובר לבדיקה.",
-      steps: ["התחברות למודל", "איתור ההגשות למטלה", "הורדת הקבצים", "בדיקת תקינות"],
-      tabs: [["list", "ההגשות שנמשכו"], ["instr", "מה זה אומר למשוך"], ["conn", "חיבור למודל"]],
+      no: 1, route: "/pull", name: "משיכת הגשות",
+      desc: "מורידים ממודל את קובץ ה-ZIP עם כל ההגשות של המטלה, והמערכת קולטת אותו מתיקיית ההורדות: שומרת אותו בתיקיית המטלה, נותנת לכל סטודנט מספר קבוע ומעתיקה את ההגשות הממוספרות לתיקיית OneDrive, בלי שמות.",
+      steps: ["איתור ה-ZIP בתיקיית ההורדות", "שמירת ה-ZIP בתיקיית המטלה", "חילוץ ומספור ההגשות", "עדכון טבלת המפתח"],
+      tabs: [["list", "ההגשות שנמשכו"], ["instr", "מה קורה במשיכה"], ["conn", "חיבור למודל"]],
     },
     grade: {
-      no: 2, route: "/grade", name: "בדיקה וציון", verb: "בדוק",
-      desc: "כל עבודה נשלחת ל-Claude יחד עם המחוון, הדגשים והפתרון הרשמי. Claude מסמן את הטעויות על גבי העבודה, נותן ניקוד לכל שאלה וכותב משוב.",
-      steps: ["הכנת המחוון וההנחיות", "שליחת העבודות ל-Claude", "סימון הערות על העבודות", "חישוב ציונים ומשוב"],
+      no: 2, route: "/grade", name: "בדיקה וציון",
+      desc: "כל הגשה ממוספרת נשלחת ל-Claude כתמונות של העמודים, עם השאלות, המחוון, ההנחיות והפתרון הרשמי. Claude נותן ניקוד ומשפט לכל שאלה, כותב משוב ומסמן כל טעות במקום שלה. המערכת מחשבת את הציון, מציירת את ההערות על ה-PDF ושומרת אותו ב-\"2 - Graded with comments\", ואת הציון ב-Grades.csv. עבודה ש-Claude לא בטוח בה מסומנת לבדיקה ידנית.",
+      steps: ["קריאת השאלות, המחוון וההנחיות", "שליחת ההגשות ל-Claude", "סימון ההערות על ה-PDF", "שמירת הציונים ב-Grades.csv"],
       tabs: [["list", "העבודות"], ["instr", "מחוון והנחיות לבדיקה"], ["conn", "חיבור ל-Claude"]],
     },
     ret: {
-      no: 3, route: "/return", name: "החזרה לאוניברסיטה", verb: "החזר",
-      desc: "הציון, המשוב וקובץ ה-PDF המסומן של כל סטודנט עולים חזרה למודל, בפורמט שנקבע כאן. בסוף בודקים מול מודל שהכל נשמר.",
-      steps: ["יצירת קבצי PDF מסומנים", "העלאת ציונים למודל", "העלאת משוב וקבצים", "אימות מול מודל"],
-      tabs: [["list", "מוכנות להחזרה"], ["instr", "פורמט והנחיות"], ["conn", "חיבור למודל"]],
+      no: 3, route: "/return", name: "החזרה לאוניברסיטה",
+      desc: "העבודות המסומנות עולות למודל כקובצי משוב. המערכת אורזת רק מה שחדש או השתנה מאז ההעלאה הקודמת, בודקת שהמחשב מוכן, ואחרי אישור שלך Claude בכרום מעלה כל קובץ ZIP לעמוד \"העלאת מספר קובצי משוב\" במודל. אחרי כל קובץ המערכת בודקת שמודל קלט בדיוק את מספר העבודות שבו, ורושמת אותן ביומן ההעלאה.",
+      steps: ["הכנת קובצי ZIP", "העלאה למודל דרך Claude בכרום", "אימות מול מודל"],
+      tabs: [["list", "העבודות להעלאה"], ["instr", "מה עולה למודל"], ["conn", "חיבור למודל"]],
     },
   };
   const ROUTE_STAGE = { "/pull": "pull", "/grade": "grade", "/return": "ret" };
-  // במצב מחובר, שלב 3 מעלה קובצי ZIP למודל דרך Claude in Chrome
-  const RET_LOCAL_STEPS = ["הכנת הקבצים", "העלאה למודל", "אימות מול מודל"];
-  const stepsOf = (stage) => (LOCAL.on && stage === "ret" ? RET_LOCAL_STEPS : STAGES[stage].steps);
+  const RET_LOCAL_STEPS = STAGES.ret.steps;
+  const stepsOf = (stage) => STAGES[stage].steps;
+  const moodleGradingUrl = (A) => `https://moodle.bgu.ac.il/moodle/mod/assign/view.php?id=${encodeURIComponent(A.moodleId || "")}&action=grading`;
 
   const NO_KEY = "אין מפתח של Claude, ולכן אי אפשר לבדוק. מוסיפים לקובץ .env שבתיקיית הריפו שורה ANTHROPIC_API_KEY=... ומפעילים מחדש את start.bat.";
   const STATUS = { pulled: "ממתינה לבדיקה", grading: "בבדיקה", graded: "נבדקה", returned: "הוחזרה", error: "דורשת טיפול" };
@@ -106,7 +112,6 @@
     return `${d.toLocaleDateString("he-IL", { day: "numeric", month: "short" })}, ${hhmm(d)}`;
   }
   const dueText = (A) => (A.due ? new Date(A.due).toLocaleString("he-IL", { day: "numeric", month: "long", hour: "2-digit", minute: "2-digit" }) : "לא נקבע");
-  const initials = (name) => name.split(" ").map((p) => p[0]).slice(0, 2).join("");
   const avg = (arr) => (arr.length ? Math.round(arr.reduce((a, b) => a + b, 0) / arr.length) : null);
   const plural = (n, one, many) => (n === 1 ? one : `${n} ${many}`);
 
@@ -150,59 +155,12 @@
   }
 
   // ---------- Pipeline runs ----------
-  function log(kind, text, A) {
-    D.runs.unshift({ at: new Date().toISOString(), kind, text, where: D.where(A) });
-  }
-
-  async function runStage(stage) {
-    if (LOCAL.on) {
-      if (stage === "pull") runLocalPull();
-      if (stage === "grade") runLocalGrade(info().toGrade.map((s) => s.id));
-      if (stage === "ret") startSendFlow();
-      return;
-    }
-    const A = cur();
-    if (state.run[A.id]) return;
-    const I = info(A);
-    if (stage === "grade" && !I.toGrade.length) return;
-    if (stage === "ret" && !I.toReturn.length) return;
-    const run = (state.run[A.id] = { stage, steps: STAGES[stage].steps.map(() => "pending") });
-    const onStep = (i, st) => { run.steps[i] = st; render(); };
-    const onItem = (s) => { s.fresh = true; render(); };
-    render();
-
-    if (stage === "pull") {
-      const fresh = await API.pull(A, { instructions: state.instr.pull, moodle: state.moodle }, onStep);
-      fresh.forEach((s) => (s.fresh = true));
-      A.subs.push(...fresh);
-      A.pulledAt = new Date().toISOString();
-      A.lastFresh = fresh.length;
-      log("pull", fresh.length ? `נמשכו ${fresh.length} הגשות חדשות ממודל` : "אין הגשות חדשות במודל", A);
-      delete state.run[A.id];
-      toast(fresh.length ? `המשיכה הסתיימה: ${plural(fresh.length, "הגשה חדשה אחת", "הגשות חדשות")}` : "המשיכה הסתיימה: אין הגשות חדשות");
-      render();
-      if (state.claude.auto && fresh.length) setTimeout(() => runStage("grade"), 700);
-      return;
-    }
-
-    if (stage === "grade") {
-      const subs = I.toGrade;
-      await API.grade(A, subs, { instructions: state.instr.grade, rubric: rubric(), claude: state.claude }, onStep, onItem);
-      A.gradedAt = new Date().toISOString();
-      log("grade", `Claude בדק ${subs.length} עבודות. ממוצע ${avg(subs.map((s) => s.score))}`, A);
-      delete state.run[A.id];
-      toast(`הבדיקה הסתיימה: ${plural(subs.length, "עבודה אחת נבדקה", "עבודות נבדקו")}`);
-      render();
-      return;
-    }
-
-    const subs = I.toReturn;
-    await API.returnGrades(A, subs, { instructions: state.instr.ret, format: state.retFormat }, onStep, onItem);
-    A.returnedAt = new Date().toISOString();
-    log("return", `הוחזרו ${subs.length} ציונים וקבצים מסומנים למודל`, A);
-    delete state.run[A.id];
-    toast(`ההחזרה הסתיימה: ${plural(subs.length, "עבודה אחת עלתה", "עבודות עלו")} למודל`);
-    render();
+  // כל כפתור מפעיל את הקוד האמיתי במחשב. המספרים מתעדכנים רק ממה שנכתב בתיקייה
+  function runStage(stage) {
+    if (!LOCAL.on || !cur()) return;
+    if (stage === "pull") runLocalPull();
+    if (stage === "grade") runLocalGrade(info().toGrade.map((s) => s.id));
+    if (stage === "ret") startSendFlow();
   }
 
   // ---------- Stage pieces ----------
@@ -222,7 +180,7 @@
     }
     let text = mine ? (run.progress || "רץ עכשיו…") : label, spinning = mine;
     if (LOCAL.on && stage === "ret") {
-      if (!mine) text = n ? `העלה ${n} למודל` : "אין עבודות להעלאה";
+      if (!mine) text = n ? `העלה ${n} למודל` : I.done.ret ? "הכל הועלה" : "אין עבודות להעלאה";
       if (LOCAL.sending?.running || LOCAL.starting) disabled = true;  // העלאה אחת בכל פעם, גם אם היא של מטלה אחרת
       if (LOCAL.sending?.running && sendingHere()) { text = sendProgressText(); spinning = true; }
       if (LOCAL.rd?.flow && LOCAL.rd.assignmentId === A.id && !mine) { text = "בודק שהמחשב מוכן…"; spinning = true; disabled = true; }
@@ -306,11 +264,9 @@
     const gradedNow = I.graded.length;
     const marks = I.graded.reduce((a, s) => a + (s.q || []).filter((v, i) => v < rubric().questions[i]?.pts).length, 0);
     const results = {
-      pull: ["החיבור הצליח", `${I.subs.length} הגשות${A.lastFresh != null ? `, ${A.lastFresh} חדשות` : ""}`, `${I.files} קבצים`, I.issues ? `${I.ok.length} תקינות, ${I.issues} דורשות טיפול` : "כל הקבצים תקינים"],
-      grade: [`${rubric().questions.length} שאלות, 100 נקודות`, `${gradedNow} עבודות`, `${marks} הערות`, `ממוצע ${avg(I.graded.map((s) => s.score)) ?? "—"}`],
-      ret: LOCAL.on
-        ? [`${I.returned.length} עבודות מסומנות`, `${I.returned.length} עבודות עלו`, "מודל ספר את אותו מספר קבצים"]
-        : [`${I.returned.length} קבצים`, `${I.returned.length} ציונים`, `${I.returned.length} משובים`, "הכל נשמר במודל"],
+      pull: [`ZIP מ-${when(A.pulledAt)}`, "נשמר בתיקיית המטלה", `${I.subs.length} הגשות, ${I.files} קבצים`, "לכל הגשה מספר קבוע"],
+      grade: [`${rubric().questions.length} שאלות, ${A.maxGrade || 100} נקודות`, `${gradedNow} עבודות`, `${marks} הורדות ניקוד`, `ממוצע ${avg(I.graded.map((s) => s.score)) ?? "—"}`],
+      ret: [`${I.returned.length} עבודות מסומנות`, `${I.returned.length} עבודות עלו`, "מודל קלט את אותו מספר קבצים"],
     }[stage];
     return `
       <ol class="run-steps" aria-label="שלבי הריצה">
@@ -351,25 +307,22 @@
   // ---------- Tables ----------
   function statusPill(s) { return `<span class="status ${s.status}">${STATUS[s.status]}</span>`; }
   function who(s) {
-    // בגרסה המחוברת אין שמות: רק מספר ההגשה, כמו בתיקייה
-    if (LOCAL.on) return `<div class="who"><span class="ini num">${esc(String(s.id).slice(-2))}</span><div><b>${esc(s.name)}</b></div></div>`;
-    return `<div class="who"><span class="ini">${initials(s.name)}</span><div><b>${esc(s.name)}</b><small class="num">${s.studentId}</small></div></div>`;
+    // אין שמות: רק מספר ההגשה, כמו בתיקייה
+    return `<div class="who"><span class="ini num">${esc(String(s.id).slice(-2))}</span><div><b>${esc(s.name)}</b></div></div>`;
   }
   function scoreHTML(s) {
     if (s.score == null) return `<span class="score none">—</span>`;
     return `<span class="score ${s.score < 60 ? "low" : ""}">${s.score}</span>`;
   }
   function searchBox(stage) {
-    return `<label class="search">${ICON.search}<span class="sr">חיפוש סטודנט</span><input type="search" id="q-${stage}" data-query="${stage}" value="${esc(state.query[stage])}" placeholder="${LOCAL.on ? "חיפוש לפי מספר הגשה" : "חיפוש לפי שם או ת.ז."}"></label>`;
+    return `<label class="search">${ICON.search}<span class="sr">חיפוש הגשה</span><input type="search" id="q-${stage}" data-query="${stage}" value="${esc(state.query[stage])}" placeholder="חיפוש לפי מספר הגשה"></label>`;
   }
   const matches = (s, q) => !q.trim() || s.name.includes(q.trim()) || s.studentId.includes(q.trim());
 
   function emptyPulled() {
-    if (LOCAL.on) {
-      return `<div class="empty"><strong>עוד אין הגשות במטלה הזו</strong>במודל: "הצגת כל ההגשות" ← "הורדת כל ההגשות". ה-ZIP נשמר בתיקיית ההורדות (Downloads), ולוחצים "משוך הגשות".
-        <div class="empty-act">${stageButton("pull")}<button class="btn secondary" data-act="open-inbox">${ICON.folder}פתח את תיקיית ההורדות</button></div></div>`;
-    }
-    return `<div class="empty"><strong>עוד לא נמשכו הגשות למטלה הזו</strong>לחיצה על "משוך הגשות" תביא ממודל את כל מה שהוגש עד עכשיו.<div class="empty-act">${stageButton("pull")}</div></div>`;
+    const A = cur();
+    return `<div class="empty"><strong>עוד אין הגשות במטלה הזו</strong>במודל, בעמוד ההגשות של המטלה: פעולות ← "הורדת כל ההגשות". ה-ZIP נשמר בתיקיית ההורדות (Downloads), ואז לוחצים "משוך הגשות".
+      <div class="empty-act">${stageButton("pull")}<a class="btn secondary" href="${moodleGradingUrl(A)}" target="_blank" rel="noopener">פתח את ההגשות במודל</a><button class="btn secondary" data-act="open-inbox">${ICON.folder}פתח את תיקיית ההורדות</button></div></div>`;
   }
 
   // מה קרה במשיכה האחרונה (בגרסה המחוברת)
@@ -739,19 +692,17 @@
           <div class="stats">
             <span><b class="num">${I.subs.length}</b> הגשות</span>
             <span><b class="num">${I.files}</b> קבצים</span>
-            <span><b class="num">${I.late}</b> באיחור</span>
-            <span class="${I.issues ? "bad" : ""}"><b class="num">${I.issues}</b> דורשות טיפול</span>
           </div>
           <div class="end">${searchBox("pull")}</div>
         </div>
         <div class="table-wrap"><table>
-          <thead><tr><th>סטודנט</th><th>הוגשה</th><th class="col-hide">קבצים</th><th>תקינות</th></tr></thead>
+          <thead><tr><th>הגשה</th><th>זמן הקובץ</th><th class="col-hide">קבצים</th><th>מצב</th></tr></thead>
           <tbody>${rows.map((s) => `
             <tr class="${s.fresh ? "flash" : ""}">
               <td>${who(s)}</td>
-              <td class="muted num">${when(s.submittedAt)}${s.late ? ` <span class="flag">באיחור</span>` : ""}</td>
-              <td class="col-hide"><div class="files">${s.files.map((f) => `<span class="file">${f.name.endsWith(".jpg") ? ICON.img : ICON.file}<span dir="ltr">${esc(f.name)}</span>${f.name.endsWith(".pdf") && f.pages ? `<em class="num">${f.pages} עמ׳</em>` : ""}</span>`).join("")}</div>${s.scanned ? `<small class="muted">סריקות, יאוחדו ל-PDF</small>` : ""}</td>
-              <td>${s.issue ? `<span class="check bad">${ICON.warn}${esc(s.issue)}</span>` : `<span class="check ok">${ICON.check}תקין</span>`}</td>
+              <td class="muted num">${when(s.submittedAt)}</td>
+              <td class="col-hide"><div class="files">${s.files.filter((f) => !f.marked).map((f) => `<span class="file">${/\.(jpe?g|png)$/i.test(f.name) ? ICON.img : ICON.file}<span dir="ltr">${esc(f.name)}</span></span>`).join("")}</div></td>
+              <td>${statusPill(s)}</td>
             </tr>`).join("") || `<tr><td colspan="4"><div class="empty slim">אין תוצאות לחיפוש הזה.</div></td></tr>`}
           </tbody>
         </table></div>
@@ -774,7 +725,7 @@
           <div class="end">${searchBox("grade")}</div>
         </div>
         <div class="table-wrap"><table>
-          <thead><tr><th>סטודנט</th><th>מצב</th><th>ציון</th>${qs.map((q) => `<th class="col-hide qcol">ש${q.n}</th>`).join("")}<th class="col-hide-sm">הערות</th></tr></thead>
+          <thead><tr><th>הגשה</th><th>מצב</th><th>ציון</th>${qs.map((q) => `<th class="col-hide qcol">ש${q.n}</th>`).join("")}<th class="col-hide-sm">הערות</th></tr></thead>
           <tbody>${rows.map((s) => {
             const lost = s.q ? s.q.filter((v, i) => v < qs[i].pts).length : 0;
             return `<tr data-open="${s.id}" tabindex="0" class="clickable ${s.fresh ? "flash" : ""}" aria-label="פתח את העבודה של ${esc(s.name)}">
@@ -790,70 +741,34 @@
       </section>`;
   }
 
-  function fileNameFor(s) {
-    const A = cur();
-    return state.retFormat.pattern.replace("{studentId}", s.studentId).replace("{n}", A.n).replace("{name}", s.name.replace(/\s+/g, "_"));
-  }
-
   function returnList() {
-    const A = cur(), I = info(A);
+    const I = info();
     if (!I.subs.length) return `<section class="panel">${emptyPulled()}</section>`;
-    if (LOCAL.on) {
-      const list = [...I.toReturn, ...I.returned].filter((s) => matches(s, state.query.ret));
-      if (!I.graded.length) {
-        return `${readyPanelHTML()}${sendPanelHTML()}<section class="panel"><div class="empty"><strong>עוד אין עבודות בדוקות</strong>אחרי שלב הבדיקה, העבודות המסומנות יופיעו כאן מוכנות להעלאה למודל.<div class="empty-act">${stageButton("ret")}</div></div></section>`;
-      }
-      return `${readyPanelHTML()}${sendPanelHTML()}
-        <section class="panel">
-          <div class="panel-head">
-            <div class="stats">
-              <span><b class="num">${I.toReturn.length}</b> מוכנות להעלאה</span>
-              <span><b class="num">${I.returned.length}</b> הוחזרו</span>
-              <span><b class="num">${I.toGrade.length}</b> עוד לא נבדקו</span>
-            </div>
-            <div class="end">${searchBox("ret")}</div>
-          </div>
-          <div class="table-wrap"><table>
-            <thead><tr><th>הגשה</th><th>ציון</th><th>מצב</th></tr></thead>
-            <tbody>${list.map((s) => `
-              <tr data-open="${s.id}" tabindex="0" class="clickable ${s.fresh ? "flash" : ""}">
-                <td>${who(s)}</td>
-                <td>${scoreHTML(s)}</td>
-                <td>${s.status === "returned" ? `<span class="check ok">${ICON.check}הוחזרה</span>` : `<span class="status graded">מוכנה להעלאה</span>`}</td>
-              </tr>`).join("") || `<tr><td colspan="3"><div class="empty slim">אין תוצאות לחיפוש הזה.</div></td></tr>`}
-            </tbody>
-          </table></div>
-          <div class="panel-body"><button class="btn secondary small" data-act="open-upload">${ICON.folder}פתח את התיקייה "3 - Ready to upload to Moodle"</button></div>
-        </section>`;
-    }
     const list = [...I.toReturn, ...I.returned].filter((s) => matches(s, state.query.ret));
-    if (!I.graded.length) return `<section class="panel"><div class="empty"><strong>עוד אין עבודות בדוקות</strong>אחרי שלב הבדיקה, העבודות יופיעו כאן מוכנות להחזרה.<div class="empty-act"><a class="btn secondary" href="#/grade">${ICON.grade}לשלב הבדיקה</a></div></div></section>`;
-    const inc = state.retFormat.include;
-    return `
+    if (!I.graded.length) {
+      return `${readyPanelHTML()}${sendPanelHTML()}<section class="panel"><div class="empty"><strong>עוד אין עבודות בדוקות</strong>אחרי שלב הבדיקה, העבודות המסומנות יופיעו כאן מוכנות להעלאה למודל.<div class="empty-act">${stageButton("ret")}</div></div></section>`;
+    }
+    return `${readyPanelHTML()}${sendPanelHTML()}
       <section class="panel">
         <div class="panel-head">
           <div class="stats">
-            <span><b class="num">${I.toReturn.length}</b> מוכנות להחזרה</span>
+            <span><b class="num">${I.toReturn.length}</b> מוכנות להעלאה</span>
             <span><b class="num">${I.returned.length}</b> הוחזרו</span>
             <span><b class="num">${I.toGrade.length}</b> עוד לא נבדקו</span>
           </div>
           <div class="end">${searchBox("ret")}</div>
         </div>
         <div class="table-wrap"><table>
-          <thead><tr><th>סטודנט</th><th>ציון</th><th class="col-hide">מה עולה למודל</th><th>מצב</th></tr></thead>
+          <thead><tr><th>הגשה</th><th>ציון</th><th>מצב</th></tr></thead>
           <tbody>${list.map((s) => `
             <tr data-open="${s.id}" tabindex="0" class="clickable ${s.fresh ? "flash" : ""}">
               <td>${who(s)}</td>
               <td>${scoreHTML(s)}</td>
-              <td class="col-hide"><div class="files">
-                ${inc.pdf ? `<span class="file">${ICON.file}<span dir="ltr">${esc(fileNameFor(s))}</span></span>` : ""}
-                ${inc.feedback ? `<span class="file soft">משוב כתוב</span>` : ""}
-                ${inc.breakdown ? `<span class="file soft">ניקוד לפי שאלות</span>` : ""}
-              </div></td>
-              <td>${s.status === "returned" ? `<span class="check ok">${ICON.check}הוחזרה</span>` : `<span class="status graded">מוכנה להחזרה</span>`}</td>
-            </tr>`).join("") || `<tr><td colspan="4"><div class="empty slim">אין תוצאות לחיפוש הזה.</div></td></tr>`}
+              <td>${s.status === "returned" ? `<span class="check ok">${ICON.check}הוחזרה</span>` : `<span class="status graded">מוכנה להעלאה</span>`}</td>
+            </tr>`).join("") || `<tr><td colspan="3"><div class="empty slim">אין תוצאות לחיפוש הזה.</div></td></tr>`}
           </tbody>
         </table></div>
+        <div class="panel-body"><button class="btn secondary small" data-act="open-upload">${ICON.folder}פתח את התיקייה "3 - Ready to upload to Moodle"</button></div>
       </section>`;
   }
 
@@ -881,78 +796,70 @@
     return `<div class="secret">${ICON.lock}<div><b dir="ltr">${name}</b><small>${where}</small></div><span class="tag ${isSet ? "ok" : "warn"}">${isSet ? "מוגדר" : "לא הוגדר"}</span></div>`;
   }
 
+  // שלב 1: מה קורה בלחיצה על "משוך הגשות" (moodle/ingest.py, moodle/anonymize.py)
   function pullInstr() {
-    return `<div class="split">
-      ${instrBox("pull", "מה זה אומר למשוך הגשות", "כאן כותבים במילים פשוטות מה בדיוק המערכת צריכה לעשות כשלוחצים \"משוך הגשות\". ההנחיות האלה הן המפרט שלפיו ייכתב החיבור למודל.")}
+    const A = cur();
+    return `<div class="split wide-first">
       <section class="panel">
-        <div class="panel-head"><h3>מה נשמר לכל הגשה</h3></div>
+        <div class="panel-head"><h2>מה קורה כשמושכים הגשות</h2></div>
+        <div class="panel-body">
+          <ol class="todo">
+            <li><b>מורידים ממודל.</b> בעמוד ההגשות של המטלה: פעולות ← "הורדת כל ההגשות", כש"ארגון ההגשות בתיקיות לכל סטודנט" מסומן. ה-ZIP נשמר בתיקיית ההורדות. את זה עושים בכרום, בעצמכם או בבקשה מ-Claude בכרום.</li>
+            <li><b>המערכת מוצאת את ה-ZIP.</b> בתיקיית ההורדות, ה-ZIP החדש ביותר ששמו נגמר ב-<code dir="ltr">-${esc(A.moodleId || "<מזהה המטלה>")}.zip</code>.</li>
+            <li><b>שומרת אותו בתיקיית המטלה</b> בשם <code dir="ltr">Moodle download &lt;date&gt;.zip</code>. כל הורדה נשמרת, כך שהורדה מאוחרת לא מוחקת את הקודמת.</li>
+            <li><b>מחלצת אותו עם 7-Zip במחשב שלך בלבד.</b> התיקיות עם שמות הסטודנטים לא עולות ל-OneDrive.</li>
+            <li><b>נותנת לכל סטודנט מספר קבוע</b> (0001, 0002…) ומעתיקה את הקבצים ל-"1 - Submissions to grade". מי שכבר נמשך שומר על המספר שלו, ומי שהגיש מאז מקבל את המספר הפנוי הבא.</li>
+            <li><b>מעדכנת את טבלת המפתח</b> (מספר ← מזהה המשתתף במודל). זה המקום היחיד שמקשר מספר לסטודנט, והוא נשאר בתיקיית המטלה.</li>
+          </ol>
+          <div class="row-start">
+            <a class="btn secondary small" href="${moodleGradingUrl(A)}" target="_blank" rel="noopener">פתח את ההגשות במודל</a>
+            <button class="btn secondary small" data-act="open-inbox">${ICON.folder}פתח את תיקיית ההורדות</button>
+          </div>
+        </div>
+      </section>
+      <section class="panel">
+        <div class="panel-head"><h3>מה נשמר ב-OneDrive</h3></div>
         <div class="panel-body">
           <dl class="fields">
-            <div><dt>סטודנט</dt><dd>שם מלא, תעודת זהות, מייל</dd></div>
-            <div><dt>הגשה</dt><dd>זמן הגשה, באיחור או לא, מספר ניסיון</dd></div>
-            <div><dt>קבצים</dt><dd>כל הקבצים, מאוחדים ל-PDF אחד לפי סדר העמודים</dd></div>
-            <div><dt>תקינות</dt><dd>הקובץ נפתח, לא ריק, מזוהה לסטודנט</dd></div>
+            <div><dt>הגשות</dt><dd>הקבצים של כל סטודנט תחת המספר שלו: 0001.pdf, ואם יש עוד קובץ 0001-2.pdf. בלי שמות</dd></div>
+            <div><dt>ה-ZIP</dt><dd>בדיוק כמו שמודל נתן אותו, לכל הורדה</dd></div>
+            <div><dt>טבלת המפתח</dt><dd>מספר ← מזהה משתתף במודל. Claude לא רואה אותה</dd></div>
+            <div><dt>נעילה</dt><dd>בזמן משיכה נוצר "Pull in progress.txt", ומשיכה נוספת של אותה מטלה מחכה</dd></div>
           </dl>
         </div>
       </section>
     </div>`;
   }
 
+  // מודל: בלי API ובלי סיסמאות. Claude in Chrome עובד בכרום של האדם, עם החשבון שלו
   function pullConn() {
-    const m = state.moodle;
-    return `<div class="split">
-      <section class="panel">
-        <div class="panel-head"><h2>חיבור למודל</h2><span class="end tag warn">לא מחובר</span></div>
-        <div class="panel-body form-grid">
-          <div class="field full"><label for="m-url">כתובת המודל</label><input id="m-url" dir="ltr" value="${esc(m.url)}" data-set="moodle.url"></div>
-          <div class="field"><label for="m-course">מזהה הקורס במודל</label><input id="m-course" dir="ltr" placeholder="למשל 48213" data-set="moodle.course" value="${esc(m.course || "")}"></div>
-          <div class="field"><label for="m-assign">מזהה המטלה במודל</label><input id="m-assign" dir="ltr" placeholder="למשל 102934" data-set="moodle.assign" value="${esc(m.assign || "")}"></div>
-          <div class="field"><label for="m-sync">מתי למשוך</label>
-            <select id="m-sync" data-set="moodle.sync">
-              ${[["manual", "רק כשלוחצים על הכפתור"], ["hourly", "כל שעה"], ["due", "פעם אחת, אחרי מועד ההגשה"]].map(([v, l]) => `<option value="${v}" ${m.sync === v ? "selected" : ""}>${l}</option>`).join("")}
-            </select></div>
-          <div class="field"><label for="m-types">סוגי קבצים</label><input id="m-types" dir="ltr" value="${esc(m.types)}" data-set="moodle.types"></div>
-          <div class="field full">${sw("m-late", "למשוך גם הגשות באיחור", "הן יסומנו ולא ידולגו", m.late, "moodle.late")}</div>
+    const A = cur(), rd = ensureReady();
+    return `<section class="panel">
+      <div class="panel-head"><h2>חיבור למודל</h2>${allReady(rd.data) ? `<span class="end tag ok">מחובר</span>` : ""}</div>
+      <div class="panel-body">
+        <p class="lead">למודל של האוניברסיטה אין API, ולכן המערכת לא מתחברת אליו עם מפתח. מודל נפתח בכרום שלך, עם החשבון שלך, ו-Claude in Chrome עובד בו. אף סיסמה לא נכנסת למערכת.</p>
+        <p class="lead">במשיכה מורידים את ה-ZIP בכרום (בעצמכם, או בבקשה מ-Claude בכרום), והכפתור "משוך הגשות" קולט אותו מתיקיית ההורדות. בהחזרה Claude בכרום מעלה את העבודות המסומנות בעצמו.</p>
+        <div class="row-start" style="margin:0 0 16px">
+          <a class="btn secondary small" href="${moodleGradingUrl(A)}" target="_blank" rel="noopener">פתח את ההגשות במודל</a>
         </div>
-      </section>
-      <div class="stack">
-        <section class="panel">
-          <div class="panel-head"><h3>מפתחות</h3></div>
-          <div class="panel-body">
-            ${secretField("MOODLE_TOKEN", "טוקן של שירותי הרשת של מודל. נשמר בקובץ .env במחשב שמריץ את המערכת, לא בדפדפן ולא ב-GitHub.", LOCAL.health?.moodle)}
-            <p class="hint">את הטוקן מקבלים מהאוניברסיטה עבור משתמש הבודק של הקורס.</p>
-          </div>
-        </section>
-        <section class="panel">
-          <div class="panel-head"><h3>פונקציות מודל בשימוש</h3></div>
-          <div class="panel-body">
-            <ul class="api-list" dir="ltr">
-              <li><code>mod_assign_get_assignments</code></li>
-              <li><code>mod_assign_get_submissions</code></li>
-              <li><code>core_user_get_users_by_field</code></li>
-            </ul>
-          </div>
-        </section>
+        ${readyChecklistHTML(rd)}
       </div>
-    </div>`;
+    </section>`;
   }
 
   function promptPreview() {
     const A = cur(), R = rubric();
     return [
-      `אתה בודק את ${A.title} בקורס ${course().name}.`,
+      `בדיקה של ${A.title}, ${course().name}.`,
       "",
       "הנחיות:",
       state.instr.grade,
       "",
-      "מחוון:",
-      ...R.questions.map((q) => `שאלה ${q.n} (${q.pts} נק'): ${q.req}`),
+      `השאלות והניקוד (מתוך ${A.maxGrade || 100}):`,
+      ...R.questions.map((q) => `${q.req || `שאלה ${q.n}`}: ${q.pts} נק'${q.criteria ? `. ${q.criteria}` : ""}`),
       "",
-      "דגשים:",
-      ...R.emphases.map((e) => `- ${e}`),
-      "",
-      state.claude.sendSolution ? `מצורפים: הפתרון הרשמי (${state.solution[A.id] || "לא הועלה"}) ועבודת הסטודנט.` : "מצורפת: עבודת הסטודנט.",
-      "החזר JSON לפי הסכמה.",
+      state.claude.sendSolution && A.solution ? "מצורפים: הפתרון הרשמי ועמודי ההגשה כתמונות." : "מצורפים: עמודי ההגשה כתמונות.",
+      "Claude מחזיר JSON לפי הסכמה.",
     ].join("\n");
   }
 
@@ -969,41 +876,37 @@
   "review_reason": ""
 }`;
 
+  // שלב 2: ההנחיות נשלחות ל-Claude. המחוון והפתרון נקראים מתיקיית המטלה (grading/grade.py)
   function gradeInstr() {
     const R = rubric(), A = cur();
     const total = R.questions.reduce((a, q) => a + q.pts, 0);
     return `<div class="split wide-first">
       <div class="stack">
-        ${instrBox("grade", "מה זה אומר לבדוק", "ההנחיות הכלליות שנשלחות ל-Claude עם כל עבודה. כדאי לכתוב כאן כל מה שהייתם אומרים למתרגל חדש לפני שהוא מתחיל לבדוק.")}
+        ${instrBox("grade", "הנחיות לבדיקה", "ההנחיות הכלליות שנשלחות ל-Claude עם כל עבודה, יחד עם המחוון. כדאי לכתוב כאן כל מה שהייתם אומרים למתרגל חדש לפני שהוא מתחיל לבדוק. הן נשמרות בדפדפן הזה ונשלחות בכל לחיצה על \"בדוק\".")}
         <section class="panel">
-          <div class="panel-head"><h2>מחוון</h2><span class="meta">${course().name}, ${A.title}</span></div>
+          <div class="panel-head"><h2>מחוון</h2><span class="meta">${esc(course().name)}, ${esc(A.title)}</span></div>
           <div class="panel-body">
-            ${R.questions.map((q, i) => `
+            ${R.questions.map((q) => `
               <div class="rubric-row">
                 <span class="rq">שאלה ${q.n}</span>
-                <label class="sr" for="rq-${i}">ניקוד שאלה ${q.n}</label>
-                <span class="rpts"><input id="rq-${i}" type="number" min="0" max="100" value="${q.pts}" data-rpts="${i}"><span>נק׳</span></span>
-                <label class="sr" for="rr-${i}">מה נדרש בשאלה ${q.n}</label>
-                <input class="rreq" id="rr-${i}" value="${esc(q.req)}" data-rreq="${i}">
+                <span class="rpts"><b class="num">${q.pts}</b><span>נק׳</span></span>
+                <span>${esc(q.req)}${q.criteria ? `<small class="muted" style="display:block">${esc(q.criteria)}</small>` : ""}</span>
               </div>`).join("")}
-            <div class="total-line ${total !== 100 ? "bad" : ""}" id="total-line"><span>סך הכל</span><span class="num">${total} נק׳</span></div>
+            <div class="total-line"><span>סך הכל</span><span class="num">${total} נק׳</span></div>
+            <p class="hint">כך הבדיקה קוראת את המחוון מהקובץ Assignment details.json שבתיקיית המטלה. כל עוד אין בו מחוון (rubric), הניקוד מתחלק שווה בין השאלות. כדי לשנות, עורכים את הקובץ.</p>
+            <div class="row-start"><button class="btn secondary small" data-act="open-folder">${ICON.folder}פתח את תיקיית המטלה</button></div>
           </div>
-        </section>
-        <section class="panel">
-          <div class="panel-head"><h2>דגשים</h2><span class="meta">שורה לכל דגש</span></div>
-          <div class="panel-body"><label class="sr" for="emph">דגשים</label><textarea id="emph" rows="5" data-emph>${esc(R.emphases.join("\n"))}</textarea></div>
         </section>
       </div>
       <div class="stack">
         <section class="panel">
-          <div class="panel-head"><h3>פתרון רשמי</h3></div>
-          <div class="panel-body">
-            ${state.solution[A.id] ? `<div class="file big">${ICON.file}<span dir="ltr">${esc(state.solution[A.id])}</span><em>הועלה</em></div>` : `<p class="muted" style="margin:0 0 10px">עוד לא הועלה פתרון רשמי למטלה הזו.</p>`}
-            <label class="btn secondary small upload">${ICON.upload}${state.solution[A.id] ? "החלף קובץ" : "העלה פתרון רשמי"}<input type="file" id="solution-file" accept=".pdf" data-solution></label>
-          </div>
+          <div class="panel-head"><h3>פתרון רשמי</h3><span class="end tag ${A.solution ? "ok" : "warn"}">${A.solution ? "נמצא" : "אין"}</span></div>
+          <div class="panel-body"><p class="lead" style="margin:0">${A.solution
+            ? "הקובץ Official solution.pdf שבתיקיית המטלה נשלח ל-Claude עם כל הגשה (אפשר לכבות בלשונית \"חיבור ל-Claude\")."
+            : "עוד אין פתרון רשמי. כדי שהבדיקה תשווה אליו, שמים את הפתרון בשם Official solution.pdf בתיקיית המטלה."}</p></div>
         </section>
         <section class="panel">
-          <div class="panel-head"><h3>מה נשלח ל-Claude</h3></div>
+          <div class="panel-head"><h3>מה נשלח ל-Claude</h3><span class="meta">בקיצור</span></div>
           <div class="panel-body"><pre class="prompt" id="prompt-preview">${esc(promptPreview())}</pre></div>
         </section>
       </div>
@@ -1014,11 +917,10 @@
     const c = state.claude;
     return `<div class="split">
       <section class="panel">
-        <div class="panel-head"><h2>חיבור ל-Claude</h2>${LOCAL.health?.claude ? `<span class="end tag ok">מחובר</span>` : `<span class="end tag warn">לא מחובר</span>`}</div>
+        <div class="panel-head"><h2>חיבור ל-Claude</h2>${LOCAL.health?.claude ? `<span class="end tag ok">מחובר</span>` : `<span class="end tag warn">עוד לא מחובר</span>`}</div>
         <div class="panel-body">
-          ${!LOCAL.on ? `<div class="notice">${ICON.lock}<div><b>הבדיקות במסך כרגע מדומות.</b> כשיוגדר מפתח API בצד השרת, אותו כפתור ישלח את העבודות ל-Claude באמת, בלי שינוי במסך.</div></div>`
-            : LOCAL.health?.claude ? `<div class="notice">${ICON.lock}<div><b>הבדיקה עובדת.</b> ל-Claude נשלחים רק העמודים של ההגשה הממוספרת, בלי שמות. העבודה המסומנת נשמרת ב-"2 - Graded with comments" והציון ב-Grades.csv.</div></div>`
-            : `<div class="notice">${ICON.lock}<div><b>אין מפתח Claude.</b> ${esc(NO_KEY)}</div></div>`}
+          ${LOCAL.health?.claude ? `<div class="notice">${ICON.lock}<div><b>הבדיקה עובדת.</b> ל-Claude נשלחים רק העמודים של ההגשה הממוספרת, בלי שמות. העבודה המסומנת נשמרת ב-"2 - Graded with comments" והציון ב-Grades.csv.</div></div>`
+            : `<div class="notice">${ICON.lock}<div><b>הבדיקה עם Claude עוד לא מחוברת.</b> ${esc(NO_KEY)}</div></div>`}
           <div class="form-grid">
             <div class="field"><label for="c-model">מודל</label>
               <select id="c-model" dir="ltr" data-set="claude.model">
@@ -1027,67 +929,58 @@
               <p class="hint">Opus לבדיקה מעמיקה של הוכחות. Haiku לבדיקות מהירות וזולות.</p></div>
             <div class="field"><label for="c-par">עבודות במקביל</label><input id="c-par" type="number" min="1" max="20" value="${c.parallel}" data-set="claude.parallel"></div>
           </div>
-          ${LOCAL.on ? "" : sw("c-auto", "בדיקה אוטומטית אחרי כל משיכה", "כשמשיכה מסתיימת, Claude מתחיל לבדוק את ההגשות החדשות בלי לחיצה נוספת", c.auto, "claude.auto")}
-          ${sw("c-sol", "לצרף את הפתרון הרשמי", "Claude משווה כל עבודה לפתרון הרשמי של המטלה", c.sendSolution, "claude.sendSolution")}
-          ${sw("c-low", "עבודה לא ודאית עוברת לבדיקה ידנית", "כתב יד לא קריא או ביטחון נמוך בציון מסמנים את העבודה למתרגל", c.lowConfidence, "claude.lowConfidence")}
+          ${sw("c-sol", "לצרף את הפתרון הרשמי", "Claude משווה כל עבודה ל-Official solution.pdf של המטלה, אם יש", c.sendSolution, "claude.sendSolution")}
         </div>
       </section>
       <div class="stack">
         <section class="panel">
-          <div class="panel-head"><h3>מפתחות</h3></div>
+          <div class="panel-head"><h3>מפתח</h3></div>
           <div class="panel-body">${secretField("ANTHROPIC_API_KEY", "מפתח ה-API של Claude. נשמר בקובץ .env במחשב שמריץ את המערכת, לא בדפדפן ולא ב-GitHub.", LOCAL.health?.claude)}</div>
         </section>
         <section class="panel">
           <div class="panel-head"><h3>מה Claude מחזיר על כל עבודה</h3></div>
           <div class="panel-body"><pre class="code-block" dir="ltr">${esc(SCHEMA)}</pre>
-          <p class="hint">המיקום של כל הערה (עמוד ומלבן, באלפיות של העמוד) מאפשר לצייר את הסימון האדום על גבי ה-PDF המקורי. הציון מחושב מהניקוד של השאלות.</p></div>
+          <p class="hint">המיקום של כל הערה (עמוד ומלבן, באלפיות של העמוד) מאפשר לצייר את הסימון האדום על גבי ה-PDF המקורי. את הציון מחשבת המערכת מהניקוד של השאלות, לא Claude.</p></div>
         </section>
       </div>
     </div>`;
   }
 
+  // שלב 3: מה בדיוק עולה למודל ואיך (moodle/send.py, moodle/claude_upload.md)
   function retInstr() {
-    const f = state.retFormat, A = cur(), I = info(A);
-    const ex = I.graded.slice(0, 3);
-    const inc = (k, label, desc) => `<label class="opt"><input type="checkbox" data-inc="${k}" ${f.include[k] ? "checked" : ""}><span><b>${label}</b><small>${desc}</small></span></label>`;
     return `<div class="split wide-first">
+      <section class="panel">
+        <div class="panel-head"><h2>מה קורה כשלוחצים "העלה למודל"</h2></div>
+        <div class="panel-body">
+          <ol class="todo">
+            <li><b>בוחרים מה עולה.</b> רק עבודות מסומנות מ-"2 - Graded with comments" שעוד לא עלו, או שהשתנו מאז ההעלאה האחרונה שלהן (לפי Upload log.csv).</li>
+            <li><b>אורזים לפי מה שמודל מצפה לו.</b> לכל סטודנט תיקייה עם השם ומזהה המשתתף שלו מטבלת המפתח, ובתוכה feedback.pdf. ה-ZIP-ים (עד 9MB כל אחד) נשמרים ב-"3 - Ready to upload to Moodle". עבודה שהוגשה מחדש אחרי הבדיקה, או קובץ גדול מדי, נשארים בחוץ ומדווחים.</li>
+            <li><b>בודקים שהמחשב מוכן:</b> Claude Code מותקן ומחובר, והכרום והמודל מחוברים (לשונית "חיבור למודל").</li>
+            <li><b>אדם מאשר.</b> חלון אישור מראה כמה קבצים וכמה סטודנטים. בלי "כן" שום דבר לא עולה.</li>
+            <li><b>Claude בכרום מעלה כל ZIP</b> בעמוד "העלאת מספר קובצי משוב כקובץ 7Zip אחד" של המטלה. מודל של האוניברסיטה קולט את הקבצים מיד, בלי מסך אישור נוסף.</li>
+            <li><b>המערכת מאמתת.</b> אחרי כל ZIP היא (לא Claude) בודקת שמודל קלט בדיוק את מספר הקבצים שבו, ורושמת אותם ב-Upload log.csv. מספר שלא מתאים עוצר הכל עד שמישהו בודק במודל.</li>
+          </ol>
+        </div>
+      </section>
       <div class="stack">
-        ${instrBox("ret", "מה זה אומר להחזיר לאוניברסיטה", "כאן מגדירים בדיוק איך הציונים והקבצים עולים חזרה למודל, ומה אסור לשנות. אלה ההנחיות לצד השרת בשלב ההחזרה.")}
         <section class="panel">
-          <div class="panel-head"><h2>איך מעלים</h2></div>
+          <div class="panel-head"><h3>מה הסטודנט מקבל</h3></div>
           <div class="panel-body">
-            <div class="radio-cards" role="radiogroup" aria-label="שיטת ההחזרה">
-              <label class="rcard"><input type="radio" name="ret-method" value="api" data-method ${f.method === "api" ? "checked" : ""}><span><b>ישירות למודל</b><small>הציון, המשוב והקובץ עולים אוטומטית דרך שירותי הרשת של מודל.</small></span></label>
-              <label class="rcard"><input type="radio" name="ret-method" value="files" data-method ${f.method === "files" ? "checked" : ""}><span><b>קבצים להעלאה ידנית</b><small>נוצרים קובץ ציונים CSV וקובץ ZIP עם המשובים, ומעלים אותם למודל בעצמכם.</small></span></label>
-            </div>
+            <dl class="fields">
+              <div><dt>קובץ משוב</dt><dd>העבודה שלו עם ההערות במקום של כל טעות, ובהתחלה עמוד עם הציון, הניקוד לכל שאלה והמשוב</dd></div>
+              <div><dt>הציון</dt><dd>בינתיים עולה ידנית: במטלה מפעילים "Offline grading worksheet", מורידים את גיליון הציונים, <code dir="ltr">python -m moodle upload &lt;id&gt;</code> ממלא אותו, ומעלים דרך "העלאת גיליון ציונים"</dd></div>
+            </dl>
           </div>
         </section>
         <section class="panel">
-          <div class="panel-head"><h2>מה מקבל כל סטודנט</h2></div>
-          <div class="panel-body options">
-            ${inc("grade", "ציון סופי", "מספר בין 0 ל-100 בשדה הציון של המטלה")}
-            ${inc("feedback", "משוב כתוב", "המשוב של Claude, אחרי העריכה שלכם")}
-            ${inc("pdf", "PDF מסומן", "העבודה המקורית עם הסימונים בעט אדום")}
-            ${inc("breakdown", "ניקוד לפי שאלות", "טבלה קטנה בראש המשוב")}
-            <div class="field" style="margin-top:6px"><label for="ret-pattern">שם הקובץ המסומן</label><input id="ret-pattern" dir="ltr" value="${esc(f.pattern)}" data-pattern>
-            <p class="hint">אפשר להשתמש ב-<code dir="ltr">{studentId}</code>, <code dir="ltr">{name}</code>, <code dir="ltr">{n}</code>. לדוגמה: <span dir="ltr" id="pattern-example">${esc(ex[0] ? fileNameFor(ex[0]) : "")}</span></p></div>
-          </div>
-        </section>
-      </div>
-      <div class="stack">
-        <section class="panel">
-          <div class="panel-head"><h3>תצוגה מקדימה של קובץ הציונים</h3></div>
-          <div class="table-wrap"><table class="csv" dir="ltr">
-            <thead><tr><th>Identifier</th><th>Full name</th><th>Grade</th><th>Feedback comments</th></tr></thead>
-            <tbody>${ex.map((s) => `<tr><td class="num">${s.studentId}</td><td dir="rtl">${esc(s.name)}</td><td class="num">${s.score}</td><td dir="rtl" class="clip">${esc(feedbackFor(s).slice(0, 48))}…</td></tr>`).join("") || `<tr><td colspan="4" class="muted">יופיע אחרי שיהיו עבודות בדוקות</td></tr>`}</tbody>
-          </table></div>
-          <p class="hint panel-body" style="margin:0">העמודות תואמות לגיליון הציונים של מטלה במודל.</p>
+          <div class="panel-head"><h3>יומן ההעלאה</h3></div>
+          <div class="panel-body"><p class="lead" style="margin:0">עבודה נחשבת "הוחזרה" רק כשהקובץ המסומן שלה זהה למה שנרשם ב-Upload log.csv אחרי העלאה שאומתה. אם מישהו מתקן את העבודה אחר כך, היא חוזרת להיות "מוכנה להעלאה".</p></div>
         </section>
       </div>
     </div>`;
   }
 
-  function retConnLocal() {
+  function retConn() {
     const rd = ensureReady();
     return `<section class="panel">
       <div class="panel-head"><h2>חיבור למודל</h2>${allReady(rd.data) ? `<span class="end tag ok">מוכן להעלאה</span>` : ""}</div>
@@ -1096,30 +989,6 @@
         ${readyChecklistHTML(rd)}
       </div>
     </section>`;
-  }
-
-  function retConn() {
-    if (LOCAL.on) return retConnLocal();
-    return `<div class="split">
-      <section class="panel">
-        <div class="panel-head"><h2>חיבור למודל</h2><span class="end tag warn">לא מחובר</span></div>
-        <div class="panel-body">
-          <p class="lead">ההחזרה משתמשת באותו חיבור כמו שלב המשיכה, ובהרשאת כתיבה לציונים.</p>
-          ${secretField("MOODLE_TOKEN", "אותו טוקן כמו במשיכה. צריך הרשאה לעדכן ציונים במטלה.")}
-          <div class="row-end"><a class="btn secondary small" href="#/pull" data-goto-tab="pull:conn">להגדרות החיבור</a></div>
-        </div>
-      </section>
-      <section class="panel">
-        <div class="panel-head"><h3>פונקציות מודל בשימוש</h3></div>
-        <div class="panel-body">
-          <ul class="api-list" dir="ltr">
-            <li><code>core_files_upload</code></li>
-            <li><code>mod_assign_save_grade</code></li>
-            <li><code>mod_assign_get_grades</code></li>
-          </ul>
-        </div>
-      </section>
-    </div>`;
   }
 
   // ---------- Views ----------
@@ -1165,15 +1034,6 @@
       <li class="${i === worst ? "worst" : ""}"><span>שאלה ${q.n}</span><span class="track"><i style="width:${rates[i]}%"></i></span><b class="num">${rates[i]}%</b></li>`).join("")}</ul>`;
   }
 
-  function mistakesHTML(I) {
-    if (!I.graded.length || !rubric().mistakes.length) return `<p class="muted empty-line">יופיע אחרי שיהיו עבודות בדוקות.</p>`;
-    const n = I.graded.length;
-    return `<ul class="mistakes">${rubric().mistakes.map((m) => {
-      const c = Math.max(1, Math.round(m.pct * n));
-      return `<li><span class="mt">${esc(m.text)}</span><span class="mc num">${c} <small>מתוך ${n}</small></span><span class="track"><i style="width:${(c / n) * 100}%"></i></span></li>`;
-    }).join("")}</ul>`;
-  }
-
   function logHTML(limit, onlyHere) {
     const icon = { pull: ICON.pull, grade: ICON.grade, return: ICON.ret, error: ICON.warn };
     const list = D.runs.filter((r) => !onlyHere || (r.where || "").startsWith(course()?.name || "")).slice(0, limit);
@@ -1205,8 +1065,41 @@
   function rubricSummaryHTML() {
     const R = rubric();
     return `
-      <ul class="criteria">${R.questions.map((q) => `<li><span>שאלה ${q.n}</span><span class="track"><i style="width:${q.pts}%"></i></span><b class="num">${q.pts}</b></li>`).join("")}</ul>
-      <ul class="emph">${R.emphases.slice(0, 3).map((e) => `<li>${esc(e)}</li>`).join("")}</ul>`;
+      <ul class="criteria">${R.questions.map((q) => `<li><span title="${esc(q.req)}">שאלה ${q.n}</span><span class="track"><i style="width:${q.pts}%"></i></span><b class="num">${q.pts}</b></li>`).join("")}</ul>`;
+  }
+
+  // אין חיבור למערכת שבמחשב, או שאין עדיין מטלות: אין מספרים להציג
+  function offlineHTML() {
+    const how = `
+      <section class="pipeline" aria-label="מסלול הבדיקה">
+        ${["pull", "grade", "ret"].map((st, idx) => `
+          <article class="stage" data-state="idle">
+            ${idx ? `<span class="stage-arrow" aria-hidden="true">${ICON.chev}</span>` : ""}
+            <header class="stage-top"><span class="stage-mark">${STAGES[st].no}</span><div><h2>${STAGES[st].name}</h2></div></header>
+            <p class="lead" style="margin:0">${esc(STAGES[st].desc)}</p>
+          </article>`).join("")}
+      </section>`;
+    if (LOCAL.on && LOCAL.health?.root) {
+      return `<div class="page-head"><div><h1>עוד אין מטלות בתיקייה</h1>
+          <p>המערכת מחוברת לתיקיית OneDrive, אבל אין בה עדיין מטלה. מטלה חדשה נוספת פעם אחת משורת הפקודה, עם שמות התיקיות באנגלית, ואחר כך מושכים אליה מכאן:</p>
+          <pre class="prompt" dir="ltr">python -m moodle ingest &lt;assignment id&gt; --course "Linear Algebra" --name "Assignment 1 - Vectors"</pre></div></div>${how}`;
+    }
+    if (LOCAL.on) return `<div class="page-head"><div><h1>תיקיית OneDrive לא נמצאה</h1><p>המערכת פועלת, אבל לא מצאה במחשב הזה את התיקייה של הקורס. ההסבר מופיע למעלה.</p></div></div>${how}`;
+    return `
+      <div class="page-head"><div><h1>המערכת לא מחוברת</h1>
+        <p>האתר מציג רק נתונים אמיתיים, מתוך תיקיית OneDrive של הקורס. הם מגיעים מהמערכת שרצה במחשב שלך, ועכשיו היא לא מחוברת.</p></div></div>
+      <section class="panel" style="margin-bottom:24px">
+        <div class="panel-head"><h2>איך מתחברים</h2><span class="end tag warn">${LOCAL.probing ? "מנסה להתחבר…" : "לא מחובר"}</span></div>
+        <div class="panel-body">
+          <ol class="todo">
+            <li>לוחצים פעמיים על <code dir="ltr">start.bat</code> בתיקיית הריפו (assignment-checker). חלון שחור נפתח, והוא צריך להישאר פתוח כל זמן שעובדים.</li>
+            <li>אם כרום שואל אם לאפשר לאתר לגשת לאפליקציות ולשירותים במכשיר הזה, לוחצים "אפשר" (Allow). ההרשאה הזו מחברת את האתר למערכת שבמחשב.</li>
+            <li>האתר מתחבר לבד תוך כמה שניות. אפשר גם לעבוד ישירות בכתובת <code dir="ltr">http://localhost:8765</code>.</li>
+          </ol>
+          <div class="row-start"><button class="btn secondary small" data-act="recheck">${ICON.redo}בדוק עכשיו</button></div>
+        </div>
+      </section>
+      ${how}`;
   }
 
   // ---------- הגרסה המחוברת: תיקיית OneDrive דרך השרת המקומי ----------
@@ -1233,13 +1126,13 @@
       </section>`;
     }
     return `<section class="panel" style="margin-top:24px">
-      <div class="panel-head"><h2>תיקיית OneDrive</h2><span class="end tag warn">מצב הדגמה</span></div>
+      <div class="panel-head"><h2>תיקיית OneDrive</h2><span class="end tag warn">לא מחובר</span></div>
       <div class="panel-body">
-        <p class="lead">האתר הזה מציג נתוני הדגמה. כדי שהכפתורים יעבדו באמת ויכתבו לתיקיית OneDrive של הקורס, מפעילים את המערכת במחשב שמסנכרן את התיקייה:</p>
+        <p class="lead">האתר קורא את תיקיית OneDrive של הקורס דרך המערכת שרצה במחשב שמסנכרן אותה:</p>
         <ol class="todo">
           <li>באפליקציית OneDrive מחברים את חשבון האוניברסיטה. בדפדפן, על התיקייה YallaLinearit, לוחצים Add shortcut to My files.</li>
           <li>מורידים את הריפו מ-GitHub ולוחצים פעמיים על <code dir="ltr">start.bat</code>.</li>
-          <li>האתר נפתח בכתובת <code dir="ltr">http://localhost:8765</code>, מחובר לתיקייה.</li>
+          <li>האתר הזה מתחבר אליה לבד (כרום שואל פעם אחת אם לאפשר). אפשר גם לעבוד בכתובת <code dir="ltr">http://localhost:8765</code>.</li>
         </ol>
       </div>
     </section>`;
@@ -1247,7 +1140,7 @@
 
   // עבודה אמיתית: מציגים את הקובץ עצמו. אחרי הבדיקה, את העבודה המסומנת
   function localDrawerHTML(s, head) {
-    const url = (f) => `api/file?path=${encodeURIComponent(f.path)}`;
+    const url = (f) => `${BASE}api/file?path=${encodeURIComponent(f.path)}`;
     const pdf = s.files.find((f) => f.marked) || s.files.find((f) => f.name.toLowerCase().endsWith(".pdf") && f.size);
     const qs = rubric().questions;
     const busy = s.status === "grading";
@@ -1287,21 +1180,18 @@
         <div class="page-head">
           <div>
             <h1>${A.title}</h1>
-            <p>${esc(course().name)}. מועד הגשה ${dueText(A)}. ${rubric().questions.length} שאלות, 100 נקודות.</p>
-            ${LOCAL.on && A.notes ? `<p class="muted">${esc(A.notes)}</p>` : ""}
+            <p>${esc(course().name)}. מועד הגשה ${dueText(A)}. ${rubric().questions.length} שאלות, ${A.maxGrade || 100} נקודות.</p>
+            ${A.notes ? `<p class="muted">${esc(A.notes)}</p>` : ""}
           </div>
         </div>
         ${pipelineHTML()}
         <div class="grid-2">
           <div class="stack">
             <section class="panel"><div class="panel-head"><h2>התפלגות ציונים</h2><span class="meta">${I.graded.length} עבודות בדוקות</span></div><div class="panel-body">${distHTML(I)}</div></section>
-            <div class="grid-even">
-              <section class="panel"><div class="panel-head"><h3>הצלחה לפי שאלה</h3></div><div class="panel-body">${perQuestionHTML(I)}</div></section>
-              <section class="panel"><div class="panel-head"><h3>טעויות נפוצות</h3><span class="meta">לפי הערות Claude</span></div><div class="panel-body">${mistakesHTML(I)}</div></section>
-            </div>
+            <section class="panel"><div class="panel-head"><h3>הצלחה לפי שאלה</h3></div><div class="panel-body">${perQuestionHTML(I)}</div></section>
           </div>
           <div class="stack">
-            <section class="panel"><div class="panel-head"><h3>מחוון ודגשים</h3><a class="end link" href="#/grade" data-goto-tab="grade:instr">עריכה</a></div><div class="panel-body">${rubricSummaryHTML()}</div></section>
+            <section class="panel"><div class="panel-head"><h3>מחוון</h3><a class="end link" href="#/grade" data-goto-tab="grade:instr">פרטים</a></div><div class="panel-body">${rubricSummaryHTML()}</div></section>
             <section class="panel"><div class="panel-head"><h3>פעילות אחרונה</h3><a class="end link" href="#/runs">ליומן המלא</a></div><div class="panel-body tight">${logHTML(4, true)}</div></section>
           </div>
         </div>
@@ -1315,147 +1205,68 @@
     "/return": () => stageView("ret"),
     "/runs"() {
       return `
-        <div class="page-head"><div><h1>יומן ריצות</h1><p>כל פעולה שהמערכת ביצעה בכל הקורסים: משיכות, בדיקות, החזרות ושגיאות.</p></div></div>
+        <div class="page-head"><div><h1>יומן פעילות</h1><p>מה שבאמת קרה בתיקיות של כל הקורסים: כל ZIP שנמשך ממודל, כל עדכון של Grades.csv וכל העלאה למודל שאומתה.</p></div></div>
         <section class="panel"><div class="panel-body tight">${logHTML(80, false)}</div></section>`;
     },
     "/settings"() {
       const node = (title, tech, tag, cls = "warn") => `<div class="node"><b>${title}</b><small>${tech}</small><span class="tag ${cls}">${tag}</span></div>`;
       return `
-        <div class="page-head"><div><h1>חיבורים והגדרות</h1><p>איך המערכת בנויה, מה כבר עובד, ומה צריך כדי לעבור מהדגמה לבדיקה אמיתית.</p></div></div>
+        <div class="page-head"><div><h1>חיבורים והגדרות</h1><p>איך המערכת בנויה ומה מחובר עכשיו.</p></div></div>
         <section class="panel">
           <div class="panel-head"><h2>איך המערכת בנויה</h2></div>
           <div class="panel-body">
             <div class="arch">
               <div class="arch-row">
-                ${node("מודל", "אתר הקורסים של האוניברסיטה", ...(LOCAL.health?.moodle ? ["מחובר עם טוקן", "ok"] : ["דרך קובצי ZIP", "warn"]))}
+                ${node("מודל", "דרך Claude in Chrome, בכרום ובחשבון שלך", ...(LOCAL.health?.moodle ? ["מחובר", "ok"] : LOCAL.on ? ["צריך להתחבר ל-Claude", "warn"] : ["לא ידוע", "warn"]))}
                 <span class="arch-link" aria-hidden="true">⇄</span>
-                ${node("המערכת", "פייתון במחשב שמסנכרן את התיקייה (start.bat)", ...(LOCAL.on ? ["פועלת", "ok"] : ["לא פועלת כרגע", "warn"]))}
+                ${node("המערכת", "פייתון במחשב שמסנכרן את התיקייה (start.bat)", ...(LOCAL.on ? ["פועלת", "ok"] : ["לא מחוברת", "warn"]))}
                 <span class="arch-link" aria-hidden="true">⇄</span>
-                ${node("Claude", "בדיקה, סימון וציון", "לא מחובר")}
+                ${node("Claude", "בדיקה, סימון וציון", ...(LOCAL.health?.claude ? ["מחובר", "ok"] : ["עוד לא מחובר", "warn"]))}
               </div>
               <span class="arch-v" aria-hidden="true">⇅</span>
               <div class="arch-row center">${node("תיקיית OneDrive", "YallaLinearit: הגשות, ציונים ויומן", ...(LOCAL.health?.root ? ["מחוברת", "ok"] : ["לא מחוברת", "warn"]))}</div>
               <span class="arch-v" aria-hidden="true">⇅</span>
-              <div class="arch-row center">${node("האתר הזה", LOCAL.on ? "דרך המערכת במחשב" : "Vercel, מצב הדגמה", "פעיל", "ok")}</div>
+              <div class="arch-row center">${node("האתר הזה", ON_LOCAL_HOST ? "דרך המערכת במחשב" : "Vercel, מתחבר למערכת שבמחשב", ...(LOCAL.on ? ["מחובר", "ok"] : ["לא מחובר", "warn"]))}</div>
             </div>
           </div>
         </section>
         ${drivePanelHTML()}
         <div class="grid-2">
           <section class="panel">
-            <div class="panel-head"><h2>מפתחות שצריך להגדיר</h2><span class="meta">נשמרים בקובץ .env במחשב שמריץ את המערכת</span></div>
+            <div class="panel-head"><h2>מפתחות</h2><span class="meta">נשמרים בקובץ .env במחשב שמריץ את המערכת</span></div>
             <div class="panel-body">
-              ${secretField("MOODLE_TOKEN", "משיכת הגשות והחזרת ציונים", LOCAL.health?.moodle)}
               ${secretField("ANTHROPIC_API_KEY", "בדיקת העבודות עם Claude", LOCAL.health?.claude)}
+              <p class="hint">למודל לא צריך מפתח: הוא עובד דרך Claude in Chrome, בחשבון שלך.</p>
             </div>
           </section>
           <section class="panel">
-            <div class="panel-head"><h3>מדיניות</h3></div>
-            <div class="panel-body tight">
-              ${sw("p1", "אישור מתרגל לפני החזרה", "שום ציון לא עולה למודל בלי שמישהו מהצוות עבר עליו", true)}
-              ${sw("p2", "סימון חשד להעתקה", "השוואה בין הגשות באותה מטלה", true)}
-              ${sw("p3", "הודעה לסטודנט", "מייל כשהציון מתפרסם במודל", false)}
+            <div class="panel-head"><h3>כללים שהמערכת שומרת</h3></div>
+            <div class="panel-body">
+              <ul class="emph" style="margin:0; padding:0; border:0">
+                <li>שום דבר לא עולה למודל בלי "כן" של אדם על אותה העלאה.</li>
+                <li>ל-Claude נשלחות רק הגשות ממוספרות. שמות ות"ז לא יוצאים מהמחשב ומטבלת המפתח.</li>
+                <li>ציונים מותאמים לסטודנטים לפי מספר, אף פעם לא לפי סדר השורות.</li>
+                <li>אף סיסמה לא נכנסת למערכת. למודל ול-Claude מתחברים בעצמך.</li>
+              </ul>
             </div>
           </section>
         </div>`;
     },
   };
 
-  // ---------- Drawer: the marked submission ----------
-  function feedbackFor(s) {
-    if (s.feedback != null) return s.feedback;
-    const sample = D.samples[state.courseId], qs = rubric().questions;
-    const open = s.score >= 90 ? "עבודה מצוינת, מסודרת ומנומקת." : s.score >= 75 ? "עבודה טובה. רוב הפתרונות נכונים ומנומקים היטב." : s.score >= 60 ? "יש בעבודה בסיס טוב, אבל בכמה שאלות חסרים נימוקים." : "העבודה מראה שחלק מהנושאים עוד דורשים חיזוק.";
-    const issues = sample.filter((q, i) => s.q[i] < qs[i].pts).map((q) => q.fb);
-    const close = issues.length ? "מומלץ לעבור שוב על הפתרון הרשמי בשאלות האלה." : "כל הכבוד.";
-    return [open, ...issues, close].join(" ");
-  }
-
-  function docHTML(s) {
-    const sample = D.samples[state.courseId], qs = rubric().questions, A = cur();
-    const line = (l, marked) => {
-      const disp = l.startsWith("$$") && l.endsWith("$$");
-      return `<div class="dl ${disp ? "disp" : ""} ${marked ? "marked" : ""}">${tex(l)}</div>`;
-    };
-    return `
-      <article class="doc" aria-label="העבודה של ${esc(s.name)}">
-        <header class="doc-head"><span>${esc(course().name)}</span><span>${A.title}</span><span>${esc(s.name)}, <span class="num">${s.studentId}</span></span></header>
-        ${sample.map((q, i) => {
-          const lost = s.q[i] < qs[i].pts;
-          return `
-          <section class="dq ${lost ? "lost" : "full"}">
-            <span class="hand-score" aria-label="ניקוד שאלה ${i + 1}">${s.q[i]}<small>/${qs[i].pts}</small></span>
-            <h4>שאלה ${i + 1}</h4>
-            <div class="dprompt">${tex(q.prompt)}</div>
-            ${q.lines.map((l) => line(l)).join("")}
-            ${(lost ? q.bad : q.ok).map((l) => line(l, lost)).join("")}
-            ${lost ? `<div class="pen-note">${ICON.pen}<span>${tex(q.note)}</span></div>` : `<span class="hand-tick" aria-label="נכון">${ICON.check}</span>`}
-          </section>`;
-        }).join("")}
-      </article>`;
-  }
-
+  // ---------- Drawer: the submission and its marked copy ----------
   function drawerHTML(s) {
     const files = s.files.filter((f) => !f.marked).map((f) => `<span dir="ltr">${esc(f.name)}</span>`).join(", ");
     const head = `
       <div class="drawer-head">
         <div>
           <h2>${esc(s.name)}</h2>
-          <div class="sub">${LOCAL.on ? "" : `<span class="num">ת.ז. ${s.studentId}</span>`}<span>הוגשה ${when(s.submittedAt)}${s.late ? " (באיחור)" : ""}</span><span>${files}</span>${statusPill(s)}</div>
+          <div class="sub"><span>${when(s.submittedAt)}</span><span>${files}</span>${statusPill(s)}</div>
         </div>
         <button class="btn ghost close" data-act="close" aria-label="סגור">${ICON.close}</button>
       </div>`;
 
-    if (LOCAL.on) return localDrawerHTML(s, head);
-
-    if (!s.q) {
-      const msg = {
-        pulled: ["העבודה עוד לא נבדקה", "היא נמשכה ממודל ומחכה בתור לבדיקה."],
-        grading: ["Claude בודק את העבודה עכשיו", "הסימונים והציון יופיעו כאן בעוד כמה שניות."],
-        error: [s.issue || "יש בעיה בקובץ", "אי אפשר לבדוק את ההגשה. כדאי לפנות לסטודנט ולבקש הגשה מחדש, ואז למשוך שוב."],
-      }[s.status];
-      return `${head}
-        <div class="drawer-body single"><div class="panel"><div class="empty"><strong>${esc(msg[0])}</strong>${esc(msg[1])}</div></div></div>
-        <div class="drawer-foot"><span class="grow"></span>${s.status === "pulled" ? `<button class="btn primary" data-act="grade-one" data-id="${s.id}">${ICON.grade}בדוק עכשיו</button>` : ""}</div>`;
-    }
-
-    const qs = rubric().questions;
-    const lost = s.q.filter((v, i) => v < qs[i].pts).length;
-    const locked = s.status === "returned";
-    return `${head}
-      <div class="drawer-body">
-        <div class="doc-col">
-          <div class="doc-bar">${ICON.pen}<span>${lost ? `Claude סימן ${plural(lost, "הערה אחת", "הערות")} על העבודה` : "Claude לא מצא טעויות"}</span><span class="muted">${s.files.reduce((a, f) => a + f.pages, 0)} עמודים</span></div>
-          ${docHTML(s)}
-        </div>
-        <aside class="grade-col">
-          <div class="grade-card">
-            <div class="grade-top">
-              <span class="big num" id="total-score">${s.score}</span>
-              <span class="lbl"><b>${locked ? "הציון שהוחזר" : "ציון מוצע"}</b>מתוך 100</span>
-            </div>
-            <ul class="breakdown">
-              ${qs.map((q, i) => `<li>
-                <label for="qs-${i}">שאלה ${q.n}</label>
-                <span class="qin"><input id="qs-${i}" type="number" min="0" max="${q.pts}" value="${s.q[i]}" data-q="${i}" ${locked ? "disabled" : ""}><span class="num">/ ${q.pts}</span></span>
-                <span class="track"><i class="${s.q[i] < q.pts ? "short" : ""}" style="width:${(s.q[i] / q.pts) * 100}%"></i></span>
-              </li>`).join("")}
-            </ul>
-            ${locked ? "" : `<p class="hint">אפשר לתקן ניקוד של כל שאלה. הציון הסופי מתעדכן לבד.</p>`}
-          </div>
-          <div class="feedback">
-            <label for="fb-text">${ICON.pen}משוב לסטודנט</label>
-            <textarea id="fb-text" rows="8" ${locked ? "disabled" : ""}>${esc(feedbackFor(s))}</textarea>
-          </div>
-        </aside>
-      </div>
-      <div class="drawer-foot">
-        ${locked
-          ? `<span class="grow">${ICON.check} הציון, המשוב וה-PDF המסומן עלו למודל.</span><button class="btn secondary" data-act="close">סגור</button>`
-          : `<span class="grow">השינויים יעלו למודל בשלב ההחזרה.</span>
-             <button class="btn secondary" data-act="regrade" data-id="${s.id}">${ICON.redo}בדיקה חוזרת</button>
-             <button class="btn primary" data-act="save" data-id="${s.id}">${ICON.check}שמור</button>`}
-      </div>`;
+    return localDrawerHTML(s, head);
   }
 
   let lastFocus = null;
@@ -1490,14 +1301,8 @@
     lastFocus?.focus?.();
   }
 
-  async function gradeOne(id) {
-    if (LOCAL.on) { runLocalGrade([id]); return; }
-    const A = cur(), s = A.subs.find((x) => x.id === id);
-    s.status = "grading"; render(); refreshDrawer();
-    await new Promise((r) => setTimeout(r, 1400));
-    D.gradeSubmission(s); s.fresh = true;
-    render(); refreshDrawer();
-    toast(`העבודה של ${s.name} נבדקה`);
+  function gradeOne(id) {
+    runLocalGrade([id]);
   }
 
   // ---------- Render ----------
@@ -1512,17 +1317,21 @@
       const st = a.dataset.stage, done = I.done[st];
       a.classList.toggle("done", done);
       $(".nav-step", a).innerHTML = done ? ICON.check : `<span>${STAGES[st].no}</span>`;
-      const badge = $(".nav-badge", a);
-      if (run?.stage === st || (LOCAL.on && st === "ret" && sendingHere())) badge.innerHTML = ICON.spin;
-      else badge.textContent = st === "grade" && I.toGrade.length ? I.toGrade.length : st === "ret" && I.toReturn.length ? I.toReturn.length : "";
-      badge.className = `nav-badge ${run?.stage === st || (LOCAL.on && st === "ret" && sendingHere()) ? "running" : ""}`;
+      // רק סימן "רץ עכשיו". את המספרים רואים בלוח הבקרה
+      const badge = $(".nav-badge", a), running = run?.stage === st || (st === "ret" && sendingHere());
+      if (running) badge.innerHTML = ICON.spin;
+      else badge.textContent = "";
+      badge.className = `nav-badge ${running ? "running" : ""}`;
     });
   }
 
   function renderPickers() {
     const cs = $("#course-select"), as = $("#assignment-select");
-    cs.innerHTML = D.courses.map((c) => `<option value="${c.id}" ${c.id === state.courseId ? "selected" : ""}>${esc(c.name)}</option>`).join("");
-    as.innerHTML = D.assignments.filter((a) => a.courseId === state.courseId).map((a) => `<option value="${a.id}" ${a.id === state.assignmentId ? "selected" : ""}>${a.title}</option>`).join("");
+    const list = D.assignments.filter((a) => a.courseId === state.courseId);
+    cs.innerHTML = D.courses.map((c) => `<option value="${c.id}" ${c.id === state.courseId ? "selected" : ""}>${esc(c.name)}</option>`).join("") || "<option>אין קורסים</option>";
+    as.innerHTML = list.map((a) => `<option value="${a.id}" ${a.id === state.assignmentId ? "selected" : ""}>${esc(a.title)}</option>`).join("") || "<option>אין מטלות</option>";
+    cs.disabled = !D.courses.length;
+    as.disabled = !list.length;
   }
 
   function render() {
@@ -1543,6 +1352,7 @@
 
     let html;
     if (state.loading && !booted) html = `<div class="loading">${ICON.spin}טוען…</div>`;
+    else if (!cur() && !["/settings", "/runs"].includes(route())) html = offlineHTML();
     else html = views[route()]();
     $("#main").innerHTML = bannerHTML() + html;
     renderNav();
@@ -1565,22 +1375,12 @@
     const act = t.closest("[data-act]");
     if (act) {
       const a = act.dataset.act, id = act.dataset.id;
-      const s = id && cur().subs.find((x) => x.id === id);
       if (a === "close") closeDrawer();
       if (a === "grade-one") gradeOne(id);
-      if (a === "regrade") { closeDrawer(); gradeOne(id); }
-      if (a === "save") {
-        s.q = rubric().questions.map((q, i) => Math.max(0, Math.min(q.pts, Number($(`#qs-${i}`).value) || 0)));
-        s.score = s.q.reduce((x, y) => x + y, 0);
-        s.feedback = $("#fb-text").value;
-        s.fresh = true;
-        closeDrawer(); render();
-        toast(`השינויים בעבודה של ${s.name} נשמרו`);
-      }
       if (a === "open-folder") openFolder("folder");
       if (a === "open-inbox") openFolder("inbox");
       if (a === "open-upload") openFolder("upload");
-      if (a === "recheck") location.reload();
+      if (a === "recheck") { if (LOCAL.on) location.reload(); else connect(true); }
       if (a === "send-confirm" && LOCAL.batch?.assignmentId === cur().id) startLocalSend(LOCAL.batch.id);
       if (a === "send-cancel") { LOCAL.batch = null; render(); }
       if (a === "send-stop") stopLocalSend();
@@ -1606,7 +1406,7 @@
     const reset = t.closest("[data-reset]");
     if (reset) {
       const st = reset.dataset.reset;
-      state.instr[st] = D.instructions[st];
+      state.instr[st] = DEFAULT_GRADE_INSTR;
       store.set(`instr.${st}`, state.instr[st]);
       render(); toast("ההנחיות חזרו לברירת המחדל"); return;
     }
@@ -1646,43 +1446,12 @@
       flashSaved(st);
       updatePrompt(); return;
     }
-    if (t.dataset.rpts !== undefined) {
-      rubric().questions[+t.dataset.rpts].pts = Math.max(0, Number(t.value) || 0);
-      const total = rubric().questions.reduce((a, q) => a + q.pts, 0);
-      const line = $("#total-line");
-      line.classList.toggle("bad", total !== 100);
-      line.lastElementChild.textContent = `${total} נק׳`;
-      updatePrompt(); return;
-    }
-    if (t.dataset.rreq !== undefined) { rubric().questions[+t.dataset.rreq].req = t.value; updatePrompt(); return; }
-    if (t.dataset.emph !== undefined) { rubric().emphases = t.value.split("\n").filter((x) => x.trim()); updatePrompt(); return; }
-    if (t.dataset.pattern !== undefined) {
-      state.retFormat.pattern = t.value; persistSetting("retFormat");
-      const ex = info().graded[0];
-      if (ex && $("#pattern-example")) $("#pattern-example").textContent = fileNameFor(ex);
-      return;
-    }
-    if (t.dataset.q !== undefined) {
-      const total = $$("[data-q]").reduce((a, el) => a + (Number(el.value) || 0), 0);
-      $("#total-score").textContent = total;
-      const i = +t.dataset.q, max = rubric().questions[i].pts, v = Math.min(max, Number(t.value) || 0);
-      const bar = t.closest("li").querySelector(".track i");
-      bar.style.width = `${(v / max) * 100}%`;
-      bar.classList.toggle("short", v < max);
-    }
     if (t.dataset.set && t.type !== "checkbox" && t.tagName !== "SELECT") setPath(t.dataset.set, t.type === "number" ? Number(t.value) : t.value);
   });
 
   document.addEventListener("change", (e) => {
     const t = e.target;
     if (t.dataset.set && (t.type === "checkbox" || t.tagName === "SELECT")) { setPath(t.dataset.set, t.type === "checkbox" ? t.checked : t.value); updatePrompt(); }
-    if (t.dataset.inc) { state.retFormat.include[t.dataset.inc] = t.checked; persistSetting("retFormat"); }
-    if (t.dataset.method !== undefined) { state.retFormat.method = t.value; persistSetting("retFormat"); }
-    if (t.dataset.solution !== undefined && t.files[0]) {
-      state.solution[cur().id] = t.files[0].name;
-      render();
-      toast("הפתרון הרשמי נשמר למטלה");
-    }
   });
 
   function persistSetting(key) { store.set(key, state[key]); }
@@ -1696,7 +1465,7 @@
   $("#course-select").addEventListener("change", (e) => {
     state.courseId = e.target.value;
     const list = D.assignments.filter((a) => a.courseId === state.courseId);
-    state.assignmentId = (list.find((a) => a.phase === "current") || list[0]).id;
+    state.assignmentId = (list.find((a) => a.phase === "current") || list[0])?.id;
     state.filter = "all";
     closeDrawer(); renderPickers(); render();
   });
@@ -1716,57 +1485,53 @@
 
   window.addEventListener("hashchange", () => { closeDrawer(); render(); window.scrollTo(0, 0); $("#main").focus({ preventScroll: true }); });
 
-  // ---------- הגרסה המחוברת: טעינה ומשיכה דרך השרת המקומי ----------
+  // ---------- החיבור למערכת שבמחשב (dashboard/web_server.py) ----------
   function api(path, opts = {}) {
-    return fetch(path, { cache: "no-store", ...opts, headers: { "Content-Type": "application/json", "X-Assignment-Checker": "1" } })
+    return fetch(BASE + path, { cache: "no-store", ...opts, headers: { "Content-Type": "application/json", "X-Assignment-Checker": "1" } })
       .then(async (r) => {
         const data = await r.json().catch(() => ({}));
-        if (!r.ok) throw new Error(data.error || `השרת המקומי החזיר שגיאה ${r.status}`);
+        if (!r.ok) throw new Error(data.error || `המערכת במחשב החזירה שגיאה ${r.status}`);
         return data;
-      });
+      }, () => { throw new Error("אין חיבור למערכת במחשב. האם start.bat עדיין פתוח?"); });
   }
 
-  // השרת המקומי עונה ב-api/health. באתר הציבורי (Vercel) אין לו תשובה, ולכן נשארים בהדגמה
-  async function detectLocal() {
-    if (!["localhost", "127.0.0.1"].includes(location.hostname)) return false;
+  // המערכת עונה ב-api/health. באתר הציבורי כרום שואל פעם אחת אם לאפשר גישה למכשיר, ועד התשובה הבקשה מחכה
+  async function detectLocal(timeoutMs) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     try {
-      const ctrl = new AbortController();
-      setTimeout(() => ctrl.abort(), 1500);
-      const r = await fetch("api/health", { cache: "no-store", signal: ctrl.signal });
+      const r = await fetch(BASE + "api/health", { cache: "no-store", signal: ctrl.signal });
       if (!r.ok) return false;
       LOCAL.health = await r.json();
       return LOCAL.health?.ok === true;
     } catch {
       return false;
+    } finally {
+      clearTimeout(timer);
     }
   }
 
-  const GENERIC_RUBRIC = { questions: [1, 2, 3, 4].map((n) => ({ n, pts: 25, req: "" })), emphases: [] };
-  function rubricFor(name) {
-    const base = /לינארית/.test(name) ? DEMO_RUBRICS.la : /בדידה/.test(name) ? DEMO_RUBRICS.dm : GENERIC_RUBRIC;
-    return { questions: structuredClone(base.questions), emphases: [...base.emphases], mistakes: [] };
-  }
+  // בלי מחוון: הניקוד מתחלק שווה בין השאלות, כמו בבדיקה עצמה (grading/grade.py)
+  const equalRubric = (labels) => ({ questions: labels.map((l, i) => ({ n: i + 1, pts: Math.round(100 / labels.length), req: l })) });
 
   async function loadLocal() {
     try {
-      const data = await api("api/state");
+      const [data, health] = await Promise.all([api("api/state"), api("api/health").catch(() => null)]);
       D.courses.splice(0, D.courses.length, ...data.courses);
       D.assignments.splice(0, D.assignments.length, ...data.assignments.map((a) => ({
         ...a, phase: a.subs.length ? "current" : "new", gradedAt: a.gradedAt || null, returnedAt: a.returnedAt || null, lastFresh: null,
-        rubricQ: a.rubric?.length ? { questions: a.rubric.map((q, i) => ({ n: i + 1, pts: q.points, req: q.label })), emphases: [], mistakes: [] } : null,
+        rubricQ: a.rubric?.length ? { questions: a.rubric.map((q, i) => ({ n: i + 1, pts: q.points, req: q.label, criteria: q.criteria || "" })) } : null,
       })));
       Object.keys(D.rubrics).forEach((k) => delete D.rubrics[k]);
       data.courses.forEach((c) => {
-        // השאלות של המטלה (מתוך Assignment details.json), או מחוון ברירת מחדל
         const labels = data.assignments.find((a) => a.courseId === c.id && a.questionLabels?.length)?.questionLabels;
-        D.rubrics[c.id] = labels
-          ? { questions: labels.map((l, i) => ({ n: i + 1, pts: Math.round(100 / labels.length), req: l })), emphases: [], mistakes: [] }
-          : rubricFor(c.name);
+        D.rubrics[c.id] = equalRubric(labels || ["שאלה 1"]);
       });
       D.runs.splice(0, D.runs.length, ...data.assignments
         .flatMap((a) => (a.log || []).map((l) => ({ ...l, where: `${a.course}, ${a.title}` })))
         .sort((x, y) => (y.at || "").localeCompare(x.at || "")));
-      LOCAL.health = { ...LOCAL.health, root: data.root, moodle: data.moodle, claude: data.claude };
+      // מודל מחובר = Claude Code מחובר במחשב (דרכו Claude in Chrome עובד במודל)
+      LOCAL.health = { ...LOCAL.health, ...(health || {}), root: data.root, claude: data.claude };
       if (!LOCAL.polling) LOCAL.sending = data.sending || null;
       if (!D.assignments.some((a) => a.id === state.assignmentId)) {
         const first = D.assignments.find((a) => a.subs.length) || D.assignments[0];
@@ -1869,34 +1634,48 @@
   function renderStatus() {
     const live = LOCAL.on && !!LOCAL.health?.root;
     const badge = $("#mode-badge");
-    badge.textContent = live ? "מחובר ל-OneDrive" : LOCAL.on ? "OneDrive לא נמצא" : "מצב הדגמה";
+    badge.textContent = live ? "מחובר ל-OneDrive" : LOCAL.on ? "OneDrive לא נמצא" : LOCAL.probing ? "מתחבר…" : "המערכת לא מחוברת";
     badge.className = `demo-badge ${live ? "ok" : ""}`;
-    badge.title = live ? LOCAL.health.root : "הנתונים במסך לדוגמה בלבד";
+    badge.title = live ? LOCAL.health.root : "הנתונים מגיעים מהמערכת שרצה במחשב (start.bat)";
     const set = (id, ok, text) => {
       const el = $(id);
       el.classList.toggle("ok", ok);
       $(".dot", el).className = `dot ${ok ? "ok" : "warn"}`;
       $("em", el).textContent = text;
     };
-    set("#conn-moodle", !!LOCAL.health?.moodle, LOCAL.health?.moodle ? "מחובר" : LOCAL.on ? "דרך ZIP" : "לא מחובר");
-    set("#conn-claude", !!LOCAL.health?.claude, LOCAL.health?.claude ? "מחובר" : "לא מחובר");
+    set("#conn-moodle", !!LOCAL.health?.moodle, LOCAL.health?.moodle ? "דרך Claude בכרום" : LOCAL.on ? "צריך להתחבר" : "לא מחובר");
+    set("#conn-claude", !!LOCAL.health?.claude, LOCAL.health?.claude ? "מחובר" : LOCAL.on ? "עוד לא מחובר" : "לא מחובר");
     set("#conn-drive", live, live ? "מחובר" : "לא מחובר");
     $("#proto-note").textContent = live
-      ? (LOCAL.health?.claude ? "ההגשות, הציונים והעבודות המסומנות נשמרים בתיקיית OneDrive של הקורס." : "ההגשות נשמרות בתיקיית OneDrive של הקורס. כדי לבדוק עם Claude צריך מפתח (ANTHROPIC_API_KEY ב-.env).")
-      : "מצב הדגמה: הנתונים והפעולות במסך מדומים. כדי לעבוד עם OneDrive מפעילים את start.bat.";
+      ? (LOCAL.health?.claude ? "כל המספרים במסך נקראים מתיקיית OneDrive של הקורס." : "כל המספרים במסך נקראים מתיקיית OneDrive של הקורס. הבדיקה עם Claude עוד לא מחוברת (חסר ANTHROPIC_API_KEY ב-.env).")
+      : "האתר מציג רק נתונים אמיתיים, מהמערכת שרצה במחשב (start.bat). כרגע היא לא מחוברת.";
+  }
+
+  // מתחברים למערכת. באתר הציבורי מנסים שוב כל כמה שניות, עד שמפעילים את start.bat
+  async function connect(manual = false) {
+    if (LOCAL.probing || LOCAL.on) return;
+    LOCAL.probing = true;
+    renderStatus();
+    const ok = await detectLocal(ON_LOCAL_HOST ? 1500 : 60000);
+    LOCAL.probing = false;
+    if (ok) {
+      LOCAL.on = true;
+      if (LOCAL.health.root) await loadLocal();
+      if (!ON_LOCAL_HOST) toast("האתר מחובר למערכת שבמחשב");
+    }
+    // ניסיון שנכשל ברקע לא מצייר את המסך מחדש
+    if (ok || manual || !booted) { renderPickers(); render(); } else renderStatus();
   }
 
   let booted = false;
   (async () => {
-    state.loading = true;
+    state.loading = ON_LOCAL_HOST;  // באתר הציבורי מראים מיד איך מתחברים, בלי לחכות
     render();
-    if (await detectLocal()) {
-      LOCAL.on = true;
-      if (LOCAL.health.root) await loadLocal();
-    }
+    await connect();
     state.loading = false;
+    booted = true;
     renderPickers();
     render();
-    booted = true;
+    if (!ON_LOCAL_HOST) setInterval(() => { if (!LOCAL.on) connect(); }, 5000);
   })();
 })();

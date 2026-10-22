@@ -615,11 +615,34 @@ def returned_numbers(assignment_dir: Path, marked: dict[str, list[Path]]) -> set
 _DOWNLOAD = re.compile(re.escape(paths.DOWNLOAD_PREFIX) + r" (\d{4}-\d{2}-\d{2} \d{2}-\d{2})\.zip$")
 
 
+def _downloads(a: folder_view.Assignment) -> list[str]:
+    """מתי נמשכו ה-ZIP-ים של המטלה (כל הורדה נשמרת בתיקיית המטלה), מהישן לחדש."""
+    stamps = sorted(m.group(1) for p in a.dir.glob("*.zip") if (m := _DOWNLOAD.match(p.name)))
+    return [datetime.strptime(s, "%Y-%m-%d %H-%M").isoformat(timespec="minutes") for s in stamps]
+
+
 def _last_download(a: folder_view.Assignment) -> str | None:
-    stamps = [m.group(1) for p in a.dir.glob("*.zip") if (m := _DOWNLOAD.match(p.name))]
-    if not stamps:
-        return None
-    return datetime.strptime(max(stamps), "%Y-%m-%d %H-%M").isoformat(timespec="minutes")
+    return (_downloads(a) or [None])[-1]
+
+
+def _activity(a: folder_view.Assignment, results: dict, log: list[dict]) -> list[dict]:
+    """יומן הפעילות של המטלה, רק ממה שבאמת קרה בתיקייה: משיכות, עדכון Grades.csv והעלאות למודל. בלי שמות."""
+    out = [{"at": at, "kind": "pull", "text": "נמשכו הגשות ממודל (ZIP נקלט לתיקיית המטלה)"} for at in _downloads(a)]
+    grades_file = a.dir / grading.GRADES
+    if grades_file.exists():
+        n = sum(1 for r in results.values() if r.get("grade"))
+        out.append({"at": datetime.fromtimestamp(grades_file.stat().st_mtime).isoformat(timespec="minutes"),
+                    "kind": "grade", "text": f"Grades.csv עודכן: {n} ציונים"})
+    uploads: dict[tuple[str, str], dict] = {}
+    for r in log:  # שורה לכל קובץ שעלה. מקבצים לפי ה-ZIP והדקה
+        at = (r.get("uploaded_at") or "")[:16]
+        u = uploads.setdefault((r.get("zip") or "", at), {"at": at, "by": r.get("by") or "", "numbers": set()})
+        u["numbers"].add(r.get("number"))
+    for (zip_name, _), u in uploads.items():
+        n = len(u["numbers"])
+        out.append({"at": u["at"], "kind": "return", "actor": u["by"],
+                    "text": f"הועלו למודל {n} עבודות מסומנות" + (f" ({zip_name})" if zip_name else "")})
+    return out
 
 
 def state(root: Path) -> dict:
@@ -677,7 +700,7 @@ def state(root: Path) -> dict:
                             + [f"עותק כפול של יומן ההעלאה: {c}" for c in upload_log.log_conflicts(a.dir)]
                             + ([f"משיכה בתהליך: {moodle_lock.parse((a.dir / LOCK_FILE).read_text(encoding='utf-8'))[0]}"] if (a.dir / LOCK_FILE).exists() else [])
                             + ([f"העלאה בתהליך: {who}"] if (who := _upload_lock_holder(a)) else []),
-                "subs": subs, "log": [],
+                "subs": subs, "log": _activity(a, results, log),
             })
     return {"root": str(root), "courses": courses, "assignments": out,
             "moodle": False, "claude": bool(cfg.claude_key()), "grading": grade_status(), "sending": send_status()}
