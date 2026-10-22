@@ -9,7 +9,9 @@
           Key - number to student.csv    טבלת המפתח: מספר ↔ סטודנט. רק כאן יש שמות
           0 - Moodle download/           ZIP של "הורדת כל ההגשות" ממודל (המערכת מוסיפה)
           1 - Submissions to grade/      0001.pdf, 0002.pdf... ממוספרות, בלי שמות
-          2 - Graded with comments/      אותו מספר, עם ההערות (שלב הבדיקה)
+          2 - Graded with comments/      אותו מספר, עם ההערות (שלב הבדיקה). 0001-2.pdf: קובץ נוסף של 0001
+          Grades.csv                     ציון ומשוב לפי מספר (שלב הבדיקה, ראו grade.py)
+          Official solution.pdf          הפתרון הרשמי, אם יש. נשלח ל-Claude עם כל הגשה
           3 - Ready to upload to Moodle/ מה שמוכן להעלאה (שלב ההחזרה)
           System log.txt                 מה המערכת עשתה ומתי (בלי שמות)
 
@@ -138,13 +140,22 @@ class Assignment:
         return max((len(r["number"]) for r in rows if r.get("number")), default=4)
 
     # ---- מצב של כל הגשה ----
-    def graded_numbers(self) -> set[str]:
+    def marked_files(self) -> dict[str, list[Path]]:
+        """מספר → הקבצים המסומנים שלו ב-"2 - Graded with comments". גם 0001-2.pdf שייך ל-0001."""
         d = self.dir / GRADED
-        return {p.stem for p in d.glob("*.pdf")} if d.is_dir() else set()
+        out: dict[str, list[Path]] = {}
+        for p in sorted(d.glob("*.pdf")) if d.is_dir() else []:
+            n = marked_number(p.stem)
+            if n:
+                out.setdefault(n, []).append(p)
+        return out
+
+    def graded_numbers(self) -> set[str]:
+        return set(self.marked_files())
 
     def ready_numbers(self) -> set[str]:
         d = self.dir / READY
-        return {p.stem for p in d.glob("*.pdf")} if d.is_dir() else set()
+        return {n for p in d.glob("*.pdf") if (n := marked_number(p.stem))} if d.is_dir() else set()
 
     # ---- יומן ----
     def log(self, message: str) -> None:
@@ -164,9 +175,15 @@ class Assignment:
             except ValueError:
                 continue
             text = text.strip()
-            kind = "error" if ("נכשל" in text or "דורשת טיפול" in text) else "pull"
+            kind = "error" if ("נכשל" in text or "דורשת טיפול" in text) else "grade" if text.startswith("בדיקה עם Claude") else "pull"
             out.append({"at": at, "kind": kind, "text": text})
         return out
+
+
+def marked_number(stem: str) -> str | None:
+    """"0001" או "0001-2" (קובץ נוסף של אותה הגשה) → "0001". כל שם אחר → None."""
+    m = re.fullmatch(r"(\d+)(?:-\d+)?", stem)
+    return m.group(1) if m else None
 
 
 # ---------- קורסים ומטלות ----------
@@ -215,7 +232,7 @@ def create_assignment(course_dir: Path, folder_name: str, details: dict) -> Assi
         a.save_details({
             "id": details.get("id"), "course": course_dir.name, "course_id": details.get("course_id"),
             "name": a.dir.name, "due": details.get("due"), "questions": [], "submission_rules": [],
-            "max_grade": None, "rubric": None, "notes": details.get("notes", ""),
+            "max_grade": None, "rubric": None, "grading_instructions": "", "notes": details.get("notes", ""),
             "title": details.get("title") or a.dir.name, "course_title": details.get("course_title") or course_title(course_dir),
         })
     if not (a.dir / KEY).exists():

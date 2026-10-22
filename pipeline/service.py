@@ -5,14 +5,16 @@
     גם קובצי ZIP שמחכים בתיקייה "0 - Moodle download" של המטלה, ורק שם.
   * עם טוקן, מטלות חדשות במודל מקבלות תיקייה לבד, באותו מבנה.
   * קבצים שהמערכת לא שמה (למשל ההורדה המקורית של אורי בתיקיית המטלה) לא נקראים ולא זזים.
+  * "בדוק" שולח את ההגשות הממוספרות ל-Claude (ראו grade.py). הבדיקה רצה ברקע, והאתר שואל מה המצב.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import threading
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from . import config, settings as cfg, team
+from . import config, grade as grading, settings as cfg, team
 from .moodle_api import Moodle, MoodleError
 from .pull import PullResult, import_submissions, pull_zip, waiting_zips
 
@@ -107,8 +109,85 @@ def pull(root: Path, course: str, assignment: str) -> PullReport:
     return rep
 
 
+# ---------- בדיקה ----------
+@dataclass
+class GradeJob:
+    """בדיקה אחת שרצה ברקע. האתר שואל מה המצב עד שהיא נגמרת."""
+    course: str = ""
+    assignment: str = ""
+    numbers: list[str] = field(default_factory=list)
+    running: bool = False
+    done: dict[str, str] = field(default_factory=dict)  # מספר → graded / failed / skipped
+    report: dict | None = None
+    summary: str = ""
+    error: str = ""
+    started_at: str = ""
+    finished_at: str = ""
+
+
+_job = GradeJob()
+_job_lock = threading.Lock()
+
+
+def grade_status() -> dict:
+    with _job_lock:
+        return {**asdict(_job), "total": len(_job.numbers)}
+
+
+def start_grading(root: Path, course: str, assignment: str, numbers: list[str] | None = None,
+                  ask: grading.Ask | None = None, wait: bool = False, **opts) -> dict:
+    """מתחיל לבדוק ברקע. זורק NoApiKey אם אין מפתח, ו-RuntimeError אם כבר רצה בדיקה."""
+    global _job
+    asg = find_assignment(root, course, assignment)
+    if ask is None:
+        ask = grading.claude_ask()
+    todo = grading.pending(asg) if numbers is None else [grading.number_key(n) for n in numbers]
+    with _job_lock:
+        if _job.running:
+            raise RuntimeError("בדיקה אחרת כבר רצה. כדאי לחכות שתסתיים.")
+        _job = GradeJob(course, assignment, todo, running=bool(todo),
+                        started_at=datetime.now().isoformat(timespec="seconds"))
+        job = _job
+    if not todo:
+        job.summary = "אין הגשות שמחכות לבדיקה."
+        job.finished_at = job.started_at
+        return grade_status()
+
+    def progress(n: str, what: str) -> None:
+        with _job_lock:
+            job.done[n] = what
+
+    def run() -> None:
+        try:
+            rep = grading.grade_assignment(asg, todo, ask=ask, on_progress=progress, **opts)
+            job.report, job.summary = asdict(rep), rep.summary()
+        except grading.NoApiKey as e:
+            job.error = str(e)
+        except Exception as e:  # השגיאה מוצגת באתר במקום שהבדיקה תיעלם בשקט
+            job.error = f"הבדיקה נכשלה: {e}"
+            asg.log(job.error)
+        finally:
+            with _job_lock:
+                job.running = False
+                job.finished_at = datetime.now().isoformat(timespec="seconds")
+
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    if wait:
+        t.join()
+    return grade_status()
+
+
 # ---------- מצב לאתר ----------
 _STATUS_ORDER = ("returned", "graded", "pulled")
+
+
+def _score(raw: str | None) -> float | int | None:
+    try:
+        x = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return int(x) if x.is_integer() else x
 
 
 def state(root: Path) -> dict:
@@ -122,33 +201,45 @@ def state(root: Path) -> dict:
         courses.append({"id": cid, "name": team.course_title(course_dir), "folder": course_dir.name})
         for ai, a in enumerate(items):
             d = a.details()
-            graded, ready = a.graded_numbers(), a.ready_numbers()
+            marked, ready, grades = a.marked_files(), a.ready_numbers(), grading.read_grades(a.dir)
             subs = []
             for r in a.key_rows():
                 f = a.submissions / r.get("anon_file", "")
                 if not f.exists():
                     continue
                 n = r["number"]
-                status = "returned" if n in ready else "graded" if n in graded else "pulled"
+                row = grades.get(grading.number_key(n))
+                status = "returned" if n in ready else "graded" if (n in marked or row) else "pulled"
                 st = f.stat()
+                files = [{"name": f.name, "pages": 0, "size": st.st_size, "path": f.relative_to(root).as_posix()}]
+                files += [{"name": m.name, "pages": 0, "size": m.stat().st_size, "path": m.relative_to(root).as_posix(),
+                           "marked": True} for m in marked.get(n, [])]
                 subs.append({
                     "id": n, "name": f"הגשה {n}", "studentId": n, "email": "",
                     "submittedAt": datetime.fromtimestamp(st.st_mtime).isoformat(timespec="minutes"),
-                    "late": False, "scanned": False, "status": status, "q": None, "score": None, "issue": None,
-                    "files": [{"name": f.name, "pages": 0, "size": st.st_size,
-                               "path": f.relative_to(root).as_posix()}],
+                    "late": False, "scanned": False, "status": status,
+                    "q": grading.parse_points(row.get("points")) if row else None,
+                    "score": _score(row.get("grade")) if row else None,
+                    "feedback": (row.get("feedback") or "") if row else "",
+                    "approved": grading.is_approved(row), "review": (row.get("review") or "") if row else "",
+                    "issue": None, "files": files,
                 })
             log = a.log_lines()
             pulled = next((x["at"] for x in reversed(log) if x["text"].startswith(("נקלט", "נמשך"))), None)
+            graded_at = next((x["at"] for x in reversed(log) if x["kind"] == "grade"), None)
+            ctx = grading.load_context(a, send_solution=False)
             out.append({
                 "id": f"{cid}a{ai}", "courseId": cid, "course": team.course_title(course_dir),
                 "courseFolder": course_dir.name, "folder": a.dir.name, "title": a.title,
                 "n": ai + 1, "due": d.get("due"), "questions": a.question_count(), "questionLabels": a.question_labels(),
+                "rubric": [{"label": q.label, "points": q.points, "criteria": q.criteria} for q in ctx.questions],
+                "maxGrade": ctx.max_grade, "solution": (a.dir / grading.SOLUTION).is_file(),
                 # מטלה שכבר יש בה הגשות נחשבת כנמשכה, גם אם נמשכה לפני שהמערכת הייתה קיימת
                 "pulledAt": pulled or (datetime.fromtimestamp((a.dir / team.KEY).stat().st_mtime).isoformat(timespec="minutes")
                                        if subs and (a.dir / team.KEY).exists() else None),
+                "gradedAt": graded_at,
                 "moodleId": d.get("id"), "notes": d.get("notes") or "", "rules": d.get("submission_rules") or [],
                 "subs": subs, "log": log,
             })
     return {"root": str(root), "courses": courses, "assignments": out,
-            "moodle": bool(cfg.moodle_token()), "claude": bool(cfg.claude_key())}
+            "moodle": bool(cfg.moodle_token()), "claude": bool(cfg.claude_key()), "grading": grade_status()}
