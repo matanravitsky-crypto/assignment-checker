@@ -5,12 +5,8 @@
 """
 from __future__ import annotations
 
-import csv
-import http.client
 import json
-import threading
 import zipfile
-from http.server import ThreadingHTTPServer
 from urllib.parse import quote
 
 import pytest
@@ -19,46 +15,7 @@ from moodle import paths
 from dashboard import actions, folder_view, shared_folder
 from tests.sample_files import homework_pdf
 
-COURSE, HW, MID = "Linear Algebra", "Assignment 0 - Sets and Complex Numbers", "3438636"
-NAMES = {"1001": "נועה כהן", "1002": "איתי לוי", "1003": "מאיה מזרחי", "2000": "יונתן פרץ"}
-
-
-def write_key(a_dir, rows):
-    with (a_dir / paths.KEY).open("w", encoding="utf-8-sig", newline="") as fh:
-        w = csv.DictWriter(fh, fieldnames=["number", "anon_file", "participant_id", "original_folder", "original_file"])
-        w.writeheader()
-        w.writerows(rows)
-
-
-@pytest.fixture
-def root(tmp_path, monkeypatch):
-    """עותק מוקטן של YallaLinearit/Exercise Checking System, כמו שאורי בנה."""
-    course_folder = tmp_path / "BGU" / "נדב מאיר - YallaLinearit"
-    (course_folder / "Recordings").mkdir(parents=True)
-    r = course_folder / "Exercise Checking System"
-    (r / "Discrete Mathematics").mkdir(parents=True)
-    a = r / COURSE / HW
-    for sub in (paths.TO_GRADE, paths.MARKED, paths.UPLOAD):
-        (a / sub).mkdir(parents=True)
-    (a / paths.INFO).write_text(json.dumps({
-        "id": MID, "course": COURSE, "course_id": "67024", "name": HW, "due": "2026-10-26T23:59:00+02:00",
-        "questions": [{"sheet": "דף קבוצות", "numbers": [11, 12]}, {"sheet": "דף מספרים מרוכבים", "numbers": [6, 7, 8]}],
-        "title": "הגשה 0 - קבוצות ומרוכבים", "course_title": "אלגברה לינארית להנדסה", "notes": "הורד ב-21/10",
-    }, ensure_ascii=False), encoding="utf-8")
-    rows = []
-    for i, pid in enumerate(("1001", "1002", "1003"), start=1):
-        n = f"{i:04d}"
-        (a / paths.TO_GRADE / f"{n}.pdf").write_bytes(homework_pdf(NAMES[pid], HW))
-        rows.append({"number": n, "anon_file": f"{n}.pdf", "participant_id": pid,
-                     "original_folder": f"{NAMES[pid]}_{pid}_assignsubmission_file", "original_file": "hw.pdf"})
-    # לסטודנט 0002 יש שני קבצים
-    (a / paths.TO_GRADE / "0002-2.pdf").write_bytes(homework_pdf(NAMES["1002"], HW))
-    rows.append({"number": "0002", "anon_file": "0002-2.pdf", "participant_id": "1002",
-                 "original_folder": f"{NAMES['1002']}_1002_assignsubmission_file", "original_file": "part2.pdf"})
-    write_key(a, rows)
-    (a / "Moodle download 2026-10-21 16-28.zip").write_bytes(b"original download")
-    monkeypatch.setenv("ASSIGNMENT_CHECKER_ROOT", str(course_folder))
-    return r
+from tests.dashboard.helpers import COURSE, HW, MID, NAMES, call, write_key
 
 
 # ---------- איתור התיקייה ----------
@@ -161,27 +118,6 @@ def test_unknown_assignment_is_refused(root):
     with pytest.raises(FileNotFoundError):
         actions.pull(root, COURSE, "../../Recordings")
 
-
-# ---------- השרת המקומי ----------
-@pytest.fixture
-def server(root):
-    from dashboard.web_server import Handler
-    srv = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
-    yield srv.server_port
-    srv.shutdown()
-
-
-def call(port, method, path, body=None, headers=None):
-    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
-    h = {"Host": f"localhost:{port}", **(headers or {})}
-    data = json.dumps(body).encode() if body is not None else None
-    if data:
-        h["Content-Type"] = "application/json"
-    conn.request(method, path, body=data, headers=h)
-    r = conn.getresponse()
-    raw = r.read()
-    return r.status, (json.loads(raw) if r.getheader("Content-Type", "").startswith("application/json") else raw)
 
 
 def test_server_pull_error_and_files(root, server, monkeypatch):

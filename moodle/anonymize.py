@@ -85,6 +85,42 @@ def existing_numbers(assignment_dir: Path) -> dict[str, int]:
         return {row["participant_id"]: int(row["number"]) for row in csv.DictReader(f)}
 
 
+def key_conflicts(assignment_dir: Path) -> list[str]:
+    """Conflict copies of the key that OneDrive makes when two computers write it at once ("...-DESKTOP-ABC.csv").
+
+    While one exists, two students may share a number: nothing that numbers or uploads may go on until
+    someone merges the copy into the main key and deletes it.
+    """
+    stem = Path(paths.KEY).stem
+    return sorted(p.name for p in assignment_dir.glob(f"{stem}*.csv") if p.name != paths.KEY)
+
+
+def key_problems(assignment_dir: Path) -> dict[str, list[str]]:
+    """What is wrong in the key table, by number only (never names): {kind: sorted numbers}, empty when it is sound.
+
+    "number_has_two_participants"  a number whose rows name more than one participant id
+    "participant_has_two_numbers"  numbers that share a participant id
+    "folder_does_not_match"        a number whose original folder does not carry its participant id
+    """
+    pids: dict[str, set[str]] = {}
+    numbers: dict[str, set[str]] = {}
+    bad_folder: set[str] = set()
+    with open(assignment_dir / paths.KEY, encoding="utf-8-sig") as f:
+        for row in csv.DictReader(f):
+            number, pid = (row.get("number") or "").strip(), (row.get("participant_id") or "").strip()
+            pids.setdefault(number, set()).add(pid)
+            numbers.setdefault(pid, set()).add(number)
+            match = FOLDER_PATTERN.match(row.get("original_folder") or "")
+            if not pid or not match or match.group("participant") != pid:
+                bad_folder.add(number)
+    problems = {
+        "number_has_two_participants": sorted(n for n, p in pids.items() if len(p) > 1),
+        "participant_has_two_numbers": sorted({n for ns in numbers.values() if len(ns) > 1 for n in ns}),
+        "folder_does_not_match": sorted(bad_folder),
+    }
+    return {kind: found for kind, found in problems.items() if found}
+
+
 def read_mapping(assignment_dir: Path) -> dict[str, dict]:
     """Return the key as {number: first row for that number}."""
     with open(assignment_dir / paths.KEY, encoding="utf-8-sig") as f:

@@ -2,7 +2,13 @@
   const D = window.DEMO;
   const API = window.PipelineAPI;
   // מצב מחובר: כשהאתר רץ דרך השרת המקומי (start.bat), הנתונים מגיעים מתיקיית OneDrive של הקורס
-  const LOCAL = { on: false, health: null, report: null };
+  const LOCAL = {
+    on: false, health: null, report: null,
+    batch: null,       // ההעלאה שהוכנה וממתינה ל"כן" של אדם: {...תשובת api/upload/prepare, assignmentId}
+    sending: null,     // מצב ההעלאה למודל כפי שהשרת מדווח (GET api/upload)
+    polling: false, starting: false, stopping: false,
+    rd: null,          // מוכנות המחשב להעלאה (Claude Code, התחברות, כרום ומודל), למטלה הנוכחית
+  };
   const DEMO_RUBRICS = structuredClone(D.rubrics);
   const $ = (sel, root = document) => root.querySelector(sel);
   const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -55,6 +61,9 @@
     },
   };
   const ROUTE_STAGE = { "/pull": "pull", "/grade": "grade", "/return": "ret" };
+  // במצב מחובר, שלב 3 מעלה קובצי ZIP למודל דרך Claude in Chrome
+  const RET_LOCAL_STEPS = ["הכנת הקבצים", "העלאה למודל", "אימות מול מודל"];
+  const stepsOf = (stage) => (LOCAL.on && stage === "ret" ? RET_LOCAL_STEPS : STAGES[stage].steps);
 
   const NO_KEY = "אין מפתח של Claude, ולכן אי אפשר לבדוק. מוסיפים לקובץ .env שבתיקיית הריפו שורה ANTHROPIC_API_KEY=... ומפעילים מחדש את start.bat.";
   const STATUS = { pulled: "ממתינה לבדיקה", grading: "בבדיקה", graded: "נבדקה", returned: "הוחזרה", error: "דורשת טיפול" };
@@ -149,7 +158,7 @@
     if (LOCAL.on) {
       if (stage === "pull") runLocalPull();
       if (stage === "grade") runLocalGrade(info().toGrade.map((s) => s.id));
-      if (stage === "ret") runLocalReturn();
+      if (stage === "ret") startSendFlow();
       return;
     }
     const A = cur();
@@ -211,18 +220,25 @@
       disabled = true;
       primary = false;
     }
-    if (LOCAL.on && stage === "ret") label = n ? `הכן ${n} להחזרה למודל` : "אין עבודות בדוקות";
-    const icon = mine ? ICON.spin : ICON[stage === "ret" ? "ret" : stage];
+    let text = mine ? (run.progress || "רץ עכשיו…") : label, spinning = mine;
+    if (LOCAL.on && stage === "ret") {
+      if (!mine) text = n ? `העלה ${n} למודל` : "אין עבודות להעלאה";
+      if (LOCAL.sending?.running || LOCAL.starting) disabled = true;  // העלאה אחת בכל פעם, גם אם היא של מטלה אחרת
+      if (LOCAL.sending?.running && sendingHere()) { text = sendProgressText(); spinning = true; }
+      if (LOCAL.rd?.flow && LOCAL.rd.assignmentId === A.id && !mine) { text = "בודק שהמחשב מוכן…"; spinning = true; disabled = true; }
+    }
+    const icon = spinning ? ICON.spin : ICON[stage === "ret" ? "ret" : stage];
     const why = LOCAL.on && stage === "grade" && !LOCAL.health?.claude ? ` title="${esc(NO_KEY)}"` : "";
-    return `<button class="btn ${primary ? "primary" : "secondary"} ${big ? "lg" : ""}" data-run="${stage}" ${disabled ? "disabled" : ""}${why}>${icon}${mine ? (run.progress || "רץ עכשיו…") : label}</button>`;
+    return `<button class="btn ${primary ? "primary" : "secondary"} ${big ? "lg" : ""}" data-run="${stage}" ${disabled ? "disabled" : ""}${why}>${icon}${text}</button>`;
   }
 
   function stageState(stage) {
     const A = cur(), I = info(A), run = state.run[A.id];
     if (run?.stage === stage) {
       const i = run.steps.findIndex((s) => s === "running");
-      return { kind: "running", text: `${STAGES[stage].steps[Math.max(i, 0)]}…` };
+      return { kind: "running", text: `${stepsOf(stage)[Math.max(i, 0)]}…` };
     }
+    if (LOCAL.on && stage === "ret" && sendingHere()) return { kind: "running", text: sendProgressText() };
     if (I.done[stage]) {
       const at = { pull: A.pulledAt, grade: A.gradedAt, ret: A.returnedAt }[stage];
       return { kind: "done", text: at ? `הושלם ${when(at)}` : "הושלם" };
@@ -234,7 +250,7 @@
 
   function stageMark(stage, cls = "") {
     const A = cur(), done = info(A).done[stage];
-    if (state.run[A.id]?.stage === stage) return `<span class="stage-mark ${cls} running">${ICON.spin}</span>`;
+    if (state.run[A.id]?.stage === stage || (LOCAL.on && stage === "ret" && sendingHere())) return `<span class="stage-mark ${cls} running">${ICON.spin}</span>`;
     const key = `${A.id}:${stage}`;
     const fresh = done && state.seenDone[key] === false;
     return `<span class="stage-mark ${cls} ${done ? "done" : ""} ${fresh ? "just-done" : ""}">${done ? CHECK_DRAW : STAGES[stage].no}</span>`;
@@ -284,15 +300,17 @@
 
   function runStepsHTML(stage) {
     const A = cur(), I = info(A), run = state.run[A.id];
-    const S = STAGES[stage];
-    const live = run?.stage === stage ? run.steps : null;
+    const S = { ...STAGES[stage], steps: stepsOf(stage) };
+    const live = run?.stage === stage ? run.steps : LOCAL.on && stage === "ret" && sendingHere() ? ["done", "running", "pending"] : null;
     const done = I.done[stage] || (stage === "pull" && A.pulledAt);
     const gradedNow = I.graded.length;
     const marks = I.graded.reduce((a, s) => a + (s.q || []).filter((v, i) => v < rubric().questions[i]?.pts).length, 0);
     const results = {
       pull: ["החיבור הצליח", `${I.subs.length} הגשות${A.lastFresh != null ? `, ${A.lastFresh} חדשות` : ""}`, `${I.files} קבצים`, I.issues ? `${I.ok.length} תקינות, ${I.issues} דורשות טיפול` : "כל הקבצים תקינים"],
       grade: [`${rubric().questions.length} שאלות, 100 נקודות`, `${gradedNow} עבודות`, `${marks} הערות`, `ממוצע ${avg(I.graded.map((s) => s.score)) ?? "—"}`],
-      ret: [`${I.returned.length} קבצים`, `${I.returned.length} ציונים`, `${I.returned.length} משובים`, "הכל נשמר במודל"],
+      ret: LOCAL.on
+        ? [`${I.returned.length} עבודות מסומנות`, `${I.returned.length} עבודות עלו`, "מודל ספר את אותו מספר קבצים"]
+        : [`${I.returned.length} קבצים`, `${I.returned.length} ציונים`, `${I.returned.length} משובים`, "הכל נשמר במודל"],
     }[stage];
     return `
       <ol class="run-steps" aria-label="שלבי הריצה">
@@ -368,14 +386,346 @@
     </section>${rule}`;
   }
 
-  // מה הוכן בהחזרה האחרונה (בגרסה המחוברת)
-  function returnReportHTML() {
-    const r = LOCAL.ret;
-    if (!LOCAL.on || !r || r.assignmentId !== state.assignmentId) return "";
-    return `<section class="panel report">
-      <div class="panel-head"><h3>ההחזרה שהוכנה</h3><span class="end tag ok">${esc(r.summary)}</span></div>
-      <ul class="report-lines">${r.notes.map((l) => `<li>${esc(l)}</li>`).join("")}</ul>
-      <div class="panel-body" style="padding-top:0"><button class="btn secondary small" data-act="open-upload">${ICON.folder}פתח את התיקייה "3 - Ready to upload to Moodle"</button></div>
+  // ---------- שלב 3 בגרסה המחוברת: העלאה למודל ----------
+  // ההעלאה עצמה (Claude in Chrome) רצה בשרת, ברקע. כאן: חלון אישור, התקדמות, עצירה והמשך
+  const sendHere = () => {
+    const A = cur(), S = LOCAL.sending;
+    return !!(A && S && S.course === A.courseFolder && S.assignment === A.folder);
+  };
+  const sendingHere = () => sendHere() && !!LOCAL.sending.running;
+  function sendProgressText() {
+    const S = LOCAL.sending;
+    return `מעלה קובץ ${Math.min((S.done || 0) + 1, S.total || 1)} מתוך ${S.total}…`;
+  }
+  const numList = (items, max = 20) => (items.length > max ? `${items.slice(0, max).join(", ")} ועוד ${items.length - max}` : items.join(", "));
+  // "mismatch" (Moodle imported, the numbers are off) and "stale" are not here on purpose: a person checks Moodle
+  // and prepares again, so nothing is imported twice by one click (tests/moodle/test_send_run.py checks this list)
+  const RESUMABLE = ["needs_login", "user", "error"];
+
+  function sendPanelHTML() {
+    if (!LOCAL.on) return "";
+    const A = cur(), S = LOCAL.sending, b = LOCAL.batch;
+    if (S?.running) {
+      if (!sendHere()) return `<div class="banner">${ICON.spin}<div>העלאה למודל רצה עכשיו במטלה אחרת. אפשר להכין העלאה חדשה כשהיא תסתיים.</div></div>`;
+      const pct = S.total ? Math.round((100 * (S.done || 0)) / S.total) : 0;
+      return `<section class="panel report send-panel" aria-live="polite">
+        <div class="panel-head"><h3>העלאה למודל</h3><span class="end tag">${S.done || 0} מתוך ${S.total} הועלו</span></div>
+        <div class="panel-body">
+          <p class="send-line">${ICON.spin}<b>${sendProgressText()}</b></p>
+          <div class="send-bar" role="progressbar" aria-label="התקדמות ההעלאה" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><i style="width:${pct}%"></i></div>
+          ${LOCAL.stopping ? `<p class="hint">ביקשת לעצור: ההעלאה תיעצר אחרי הקובץ הנוכחי.</p>` : ""}
+          <div class="send-actions"><button class="btn secondary" data-act="send-stop" ${LOCAL.stopping ? "disabled" : ""}>עצור אחרי הקובץ הנוכחי</button></div>
+        </div>
+      </section>`;
+    }
+    if (b && b.assignmentId === A.id) {
+      const notes = [];
+      if (b.not_approved?.length) notes.push(`לידיעה: ${b.not_approved.length} מהן עוד לא סומנו כמאושרות ב-Grades.csv.`);
+      if (b.too_big?.length) notes.push(`גדולות מדי ולא ייכללו: ${numList(b.too_big)}`);
+      if (b.resubmitted?.length) notes.push(`הוגשו מחדש אחרי הבדיקה ולא ייכללו: ${numList(b.resubmitted)}`);
+      const noteList = notes.length ? `<ul class="report-lines send-notes">${notes.map((n) => `<li>${esc(n)}</li>`).join("")}</ul>` : "";
+      if (!b.zips?.length) {
+        return `<section class="panel report send-panel">
+          <div class="panel-head"><h3>העלאה למודל</h3></div>
+          <div class="panel-body"><p class="send-line"><b>אין עבודות חדשות להעלאה</b></p>${noteList}
+            <div class="send-actions"><button class="btn secondary" data-act="send-cancel">סגור</button></div></div>
+        </section>`;
+      }
+      return `<section class="panel report send-panel">
+        <div class="panel-head"><h3>אישור העלאה למודל</h3><span class="end tag warn">ממתין לאישור</span></div>
+        <div class="panel-body">
+          <p class="send-line"><b>${esc(b.summary)}</b></p>
+          <ul class="send-zips" dir="ltr">${b.zips.map((z) => `<li><code>${esc(z.name)}</code><span>${z.count} files, ${z.mb} MB</span></li>`).join("")}</ul>
+          ${noteList}
+          <p class="send-warn">${ICON.warn}<span>אחרי הלחיצה הקבצים נכנסים למודל מיד, בלי מסך אישור נוסף.</span></p>
+          <div class="send-actions">
+            <button class="btn primary" data-act="send-confirm" ${LOCAL.starting ? "disabled" : ""}>${LOCAL.starting ? ICON.spin : ICON.upload}העלה למודל</button>
+            <button class="btn secondary" data-act="send-cancel" ${LOCAL.starting ? "disabled" : ""}>ביטול</button>
+          </div>
+        </div>
+      </section>`;
+    }
+    if (sendHere() && S.stopped) {
+      const message = S.stopped === "needs_login" ? "צריך להתחבר שוב למודל בכרום. אחרי ההתחברות לוחצים 'המשך'." : S.message;
+      return `<section class="panel report send-panel">
+        <div class="panel-head"><h3>ההעלאה נעצרה</h3><span class="end tag warn">${S.done || 0} מתוך ${S.total} הועלו</span></div>
+        <div class="panel-body">
+          <p class="send-line">${ICON.warn}<span>${esc(message)}</span></p>
+          ${RESUMABLE.includes(S.stopped) ? `<div class="send-actions"><button class="btn primary" data-act="send-resume" ${LOCAL.starting ? "disabled" : ""}>${ICON.redo}המשך</button></div>` : ""}
+        </div>
+      </section>`;
+    }
+    return "";
+  }
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  // "העלה N למודל": רק מכינים אצווה ומראים חלון אישור. שום דבר לא עולה לפני ה"כן"
+  async function prepareLocalSend() {
+    const A = cur();
+    if (!A || state.run[A.id] || LOCAL.sending?.running) return;
+    const run = (state.run[A.id] = { stage: "ret", steps: RET_LOCAL_STEPS.map(() => "pending"), progress: "מכין את הקבצים…" });
+    run.steps[0] = "running";
+    LOCAL.batch = null;
+    render();
+    try {
+      const rep = await api("api/upload/prepare", { method: "POST", body: JSON.stringify({ course: A.courseFolder, assignment: A.folder }) });
+      LOCAL.batch = { ...rep, assignmentId: A.id };
+      delete state.run[A.id];
+      render();
+    } catch (e) {
+      delete state.run[A.id];
+      render();
+      toast(e.message, ICON.warn);
+    }
+  }
+
+  // אחרי ה"כן" (או "המשך"): מתחילים, ושואלים את השרת על המצב כל 2 שניות, כמו בבדיקה
+  async function startLocalSend(batchId) {
+    const A = cur();
+    if (!A || !batchId || LOCAL.starting || LOCAL.sending?.running) return;
+    LOCAL.starting = true;
+    render();
+    try {
+      LOCAL.sending = await api("api/upload/start", { method: "POST", body: JSON.stringify({ course: A.courseFolder, assignment: A.folder, batchId }) });
+      LOCAL.batch = null;
+      LOCAL.stopping = false;
+      render();
+      followSend();
+    } catch (e) {
+      toast(e.message, ICON.warn);
+    } finally {
+      LOCAL.starting = false;
+      render();
+    }
+  }
+
+  async function followSend() {
+    if (LOCAL.polling) return;
+    LOCAL.polling = true;
+    let S = LOCAL.sending, shown = S?.done, failures = 0;
+    try {
+      while (S?.running) {
+        await sleep(2000);
+        try { S = await api("api/upload"); failures = 0; } catch (e) { if (++failures >= 3) throw e; continue; }
+        LOCAL.sending = S;
+        render();
+        if (S.done !== shown) { shown = S.done; await loadLocal(); }  // כל ZIP שעלה מסמן את העבודות שלו "הוחזרה"
+      }
+    } catch (e) {
+      toast(`אי אפשר לקבל את מצב ההעלאה: ${e.message}`, ICON.warn);
+    } finally {
+      LOCAL.polling = false;
+      LOCAL.stopping = false;
+    }
+    await loadLocal();
+    if (S && !S.running) toast(S.message || (S.stopped ? "ההעלאה נעצרה" : "ההעלאה הסתיימה"), S.stopped ? ICON.warn : ICON.check);
+  }
+
+  async function stopLocalSend() {
+    if (!LOCAL.sending?.running || LOCAL.stopping) return;
+    LOCAL.stopping = true;
+    render();
+    try {
+      const S = await api("api/upload/stop", { method: "POST" });
+      if (!LOCAL.polling) LOCAL.sending = S;
+    } catch (e) {
+      LOCAL.stopping = false;
+      render();
+      toast(e.message, ICON.warn);
+    }
+  }
+
+  // ---------- מוכנות המחשב להעלאה ----------
+  // כל אחד בצוות מעלה מהמחשב שלו. "העלה N למודל" בודק קודם שהמחשב הזה מוכן (Claude Code מותקן, מחובר לחשבון שלך,
+  // והכרום והמודל מחוברים), מחבר אוטומטית מה שאפשר, ורק אז עובר לחלון האישור. אותה רשימה מופיעה גם בלשונית "חיבור למודל".
+  const READY_POLL_MS = 3000;
+  const MOODLE_LOGIN_URL = "https://moodle.bgu.ac.il/moodle/login/index.php";
+  const CHROME_EXT_URL = "https://claude.ai/chrome";
+  const readyUrl = (A) => `api/ready?course=${encodeURIComponent(A.courseFolder)}&assignment=${encodeURIComponent(A.folder)}`;
+  const readyAssignment = (rd) => D.assignments.find((a) => a.id === rd.assignmentId);
+  const allReady = (d) => !!d && d.installed && d.logged_in && d.chrome === true && d.moodle === true;
+  const newReady = (A, flow) => ({
+    assignmentId: A.id, flow, data: null, looping: false, fetchedAt: 0, checking: false, checkTried: false, checkError: "",
+    loginTried: false, loginError: "", installAsk: false, installTried: false, installError: "",
+  });
+
+  // הלחיצה על "העלה N למודל". אם הכול כבר מוכן (גם לפי הזיכרון של 30 הדקות), ממשיכים ישר להכנה
+  async function startSendFlow() {
+    const A = cur();
+    if (!A || state.run[A.id] || LOCAL.sending?.running || LOCAL.starting || (LOCAL.rd?.flow && LOCAL.rd.assignmentId === A.id)) return;
+    LOCAL.batch = null;
+    const rd = (LOCAL.rd = newReady(A, true));
+    state.run[A.id] = { stage: "ret", steps: RET_LOCAL_STEPS.map(() => "pending"), progress: "בודק שהמחשב מוכן…" };
+    render();
+    try {
+      rd.data = await api(readyUrl(A));
+    } catch (e) {
+      delete state.run[A.id];
+      LOCAL.rd = null;
+      render();
+      toast(e.message, ICON.warn);
+      return;
+    }
+    delete state.run[A.id];
+    if (allReady(rd.data)) { rd.flow = false; prepareLocalSend(); return; }
+    render();
+    readyLoop(rd);
+  }
+
+  // שואל את השרת על המוכנות כל 3 שניות כל עוד משהו קורה (התקנה, התחברות, בדיקה). בזרימה, גם מחבר את מה שחסר
+  async function readyLoop(rd) {
+    if (rd.looping) return;
+    rd.looping = true;
+    try {
+      while (LOCAL.rd === rd && rd.assignmentId === state.assignmentId) {
+        rd.fetchedAt = Date.now();
+        const d = (rd.data = await api(readyUrl(readyAssignment(rd))));
+        let acted = false;
+        if (rd.flow) {
+          if (allReady(d)) { rd.flow = false; render(); prepareLocalSend(); break; }
+          if (d.installed && !d.logged_in && !d.login_running && !rd.loginTried) { acted = true; await startReadyLogin(rd, false); }
+          if (d.installed && d.logged_in && d.chrome == null && !rd.checking && !rd.checkTried) { acted = true; rd.checkTried = true; checkReady(rd); }
+        }
+        render();
+        // עוד סיבוב אחרי שהתחברות או התקנה נגמרו: ככה רואים את התוצאה שלהן גם אם הסטטוס התעדכן באיחור
+        const running = !!(d.installing || d.login_running);
+        const justEnded = rd.wasRunning && !running;
+        rd.wasRunning = running;
+        if (!(acted || running || rd.checking || justEnded)) break;
+        await sleep(READY_POLL_MS);
+      }
+    } catch (e) {
+      rd.flow = false;
+      toast(e.message, ICON.warn);
+    } finally {
+      rd.looping = false;
+      if (rd.assignmentId !== state.assignmentId) rd.flow = false;  // עברו למטלה אחרת באמצע: לא משאירים זרימה תקועה
+      render();
+    }
+  }
+
+  // פותח התחברות ל-Claude בדפדפן (השרת מריץ `claude auth login`). restart: "נסה שוב"
+  async function startReadyLogin(rd, restart) {
+    rd.loginTried = true;
+    rd.loginError = "";
+    try {
+      const r = await api("api/claude/login", { method: "POST", body: JSON.stringify({ restart }) });
+      if (!r.started && !r.running) rd.loginError = r.message;
+      if (r.running && rd.data) rd.data = { ...rd.data, login_running: true };  // עד התשובה הבאה של השרת
+    } catch (e) {
+      rd.loginError = e.message;
+    }
+    render();
+    readyLoop(rd);
+  }
+
+  // רק אחרי שהאדם אישר בלחיצה
+  async function startReadyInstall(rd) {
+    rd.installAsk = false;
+    rd.installTried = true;
+    rd.installError = "";
+    try {
+      const r = await api("api/claude/install", { method: "POST", body: "{}" });
+      if (!r.started && !r.running) rd.installError = r.message;
+      if (r.running && rd.data) rd.data = { ...rd.data, installing: true };
+    } catch (e) {
+      rd.installError = e.message;
+    }
+    render();
+    readyLoop(rd);
+  }
+
+  // בדיקת כרום ומודל: ריצה קצרה של Claude (כחצי דקה), בלי להעלות כלום
+  async function checkReady(rd) {
+    if (rd.checking) return;
+    rd.checking = true;
+    rd.checkError = "";
+    render();
+    readyLoop(rd);
+    try {
+      const A = readyAssignment(rd);
+      rd.data = await api("api/ready/check", { method: "POST", body: JSON.stringify({ course: A.courseFolder, assignment: A.folder }) });
+      if (rd.data.check_error) rd.checkError = rd.data.check_error;  // הבדיקה לא נענתה (זמן קצוב, שגיאה): מציגים את ההודעה שלה
+    } catch (e) {
+      rd.checkError = e.message;
+    } finally {
+      rd.checking = false;
+      render();
+    }
+    readyLoop(rd);
+  }
+
+  // בלשונית "חיבור למודל": מצב המוכנות של המטלה הנוכחית, בלי לחבר שום דבר לבד
+  function ensureReady() {
+    const A = cur();
+    let rd = LOCAL.rd;
+    if (!rd || rd.assignmentId !== A.id) rd = LOCAL.rd = newReady(A, false);
+    if (!rd.looping && Date.now() - rd.fetchedAt > 20000) readyLoop(rd);
+    return rd;
+  }
+
+  // הרשימה עצמה: ✓ מוכן, ✗ חסר (עם כפתור), ⏳ בעבודה. משמשת גם את חלון ההכנה וגם את הלשונית
+  function readyChecklistHTML(rd) {
+    const d = rd.data;
+    if (!d) return `<p class="send-line">${ICON.spin}<span>בודק את המחשב…</span></p>`;
+    const uploading = !!LOCAL.sending?.running;
+    const row = (kind, title, body = "", actions = "") => `<li class="ready-row ${kind}">
+      <span class="ready-mark">${kind === "ok" ? ICON.check : kind === "bad" ? ICON.warn : kind === "busy" ? ICON.spin : "<i></i>"}</span>
+      <div class="ready-text"><b>${title}</b>${body ? `<div class="ready-body">${body}</div>` : ""}</div>
+      ${actions ? `<div class="ready-actions">${actions}</div>` : ""}</li>`;
+    const btn = (act, label, primary = false) => `<button class="btn ${primary ? "primary" : "secondary"} small" data-act="${act}" ${uploading ? "disabled" : ""}>${label}</button>`;
+    const link = (href, label) => `<a class="btn secondary small" href="${href}" target="_blank" rel="noopener">${label}</a>`;
+
+    let install;
+    if (d.installed) install = row("ok", "Claude Code מותקן");
+    else if (d.installing) install = row("busy", "Claude Code מותקן", "מתקין ברקע. זה לוקח בערך דקה.");
+    else if (rd.installAsk) {
+      install = row("bad", "Claude Code מותקן", "להתקין את Claude Code מהאתר הרשמי של Anthropic?",
+        `${btn("ready-install-yes", "כן, התקן", true)}${btn("ready-install-no", "לא")}`);
+    } else {
+      install = row("bad", "Claude Code מותקן",
+        esc(rd.installError || (rd.installTried ? "ההתקנה הסתיימה, אבל Claude Code עדיין לא נמצא. אפשר לנסות שוב." : "Claude Code לא נמצא במחשב הזה.")),
+        btn("ready-install-ask", "התקן את Claude Code", true));
+    }
+
+    let login;
+    if (!d.installed) login = row("wait", "מחובר ל-Claude", "אחרי ההתקנה.");
+    else if (d.logged_in) login = row("ok", "מחובר ל-Claude");
+    else if (d.login_running) {
+      login = row("busy", "מחובר ל-Claude",
+        `נפתח דף התחברות בדפדפן. התחבר עם החשבון שלך ב-Claude (של האוניברסיטה) ולחץ Authorize. המערכת תזהה לבד כשזה הסתיים.
+         <div class="ready-tip">אם הדף אומר שצריך מנוי Max או Pro, הדפדפן מחובר לחשבון Claude אחר: היכנס ל-claude.ai, התנתק, ולחץ 'נסה שוב'.</div>`,
+        btn("ready-login-retry", "נסה שוב"));
+    } else {
+      login = row("bad", "מחובר ל-Claude",
+        esc(rd.loginError || (rd.loginTried ? "ההתחברות לא הסתיימה. אפשר לנסות שוב." : "עוד לא מחוברים לחשבון Claude.")),
+        btn("ready-login-retry", rd.loginTried ? "נסה שוב" : "התחבר ל-Claude", true));
+    }
+
+    let chrome;
+    if (!d.installed || !d.logged_in) chrome = row("wait", "הכרום והמודל מחוברים", "אחרי ההתחברות ל-Claude.");
+    else if (rd.checking) chrome = row("busy", "הכרום והמודל מחוברים", "בודק את הכרום ואת המודל (כחצי דקה)…");
+    else if (d.chrome === true && d.moodle === true) chrome = row("ok", "הכרום והמודל מחוברים", d.checked_at ? `נבדק ${when(d.checked_at)}` : "");
+    else if (rd.checkError) chrome = row("bad", "הכרום והמודל מחוברים", esc(rd.checkError), btn("ready-check", "בדוק שוב", true));
+    else if (d.chrome === false) {
+      chrome = row("bad", "הכרום והמודל מחוברים", `צריך את התוסף Claude in Chrome בכרום. אחרי ההתקנה והחיבור שלו לוחצים 'בדוק שוב'.${d.message ? `<div>${esc(d.message)}</div>` : ""}`,
+        `${link(CHROME_EXT_URL, "פתח את claude.ai/chrome")}${btn("ready-check", "בדוק שוב", true)}`);
+    } else if (d.moodle === false) {
+      chrome = row("bad", "הכרום והמודל מחוברים", `צריך להתחבר למודל בכרום. אחרי ההתחברות לוחצים 'בדוק שוב'.${d.message ? `<div>${esc(d.message)}</div>` : ""}`,
+        `${link(MOODLE_LOGIN_URL, "פתח את מודל")}${btn("ready-check", "בדוק שוב", true)}`);
+    } else chrome = row("wait", "הכרום והמודל מחוברים", "עוד לא נבדק. הבדיקה לא מעלה כלום למודל.", btn("ready-check", "בדוק חיבור"));
+
+    return `<ul class="ready-list">${install}${login}${chrome}</ul>`;
+  }
+
+  // חלון ההכנה: מופיע אחרי הלחיצה על "העלה N למודל", ונעלם כשהכול ✓ (ואז עוברים להכנת האצווה)
+  function readyPanelHTML() {
+    const rd = LOCAL.rd;
+    if (!LOCAL.on || !rd?.flow || rd.assignmentId !== cur()?.id || !rd.data) return "";
+    return `<section class="panel report send-panel ready-panel" aria-live="polite">
+      <div class="panel-head"><h3>לפני ההעלאה: בודקים שהמחשב הזה מוכן</h3><button class="btn ghost small end" data-act="ready-close">ביטול</button></div>
+      <div class="panel-body">${readyChecklistHTML(rd)}</div>
     </section>`;
   }
 
@@ -449,9 +799,32 @@
     const A = cur(), I = info(A);
     if (!I.subs.length) return `<section class="panel">${emptyPulled()}</section>`;
     if (LOCAL.on) {
-      return `${returnReportHTML()}<section class="panel"><div class="empty"><strong>${I.graded.length ? `${I.graded.length} עבודות בדוקות מוכנות להחזרה` : "עוד אין עבודות בדוקות"}</strong>
-        "הכן החזרה" בונה בתיקייה "3 - Ready to upload to Moodle" את גיליון הציונים ואת קובצי המשוב, עם הוראות העלאה. ההעלאה עצמה נעשית במודל, ומישהו מהצוות מאשר אותה.
-        <div class="empty-act">${stageButton("ret")}</div></div></section>`;
+      const list = [...I.toReturn, ...I.returned].filter((s) => matches(s, state.query.ret));
+      if (!I.graded.length) {
+        return `${readyPanelHTML()}${sendPanelHTML()}<section class="panel"><div class="empty"><strong>עוד אין עבודות בדוקות</strong>אחרי שלב הבדיקה, העבודות המסומנות יופיעו כאן מוכנות להעלאה למודל.<div class="empty-act">${stageButton("ret")}</div></div></section>`;
+      }
+      return `${readyPanelHTML()}${sendPanelHTML()}
+        <section class="panel">
+          <div class="panel-head">
+            <div class="stats">
+              <span><b class="num">${I.toReturn.length}</b> מוכנות להעלאה</span>
+              <span><b class="num">${I.returned.length}</b> הוחזרו</span>
+              <span><b class="num">${I.toGrade.length}</b> עוד לא נבדקו</span>
+            </div>
+            <div class="end">${searchBox("ret")}</div>
+          </div>
+          <div class="table-wrap"><table>
+            <thead><tr><th>הגשה</th><th>ציון</th><th>מצב</th></tr></thead>
+            <tbody>${list.map((s) => `
+              <tr data-open="${s.id}" tabindex="0" class="clickable ${s.fresh ? "flash" : ""}">
+                <td>${who(s)}</td>
+                <td>${scoreHTML(s)}</td>
+                <td>${s.status === "returned" ? `<span class="check ok">${ICON.check}הוחזרה</span>` : `<span class="status graded">מוכנה להעלאה</span>`}</td>
+              </tr>`).join("") || `<tr><td colspan="3"><div class="empty slim">אין תוצאות לחיפוש הזה.</div></td></tr>`}
+            </tbody>
+          </table></div>
+          <div class="panel-body"><button class="btn secondary small" data-act="open-upload">${ICON.folder}פתח את התיקייה "3 - Ready to upload to Moodle"</button></div>
+        </section>`;
     }
     const list = [...I.toReturn, ...I.returned].filter((s) => matches(s, state.query.ret));
     if (!I.graded.length) return `<section class="panel"><div class="empty"><strong>עוד אין עבודות בדוקות</strong>אחרי שלב הבדיקה, העבודות יופיעו כאן מוכנות להחזרה.<div class="empty-act"><a class="btn secondary" href="#/grade">${ICON.grade}לשלב הבדיקה</a></div></div></section>`;
@@ -714,7 +1087,19 @@
     </div>`;
   }
 
+  function retConnLocal() {
+    const rd = ensureReady();
+    return `<section class="panel">
+      <div class="panel-head"><h2>חיבור למודל</h2>${allReady(rd.data) ? `<span class="end tag ok">מוכן להעלאה</span>` : ""}</div>
+      <div class="panel-body">
+        <p class="lead">ההעלאה למודל נעשית דרך Claude Code ו-Claude in Chrome, בכרום שלך ועם החשבון שלך. אף סיסמה לא נכנסת למערכת: מתחברים למודל בעצמך. כשלוחצים "העלה למודל", הבדיקה הזו רצה לבד ומחברת מה שחסר.</p>
+        ${readyChecklistHTML(rd)}
+      </div>
+    </section>`;
+  }
+
   function retConn() {
+    if (LOCAL.on) return retConnLocal();
     return `<div class="split">
       <section class="panel">
         <div class="panel-head"><h2>חיבור למודל</h2><span class="end tag warn">לא מחובר</span></div>
@@ -1128,9 +1513,9 @@
       a.classList.toggle("done", done);
       $(".nav-step", a).innerHTML = done ? ICON.check : `<span>${STAGES[st].no}</span>`;
       const badge = $(".nav-badge", a);
-      if (run?.stage === st) badge.innerHTML = ICON.spin;
+      if (run?.stage === st || (LOCAL.on && st === "ret" && sendingHere())) badge.innerHTML = ICON.spin;
       else badge.textContent = st === "grade" && I.toGrade.length ? I.toGrade.length : st === "ret" && I.toReturn.length ? I.toReturn.length : "";
-      badge.className = `nav-badge ${run?.stage === st ? "running" : ""}`;
+      badge.className = `nav-badge ${run?.stage === st || (LOCAL.on && st === "ret" && sendingHere()) ? "running" : ""}`;
     });
   }
 
@@ -1196,6 +1581,16 @@
       if (a === "open-inbox") openFolder("inbox");
       if (a === "open-upload") openFolder("upload");
       if (a === "recheck") location.reload();
+      if (a === "send-confirm" && LOCAL.batch?.assignmentId === cur().id) startLocalSend(LOCAL.batch.id);
+      if (a === "send-cancel") { LOCAL.batch = null; render(); }
+      if (a === "send-stop") stopLocalSend();
+      if (a === "send-resume" && LOCAL.sending?.batch_id) startLocalSend(LOCAL.sending.batch_id);
+      if (a === "ready-close" && LOCAL.rd) { LOCAL.rd.flow = false; render(); }
+      if (a === "ready-install-ask" && LOCAL.rd) { LOCAL.rd.installAsk = true; render(); }
+      if (a === "ready-install-no" && LOCAL.rd) { LOCAL.rd.installAsk = false; render(); }
+      if (a === "ready-install-yes" && LOCAL.rd) startReadyInstall(LOCAL.rd);
+      if (a === "ready-login-retry" && LOCAL.rd) startReadyLogin(LOCAL.rd, true);
+      if (a === "ready-check" && LOCAL.rd) checkReady(LOCAL.rd);
       return;
     }
 
@@ -1357,7 +1752,7 @@
       const data = await api("api/state");
       D.courses.splice(0, D.courses.length, ...data.courses);
       D.assignments.splice(0, D.assignments.length, ...data.assignments.map((a) => ({
-        ...a, phase: a.subs.length ? "current" : "new", gradedAt: a.gradedAt || null, returnedAt: null, lastFresh: null,
+        ...a, phase: a.subs.length ? "current" : "new", gradedAt: a.gradedAt || null, returnedAt: a.returnedAt || null, lastFresh: null,
         rubricQ: a.rubric?.length ? { questions: a.rubric.map((q, i) => ({ n: i + 1, pts: q.points, req: q.label })), emphases: [], mistakes: [] } : null,
       })));
       Object.keys(D.rubrics).forEach((k) => delete D.rubrics[k]);
@@ -1372,6 +1767,7 @@
         .flatMap((a) => (a.log || []).map((l) => ({ ...l, where: `${a.course}, ${a.title}` })))
         .sort((x, y) => (y.at || "").localeCompare(x.at || "")));
       LOCAL.health = { ...LOCAL.health, root: data.root, moodle: data.moodle, claude: data.claude };
+      if (!LOCAL.polling) LOCAL.sending = data.sending || null;
       if (!D.assignments.some((a) => a.id === state.assignmentId)) {
         const first = D.assignments.find((a) => a.subs.length) || D.assignments[0];
         state.assignmentId = first?.id;
@@ -1382,6 +1778,7 @@
     }
     renderPickers();
     render();
+    if (LOCAL.sending?.running && !LOCAL.polling) followSend();  // העלאה שרצה כשהדף נטען: ממשיכים לעקוב אחריה
   }
 
   // "משוך הגשות" אמיתי: השרת מושך ממודל (אם יש טוקן) ומקובצי ZIP בקליטה, ישר לתיקיית OneDrive
@@ -1457,26 +1854,6 @@
       delete state.run[A.id];
       await loadLocal();
       refreshDrawer();
-      toast(e.message, ICON.warn);
-    }
-  }
-
-  // "החזר": הקוד של אורי (moodle upload) בונה את מה שעולה למודל
-  async function runLocalReturn() {
-    const A = cur();
-    if (!A || state.run[A.id]) return;
-    const run = (state.run[A.id] = { stage: "ret", steps: STAGES.ret.steps.map(() => "pending") });
-    run.steps[0] = "running";
-    render();
-    try {
-      const rep = await api("api/return", { method: "POST", body: JSON.stringify({ course: A.courseFolder, assignment: A.folder }) });
-      LOCAL.ret = { ...rep, assignmentId: A.id };
-      delete state.run[A.id];
-      await loadLocal();
-      toast(`ההחזרה הוכנה: ${rep.summary}`);
-    } catch (e) {
-      delete state.run[A.id];
-      render();
       toast(e.message, ICON.warn);
     }
   }

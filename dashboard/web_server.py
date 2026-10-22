@@ -27,6 +27,13 @@ from . import actions, folder_view, settings as cfg
 WEBSITE = cfg.REPO_DIR / "website"
 HEADER = "X-Assignment-Checker"
 _lock = threading.Lock()  # משיכה אחת בכל פעם
+STALE_UPLOAD = "הקבצים השתנו מאז ההכנה. צריך ללחוץ שוב על 'העלה למודל'."
+# כתובת → (הפעולה ב-actions, איך קוראים לה בהודעת שגיאה). אלה רצות תחת _lock
+_LOCKED_STEPS = {
+    "/api/pull": ("pull", "המשיכה"),
+    "/api/return": ("prepare_return", "הכנת ההחזרה"),
+    "/api/upload/prepare": ("prepare_send", "הכנת ההעלאה"),
+}
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -73,6 +80,16 @@ class Handler(SimpleHTTPRequestHandler):
         n = int(self.headers.get("Content-Length") or 0)
         return json.loads(self.rfile.read(n) or b"{}") if n else {}
 
+    def _discard_body(self) -> None:
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = 0
+        if 0 < n <= 1_000_000:
+            self.rfile.read(n)
+        elif n:
+            self.close_connection = True
+
     # ---------- GET ----------
     def do_GET(self):
         if not self._host_ok():
@@ -81,7 +98,24 @@ class Handler(SimpleHTTPRequestHandler):
         if url.path == "/api/health":
             root, err = actions.root_info()
             return self._json({"ok": True, "root": str(root) if root else None, "error": err,
-                               "moodle": False, "claude": bool(cfg.claude_key())})
+                               "moodle": actions.moodle_status()["logged_in"], "claude": bool(cfg.claude_key())})
+        if url.path == "/api/upload":
+            return self._json(actions.send_status())
+        if url.path == "/api/moodle":
+            return self._json(actions.moodle_status())
+        if url.path == "/api/ready":
+            # מהירה: לא מפעילה בדיקת כרום. מי שרוצה בדיקה קורא ל-POST /api/ready/check
+            root = self._root()
+            if not root:
+                return
+            query = parse_qs(url.query)
+            course, assignment = query.get("course", [""])[0], query.get("assignment", [""])[0]
+            if not course or not assignment:
+                return self._json({"error": "חסרים קורס ומטלה"}, HTTPStatus.BAD_REQUEST)
+            try:
+                return self._json(actions.readiness(root, course, assignment))
+            except FileNotFoundError as e:
+                return self._json({"error": str(e)}, HTTPStatus.NOT_FOUND)
         if url.path == "/api/state":
             root = self._root()
             return root and self._json(actions.state(root))
@@ -112,31 +146,65 @@ class Handler(SimpleHTTPRequestHandler):
     # ---------- POST ----------
     def do_POST(self):
         if not self._host_ok() or not self._write_ok():
+            self._discard_body()  # else Windows may reset the connection before the client reads the 403
             return self.send_error(HTTPStatus.FORBIDDEN)
         url = urlparse(self.path)
+        body = self._body()
+        if url.path == "/api/claude/login":  # these two work on this computer, not on the shared folder: no root needed
+            return self._json(actions.start_claude_login(restart=body.get("restart") is True))
+        if url.path == "/api/claude/install":
+            return self._json(actions.start_claude_install())
         root = self._root()
         if not root:
             return
-        body = self._body()
-        if url.path in ("/api/pull", "/api/return"):
-            # משיכה: moodle ingest. החזרה: moodle upload. אחת בכל פעם
+        if url.path in _LOCKED_STEPS:
+            # משיכה: moodle ingest. החזרה: moodle upload. הכנת העלאה: moodle send. אחת בכל פעם
             course, assignment = body.get("course"), body.get("assignment")
             if not course or not assignment:
                 return self._json({"error": "חסרים קורס ומטלה"}, HTTPStatus.BAD_REQUEST)
             if not _lock.acquire(blocking=False):
                 return self._json({"error": "פעולה אחרת כבר רצה. כדאי לנסות שוב בעוד רגע."}, HTTPStatus.CONFLICT)
+            run, what = _LOCKED_STEPS[url.path]
             try:
-                run = actions.pull if url.path == "/api/pull" else actions.prepare_return
-                return self._json(run(root, course, assignment))
+                return self._json(getattr(actions, run)(root, course, assignment))
             except actions.UserError as e:
                 return self._json({"error": str(e)}, HTTPStatus.UNPROCESSABLE_ENTITY)
             except FileNotFoundError as e:
                 return self._json({"error": str(e)}, HTTPStatus.NOT_FOUND)
             except Exception as e:  # השגיאה מוצגת באתר במקום שהשרת ייפול
-                what = "המשיכה" if url.path == "/api/pull" else "הכנת ההחזרה"
                 return self._json({"error": f"{what} נכשלה: {e}"}, HTTPStatus.INTERNAL_SERVER_ERROR)
             finally:
                 _lock.release()
+        if url.path == "/api/upload/start":
+            # אחרי "כן" של אדם על האצווה שהוכנה. ההעלאה רצה ברקע, והאתר שואל על המצב ב-GET /api/upload
+            course, assignment, batch_id = body.get("course"), body.get("assignment"), body.get("batchId")
+            if not course or not assignment or not isinstance(batch_id, str) or not batch_id:
+                return self._json({"error": "חסרים קורס, מטלה ומזהה אצווה"}, HTTPStatus.BAD_REQUEST)
+            try:
+                return self._json(actions.start_send(root, course, assignment, batch_id), HTTPStatus.ACCEPTED)
+            except ValueError as e:
+                if str(e) == "stale":
+                    return self._json({"error": STALE_UPLOAD}, HTTPStatus.CONFLICT)
+                return self._json({"error": f"ההעלאה לא התחילה: {e}"}, HTTPStatus.UNPROCESSABLE_ENTITY)
+            except FileNotFoundError as e:
+                return self._json({"error": str(e)}, HTTPStatus.NOT_FOUND)
+            except RuntimeError as e:
+                return self._json({"error": str(e)}, HTTPStatus.CONFLICT)
+        if url.path == "/api/upload/stop":
+            return self._json(actions.stop_send())
+        if url.path in ("/api/moodle/check", "/api/ready/check"):
+            course, assignment = body.get("course"), body.get("assignment")
+            if not course or not assignment:
+                return self._json({"error": "חסרים קורס ומטלה"}, HTTPStatus.BAD_REQUEST)
+            check = actions.check_moodle if url.path == "/api/moodle/check" else actions.check_ready
+            try:
+                return self._json(check(root, course, assignment))
+            except FileNotFoundError as e:
+                return self._json({"error": str(e)}, HTTPStatus.NOT_FOUND)
+            except RuntimeError as e:  # העלאה רצה עכשיו: הבדיקה וההעלאה היו מפעילות את אותו כרום
+                return self._json({"error": str(e)}, HTTPStatus.CONFLICT)
+            except Exception as e:
+                return self._json({"error": f"הבדיקה נכשלה: {e}"}, HTTPStatus.INTERNAL_SERVER_ERROR)
         if url.path == "/api/grade":
             course, assignment = body.get("course"), body.get("assignment")
             if not course or not assignment:
