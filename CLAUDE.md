@@ -237,6 +237,19 @@ pages read with Read at 1568 px cost $8.79 (list-price equivalent, counted again
 with grades within 2 points of the first run on 18 of 20. Pages go at 1100 px first; a submission Claude answers
 `unreadable` goes again at 1568, and then at 1568 asking it to go page by page (`READ_STEPS` in `grade.py`).
 
+## Grading on several computers at once
+
+Anyone may press "Grade" (or run `python -m grading <id>`) at the same time as others; nobody needs to coordinate.
+`moodle/grades.py` splits an assignment into fifths by number (fifth 1 = 0001, 0006, 0011 ...; by number, so the split
+never moves when more submissions are pulled). A run takes the fifths one at a time, each under its own lock
+(`Grading part N in progress.txt`, the same lock as pull/upload: who, refreshed after every submission, stuck after
+30 minutes), and skips a fifth someone else holds ("חמישית 2 נבדקת עכשיו אצל ..."). It writes only that fifth's file,
+`Grades - part N.csv`, so two computers never write the same file and OneDrive has nothing to make a conflict copy of.
+Everything that reads grades (`grades.read`: grading, `upload`, `send`, `status`, the dashboard) reads `Grades.csv`
+with the fifths' files on top, and an approved row is never replaced by one that is not. When no fifth is being graded,
+a run merges the fifths into `Grades.csv` and deletes them. Each computer still grades 4 at a time; with the same
+Claude account on all of them they share one subscription's usage.
+
 ## What grading gets
 
 For each assignment, in its folder:

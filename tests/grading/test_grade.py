@@ -8,6 +8,7 @@ import base64
 import csv
 import http.client
 import json
+import os
 import random
 import threading
 import time
@@ -241,6 +242,64 @@ def test_grading_writes_grades_csv_and_marked_pdfs(root):
         w, h = doc[1].rect.width, doc[1].rect.height
         assert abs(r.x0 - 0.1 * w) < 2 and abs(r.y0 - 0.1 * h) < 2 and abs(r.x1 - 0.9 * w) < 2 and abs(r.y1 - 0.16 * h) < 2
     assert rep.summary() == "נבדקו 3 מתוך 3"
+    # כל חמישית נכתבה לקובץ משלה, ובסוף, כשאף אחת לא נבדקת, הכל אוחד ל-Grades.csv
+    assert not list(a.dir.glob("Grades - part *.csv")) and not list(a.dir.glob("Grading part *"))
+
+
+# ---------- כמה מחשבים בו זמנית ----------
+def other_computer_holds(a, part: int) -> None:
+    (a.dir / paths.GRADING_LOCK.format(part)).write_text("noa (OTHER-PC) pid=1", encoding="utf-8")
+
+
+def test_submissions_split_into_fifths_by_number():
+    from moodle import grades
+    assert [grades.part_of(n) for n in ("0001", "0002", "0005", "0006", "0481")] == [1, 2, 5, 1, 1]
+
+
+def test_a_fifth_another_computer_is_grading_is_skipped(root):
+    a = asg(root)
+    other_computer_holds(a, 2)
+    fake = FakeClaude()
+    rep = grading.grade_assignment(a.dir, ask=fake)
+    # 0002 בחמישית 2: לא נבדקה כאן ולא נשלחה ל-Claude
+    assert rep.graded == ["0001", "0003"] and rep.busy == {2: "noa (OTHER-PC)"} and len(fake.requests) == 2
+    assert "חמישית 2" in rep.notes[0] and "noa (OTHER-PC)" in rep.notes[0] and rep.total == 2
+    # כל חמישית בקובץ משלה. אין איחוד ל-Grades.csv כל עוד חמישית 2 נבדקת במחשב האחר
+    assert not (a.dir / grading.GRADES).exists()
+    assert [r["number"] for r in read_csv(a.dir / "Grades - part 1.csv")] == ["0001"]
+    assert [r["number"] for r in read_csv(a.dir / "Grades - part 3.csv")] == ["0003"]
+    assert set(grading.read_grades(a.dir)) == {"0001", "0003"}
+    # המנעולים שלי שוחררו, ושל המחשב האחר נשאר
+    assert [p.name for p in a.dir.glob("Grading part *")] == ["Grading part 2 in progress.txt"]
+
+    # המחשב האחר סיים (כתב את הקובץ שלו ושחרר): הריצה הבאה לא בודקת שוב, ומאחדת הכל
+    (a.dir / "Grades - part 2.csv").write_text("number,grade,feedback\r\n0002,70,x\r\n", encoding="utf-8-sig")
+    (a.dir / paths.GRADING_LOCK.format(2)).unlink()
+    rep = grading.grade_assignment(a.dir, ask=fake)
+    assert rep.graded == [] and len(fake.requests) == 2
+    assert [(r["number"], r["grade"]) for r in read_csv(a.dir / grading.GRADES)] == [("0001", "85"), ("0002", "70"), ("0003", "85")]
+    assert not list(a.dir.glob("Grades - part *.csv"))
+
+
+def test_a_stuck_lock_does_not_block_forever(root):
+    a = asg(root)
+    other_computer_holds(a, 2)
+    old = time.time() - 31 * 60
+    os.utime(a.dir / paths.GRADING_LOCK.format(2), (old, old))
+    rep = grading.grade_assignment(a.dir, ask=FakeClaude())
+    assert rep.graded == ["0001", "0002", "0003"] and not rep.busy
+
+
+def test_approved_rows_are_kept_when_fifths_are_merged(root):
+    a = asg(root)
+    (a.dir / grading.GRADES).write_text("number,grade,feedback,approved\r\n0001,90,טוב,כן\r\n", encoding="utf-8-sig")
+    (a.dir / "Grades - part 1.csv").write_text("number,grade,feedback,approved\r\n0001,40,x,\r\n", encoding="utf-8-sig")
+    (a.dir / "Grades - part 2.csv").write_text("number,grade,feedback,approved\r\n0002,70,y,\r\n", encoding="utf-8-sig")
+    assert {n: r["grade"] for n, r in grading.read_grades(a.dir).items()} == {"0001": "90", "0002": "70"}
+    from moodle import upload
+    assert {n: r["grade"] for n, r in upload.read_results(a.dir).items()} == {"0001": "90", "0002": "70"}
+    assert grading.merge_parts(a.dir)
+    assert [(r["number"], r["grade"]) for r in read_csv(a.dir / grading.GRADES)] == [("0001", "90"), ("0002", "70")]
 
 
 def test_several_files_of_one_student_are_graded_together(root):

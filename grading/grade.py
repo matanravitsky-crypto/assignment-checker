@@ -42,7 +42,7 @@ from typing import Callable
 import numpy as np
 import pymupdf
 
-from moodle import claude_driver, paths
+from moodle import claude_driver, grades, lock as moodle_lock, paths
 
 from . import notes
 from .render import MAX_SIDE, PageImage, render_pdf
@@ -585,20 +585,16 @@ def mark_pdf(pdf: bytes, g: Graded, ctx: Context, max_bytes: int = MAX_BYTES) ->
 
 
 # ---------- Grades.csv ----------
-def number_key(n: str, width: int = 4) -> str:
-    n = str(n).strip()
-    return n.zfill(width) if n.isdigit() else n
+number_key = grades.number_key
+is_approved = grades.is_approved
 
 
 def read_grades(dir: Path) -> dict[str, dict]:
-    path = dir / GRADES
-    if not path.exists():
-        return {}
-    with path.open(encoding="utf-8-sig", newline="") as fh:
-        return {number_key(r["number"]): r for r in csv.DictReader(fh) if (r.get("number") or "").strip()}
+    """כל הציונים של המטלה: Grades.csv, ומעליו הקבצים של החמישיות שנבדקות עכשיו (moodle/grades.py)."""
+    return grades.read(dir)
 
 
-def write_grades(dir: Path, rows: dict[str, dict]) -> None:
+def write_grades(dir: Path, rows: dict[str, dict], name: str = GRADES) -> None:
     cols = list(GRADE_COLUMNS)
     for r in rows.values():
         cols += [c for c in r if c and c not in cols]
@@ -608,13 +604,26 @@ def write_grades(dir: Path, rows: dict[str, dict]) -> None:
     for n in sorted(rows):
         w.writerow({**rows[n], "number": n})
     # BOM כדי ש-Excel יציג עברית. כותבים לקובץ זמני ומחליפים, כדי שקובץ חצי כתוב לא יישאר
-    tmp = dir / (GRADES + ".tmp")
+    tmp = dir / (name + ".tmp")
     tmp.write_text(buf.getvalue(), encoding="utf-8-sig", newline="")
-    tmp.replace(dir / GRADES)
+    tmp.replace(dir / name)
 
 
-def is_approved(row: dict | None) -> bool:
-    return bool(row) and (row.get("approved") or "").strip().lower() not in ("", "0", "no", "false", "לא")
+def merge_parts(dir: Path) -> bool:
+    """כשאף חמישית לא נבדקת עכשיו: מאחד את הקבצים של החמישיות לתוך Grades.csv ומוחק אותם. True אם איחד.
+
+    קובץ של חמישית שהתעדכן בזמן האיחוד, או שמישהו לקח את המנעול שלה בינתיים, נשאר במקומו לפעם הבאה."""
+    parts = grades.part_files(dir)
+    # כל חמישית שנבדקת עכשיו, גם כזו שעוד לא כתבה אף ציון
+    if not parts or any(moodle_lock.holder(dir / grades.part_lock(k)) for k in range(1, grades.PARTS + 1)):
+        return False
+    seen = {p: p.stat().st_mtime for p in parts}
+    write_grades(dir, grades.read(dir))
+    for p, mtime in seen.items():
+        part = int(grades.PART_FILE.fullmatch(p.name).group(1))
+        if p.stat().st_mtime == mtime and not moodle_lock.holder(dir / grades.part_lock(part)):
+            p.unlink()
+    return True
 
 
 def parse_points(raw: str | None) -> list[float] | None:
@@ -671,9 +680,12 @@ class GradeReport:
     skipped: list[str] = field(default_factory=list)    # כבר אושרו, ולכן לא נבדקו שוב
     failed: dict[str, str] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
+    busy: dict[int, str] = field(default_factory=dict)  # חמישיות שמחשב אחר בודק עכשיו: חמישית -> מי
 
     def summary(self) -> str:
         parts = [f"נבדקו {len(self.graded)} מתוך {self.total}"]
+        if self.busy:
+            parts.append(f"{len(self.busy)} חמישיות נבדקות עכשיו במחשב אחר ודולגו")
         if self.review:
             parts.append(f"{len(self.review)} לבדיקה ידנית")
         if self.skipped:
@@ -719,6 +731,7 @@ def grade_assignment(assignment_dir: Path, numbers: list[str] | None = None, *, 
     if not todo:
         if not rep.skipped and not rep.failed:
             rep.notes.append("אין הגשות שמחכות לבדיקה.")
+        merge_parts(assignment_dir)  # אולי מחשבים אחרים סיימו את החמישיות שלהם
         return rep
 
     ctx = load_context(assignment_dir, instructions, send_solution)
@@ -738,41 +751,68 @@ def grade_assignment(assignment_dir: Path, numbers: list[str] | None = None, *, 
             g.review = " ".join(filter(None, [g.review, f"קבצים שלא נבדקו: {', '.join(skipped)}."]))
         return n, g, out
 
-    def save(n: str, g: Graded, out: bytes) -> bool:
+    def save(n: str, g: Graded, out: bytes, part: int, held: Path) -> bool:
+        """הציון נכתב רק לקובץ של החמישית שלו, שרק מי שמחזיק את המנעול שלה כותב אליו."""
         with lock:
-            rows = read_grades(assignment_dir)
-            if is_approved(rows.get(n)):  # מישהו אישר בזמן שהבדיקה רצה
+            if is_approved(read_grades(assignment_dir).get(n)):  # מישהו אישר בזמן שהבדיקה רצה
                 return False
             tmp = marked / f"{n}.pdf.tmp"
             tmp.write_bytes(out)
             tmp.replace(marked / f"{n}.pdf")
-            rows[n] = {**rows.get(n, {}), "number": n, "grade": _pts(g.grade), "feedback": g.feedback,
+            name = grades.part_file(assignment_dir, part).name
+            rows = grades.read_file(assignment_dir / name)
+            rows[n] = {"number": n, "grade": _pts(g.grade), "feedback": g.feedback,
                        "points": ";".join(_pts(p) for p in g.points), "approved": "", "review": g.review}
-            write_grades(assignment_dir, rows)
+            write_grades(assignment_dir, rows, name)
+            moodle_lock.refresh(held)  # עבודה ארוכה: המנעול לא נחשב תקוע
             return True
 
-    with ThreadPoolExecutor(max_workers=max(1, min(parallel, 20))) as pool:
-        futures = {pool.submit(work, n): n for n in todo}
-        for fut in as_completed(futures):
-            n = futures[fut]
-            try:
-                _, g, out = fut.result()
-            except NoApiKey:
-                for f in futures:
-                    f.cancel()
-                raise
-            except Exception as e:  # עבודה אחת שנכשלה לא עוצרת את השאר
-                rep.failed[n] = str(e)
-                on_progress and on_progress(n, "failed")
-                continue
-            if save(n, g, out):
-                rep.graded.append(n)
-                if g.review:
-                    rep.review.append(n)
-                on_progress and on_progress(n, "graded")
-            else:
-                rep.skipped.append(n)
-                on_progress and on_progress(n, "skipped")
+    def grade_part(part: int, numbers: list[str], held: Path) -> None:
+        with ThreadPoolExecutor(max_workers=max(1, min(parallel, 20))) as pool:
+            futures = {pool.submit(work, n): n for n in numbers}
+            for fut in as_completed(futures):
+                n = futures[fut]
+                try:
+                    _, g, out = fut.result()
+                except NoApiKey:
+                    for f in futures:
+                        f.cancel()
+                    raise
+                except Exception as e:  # עבודה אחת שנכשלה לא עוצרת את השאר
+                    rep.failed[n] = str(e)
+                    on_progress and on_progress(n, "failed")
+                    continue
+                if save(n, g, out, part, held):
+                    rep.graded.append(n)
+                    if g.review:
+                        rep.review.append(n)
+                    on_progress and on_progress(n, "graded")
+                else:
+                    rep.skipped.append(n)
+                    on_progress and on_progress(n, "skipped")
+
+    # חמישית אחרי חמישית. כל אחת רק עם המנעול שלה: חמישית שמחשב אחר בודק עכשיו מדלגים עליה
+    by_part: dict[int, list[str]] = {}
+    for n in todo:
+        by_part.setdefault(grades.part_of(n), []).append(n)
+    for part in sorted(by_part):
+        try:
+            held = moodle_lock.take(assignment_dir, grades.part_lock(part))
+        except moodle_lock.Locked as e:
+            rep.busy[part] = e.who
+            rep.total -= len(by_part[part])
+            rep.notes.append(f"חמישית {part} ({len(by_part[part])} הגשות) נבדקת עכשיו אצל {e.who}, ולכן דילגתי עליה.")
+            continue
+        try:
+            numbers_now = by_part[part]
+            if numbers is None:  # אולי מחשב אחר בדק אותן בינתיים, לפני שלקחתי את המנעול
+                still = set(pending(assignment_dir))
+                rep.total -= len([n for n in numbers_now if n not in still])
+                numbers_now = [n for n in numbers_now if n in still]
+            grade_part(part, numbers_now, held)
+        finally:
+            held.unlink(missing_ok=True)
+    merge_parts(assignment_dir)
 
     rep.graded.sort()
     rep.review.sort()

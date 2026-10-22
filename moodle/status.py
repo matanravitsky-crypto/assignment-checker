@@ -9,7 +9,7 @@ import csv
 import re
 from pathlib import Path
 
-from moodle import paths
+from moodle import grades, paths
 
 # Plain ASCII and Hebrew letters, minus what Windows and OneDrive forbid
 SAFE_NAME = re.compile(r'^[\x20-\x7Eא-ת]+$')
@@ -46,7 +46,7 @@ def status(assignment_dir: Path) -> dict:
         "assignment_info": (assignment_dir / paths.INFO).exists(),
         "to_grade": count_files(assignment_dir / paths.TO_GRADE),
         "key_rows": count_rows(assignment_dir / paths.KEY),
-        "grades_rows": count_rows(assignment_dir / paths.GRADES),
+        "grades_rows": len(grades.read(assignment_dir)) if grades.files(assignment_dir) else None,
         "marked": count_files(assignment_dir / paths.MARKED),
         "upload_files": count_files(assignment_dir / paths.UPLOAD),
         "downloads": sorted(p.name for p in assignment_dir.glob(f"{paths.DOWNLOAD_PREFIX} *.zip")),

@@ -26,8 +26,8 @@ from datetime import datetime
 from pathlib import Path
 
 from grading import grade as grading
-from moodle import (anonymize as moodle_anonymize, claude_driver, ingest as moodle_ingest, lock as moodle_lock, paths,
-                    send as moodle_send, upload as moodle_upload, upload_log)
+from moodle import (anonymize as moodle_anonymize, claude_driver, grades as moodle_grades, ingest as moodle_ingest,
+                    lock as moodle_lock, paths, send as moodle_send, upload as moodle_upload, upload_log)
 
 from . import folder_view, settings as cfg, shared_folder
 
@@ -685,10 +685,10 @@ def _last_download(a: folder_view.Assignment) -> str | None:
 def _activity(a: folder_view.Assignment, results: dict, log: list[dict]) -> list[dict]:
     """יומן הפעילות של המטלה, רק ממה שבאמת קרה בתיקייה: משיכות, עדכון Grades.csv והעלאות למודל. בלי שמות."""
     out = [{"at": at, "kind": "pull", "text": "נמשכו הגשות ממודל (ZIP נקלט לתיקיית המטלה)"} for at in _downloads(a)]
-    grades_file = a.dir / grading.GRADES
-    if grades_file.exists():
+    graded_at = moodle_grades.last_modified(a.dir)
+    if graded_at is not None:
         n = sum(1 for r in results.values() if r.get("grade"))
-        out.append({"at": datetime.fromtimestamp(grades_file.stat().st_mtime).isoformat(timespec="minutes"),
+        out.append({"at": datetime.fromtimestamp(graded_at).isoformat(timespec="minutes"),
                     "kind": "grade", "text": f"Grades.csv עודכן: {n} ציונים"})
     uploads: dict[tuple[str, str], dict] = {}
     for r in log:  # שורה לכל קובץ שעלה. מקבצים לפי ה-ZIP והדקה
@@ -742,21 +742,23 @@ def state(root: Path) -> dict:
             pulled = _last_download(a) or (
                 datetime.fromtimestamp((a.dir / paths.KEY).stat().st_mtime).isoformat(timespec="minutes")
                 if subs and (a.dir / paths.KEY).exists() else None)
-            grades_file = a.dir / grading.GRADES
+            graded_at = moodle_grades.last_modified(a.dir)
             ctx = grading.load_context(a.dir, send_solution=False)
             out.append({
                 "id": f"{cid}a{ai}", "courseId": cid, "course": folder_view.course_title(course_dir),
                 "courseFolder": course_dir.name, "folder": a.dir.name, "title": a.title,
                 "n": ai + 1, "due": d.get("due"), "questions": a.question_count(), "questionLabels": a.question_labels(),
                 "pulledAt": pulled, "returnedAt": max((r["uploaded_at"] for r in log), default=None), "moodleId": d.get("id"),
-                "gradedAt": datetime.fromtimestamp(grades_file.stat().st_mtime).isoformat(timespec="minutes") if grades_file.exists() else None,
+                "gradedAt": datetime.fromtimestamp(graded_at).isoformat(timespec="minutes") if graded_at is not None else None,
                 "rubric": [{"label": q.label, "points": q.points, "criteria": q.criteria} for q in ctx.questions],
                 "maxGrade": ctx.max_grade, "solution": (a.dir / grading.SOLUTION).is_file(),
                 "notes": d.get("notes") or "", "rules": d.get("submission_rules") or [],
                 "warnings": [f"עותק כפול של טבלת המפתח: {c}" for c in key_conflicts(a)]
                             + [f"עותק כפול של יומן ההעלאה: {c}" for c in upload_log.log_conflicts(a.dir)]
                             + ([f"משיכה בתהליך: {moodle_lock.parse((a.dir / LOCK_FILE).read_text(encoding='utf-8'))[0]}"] if (a.dir / LOCK_FILE).exists() else [])
-                            + ([f"העלאה בתהליך: {who}"] if (who := _upload_lock_holder(a)) else []),
+                            + ([f"העלאה בתהליך: {who}"] if (who := _upload_lock_holder(a)) else [])
+                            + [f"בדיקה בתהליך: חמישית {k} אצל {held[0]}" for k in range(1, moodle_grades.PARTS + 1)
+                               if (held := moodle_lock.holder(a.dir / moodle_grades.part_lock(k)))],
                 "subs": subs, "log": _activity(a, results, log),
             })
     return {"root": str(root), "courses": courses, "assignments": out,
