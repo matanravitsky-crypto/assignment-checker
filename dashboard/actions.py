@@ -257,6 +257,8 @@ class GradeJob:
     numbers: list[str] = field(default_factory=list)
     running: bool = False
     done: dict[str, str] = field(default_factory=dict)  # מספר → graded / failed / skipped
+    working: list[str] = field(default_factory=list)    # נשלחו ל-Claude ועוד לא חזרו
+    stopping: bool = False                              # ביקשו לעצור: מחכים רק לעבודות שב-working
     report: dict | None = None
     summary: str = ""
     error: str = ""
@@ -266,6 +268,7 @@ class GradeJob:
 
 _job = GradeJob()
 _job_lock = threading.Lock()
+_job_stop = threading.Event()
 
 
 def grade_status() -> dict:
@@ -287,6 +290,7 @@ def start_grading(root: Path, course: str, assignment: str, numbers: list[str] |
         _job = GradeJob(course, assignment, todo, running=bool(todo),
                         started_at=datetime.now().isoformat(timespec="seconds"))
         job = _job
+        _job_stop.clear()
     if not todo:
         job.summary = "אין הגשות שמחכות לבדיקה."
         job.finished_at = job.started_at
@@ -295,10 +299,17 @@ def start_grading(root: Path, course: str, assignment: str, numbers: list[str] |
     def progress(n: str, what: str) -> None:
         with _job_lock:
             job.done[n] = what
+            if n in job.working:
+                job.working.remove(n)
+
+    def started(n: str) -> None:
+        with _job_lock:
+            job.working.append(n)
 
     def run() -> None:
         try:
-            rep = grading.grade_assignment(a.dir, todo, ask=ask, on_progress=progress, **opts)
+            rep = grading.grade_assignment(a.dir, todo, ask=ask, on_progress=progress, on_start=started,
+                                           stop=_job_stop, **opts)
             job.report, job.summary = asdict(rep), rep.summary()
         except grading.NoApiKey as e:
             job.error = str(e)
@@ -307,12 +318,22 @@ def start_grading(root: Path, course: str, assignment: str, numbers: list[str] |
         finally:
             with _job_lock:
                 job.running = False
+                job.working = []
                 job.finished_at = datetime.now().isoformat(timespec="seconds")
 
     t = threading.Thread(target=run, daemon=True)
     t.start()
     if wait:
         t.join()
+    return grade_status()
+
+
+def stop_grading() -> dict:
+    """עוצר את הבדיקה שרצה: לא שולחים ל-Claude אף עבודה חדשה, ומחכים רק לאלה שכבר בבדיקה."""
+    with _job_lock:
+        if _job.running:
+            _job.stopping = True
+            _job_stop.set()
     return grade_status()
 
 

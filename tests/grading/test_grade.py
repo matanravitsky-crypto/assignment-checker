@@ -525,3 +525,60 @@ def test_server_review_and_downloads(root, server):
         assert conn.getresponse().status in (400, 404)
     for path in (paths.KEY, f"{paths.MARKED}/0003-2.jpg", f"{paths.NOTES}/0003.json"):
         assert get(rel + path)[0] == 404  # רק הגשות ועבודות מסומנות יוצאות. לא המפתח ולא שום דבר אחר
+
+
+# ---------- עצירה ----------
+def test_stop_lets_running_work_finish_and_sends_nothing_new(root):
+    a = asg(root)
+    stop = threading.Event()
+
+    def ask(req):  # כש-Claude בודק את הראשונה, מישהו לוחץ "עצור"
+        stop.set()
+        return answer()
+
+    fake = FakeClaude(ask)
+    rep = grading.grade_assignment(a.dir, ask=fake, parallel=1, stop=stop)
+    assert rep.graded == ["0001"] and rep.stopped == ["0002", "0003"] and not rep.failed
+    assert len(fake.requests) == 1 and "נעצרה: 2 לא נבדקו" in rep.summary()
+    assert set(grading.read_grades(a.dir)) == {"0001"}
+    assert grading.read_notes(a.dir, "0002") == {}  # לא נרשמה כנכשלה: היא פשוט מחכה
+    assert grading.pending(a.dir) == ["0002", "0003"]
+
+
+def test_server_stop_button(root, server, monkeypatch):
+    gate, asked = threading.Event(), threading.Event()
+
+    def ask(req):
+        asked.set()
+        assert gate.wait(10)
+        return answer()
+
+    fake = FakeClaude(ask)
+    monkeypatch.setattr(grading, "claude_ask", lambda: fake)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
+    st, job = call(server, "POST", "/api/grade", {"course": COURSE, "assignment": HW, "ids": ["0001", "0002", "0003"], "parallel": 1})
+    assert st == 202 and asked.wait(10)
+    _, job = call(server, "GET", "/api/grade")
+    assert job["running"] and job["working"] == ["0001"] and not job["stopping"]
+
+    st, job = call(server, "POST", "/api/grade/stop", {})
+    assert st == 200 and job["running"] and job["stopping"]
+    gate.set()
+    for _ in range(200):
+        _, job = call(server, "GET", "/api/grade")
+        if not job["running"]:
+            break
+        time.sleep(0.05)
+    assert not job["running"] and job["done"] == {"0001": "graded"} and job["working"] == []
+    assert job["report"]["stopped"] == ["0002", "0003"] and "נעצרה" in job["summary"]
+    assert len(fake.requests) == 1
+
+    # הבדיקה הבאה מתחילה בלי העצירה הקודמת
+    gate.set()
+    st, job = call(server, "POST", "/api/grade", {"course": COURSE, "assignment": HW, "ids": ["0002"]})
+    for _ in range(200):
+        _, job = call(server, "GET", "/api/grade")
+        if not job["running"]:
+            break
+        time.sleep(0.05)
+    assert job["done"] == {"0002": "graded"} and not job["stopping"]
