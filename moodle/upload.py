@@ -90,6 +90,55 @@ def fill_worksheet(worksheet: Path, out: Path, results: dict, mapping: dict) -> 
     return filled
 
 
+def plan_parts(
+    marked: Path, mapping: dict, max_bytes: int, numbers: set[str] | None = None
+) -> tuple[list[list[tuple[Path, str]]], list[str]]:
+    """Split the marked files into parts, each under max_bytes: a list of (source file, name inside the ZIP).
+
+    Each file goes under its student's original Moodle folder name. `numbers` limits it to those
+    numbers (None: all). A number goes whole or not at all: if one of its files is bigger than
+    max_bytes on its own, that file can't go through Moodle, so its name is returned in the second
+    list (to be saved smaller) and none of the number's files is in any part.
+    """
+    parts: list[list[tuple[Path, str]]] = [[]]
+    too_big = []
+    size = 0
+    for number, files in paths.files_by_number(marked).items():
+        if len(number) != 4 or (numbers is not None and number not in numbers):
+            continue
+        row = mapping.get(number)
+        if row is None:
+            raise ValueError(f"{files[0].name}: number {number} is not in the key table")
+        big = [file.name for file in files if file.stat().st_size > max_bytes]
+        if big:
+            too_big += big
+            continue
+        for file in files:
+            file_size = file.stat().st_size
+            if parts[-1] and size + file_size > max_bytes:
+                parts.append([])
+                size = 0
+            # Moodle skips files identical to the submission, so give them a new name
+            name = f"feedback{file.stem[len(number):]}{file.suffix.lower()}"
+            parts[-1].append((file, f"{row['original_folder']}/{name}"))
+            size += file_size
+    return [part for part in parts if part], too_big
+
+
+def write_zips(upload_dir: Path, parts: list[list[tuple[Path, str]]]) -> list[Path]:
+    """Write one "Graded - part NN.zip" per part, after deleting the earlier ones."""
+    for old in upload_dir.glob(f"{ZIP_PREFIX} *.zip"):
+        old.unlink()
+    zips = []
+    for index, files in enumerate(parts):
+        out = upload_dir / f"{ZIP_PREFIX} {index + 1:02d}.zip"
+        with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as archive:
+            for file, arcname in files:
+                archive.write(file, arcname)
+        zips.append(out)
+    return zips
+
+
 def build_feedback_zips(
     marked: Path, upload: Path, mapping: dict, max_bytes: int = MAX_ZIP_BYTES
 ) -> tuple[list[Path], list[str]]:
@@ -97,42 +146,12 @@ def build_feedback_zips(
 
     Moodle limits each upload, so the files are split into numbered parts
     ("Graded - part 01.zip", ...), each under max_bytes. Moodle adds each
-    upload to the earlier ones. Files bigger than max_bytes on their own can't
-    go through Moodle at all; they are returned by name to be saved smaller.
+    upload to the earlier ones. A student whose marked file is bigger than
+    max_bytes on its own can't go through Moodle at all: that file is returned
+    by name, to be saved smaller, and the student's other files stay out too.
     """
-    for old in upload.glob(f"{ZIP_PREFIX} *.zip"):
-        old.unlink()
-
-    parts: list[list[tuple[Path, str]]] = [[]]
-    too_big = []
-    size = 0
-    for file in sorted(marked.iterdir()):
-        match = re.match(r"^(\d{4})(-\d+)?$", file.stem)
-        if not file.is_file() or not match:
-            continue
-        row = mapping.get(match.group(1))
-        if row is None:
-            raise ValueError(f"{file.name}: number {match.group(1)} is not in the key table")
-        file_size = file.stat().st_size
-        if file_size > max_bytes:
-            too_big.append(file.name)
-            continue
-        if parts[-1] and size + file_size > max_bytes:
-            parts.append([])
-            size = 0
-        # Moodle skips files identical to the submission, so give them a new name
-        name = f"feedback{match.group(2) or ''}{file.suffix.lower()}"
-        parts[-1].append((file, f"{row['original_folder']}/{name}"))
-        size += file_size
-
-    zips = []
-    for index, files in enumerate(p for p in parts if p):
-        out = upload / f"{ZIP_PREFIX} {index + 1:02d}.zip"
-        with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as archive:
-            for file, arcname in files:
-                archive.write(file, arcname)
-        zips.append(out)
-    return zips, too_big
+    parts, too_big = plan_parts(marked, mapping, max_bytes)
+    return write_zips(upload, parts), too_big
 
 
 def write_instructions(out: Path, report: dict, max_bytes: int) -> None:
@@ -153,8 +172,11 @@ def write_instructions(out: Path, report: dict, max_bytes: int) -> None:
     lines += [
         "אחרי כל העלאה מודל מציג רשימה: איזה קובץ הולך לאיזה סטודנט.",
         "בודקים שמספר השורות תואם, ולוחצים אישור. כל העלאה מוסיפה לקודמות ולא מוחקת אותן.",
-        "",
     ]
+    # `record` needs the batch list that prepare_batch writes, so only a prepared batch (it has the id) gets this line
+    if report.get("assignment_id"):
+        lines.append(f"מי שמעלה ביד: אחרי כל ZIP מריצים `python -m moodle record {report['assignment_id']} \"<שם ה-ZIP>\"`, כדי שהאתר ידע מה הוחזר.")
+    lines.append("")
     if report["too_big"]:
         lines += [
             f"לא נכנסו ({len(report['too_big'])}), כי כל אחד מהם גדול מ-{limit_mb} MB:",
