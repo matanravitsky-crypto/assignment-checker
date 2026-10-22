@@ -2,10 +2,13 @@ import json
 import os
 import tempfile
 import time
+import zipfile
 from pathlib import Path
 
+import pytest
+
 from moodle import paths
-from moodle.ingest import assignment_folder, find_download, name_from_zip
+from moodle.ingest import assignment_folder, find_download, ingest, name_from_zip, seven_zip
 
 
 def test_find_download_picks_newest_zip_for_the_assignment():
@@ -73,3 +76,29 @@ if __name__ == "__main__":
     test_new_assignment_gets_a_named_folder_and_is_found_again()
     test_new_assignment_needs_english_names()
     print("All tests passed.")
+
+
+def has_seven_zip() -> bool:
+    try:
+        seven_zip()
+        return True
+    except FileNotFoundError:
+        return False
+
+
+@pytest.mark.skipif(not has_seven_zip(), reason="needs 7-Zip")
+def test_cut_off_zip_is_refused_before_anything_changes():
+    with tempfile.TemporaryDirectory() as tmp:
+        zip_path = Path(tmp) / "x-הגשה 0-3438636.zip"
+        with zipfile.ZipFile(zip_path, "w") as archive:
+            archive.writestr("אב_100_assignsubmission_file/a.pdf", b"a" * 5000)
+        data = zip_path.read_bytes()
+        zip_path.write_bytes(data[: len(data) // 2])  # a download that ended early
+        os.environ["ASSIGNMENT_DATA"] = str(Path(tmp) / "data")
+        try:
+            with pytest.raises(ValueError, match="incomplete or damaged"):
+                ingest("3438636", zip_path, "Linear Algebra", "Assignment 0")
+            assert zip_path.exists()
+            assert not (Path(tmp) / "data").exists()
+        finally:
+            del os.environ["ASSIGNMENT_DATA"]

@@ -71,9 +71,21 @@ def assignment_folder(assignment_id: str, zip_path: Path, course: str | None, na
     return folder
 
 
+def check_zip(zip_path: Path) -> None:
+    """Refuse a ZIP that is cut off or damaged, before anything is moved or deleted.
+
+    A big download can end early (on 22/10 a 1.8 GB one did) and still look finished.
+    """
+    test = subprocess.run([seven_zip(), "t", str(zip_path), "-bso0", "-bsp0"], capture_output=True)
+    if test.returncode != 0:
+        raise ValueError(f"{zip_path.name} is incomplete or damaged; download it again from Moodle. "
+                         f"Nothing was changed.")
+
+
 def ingest(assignment_id: str, zip_path: Path | None = None,
            course: str | None = None, name: str | None = None) -> list[dict]:
     zip_path = zip_path or find_download(assignment_id)
+    check_zip(zip_path)
     target = assignment_folder(assignment_id, zip_path, course, name)
 
     # Keep every download: a later one (after the due date) must not erase the first
