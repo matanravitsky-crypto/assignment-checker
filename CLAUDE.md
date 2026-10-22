@@ -12,12 +12,12 @@ Each folder has a README.md that explains it.
 |---|---|
 | `moodle/` | Steps 1 and 3: Moodle ZIP → numbered submissions (`ingest`), grades + marked files → ZIPs (`upload`), and the automatic upload to Moodle (`send`, `record`). `python -m moodle ingest|status|upload|send|record <id>`, `guide` |
 | `moodle/paths.py` | Every folder and file name in the shared folder (constants). Everything else imports names from here |
-| `grading/` | Step 2: grading with Claude. `python -m grading <id>` or the dashboard's "Grade" button. Its README has the input/output contract, the rubric format and the `Grades.csv` columns |
+| `grading/` | Step 2: grading with Claude. `python -m grading <id>` or the dashboard's "Grade" button. Through the API with `ANTHROPIC_API_KEY`, otherwise through the logged-in Claude Code (`grading/claude_cli.py`). Its README has the input/output contract, the rubric format and the `Grades.csv` columns |
 | `dashboard/` | Local server that connects the website to the shared folder: `python -m dashboard serve` (or `start.bat`) |
-| `dashboard/actions.py` | Pull (`moodle ingest`, with a lock and a key-conflict check), prepare return (`moodle upload`), upload to Moodle in the background (`moodle send`) with a readiness check, and the state the site shows (numbers only, no names) |
+| `dashboard/actions.py` | Pull (Claude in Chrome downloads the ZIP when none waits in Downloads, then `moodle ingest`, with a lock and a key-conflict check), prepare return (`moodle upload`), upload to Moodle in the background (`moodle send`) with a readiness check, and the state the site shows (numbers only, no names) |
 | `website/` | The dashboard site "בודק חכם" (static HTML/JS, Hebrew RTL). Published to Vercel (project `bodek-hacham`, root dir `website`, https://bodek-hacham.vercel.app) from `main` through Vercel's Git integration. No demo data: it shows only what `dashboard/` reads from the shared folder, and the Vercel page connects to the dashboard on the same PC at `http://127.0.0.1:8765` (CORS for that exact origin only, `SITE_ORIGINS` in `dashboard/web_server.py`) |
 | `tests/` | All tests (`tests/moodle/`, `tests/dashboard/`). Run `python -m pytest` from the repo root; CI runs them on every PR |
-| `start.bat` | Double-click: updates from GitHub (`git pull --ff-only`, skipped with a message if it can't), sets up `.venv` once, installs `requirements.txt`, starts the dashboard. Teammate setup (folder shortcut, Python, 7-Zip, Git, `git clone`) is in `README.md` and on the site's not-connected page |
+| `start.bat` | Double-click: updates from GitHub (`git pull --ff-only`, skipped with a message if it can't), runs `claude update` (an old Claude Code refuses the new models), sets up `.venv` once, installs `requirements.txt`, starts the dashboard. Teammate setup (folder shortcut, Python, 7-Zip, Git, `git clone`) is in `README.md` and on the site's not-connected page |
 
 ## Student data: never in the repo
 
@@ -78,7 +78,8 @@ So `dashboard/actions.py` guards the dashboard's pull:
 - Let OneDrive finish syncing (the cloud icon) before pulling on another computer.
 
 Then:
-- Team: grade from `1 - Submissions to grade`, write `Grades.csv` and `2 - Graded with comments` next to it.
+- Team: grade from `1 - Submissions to grade`, write `Grades.csv` and `2 - Graded with comments` next to it
+  (the dashboard's "Grade" button or `python -m grading <id>`).
 - Whoever returns: `python -m moodle upload <id>` (or "Prepare return" in the dashboard) → upload to Moodle (below).
 
 ## The shared folder (lecturer's OneDrive)
@@ -113,8 +114,17 @@ There is **no Moodle API**. Claude in Chrome works in the user's own logged-in C
   downloading per schedule wastes runs. Every **upload** to Moodle (grades or feedback) needs a person's yes.
 - Submissions page: `https://moodle.bgu.ac.il/moodle/mod/assign/view.php?id=<assignment id>&action=grading`.
   The assignment id is the `id=` in that URL (the number at the end of the ZIP name too).
-- Download: Actions (פעולות) → "הורדת כל ההגשות (השתמש ב 7ZIP לפתיחה)". Keep "organize submissions in folders per student" checked.
+- Download: Actions (פעולות) → "הורדת כל ההגשות (השתמש ב 7ZIP לפתיחה)", or straight `view.php?id=<id>&action=downloadall`.
+  Keep "הורדת הגשות בתיקיות" (download submissions in folders) checked: `anonymize` needs a folder per student.
   The ZIP lands in Downloads as `<course code>-<assignment>-<id>.zip`. Open with 7-Zip, not Python's zipfile (it garbles some Hebrew names).
+- **The pull button downloads by itself.** `POST /api/pull` first looks for an unconsumed ZIP of the assignment in Downloads
+  (`ingest` moves every ZIP it takes, so one still there was downloaded by hand and not pulled yet). If there is none,
+  `ClaudeChromeDriver.download` runs one locked-down `claude -p --chrome` (`--tools ""`, an empty temp folder, prompt
+  `DOWNLOAD_PROMPT`): it opens the grading page, ticks "הורדת הגשות בתיקיות" if it is off (a personal display option, the
+  only click it may make), and opens the `downloadall` address. Python then waits for the ZIP in Downloads
+  (`ingest.wait_for_download`: nothing within 3 minutes = Chrome never started it, say because it asks where to save; at most
+  25 minutes, under the 30 minutes after which the pull lock counts as stuck), and ingests it. The download shares the
+  "one Chrome job at a time" guard with the connection check and the upload. Not yet run against the real Moodle (2026-10-22).
 - Feedback upload: Actions → "העלאת מספר קובצי משוב כקובץ 7Zip אחד" → the ZIPs in `3 - Ready to upload to Moodle`
   (`Graded - part 01.zip` ...), one at a time. **BGU Moodle imports at once**: clicking "יבוא קבצי משוב" imports
   immediately, with no confirmation list (file → student) before it. Moodle then lands on the grading page with a
@@ -207,6 +217,18 @@ in the assignment.
 | Re-running ingest failed deleting folders 7-Zip extracted as read-only | `ingest.remove_tree` clears read-only and retries |
 | Moodle skips a feedback file identical in name/content to the submission | Feedback files are named `feedback.pdf` inside each student's folder |
 | Folders the web upload never saw (empty ones) | `guide` puts a `README.txt` in "2 - Graded with comments" and "3 - Ready to upload to Moodle" so they exist from day one |
+
+## Grading through Claude Code (no API key)
+
+Without `ANTHROPIC_API_KEY`, `grading.claude_ask()` grades through the Claude Code that is logged in on the computer
+(the team's subscription, like the upload), in `grading/claude_cli.py`: one `claude -p` per submission with
+`--tools Read` only, `--no-chrome`, `--strict-mcp-config`, `--setting-sources project`, `--no-session-persistence`,
+the same SYSTEM prompt (`--system-prompt-file`), `--json-schema SCHEMA`, `--effort high` and the chosen model, in a
+fresh temp folder outside OneDrive that holds only that submission's page images (and the official solution). The
+request goes in on stdin. The answer is the same JSON as through the API, so everything after it is shared.
+The dashboard reports `claudeVia: "api" | "code" | null`. Checked on 2026-10-22 on a synthetic submission: graded,
+flagged for review, marked PDF written, ~20 seconds with Opus. Claude Code 2.1.247 refused `claude-opus-5-5`
+("version 2.1.280 or newer is required"); `start.bat` now runs `claude update`.
 
 ## What grading gets
 

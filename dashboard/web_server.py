@@ -123,7 +123,7 @@ class Handler(SimpleHTTPRequestHandler):
         if url.path == "/api/health":
             root, err = actions.root_info()
             return self._json({"ok": True, "root": str(root) if root else None, "error": err,
-                               "moodle": actions.moodle_status()["logged_in"], "claude": bool(cfg.claude_key())})
+                               "moodle": actions.moodle_status()["logged_in"], "claude": actions.grading_via() is not None, "claudeVia": actions.grading_via()})
         if url.path == "/api/upload":
             return self._json(actions.send_status())
         if url.path == "/api/moodle":

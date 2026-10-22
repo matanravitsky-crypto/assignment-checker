@@ -15,6 +15,7 @@ from moodle import paths
 from dashboard import actions, folder_view, shared_folder
 from tests.sample_files import homework_pdf
 
+from tests.dashboard.conftest import FakeDownloader
 from tests.dashboard.helpers import COURSE, HW, MID, NAMES, call, write_key
 
 
@@ -226,3 +227,63 @@ def test_onedrive_conflict_copy_blocks_pull(root, monkeypatch):
         actions.pull(root, COURSE, HW)
     assert "עותק כפול" in str(e.value)
     assert actions.state(root)["assignments"][0]["warnings"] == ["עותק כפול של טבלת המפתח: Key - number to student-DESKTOP-ABC.csv"]
+
+
+# ---------- משיכה: ההורדה ממודל דרך Claude בכרום ----------
+def _record_ingest(seen):
+    def ingest(assignment_id, zip_path=None, *a, **k):
+        seen.append(zip_path)
+        return _ok_ingest(assignment_id)
+    return ingest
+
+
+def test_pull_downloads_from_moodle_when_no_zip_is_waiting(root, monkeypatch):
+    from moodle import ingest
+    seen, fake = [], FakeDownloader(ingest.downloads_dir())
+    monkeypatch.setattr(actions, "_make_downloader", lambda: fake)
+    monkeypatch.setattr("moodle.ingest.ingest", _record_ingest(seen))
+    actions.pull(root, COURSE, HW)
+    assert fake.calls == [MID]
+    assert [p.name for p in seen] == [f"214193210120271-x-{MID}.zip"]
+
+
+def test_pull_takes_a_zip_that_was_downloaded_by_hand(root, monkeypatch):
+    from moodle import ingest
+    by_hand = ingest.downloads_dir() / f"קורס-הגשה 0-{MID}.zip"
+    by_hand.write_bytes(b"zip")
+    seen, fake = [], FakeDownloader(ingest.downloads_dir())
+    monkeypatch.setattr(actions, "_make_downloader", lambda: fake)
+    monkeypatch.setattr("moodle.ingest.ingest", _record_ingest(seen))
+    actions.pull(root, COURSE, HW)
+    assert seen == [by_hand] and fake.calls == []  # לא מורידים שוב
+
+
+def test_pull_explains_a_download_that_did_not_start(root, monkeypatch):
+    from moodle import ingest
+    fake = FakeDownloader(ingest.downloads_dir(), {"status": "needs_login", "message": "Moodle מבקש התחברות."})
+    monkeypatch.setattr(actions, "_make_downloader", lambda: fake)
+    monkeypatch.setattr("moodle.ingest.ingest", lambda *a, **k: pytest.fail("nothing to ingest"))
+    with pytest.raises(actions.UserError, match="מבקש התחברות"):
+        actions.pull(root, COURSE, HW)
+    assert not (root / COURSE / HW / actions.LOCK_FILE).exists()
+
+
+def test_pull_waits_for_chrome_to_finish_and_explains_a_stuck_download(root, monkeypatch):
+    from moodle import ingest
+
+    class NothingArrives:
+        def download(self, info):
+            return {"status": "started", "message": "ok"}
+
+    monkeypatch.setattr(actions, "_make_downloader", NothingArrives)
+    def no_start(*a, **k):
+        raise TimeoutError("The download did not start in Chrome")
+    monkeypatch.setattr(ingest, "wait_for_download", no_start)
+    with pytest.raises(actions.UserError, match="שאל איפה לשמור"):
+        actions.pull(root, COURSE, HW)
+
+
+def test_pull_does_not_download_while_an_upload_uses_chrome(root, monkeypatch):
+    monkeypatch.setattr(actions._send, "running", True)
+    with pytest.raises(actions.UserError, match="העלאה"):
+        actions.pull(root, COURSE, HW)

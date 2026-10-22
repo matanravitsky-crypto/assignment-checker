@@ -4,8 +4,10 @@ import tempfile
 import time
 from pathlib import Path
 
+import pytest
+
 from moodle import paths
-from moodle.ingest import assignment_folder, find_download, name_from_zip
+from moodle.ingest import assignment_folder, find_download, name_from_zip, wait_for_download
 
 
 def test_find_download_picks_newest_zip_for_the_assignment():
@@ -64,6 +66,52 @@ def test_new_assignment_needs_english_names():
         finally:
             del os.environ["ASSIGNMENT_DATA"]
     raise AssertionError("expected ValueError")
+
+
+
+class Clock:
+    """A fake clock for wait_for_download: every sleep moves time forward and may run a step (Chrome at work)."""
+
+    def __init__(self, steps=()):
+        self.now, self.steps = 0.0, list(steps)
+
+    def __call__(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+        if self.steps:
+            self.steps.pop(0)()
+
+
+def test_wait_for_download_returns_the_new_zip_once_it_is_whole(tmp_path):
+    since = time.time()
+    old = tmp_path / "קורס-הגשה 0-3438636.zip"
+    old.write_bytes(b"an old download")
+    os.utime(old, (since - 600, since - 600))  # was there before the download was asked for: not it
+    new = tmp_path / "קורס-הגשה 0-3438636.zip"
+    partial = tmp_path / "Unconfirmed 1.crdownload"
+    steps = [lambda: partial.write_bytes(b"PK"),
+             # Chrome renames it when done (the old one was moved away by an earlier ingest)
+             lambda: (partial.unlink(), old.unlink(), new.write_bytes(b"PK whole"))]
+    clock = Clock(steps)
+    got = wait_for_download("3438636", since, tmp_path, poll_s=1, clock=clock, sleep=clock.sleep)
+    assert got == new and got.read_bytes() == b"PK whole"
+
+
+def test_wait_for_download_gives_up_when_nothing_starts(tmp_path):
+    clock = Clock()
+    with pytest.raises(TimeoutError, match="did not start"):
+        wait_for_download("3438636", time.time(), tmp_path, start_s=10, poll_s=1, clock=clock, sleep=clock.sleep)
+    assert clock.now <= 12
+
+
+def test_wait_for_download_keeps_waiting_while_chrome_downloads(tmp_path):
+    (tmp_path / "x-3438636.zip.crdownload").write_bytes(b"PK")
+    clock = Clock()
+    with pytest.raises(TimeoutError, match="did not finish"):
+        wait_for_download("3438636", time.time(), tmp_path, start_s=10, total_s=100, poll_s=5, clock=clock, sleep=clock.sleep)
+    assert clock.now > 100
 
 
 if __name__ == "__main__":
