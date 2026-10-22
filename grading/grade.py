@@ -6,6 +6,9 @@
   Assignment details.json                 השאלות (questions), כללי ההגשה (submission_rules), המחוון (rubric),
                                           הנחיות לבדיקה (grading_instructions) והציון המרבי (max_grade)
   Official solution.pdf                   הפתרון הרשמי, אם יש (לא חובה)
+  פדגוגי/ (או Pedagogy/)                  חומר הבדיקה של המטלה: מחוון, פתרונות, דרכים מקובלות. כל קובץ .md או .txt
+                                          בה נשלח ל-Claude. ניקוד לשאלה נלקח מטבלה שבה העמודה הראשונה היא שם
+                                          השאלה והשנייה הניקוד ("| קבוצות 11 | 20 |"), אם אין ניקוד ב-rubric
 
 פלט, בדיוק מה ששלב ההחזרה (moodle/upload.py של אורי) מצפה לו:
   Grades.csv                              number, grade, feedback, ועוד עמודות של המערכת (ראו GRADE_COLUMNS)
@@ -145,8 +148,35 @@ def marked_files(assignment_dir: Path) -> dict[str, list[Path]]:
     return files_by_number(assignment_dir / paths.MARKED, "*.pdf")
 
 
+def pedagogy_files(assignment_dir: Path) -> list[Path]:
+    """קובצי הטקסט בתיקיית חומר הבדיקה של המטלה (פדגוגי), המחוון קודם."""
+    folder = next((assignment_dir / name for name in paths.PEDAGOGY if (assignment_dir / name).is_dir()), None)
+    if folder is None:
+        return []
+    files = [p for p in folder.iterdir() if p.is_file() and p.suffix.lower() in (".md", ".txt") and p.name != paths.README]
+    return sorted(files, key=lambda p: (not re.search(r"rubric|מחוון", p.stem, re.I), p.name))
+
+
+def pedagogy_text(files: list[Path]) -> str:
+    return "\n\n".join(f"--- {p.name} ---\n{p.read_text(encoding='utf-8-sig').strip()}" for p in files)
+
+
+def pedagogy_points(text: str, labels: list[str]) -> dict[str, float]:
+    """ניקוד לשאלה מטבלת markdown: שורה שהתא הראשון שלה הוא סוף שם השאלה ("קבוצות 11" ל-"דף קבוצות 11"), והשני מספר."""
+    points: dict[str, float] = {}
+    for line in text.splitlines():
+        cells = [c.strip().strip("*").strip() for c in line.strip().strip("|").split("|")]
+        if len(cells) < 2 or not cells[0] or not re.fullmatch(r"\d+(\.\d+)?", cells[1]):
+            continue
+        for label in labels:
+            if label not in points and re.search(r"(^|\s)" + re.escape(cells[0]) + "$", label):
+                points[label] = float(cells[1])
+    return points
+
+
 def load_context(assignment_dir: Path, instructions: str = "", send_solution: bool = True) -> Context:
     d = read_details(assignment_dir)
+    pedagogy = pedagogy_text(pedagogy_files(assignment_dir))
     max_grade = _num(d.get("max_grade"), 100) or 100
     rubric = d.get("rubric")
     rubric_text = ""
@@ -156,9 +186,12 @@ def load_context(assignment_dir: Path, instructions: str = "", send_solution: bo
         rubric_text = str(rubric.get("notes") or "")
     else:
         labels = question_labels(d) or ["כל המטלה"]
-        qs = [Question(label, 0) for label in labels]
+        found = pedagogy_points(pedagogy, labels)
+        qs = [Question(label, found.get(label, 0)) for label in labels]
         if isinstance(rubric, str):
             rubric_text = rubric
+    if pedagogy:
+        rubric_text = "\n\n".join(t for t in (rubric_text, "חומר הבדיקה של המטלה (מחוון, פתרונות ודרכי פתרון):\n\n" + pedagogy) if t)
     # שאלות בלי ניקוד מתחלקות שווה במה שנשאר מהציון המרבי
     unset = [q for q in qs if not q.points]
     if unset:

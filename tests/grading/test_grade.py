@@ -145,6 +145,42 @@ def test_rubric_and_solution_are_sent(root):
     assert "document" not in json.dumps(grading.build_request(grading.load_context(a.dir, send_solution=False), []))
 
 
+def test_pedagogy_folder_is_sent_with_its_points(root):
+    a = asg(root)
+    ped = a.dir / "פדגוגי"
+    ped.mkdir()
+    (ped / "Solutions.md").write_text("# פתרון\nקבוצות 11א: כן", encoding="utf-8")
+    (ped / "Rubric.md").write_text(
+        "| שאלה | נקודות | סעיפים |\n|---|---|---|\n| קבוצות 11 | 20 | א 3 |\n| **קבוצות 12** | **24** | |\n"
+        "| מרוכבים 6 | 12 | |\n| מרוכבים 7 | 20 | |\n| מרוכבים 8 | 24 | |\n| **סה\"כ** | **100** | |\n"
+        "| \"לא\" בלבד | 2 |\n", encoding="utf-8")
+    (ped / paths.README).write_text("לא נשלח", encoding="utf-8")
+    (ped / "notes.pdf").write_bytes(b"not text")
+    ctx = grading.load_context(a.dir)
+    assert [(q.label, q.points) for q in ctx.questions] == list(zip(LABELS, (20, 24, 12, 20, 24)))
+    text = grading.context_text(ctx)
+    # המחוון קודם, אחריו שאר הקבצים; README ו-PDF לא נשלחים
+    assert text.index("--- Rubric.md ---") < text.index("--- Solutions.md ---")
+    assert "קבוצות 11א: כן" in text and "לא נשלח" not in text and "notes.pdf" not in text
+
+
+def test_points_in_details_win_over_the_pedagogy_folder(root):
+    a = asg(root)
+    d = a.details()
+    d["rubric"] = {"questions": [{"label": "הכל", "points": 100}]}
+    save_details(a, d)
+    (a.dir / "Pedagogy").mkdir()
+    (a.dir / "Pedagogy" / "Rubric.txt").write_text("| הכל | 50 |\nמורידים על סימון", encoding="utf-8")
+    ctx = grading.load_context(a.dir)
+    assert [(q.label, q.points) for q in ctx.questions] == [("הכל", 100)]
+    assert "מורידים על סימון" in grading.context_text(ctx)
+
+
+def test_no_pedagogy_folder_splits_points_evenly(root):
+    ctx = grading.load_context(asg(root).dir)
+    assert [q.points for q in ctx.questions] == [20] * 5 and "חומר הבדיקה" not in ctx.rubric_text
+
+
 # ---------- התשובה ----------
 def test_parse_answer_clamps_and_computes_the_grade(root):
     ctx = grading.load_context(asg(root).dir)
