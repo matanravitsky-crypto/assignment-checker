@@ -96,7 +96,7 @@ def test_a_zip_whose_file_changed_since_its_last_upload_is_not_skipped(batch):
 def test_count_mismatch_stops_without_recording(batch):
     a, s = batch
     r = run_batch(a, s.id, SimulatedDriver([UploadResult("imported", rows=1, imported=0)]))
-    assert r.stopped == "error" and read_log(a) == []
+    assert r.stopped == "mismatch" and read_log(a) == []
     assert not (a / UPLOAD_LOCK).exists()
 
 
@@ -107,17 +107,26 @@ def test_count_mismatch_stops_without_recording(batch):
     UploadResult("imported", imported=1),                     # no row count at all
     UploadResult("imported", rows=1, imported=1, skipped=1),  # imported + skipped over the ZIP's files
 ])
-def test_imported_with_numbers_that_do_not_add_up_is_an_error(batch, result):
+def test_imported_with_numbers_that_do_not_add_up_is_a_mismatch_a_person_checks(batch, result):
     a, s = batch
     r = run_batch(a, s.id, SimulatedDriver([result]))
-    assert (r.stopped, r.done_zips, read_log(a)) == ("error", [], [])
-    assert r.message.startswith(f"{PART_1}: ")
+    assert (r.stopped, r.done_zips, read_log(a)) == ("mismatch", [], [])  # not "error": the site would offer to resume
+    assert r.message.startswith(f"{PART_1}: מודל כבר ייבא את ה-ZIP")
+    assert "צריך שאדם יבדוק במודל" in r.message
 
 
 def test_a_driver_without_a_message_still_gets_the_numbers_in_the_report(batch):
     a, s = batch
     r = run_batch(a, s.id, SimulatedDriver([UploadResult("imported", rows=1, imported=0)]))
-    assert r.message == f"{PART_1}: קבצים צפויים: 1, קבצים ש-Moodle עיבד: 1, יובאו: 0, דולגו: 0"
+    assert r.message == (f"{PART_1}: מודל כבר ייבא את ה-ZIP, אבל המספרים לא תואמים, ולכן הוא לא נרשם ביומן. "
+                         "צריך שאדם יבדוק במודל מה יובא לפני שמריצים שוב "
+                         "(קבצים צפויים: 1, קבצים ש-Moodle עיבד: 1, יובאו: 0, דולגו: 0)")
+
+
+def test_a_mismatch_keeps_the_drivers_message_too(batch):
+    a, s = batch
+    r = run_batch(a, s.id, SimulatedDriver([UploadResult("imported", rows=1, imported=0, message="0 יובאו")]))
+    assert r.stopped == "mismatch" and r.message.endswith("דולגו: 0) 0 יובאו")
 
 
 def test_identical_files_skipped_by_moodle_count_as_done(batch):
@@ -214,7 +223,7 @@ def test_dry_run_takes_the_first_zip_that_is_still_to_upload(batch):
 @pytest.mark.parametrize("result, stopped", [
     (UploadResult("dry_run_ok", rows=5), "error"),               # the list is not the size of the ZIP
     (UploadResult("mismatch", rows=5, message="הודעה"), "mismatch"),
-    (UploadResult("imported", rows=1, imported=1), "error"),     # a dry run must never import
+    (UploadResult("imported", rows=1, imported=1), "mismatch"),  # a dry run must never import: a person checks
 ])
 def test_dry_run_that_does_not_check_out_stops_with_nothing_recorded(batch, result, stopped):
     a, s = batch
@@ -353,3 +362,12 @@ def test_a_batch_list_from_before_zip_hashes_is_stale(batch):
     assert (run_batch(a, s.id, d).stopped, d.calls) == ("stale", [])
     write_batch(a, {k: v for k, v in old.items() if k != "folder"})
     assert (run_batch(a, s.id, d).stopped, d.calls) == ("stale", [])
+
+
+def test_mismatch_is_not_resumable_in_the_site():
+    """website/app.js offers "resume" only for RESUMABLE: a mismatch (Moodle may have imported) must not be in it."""
+    import re
+    from pathlib import Path
+    app = (Path(__file__).resolve().parents[2] / "website" / "app.js").read_text(encoding="utf-8")
+    resumable = re.search(r"const RESUMABLE = \[([^\]]*)\]", app).group(1)
+    assert set(re.findall(r'"(\w+)"', resumable)) == {"needs_login", "user", "error"}

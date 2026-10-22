@@ -398,6 +398,8 @@
     return `מעלה קובץ ${Math.min((S.done || 0) + 1, S.total || 1)} מתוך ${S.total}…`;
   }
   const numList = (items, max = 20) => (items.length > max ? `${items.slice(0, max).join(", ")} ועוד ${items.length - max}` : items.join(", "));
+  // "mismatch" (Moodle imported, the numbers are off) and "stale" are not here on purpose: a person checks Moodle
+  // and prepares again, so nothing is imported twice by one click (tests/moodle/test_send_run.py checks this list)
   const RESUMABLE = ["needs_login", "user", "error"];
 
   function sendPanelHTML() {

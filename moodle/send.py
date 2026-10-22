@@ -41,6 +41,8 @@ from moodle import anonymize, lock, paths, upload, upload_log
 
 UPLOAD_LOCK = paths.UPLOAD_LOCK
 STALE_MESSAGE = "הקבצים השתנו מאז ההכנה. צריך להכין שוב."
+IMPORTED_BUT_MISMATCH = ("מודל כבר ייבא את ה-ZIP, אבל המספרים לא תואמים, ולכן הוא לא נרשם ביומן. "
+                         "צריך שאדם יבדוק במודל מה יובא לפני שמריצים שוב")
 ZIP_CHANGED_DURING_UPLOAD = ("קובץ ה-ZIP השתנה בזמן ההעלאה, ולכן הוא לא נרשם ביומן. ייתכן שמודל כבר ייבא אותו: "
                              "צריך לבדוק במודל ולהכין שוב.")
 
@@ -245,7 +247,8 @@ class SimulatedDriver:
 class RunReport:
     """How a run ended. `done_zips`: every ZIP of the batch that is finished, in this run or an earlier one.
     `recorded`: log rows this run wrote. `stopped`: None when all went through, else why it stopped:
-    "user" | "needs_login" | "mismatch" | "error" | "stale" | "locked"."""
+    "user" | "needs_login" | "mismatch" | "error" | "stale" | "locked". Only "user", "needs_login" and "error"
+    may be resumed as they are (website/app.js RESUMABLE): "mismatch" means Moodle may have imported, so a person checks first."""
     total_zips: int
     done_zips: list[str] = field(default_factory=list)
     recorded: int = 0
@@ -354,11 +357,15 @@ def upload_zips(
             finished(index, name)
             continue
 
-        # Anything else stops the run; a result that says imported (or checked) but fails the numbers is an error
-        detail = result.message
-        if not detail and result.status in ("imported", "dry_run_ok"):
-            detail = (f"קבצים צפויים: {expected}, קבצים ש-Moodle עיבד: {result.rows}, "
-                      f"יובאו: {result.imported or 0}, דולגו: {result.skipped or 0}")
+        # Anything else stops the run
+        numbers = (f"קבצים צפויים: {expected}, קבצים ש-Moodle עיבד: {result.rows}, "
+                   f"יובאו: {result.imported or 0}, דולגו: {result.skipped or 0}")
+        if result.status == "imported":
+            # Moodle imported (in a dry run too), but the numbers are off: a person checks in Moodle before anything
+            # runs again. "mismatch" is not resumable in the site; "error" would let one click import the ZIP again
+            detail = f"{IMPORTED_BUT_MISMATCH} ({numbers})" + (f" {result.message}" if result.message else "")
+            return stop("mismatch", f"{name}: {detail}")
+        detail = result.message or (numbers if result.status == "dry_run_ok" else "")
         why = result.status if result.status in ("needs_login", "mismatch", "error") else "error"
         return stop(why, f"{name}: {detail}")
 
