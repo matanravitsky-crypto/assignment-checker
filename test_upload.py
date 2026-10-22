@@ -3,7 +3,9 @@ import tempfile
 import zipfile
 from pathlib import Path
 
-from moodle.upload import INSTRUCTIONS_FILE, build_feedback_zips, participant_from_identifier, prepare_upload
+from moodle import paths
+from moodle.upload import (GRADES_FOR_MOODLE, INSTRUCTIONS_FILE, build_feedback_zips,
+                           participant_from_identifier, prepare_upload)
 
 MAPPING = [
     ["number", "anon_file", "participant_id", "original_folder", "original_file"],
@@ -32,33 +34,34 @@ def test_participant_from_identifier():
 def test_prepare_upload_matches_by_number_not_order():
     with tempfile.TemporaryDirectory() as tmp:
         assignment = Path(tmp)
-        write_csv(assignment / "mapping.csv", MAPPING)
-        write_csv(assignment / "results.csv", [["number", "grade", "feedback"], ["2", "90", "טוב"], ["0001", "70", ""]])
+        write_csv(assignment / paths.KEY, MAPPING)
+        write_csv(assignment / paths.GRADES, [["number", "grade", "feedback"], ["2", "90", "טוב"], ["0001", "70", ""]])
         write_csv(assignment / "worksheet.csv", WORKSHEET)
-        (assignment / "marked").mkdir()
-        (assignment / "marked" / "0002.pdf").write_bytes(b"marked")
+        (assignment / paths.MARKED).mkdir()
+        (assignment / paths.MARKED / "0002.pdf").write_bytes(b"marked")
 
         report = prepare_upload(assignment, assignment / "worksheet.csv")
 
+        upload = assignment / paths.UPLOAD
         assert report["grades_filled"] == 2
         assert report["missing_results"] == []
-        with open(assignment / "upload" / "grades.csv", encoding="utf-8-sig") as f:
+        with open(upload / GRADES_FOR_MOODLE, encoding="utf-8-sig") as f:
             rows = list(csv.reader(f))
         assert rows[1][2:5:2] == ["90", "טוב"]
         assert rows[2][2] == "70"
         assert rows[3][2] == ""
-        assert [z.name for z in report["feedback_zips"]] == ["feedback-1.zip"]
-        instructions = (assignment / "upload" / INSTRUCTIONS_FILE).read_text(encoding="utf-8-sig")
-        assert "feedback-1.zip" in instructions
-        assert "grades.csv מוכן (2 ציונים)" in instructions
-        with zipfile.ZipFile(assignment / "upload" / "feedback-1.zip") as archive:
+        assert [z.name for z in report["feedback_zips"]] == ["עבודות בדוקות - חלק 01.zip"]
+        instructions = (upload / INSTRUCTIONS_FILE).read_text(encoding="utf-8-sig")
+        assert "עבודות בדוקות - חלק 01.zip" in instructions
+        assert f"\"{GRADES_FOR_MOODLE}\" מוכן (2 ציונים)" in instructions
+        with zipfile.ZipFile(report["feedback_zips"][0]) as archive:
             assert archive.namelist() == ["בת_200_assignsubmission_file/feedback.pdf"]
 
 
 def test_feedback_zips_split_under_the_size_limit():
     with tempfile.TemporaryDirectory() as tmp:
         assignment = Path(tmp)
-        marked = assignment / "marked"
+        marked = assignment / paths.MARKED
         marked.mkdir()
         (marked / "0001.pdf").write_bytes(b"x" * 600)
         (marked / "0002.pdf").write_bytes(b"y" * 600)
@@ -67,7 +70,7 @@ def test_feedback_zips_split_under_the_size_limit():
 
         zips, too_big = build_feedback_zips(marked, assignment, mapping, max_bytes=1000)
 
-        assert [z.name for z in zips] == ["feedback-1.zip", "feedback-2.zip"]
+        assert [z.name for z in zips] == ["עבודות בדוקות - חלק 01.zip", "עבודות בדוקות - חלק 02.zip"]
         assert too_big == ["0002-2.pdf"]
         with zipfile.ZipFile(zips[1]) as archive:
             assert archive.namelist() == ["בת_200_assignsubmission_file/feedback.pdf"]
@@ -76,8 +79,8 @@ def test_feedback_zips_split_under_the_size_limit():
 def test_prepare_upload_reports_missing_results():
     with tempfile.TemporaryDirectory() as tmp:
         assignment = Path(tmp)
-        write_csv(assignment / "mapping.csv", MAPPING)
-        write_csv(assignment / "results.csv", [["number", "grade", "feedback"], ["0001", "70", ""], ["0009", "50", ""]])
+        write_csv(assignment / paths.KEY, MAPPING)
+        write_csv(assignment / paths.GRADES, [["number", "grade", "feedback"], ["0001", "70", ""], ["0009", "50", ""]])
 
         report = prepare_upload(assignment)
 

@@ -1,17 +1,19 @@
 """Number Moodle submissions 0001..N so grading never sees student names.
 
-Reads original/ (one folder per student, as Moodle's "Download all
+Reads the extracted ZIP (one folder per student, as Moodle's "Download all
 submissions" gives them) and writes into the assignment folder:
-    anon/0001.pdf, anon/0002.pdf, ...   the files the grader gets
-    mapping.csv                         number -> Moodle participant id and
-                                        original folder; it stays private and
-                                        is used to rebuild names for the upload
+    1 - עבודות לבדיקה/0001.pdf ...      the files the grader gets
+    טבלת מפתח - מספר לסטודנט.csv        number -> Moodle participant id and
+                                        original folder; used to rebuild
+                                        Moodle's names for the upload
 """
 
 import csv
 import re
 import shutil
 from pathlib import Path
+
+from moodle import paths
 
 # Moodle names each folder "<full name>_<participant id>_assignsubmission_file"
 FOLDER_PATTERN = re.compile(r"^(?P<name>.+)_(?P<participant>\d+)_assignsubmission_file_?$")
@@ -28,7 +30,7 @@ def parse_folder(folder_name: str) -> str:
 
 
 def prepare(original: Path, assignment_dir: Path) -> list[dict]:
-    anon = assignment_dir / "anon"
+    anon = assignment_dir / paths.TO_GRADE
     if anon.exists():
         shutil.rmtree(anon)
     anon.mkdir()
@@ -55,7 +57,7 @@ def prepare(original: Path, assignment_dir: Path) -> list[dict]:
                 "original_file": str(file.relative_to(folder)),
             })
 
-    with open(assignment_dir / "mapping.csv", "w", newline="", encoding="utf-8-sig") as f:
+    with open(assignment_dir / paths.KEY, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.DictWriter(f, fieldnames=MAPPING_FIELDS)
         writer.writeheader()
         writer.writerows(rows)
@@ -63,8 +65,8 @@ def prepare(original: Path, assignment_dir: Path) -> list[dict]:
 
 
 def read_mapping(assignment_dir: Path) -> dict[str, dict]:
-    """Return mapping.csv as {number: first row for that number}."""
-    with open(assignment_dir / "mapping.csv", encoding="utf-8-sig") as f:
+    """Return the key as {number: first row for that number}."""
+    with open(assignment_dir / paths.KEY, encoding="utf-8-sig") as f:
         mapping = {}
         for row in csv.DictReader(f):
             mapping.setdefault(row["number"], row)

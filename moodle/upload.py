@@ -1,20 +1,18 @@
 """Build what goes back to Moodle from results kept by number.
 
-Inputs in <assignment>/:
-    results.csv   columns: number, grade, feedback (feedback may be empty)
-    marked/       marked files named by number: 0001.pdf, 0001-2.pdf, ...
+Inputs in the assignment folder:
+    ציונים.csv                    columns: number, grade, feedback (feedback may be empty)
+    2 - עבודות בדוקות עם הערות/   marked files named by number: 0001.pdf, 0001-2.pdf, ...
     the grading worksheet, downloaded from Moodle (Actions > Download grading
     worksheet; needs "Offline grading worksheet" on in the assignment settings)
 
-Outputs in <assignment>/upload/:
-    grades.csv    the worksheet with grades and feedback filled in
-                  -> Moodle: Actions > Upload grading worksheet
-    feedback-1.zip, feedback-2.zip, ...
-                  one folder per student, named as in Moodle's download,
-                  each ZIP under Moodle's upload limit
-                  -> Moodle: Actions > Upload multiple feedback files in a zip
-    הוראות העלאה.txt
-                  step-by-step for whoever uploads (TA or lecturer)
+Outputs in "3 - מוכן להעלאה למודל/":
+    ציונים לגיליון של מודל.csv    the worksheet with grades and feedback filled in
+                                  -> Moodle: Actions > Upload grading worksheet
+    עבודות בדוקות - חלק 1.zip ...  one folder per student, named as in Moodle's
+                                  download, each ZIP under the upload limit
+                                  -> Moodle: Actions > Upload multiple feedback files in a zip
+    הוראות העלאה.txt              step-by-step for whoever uploads (TA or lecturer)
 
 Nothing here talks to Moodle: a person uploads, and confirms Moodle's list
 of which file goes to which student before it imports.
@@ -25,7 +23,7 @@ import re
 import zipfile
 from pathlib import Path
 
-from moodle import anonymize
+from moodle import anonymize, paths
 
 # The worksheet's headers follow the Moodle language the user downloaded it in
 GRADE_HEADERS = {"Grade", "ציון"}
@@ -37,6 +35,8 @@ MAX_ZIP_BYTES = 30_000_000
 CLAUDE_MAX_ZIP_BYTES = 9_000_000
 
 INSTRUCTIONS_FILE = "הוראות העלאה.txt"
+GRADES_FOR_MOODLE = "ציונים לגיליון של מודל.csv"
+ZIP_PREFIX = "עבודות בדוקות - חלק"
 
 
 def find_worksheet(assignment_id: str, downloads: Path | None = None) -> Path | None:
@@ -47,7 +47,7 @@ def find_worksheet(assignment_id: str, downloads: Path | None = None) -> Path | 
 
 
 def read_results(assignment_dir: Path) -> dict[str, dict]:
-    with open(assignment_dir / "results.csv", encoding="utf-8-sig") as f:
+    with open(assignment_dir / paths.GRADES, encoding="utf-8-sig") as f:
         return {f"{int(row['number']):04d}": row for row in csv.DictReader(f)}
 
 
@@ -95,12 +95,12 @@ def build_feedback_zips(
 ) -> tuple[list[Path], list[str]]:
     """Zip marked files under each student's original Moodle folder name.
 
-    Moodle limits each upload, so the files are split into feedback-1.zip,
-    feedback-2.zip, ... each under max_bytes. Moodle adds each upload to the
-    earlier ones. Files bigger than max_bytes on their own can't go through
-    Moodle at all; they are returned by name to be saved smaller.
+    Moodle limits each upload, so the files are split into numbered parts
+    ("עבודות בדוקות - חלק 01.zip", ...), each under max_bytes. Moodle adds each
+    upload to the earlier ones. Files bigger than max_bytes on their own can't
+    go through Moodle at all; they are returned by name to be saved smaller.
     """
-    for old in upload.glob("feedback-*.zip"):
+    for old in upload.glob(f"{ZIP_PREFIX} *.zip"):
         old.unlink()
 
     parts: list[list[tuple[Path, str]]] = [[]]
@@ -112,7 +112,7 @@ def build_feedback_zips(
             continue
         row = mapping.get(match.group(1))
         if row is None:
-            raise ValueError(f"{file.name}: number {match.group(1)} is not in mapping.csv")
+            raise ValueError(f"{file.name}: number {match.group(1)} is not in the key table")
         file_size = file.stat().st_size
         if file_size > max_bytes:
             too_big.append(file.name)
@@ -127,7 +127,7 @@ def build_feedback_zips(
 
     zips = []
     for index, files in enumerate(p for p in parts if p):
-        out = upload / f"feedback-{index + 1}.zip"
+        out = upload / f"{ZIP_PREFIX} {index + 1:02d}.zip"
         with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as archive:
             for file, arcname in files:
                 archive.write(file, arcname)
@@ -143,9 +143,9 @@ def write_instructions(out: Path, report: dict, max_bytes: int) -> None:
         "העלאת הבדיקות למודל",
         "=" * 20,
         "",
-        f"הגשות: {report['submissions']}. ציונים: {report['results']}. קבצי ZIP של עבודות מסומנות: {len(zips)}.",
+        f"הגשות: {report['submissions']}. ציונים: {report['results']}. קבצי ZIP של עבודות בדוקות: {len(zips)}.",
         "",
-        "שלב 1: עבודות מסומנות",
+        "שלב 1: עבודות בדוקות עם הערות",
         "במודל, במטלה: הגשות ← פעולות ← \"העלאת מספר קובצי משוב כקובץ 7Zip אחד\".",
         f"מעלים כל קובץ בנפרד, לפי הסדר (מודל מקבל עד {limit_mb} MB בכל העלאה):",
     ]
@@ -167,8 +167,8 @@ def write_instructions(out: Path, report: dict, max_bytes: int) -> None:
         lines.append("עוד לא מוכן: צריך להוריד ממודל את גיליון הציונים (Offline grading worksheet) ולהריץ שוב את ההכנה.")
     else:
         lines += [
-            f"grades.csv מוכן ({report['grades_filled']} ציונים).",
-            "במודל: הגשות ← פעולות ← \"העלאת גיליון ציונים\" ← בוחרים grades.csv ← בודקים את התצוגה המקדימה ← אישור.",
+            f"\"{GRADES_FOR_MOODLE}\" מוכן ({report['grades_filled']} ציונים).",
+            f"במודל: הגשות ← פעולות ← \"העלאת גיליון ציונים\" ← בוחרים \"{GRADES_FOR_MOODLE}\" ← בודקים את התצוגה המקדימה ← אישור.",
         ]
     if report["missing_results"]:
         lines += ["", f"שימו לב: {len(report['missing_results'])} הגשות עוד בלי ציון: {', '.join(report['missing_results'][:30])}"]
@@ -178,7 +178,7 @@ def write_instructions(out: Path, report: dict, max_bytes: int) -> None:
 def prepare_upload(assignment_dir: Path, worksheet: Path | None = None, max_bytes: int = MAX_ZIP_BYTES) -> dict:
     mapping = anonymize.read_mapping(assignment_dir)
     results = read_results(assignment_dir)
-    upload = assignment_dir / "upload"
+    upload = assignment_dir / paths.UPLOAD
     upload.mkdir(exist_ok=True)
 
     report = {
@@ -191,8 +191,8 @@ def prepare_upload(assignment_dir: Path, worksheet: Path | None = None, max_byte
         "too_big": [],
     }
     if worksheet:
-        report["grades_filled"] = fill_worksheet(worksheet, upload / "grades.csv", results, mapping)
-    marked = assignment_dir / "marked"
+        report["grades_filled"] = fill_worksheet(worksheet, upload / GRADES_FOR_MOODLE, results, mapping)
+    marked = assignment_dir / paths.MARKED
     if marked.is_dir():
         report["feedback_zips"], report["too_big"] = build_feedback_zips(marked, upload, mapping, max_bytes)
     write_instructions(upload / INSTRUCTIONS_FILE, report, max_bytes)

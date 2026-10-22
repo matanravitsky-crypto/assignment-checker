@@ -9,6 +9,8 @@ import csv
 import re
 from pathlib import Path
 
+from moodle import paths
+
 # Plain ASCII and Hebrew letters, minus what Windows and OneDrive forbid
 SAFE_NAME = re.compile(r'^[\x20-\x7Eא-ת]+$')
 FORBIDDEN = set('"*:<>?/\\|')
@@ -26,7 +28,10 @@ def unsafe_names(folder: Path) -> list[str]:
 
 
 def count_files(folder: Path) -> int:
-    return sum(1 for p in folder.iterdir() if p.is_file()) if folder.is_dir() else 0
+    """Files in folder, not counting its "read me"."""
+    if not folder.is_dir():
+        return 0
+    return sum(1 for p in folder.iterdir() if p.is_file() and p.name != paths.README)
 
 
 def count_rows(path: Path) -> int | None:
@@ -38,12 +43,12 @@ def count_rows(path: Path) -> int | None:
 
 def status(assignment_dir: Path) -> dict:
     return {
-        "assignment_info": (assignment_dir / "assignment.json").exists(),
-        "materials": count_files(assignment_dir / "materials"),
-        "anon_files": count_files(assignment_dir / "anon"),
-        "mapping_rows": count_rows(assignment_dir / "mapping.csv"),
-        "results_rows": count_rows(assignment_dir / "results.csv"),
-        "marked_files": count_files(assignment_dir / "marked"),
-        "upload_files": count_files(assignment_dir / "upload"),
+        "assignment_info": (assignment_dir / paths.INFO).exists(),
+        "to_grade": count_files(assignment_dir / paths.TO_GRADE),
+        "key_rows": count_rows(assignment_dir / paths.KEY),
+        "grades_rows": count_rows(assignment_dir / paths.GRADES),
+        "marked": count_files(assignment_dir / paths.MARKED),
+        "upload_files": count_files(assignment_dir / paths.UPLOAD),
+        "downloads": sorted(p.name for p in assignment_dir.glob(f"{paths.DOWNLOAD_PREFIX} *.zip")),
         "unsafe_names": unsafe_names(assignment_dir) if assignment_dir.exists() else [],
     }

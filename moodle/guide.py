@@ -1,99 +1,111 @@
 """Hebrew "read me" files that explain the shared folder to whoever opens it.
 
-The folder names stay in English because the scripts depend on them; these
-files say what each one is. They are rebuilt from assignment.json, so they
-stay right as assignments are added.
+One at the top, one per course and one per assignment. They are rebuilt from
+each assignment's details file, so they stay right as assignments are added.
 """
 
-import json
 from pathlib import Path
 
-from moodle import status
-
-GUIDE_NAME = "קרא אותי.txt"
+from moodle import paths, status
 
 
-def read_info(assignment_dir: Path) -> dict:
-    info_file = assignment_dir / "assignment.json"
-    if not info_file.exists():
-        return {"id": assignment_dir.name}
-    with open(info_file, encoding="utf-8") as f:
-        return json.load(f)
-
-
-def title(info: dict) -> str:
-    parts = [info.get("course"), info.get("name")]
-    return " - ".join(p for p in parts if p) or "(אין פרטים: חסר assignment.json)"
-
-
-def top_guide(data_dir: Path) -> str:
-    assignments = sorted(p for p in (data_dir / "submissions").iterdir() if p.is_dir()) \
-        if (data_dir / "submissions").is_dir() else []
+def top_guide(courses: dict[str, list[Path]]) -> str:
     lines = [
-        "מערכת בדיקת תרגילים - מבנה התיקיות",
-        "=" * 34,
+        "מערכת בדיקת תרגילים",
+        "===================",
         "",
-        "כאן נשמרות ההגשות של הסטודנטים, ממוספרות ובלי שמות, ומה שהבדיקה מחזירה.",
-        "הקוד של הפרויקט נמצא ב-GitHub: https://github.com/matanravitsky-crypto/assignment-checker",
+        "כאן נשמרות הגשות הסטודנטים, ממוספרות ובלי שמות, וכל מה שהבדיקה מחזירה.",
+        "יש תיקייה לכל קורס, ובתוכה תיקייה לכל מטלה.",
         "",
-        "submissions\\        תיקייה לכל מטלה, לפי מספר המטלה במודל:",
     ]
-    for folder in assignments:
-        lines.append(f"  {folder.name}  =  {title(read_info(folder))}")
+    for course, assignments in courses.items():
+        lines.append(f"{course}:")
+        lines += [f"  - {folder.name}" for folder in assignments]
     lines += [
-        "raw\\                קובצי ה-ZIP כמו שמודל נתן אותם (גיבוי. לא צריך לפתוח)",
         "",
-        "מתחילים מתיקיית המטלה: בכל אחת יש קובץ \"קרא אותי\" שמסביר מה יש בה.",
+        "בכל תיקיית מטלה יש קובץ \"קרא אותי\" שמסביר מה יש בה ומאיפה מתחילים.",
         "",
         "כללים:",
-        "- לא מעתיקים מכאן קבצים ל-GitHub (הריפו ציבורי).",
         "- רק אורי מוריד ממודל ומעלה למודל, כדי שתהיה טבלת מפתח אחת לכל מטלה.",
+        "- לא מעתיקים מכאן קבצים ל-GitHub: הריפו של הקוד ציבורי.",
+        "  הקוד: https://github.com/matanravitsky-crypto/assignment-checker",
     ]
     return "\n".join(lines) + "\n"
 
 
+def course_guide(course: str, assignments: list[Path]) -> str:
+    lines = [course, "=" * len(course), "", "המטלות בקורס:"]
+    for folder in assignments:
+        report = status.status(folder)
+        lines.append(f"  - {folder.name}: {report['to_grade']} הגשות")
+    lines += ["", "בכל תיקיית מטלה יש קובץ \"קרא אותי\" עם הפרטים."]
+    return "\n".join(lines) + "\n"
+
+
 def assignment_guide(assignment_dir: Path) -> str:
-    info = read_info(assignment_dir)
+    info = paths.read_info(assignment_dir)
     report = status.status(assignment_dir)
-    lines = [
-        title(info),
-        "=" * 34,
-        f"מספר המטלה במודל: {info.get('id', assignment_dir.name)}",
-    ]
+    heading = f"{info.get('course', '')} - {info.get('name', assignment_dir.name)}".strip(" -")
+    lines = [heading, "=" * len(heading)]
     if info.get("due"):
         lines.append(f"מועד הגשה: {info['due'][:16].replace('T', ' ')}")
     for question in info.get("questions") or []:
         lines.append(f"שאלות: {question['sheet']}, {', '.join(str(n) for n in question['numbers'])}")
+    lines.append(f"מספר המטלה במודל: {info.get('id')}")
+    grades = "עוד אין" if report["grades_rows"] is None else f"{report['grades_rows']} שורות"
     lines += [
         "",
-        f"anon\\           {report['anon_files']} הגשות ממוספרות (0001.pdf ...). מכאן בודקים.",
-        "                 0023-2.pdf = קובץ שני של אותו סטודנט.",
-        "assignment.json  פרטי המטלה: שאלות, כללי הגשה, ציון מקסימלי, מחוון.",
-        "mapping.csv      טבלת המפתח: איזה מספר שייך לאיזה סטודנט. לא פותחים בזמן בדיקה.",
-        "",
-        "מה הבדיקה מחזירה (יוצרים כאן):",
-        "results.csv      עמודות number,grade,feedback - שורה לכל הגשה.",
-        "marked\\         העבודה של כל סטודנט עם ההערות עליה, באותו מספר (0023.pdf). עד 1-2 MB לקובץ.",
-        "upload\\         נוצר אוטומטית: מה שעולה בחזרה למודל.",
+        "מה יש כאן:",
+        f"  {paths.TO_GRADE}",
+        f"      {report['to_grade']} הגשות, כל אחת במספר משלה (0001.pdf ...). מכאן בודקים.",
+        "      0023-2.pdf = קובץ שני של אותו סטודנט.",
+        f"  {paths.MARKED}",
+        "      העבודה של כל סטודנט עם הערות הבודק עליה, באותו מספר (0023.pdf). עד 1-2 MB לקובץ.",
+        f"  {paths.UPLOAD}",
+        "      נוצר אוטומטית: מה שעולה בחזרה למודל, עם הוראות העלאה.",
+        f"  {paths.INFO}",
+        "      פרטי המטלה: שאלות, כללי הגשה, ציון מקסימלי, מחוון.",
+        f"  {paths.GRADES}",
+        "      הבדיקה כותבת לכאן: number,grade,feedback - שורה לכל הגשה.",
+        f"  {paths.KEY}",
+        "      איזה מספר שייך לאיזה סטודנט. לא פותחים בזמן בדיקה.",
+        f"  {paths.DOWNLOAD_PREFIX} <תאריך>.zip",
+        "      הקובץ כמו שהורד ממודל. גיבוי, לא צריך לפתוח.",
         "",
         "מצב נוכחי:",
-        f"  ציונים: {'עוד אין' if report['results_rows'] is None else report['results_rows']}",
-        f"  עבודות מסומנות: {report['marked_files']}",
+        f"  עבודות לבדיקה: {report['to_grade']}",
+        f"  ציונים: {grades}",
+        f"  עבודות בדוקות: {report['marked']}",
     ]
     if info.get("notes"):
         lines += ["", f"הערה: {info['notes']}"]
     return "\n".join(lines) + "\n"
 
 
+# Short notes inside the folders that start empty, so they're there (and clear) from day one
+SUBFOLDER_NOTES = {
+    paths.MARKED: "כאן שמים את העבודות אחרי הבדיקה: העבודה של הסטודנט עם ההערות עליה,\n"
+                  "באותו מספר כמו ב\"" + paths.TO_GRADE + "\" (למשל 0023.pdf). עד 1-2 MB לקובץ.\n",
+    paths.UPLOAD: "התיקייה מתמלאת אוטומטית כשמכינים העלאה למודל.\n"
+                  "ההוראות יופיעו כאן בקובץ \"הוראות העלאה.txt\".\n",
+}
+
+
 def write_guides(data_dir: Path) -> list[Path]:
+    courses: dict[str, list[Path]] = {}
+    for folder in paths.assignment_dirs():
+        courses.setdefault(folder.parent.name, []).append(folder)
+
     written = []
-    submissions = data_dir / "submissions"
-    if submissions.is_dir():
-        for folder in sorted(p for p in submissions.iterdir() if p.is_dir()):
-            path = folder / GUIDE_NAME
-            path.write_text(assignment_guide(folder), encoding="utf-8-sig")
-            written.append(path)
-    path = data_dir / GUIDE_NAME
-    path.write_text(top_guide(data_dir), encoding="utf-8-sig")
-    written.append(path)
+    for course, assignments in courses.items():
+        for folder in assignments:
+            for subfolder, note in SUBFOLDER_NOTES.items():
+                (folder / subfolder).mkdir(exist_ok=True)
+                (folder / subfolder / paths.README).write_text(note, encoding="utf-8-sig")
+            written.append(folder / paths.README)
+            written[-1].write_text(assignment_guide(folder), encoding="utf-8-sig")
+        written.append(data_dir / course / paths.README)
+        written[-1].write_text(course_guide(course, assignments), encoding="utf-8-sig")
+    written.append(data_dir / paths.README)
+    written[-1].write_text(top_guide(courses), encoding="utf-8-sig")
     return written
