@@ -178,11 +178,23 @@ def test_no_sources_explains_what_to_do(root):
 def test_find_root_explains_when_missing(tmp_path, monkeypatch):
     monkeypatch.delenv("ASSIGNMENT_CHECKER_ROOT", raising=False)
     monkeypatch.setattr(config, "onedrive_roots", lambda: [tmp_path])
+    monkeypatch.setattr(config.Path, "home", staticmethod(lambda: tmp_path / "home"))
+    (tmp_path / "home").mkdir()
     with pytest.raises(config.FolderNotFound) as e:
         config.find_root()
-    assert "Add shortcut to My files" in str(e.value)
+    assert "Sync" in str(e.value)
     (tmp_path / "Shared" / config.FOLDER_NAME).mkdir(parents=True)
     assert config.find_root() == tmp_path / "Shared" / config.FOLDER_NAME
+
+
+def test_find_root_after_sync_button(tmp_path, monkeypatch):
+    # הכפתור Sync שם את התיקייה תחת שם הארגון, עם שם הבעלים לפני שם התיקייה
+    monkeypatch.delenv("ASSIGNMENT_CHECKER_ROOT", raising=False)
+    monkeypatch.setattr(config, "onedrive_roots", lambda: [])
+    monkeypatch.setattr(config.Path, "home", staticmethod(lambda: tmp_path))
+    synced = tmp_path / "Ben-Gurion University of the Negev" / f"נדב מאיר - {config.FOLDER_NAME}"
+    synced.mkdir(parents=True)
+    assert config.find_root() == synced
 
 
 # ---------- מודל עם טוקן (שרת מודל מדומה) ----------

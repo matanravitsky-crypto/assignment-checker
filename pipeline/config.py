@@ -45,6 +45,10 @@ def onedrive_roots() -> list[Path]:
     return unique
 
 
+def _is_course_folder(name: str) -> bool:
+    return name == FOLDER_NAME or name.endswith(f" - {FOLDER_NAME}") or name.startswith(f"{FOLDER_NAME} - ")
+
+
 def find_root() -> Path:
     """מחזיר את תיקיית הקורס ב-OneDrive, או זורק FolderNotFound עם הסבר מה לעשות."""
     explicit = os.environ.get("ASSIGNMENT_CHECKER_ROOT")
@@ -54,18 +58,36 @@ def find_root() -> Path:
             raise FolderNotFound(f"ASSIGNMENT_CHECKER_ROOT מצביע על תיקייה שלא קיימת: {path}")
         return path
 
-    for root in onedrive_roots():
-        for candidate in (root / FOLDER_NAME, *root.glob(f"*/{FOLDER_NAME}")):
-            if candidate.is_dir():
-                return candidate
+    # "Add shortcut to My files" שם את התיקייה בתוך OneDrive של האוניברסיטה.
+    # הכפתור "Sync" שם אותה בתיקייה בשם הארגון, למשל
+    # C:\Users\<שם>\Ben-Gurion University of the Negev\נדב מאיר - YallaLinearit
+    home = Path.home()
+    bases = onedrive_roots() + sorted(
+        p for p in home.iterdir()
+        if p.is_dir() and not p.name.startswith(".") and p.name not in ("AppData", "Downloads", "Desktop", "Documents")
+    )
+    for base in bases:
+        try:
+            children = [base, *(c for c in base.iterdir() if c.is_dir())]
+        except OSError:
+            continue
+        for folder in children:
+            if folder.is_dir() and _is_course_folder(folder.name):
+                return folder
+            try:
+                for sub in folder.iterdir():
+                    if sub.is_dir() and _is_course_folder(sub.name):
+                        return sub
+            except OSError:
+                continue
 
     searched = "\n".join(f"  - {r}" for r in onedrive_roots()) or "  (לא נמצאה אף תיקיית OneDrive)"
     raise FolderNotFound(
         f"לא מצאתי את התיקייה {FOLDER_NAME} במחשב.\n"
         f"חיפשתי ב:\n{searched}\n\n"
         "מה לעשות:\n"
-        "  1. באפליקציית OneDrive: הגדרות → חשבון → הוסף חשבון, ולהתחבר עם חשבון האוניברסיטה.\n"
-        f"  2. בדפדפן, על התיקייה {FOLDER_NAME}: Add shortcut to My files.\n"
+        f"  1. בדפדפן, בתוך התיקייה {FOLDER_NAME}, ללחוץ על Sync (בשורת הכפתורים העליונה).\n"
+        "  2. אם נפתח חלון של OneDrive, להתחבר עם חשבון האוניברסיטה ולאשר בטלפון.\n"
         "  3. לחכות דקה שהתיקייה תופיע במחשב, ולהריץ שוב.\n"
         "אפשר גם להגדיר נתיב ידנית במשתנה הסביבה ASSIGNMENT_CHECKER_ROOT."
     )
