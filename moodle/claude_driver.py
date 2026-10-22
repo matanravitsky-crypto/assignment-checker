@@ -4,10 +4,22 @@ Moodle has no API, so `ClaudeChromeDriver.upload_zip` (the `MoodleDriver` of sen
 
     claude -p --chrome ... "<the prompt of claude_upload.md>"
 
-in the user's own logged-in Chrome and turns the CLI's JSON output into an `UploadResult`. The run can use the
-Chrome tools only (`--tools ""` switches the built-in tools off), and see only the folder the ZIP is in. It never gets
-Bash, file tools, other MCP servers, hooks or the user's settings (the flags are in `build_command`). Claude never types a Moodle password: a login page ends the
-run with "needs_login".
+in the user's own logged-in Chrome and turns the CLI's JSON output into an `UploadResult`.
+
+What the run gets (the flags are in `build_command`):
+- Tools: the Chrome tools only. `--tools ""` switches every built-in tool off (Bash, Read, Edit, Write...), so the
+  run has no file tools at all, and `--strict-mcp-config` keeps other MCP servers out.
+- Folder: a fresh temporary folder outside OneDrive (`tempfile.mkdtemp`), holding only a copy of the ZIP. It is
+  the run's working folder and its only `--add-dir`, and it is deleted when the run ends. The run never starts in
+  the shared upload folder: anyone on the team can write there, and with `--setting-sources project` a
+  `.claude/settings.json` (hooks) or `CLAUDE.md` in the working folder would be loaded. Before the run, the copy
+  is hashed against the ZIP's hash in the batch list.
+- Settings: `--setting-sources project` (the empty temp folder has none), so not the user's settings, hooks or plugins.
+Claude never types a Moodle password: a login page ends the run with "needs_login".
+
+Known open issue: with `--tools ""` the run has no file-read permission, and on the first real test Chrome's
+`file_upload` was refused for that reason. Letting the run read its own temp folder (one more flag) waits for the
+user's explicit approval; until then the tools stay as they are.
 
 The driver never raises. `run_batch` lets a driver's exception propagate, so every failure (no `claude`, a
 timeout, a non-zero exit, output nobody can read, Claude not logged in) comes back as `UploadResult("error")`
@@ -25,6 +37,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from moodle import upload_log
 from moodle.send import UploadResult
 
 UPLOAD_URL = ("https://moodle.bgu.ac.il/moodle/mod/assign/view.php?id={id}&plugin=file"
@@ -42,6 +55,8 @@ MESSAGE_MAX = 300
 
 NOT_LOGGED_IN = "Claude Code לא מחובר במחשב הזה. מריצים פעם אחת: claude auth login"
 NOT_INSTALLED = "Claude Code לא מותקן במחשב הזה (הפקודה claude לא נמצאה)."
+NO_COPY = "לא הצלחנו להכין עותק של {name} להעלאה (הקובץ חסר או נעול). שום דבר לא הועלה."
+COPY_CHANGED = "העותק של {name} שונה מהקובץ שהוכן. שום דבר לא הועלה: צריך להכין שוב."
 UNEXPECTED = "תשובה לא צפויה מ-Claude Code: אי אפשר לקרוא את התוצאה."
 
 STATUSES = ("imported", "dry_run_ok", "needs_login", "mismatch", "error")
@@ -144,7 +159,7 @@ def build_command(prompt: str, add_dir: Path, *, model: str, budget_usd: float, 
         "--output-format", "json",
         "--max-budget-usd", str(budget_usd),
         "--json-schema", json.dumps(schema, separators=(",", ":")),
-        "--add-dir", str(add_dir),                          # the upload folder only
+        "--add-dir", str(add_dir),                          # the run's own temp folder only (a copy of the ZIP, or nothing)
         "--model", model,
         prompt,
     ]
@@ -240,19 +255,34 @@ class ClaudeChromeDriver:
         return self.run(cmd, capture_output=True, text=True, encoding="utf-8", timeout=timeout_s,
                         cwd=folder, stdin=subprocess.DEVNULL)
 
-    def upload_zip(self, info: dict, zip_path: Path, expected: int, dry_run: bool) -> UploadResult:
+    def upload_zip(self, info: dict, zip_path: Path, expected: int, dry_run: bool,
+                   sha256: str | None = None) -> UploadResult:
+        """`sha256`: the ZIP's hash in the batch list (run_batch always passes it); the copy the run gets must match it."""
         claude = self.claude or find_claude()
         if not claude:
             return UploadResult("error", message=NOT_INSTALLED)
+        name = Path(zip_path).name
+        run_dir = None
         try:
-            zip_path = Path(zip_path).absolute()  # file_upload needs the whole path
-            prompt = render_prompt(info, zip_path, expected, dry_run)
-            proc = self.execute(claude, prompt, zip_path.parent, RESULT_SCHEMA, self.budget_usd, self.timeout_s)
+            # The run's own folder, outside OneDrive, with only a copy of the ZIP (see the module docstring)
+            run_dir = Path(tempfile.mkdtemp(prefix="moodle-upload-")).absolute()
+            copy = run_dir / name  # file_upload needs the whole path
+            try:
+                shutil.copyfile(zip_path, copy)
+            except OSError:
+                return UploadResult("error", message=NO_COPY.format(name=name))
+            if sha256 is not None and upload_log.file_hash(copy) != sha256:
+                return UploadResult("error", message=COPY_CHANGED.format(name=name))
+            prompt = render_prompt(info, copy, expected, dry_run)
+            proc = self.execute(claude, prompt, run_dir, RESULT_SCHEMA, self.budget_usd, self.timeout_s)
         except Exception as error:  # the driver must never raise (see the module docstring)
             message = failure_message(error, self.timeout_s)
             if isinstance(error, subprocess.TimeoutExpired):
                 message += " ייתכן שהקובץ כבר יובא. העלאה חוזרת של אותו ZIP בטוחה."
             return UploadResult("error", message=message)
+        finally:
+            if run_dir is not None:
+                shutil.rmtree(run_dir, ignore_errors=True)
         return result_of(*read_run(proc))
 
     def check(self, info: dict) -> dict:

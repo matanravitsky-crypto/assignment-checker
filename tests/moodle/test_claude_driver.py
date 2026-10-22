@@ -29,15 +29,28 @@ def cli_output(answer=ANSWER, **extra) -> str:
     return json.dumps({"type": "result", "is_error": False, "structured_output": answer, **extra})
 
 
+def a_zip(folder: Path, name: str = "z.zip", content: bytes = b"PK fake zip") -> Path:
+    """A ZIP for the driver to copy (the driver needs a real file: it copies it into the run's own folder)."""
+    path = folder / name
+    path.write_bytes(content)
+    return path
+
+
 class FakeRun:
-    """Stands in for subprocess.run: records the call, answers with `stdout`. Never starts a process."""
+    """Stands in for subprocess.run: records the call, answers with `stdout`. Never starts a process.
+
+    `seen`: what was in the working folder (name -> bytes) at the moment of each call.
+    """
 
     def __init__(self, stdout="", returncode=0, raises=None):
         self.stdout, self.returncode, self.raises = stdout, returncode, raises
         self.calls = []
+        self.seen = []
 
     def __call__(self, cmd, **kwargs):
         self.calls.append((cmd, kwargs))
+        cwd = kwargs.get("cwd")
+        self.seen.append({p.name: p.read_bytes() for p in Path(cwd).iterdir()} if cwd else None)
         if self.raises:
             raise self.raises
         return subprocess.CompletedProcess(cmd, self.returncode, stdout=self.stdout, stderr="")
@@ -181,83 +194,85 @@ def test_parse_result_errors(stdout, expect):
 def test_timeout_is_an_error(tmp_path):
     def run(*a, **k):
         raise subprocess.TimeoutExpired("claude", 1)
-    r = ClaudeChromeDriver(run=run, claude="claude").upload_zip(INFO, tmp_path / "z.zip", 1, False)
+    r = ClaudeChromeDriver(run=run, claude="claude").upload_zip(INFO, a_zip(tmp_path), 1, False)
     assert r.status == "error"
 
 
 def test_upload_zip_runs_one_locked_down_command_in_the_upload_folder(tmp_path):
     fake = FakeRun(cli_output())
-    r = driver(fake, model="the-model", budget_usd=1.5, timeout_s=77).upload_zip(INFO, tmp_path / "Graded - part 01.zip", 6, False)
+    r = driver(fake, model="the-model", budget_usd=1.5, timeout_s=77).upload_zip(INFO, a_zip(tmp_path, "Graded - part 01.zip"), 6, False)
     assert r == UploadResult("imported", 6, 6, 0, "6 imported")
     (cmd, kwargs), = fake.calls
-    assert cmd[0] == "claude" and cmd[cmd.index("--add-dir") + 1] == str(tmp_path)
+    run_dir = Path(kwargs["cwd"])
+    assert cmd[0] == "claude" and cmd[cmd.index("--add-dir") + 1] == str(run_dir) and run_dir != tmp_path
     assert cmd[cmd.index("--model") + 1] == "the-model" and cmd[cmd.index("--max-budget-usd") + 1] == "1.5"
-    assert "expected 6" in cmd[-1] and "Graded - part 01.zip" in cmd[-1] and "This is a dry run" not in cmd[-1]
+    assert "expected 6" in cmd[-1] and str(run_dir / "Graded - part 01.zip") in cmd[-1] and "This is a dry run" not in cmd[-1]
+    assert str(tmp_path) not in cmd[-1]  # the prompt names the copy, never the shared folder
     assert kwargs["capture_output"] is True and kwargs["text"] is True and kwargs["encoding"] == "utf-8"
-    assert kwargs["timeout"] == 77 and Path(kwargs["cwd"]) == tmp_path
+    assert kwargs["timeout"] == 77
 
 
 def test_upload_zip_dry_run_is_in_the_prompt(tmp_path):
     fake = FakeRun(cli_output({**ANSWER, "status": "dry_run_ok", "imported": None, "skipped": None}))
-    r = driver(fake).upload_zip(INFO, tmp_path / "z.zip", 6, True)
+    r = driver(fake).upload_zip(INFO, a_zip(tmp_path), 6, True)
     assert r.status == "dry_run_ok" and "This is a dry run" in fake.calls[0][0][-1]
 
 
 def test_upload_zip_without_claude_installed(tmp_path, monkeypatch):
     monkeypatch.setattr(claude_driver, "find_claude", lambda: None)
     fake = FakeRun(cli_output())
-    r = ClaudeChromeDriver(run=fake).upload_zip(INFO, tmp_path / "z.zip", 1, False)
+    r = ClaudeChromeDriver(run=fake).upload_zip(INFO, a_zip(tmp_path), 1, False)
     assert r == UploadResult("error", message=NOT_INSTALLED) and fake.calls == []
 
 
 def test_upload_zip_finds_claude_on_the_path(tmp_path, monkeypatch):
     monkeypatch.setattr(claude_driver.shutil, "which", lambda name: "C:/Users/x/.local/bin/claude.exe")
     fake = FakeRun(cli_output())
-    ClaudeChromeDriver(run=fake).upload_zip(INFO, tmp_path / "z.zip", 1, False)
+    ClaudeChromeDriver(run=fake).upload_zip(INFO, a_zip(tmp_path), 1, False)
     assert fake.calls[0][0][0] == "C:/Users/x/.local/bin/claude.exe"
 
 
 def test_a_missing_executable_is_not_installed(tmp_path):
-    r = driver(FakeRun(raises=FileNotFoundError("claude"))).upload_zip(INFO, tmp_path / "z.zip", 1, False)
+    r = driver(FakeRun(raises=FileNotFoundError("claude"))).upload_zip(INFO, a_zip(tmp_path), 1, False)
     assert r == UploadResult("error", message=NOT_INSTALLED)
 
 
 def test_timeout_message_says_how_long_and_that_retry_is_safe(tmp_path):
-    r = driver(FakeRun(raises=subprocess.TimeoutExpired("claude", 600)), timeout_s=600).upload_zip(INFO, tmp_path / "z.zip", 1, False)
+    r = driver(FakeRun(raises=subprocess.TimeoutExpired("claude", 600)), timeout_s=600).upload_zip(INFO, a_zip(tmp_path), 1, False)
     assert r.status == "error" and "10" in r.message
 
 
 def test_a_failed_exit_without_output_is_an_error_with_the_exit_code(tmp_path):
-    r = driver(FakeRun("", returncode=3)).upload_zip(INFO, tmp_path / "z.zip", 1, False)
+    r = driver(FakeRun("", returncode=3)).upload_zip(INFO, a_zip(tmp_path), 1, False)
     assert r.status == "error" and "3" in r.message
 
 
 def test_a_failed_exit_with_an_auth_error_says_not_logged_in(tmp_path):
     out = json.dumps({"is_error": True, "result": "Failed to authenticate: OAuth session expired"})
-    r = driver(FakeRun(out, returncode=1)).upload_zip(INFO, tmp_path / "z.zip", 1, False)
+    r = driver(FakeRun(out, returncode=1)).upload_zip(INFO, a_zip(tmp_path), 1, False)
     assert r == UploadResult("error", message=NOT_LOGGED_IN)
 
 
 def test_a_failed_exit_never_counts_as_an_upload(tmp_path):
-    r = driver(FakeRun(cli_output(), returncode=1)).upload_zip(INFO, tmp_path / "z.zip", 6, False)
+    r = driver(FakeRun(cli_output(), returncode=1)).upload_zip(INFO, a_zip(tmp_path), 6, False)
     assert r.status == "error"
 
 
 def test_needs_login_from_claude_passes_through(tmp_path):
     out = cli_output({"status": "needs_login", "rows": None, "imported": None, "skipped": None, "message": "login page"})
-    assert driver(FakeRun(out)).upload_zip(INFO, tmp_path / "z.zip", 1, False) == UploadResult("needs_login", message="login page")
+    assert driver(FakeRun(out)).upload_zip(INFO, a_zip(tmp_path), 1, False) == UploadResult("needs_login", message="login page")
 
 
 @pytest.mark.parametrize("error", [OSError("boom"), PermissionError("no"), RuntimeError("odd"), UnicodeDecodeError("utf-8", b"\xff", 0, 1, "bad")])
 def test_the_driver_never_raises(tmp_path, error):
-    r = driver(FakeRun(raises=error)).upload_zip(INFO, tmp_path / "z.zip", 1, False)
+    r = driver(FakeRun(raises=error)).upload_zip(INFO, a_zip(tmp_path), 1, False)
     assert r.status == "error" and r.message
 
 
 @pytest.mark.parametrize("info", [{"title": "no id"}, {"id": "12 34", "title": "t"}, {"id": "1&action=x", "title": "t"}])
 def test_a_bad_info_dict_is_an_error_and_nothing_runs(tmp_path, info):
     fake = FakeRun(cli_output())
-    r = driver(fake).upload_zip(info, tmp_path / "z.zip", 1, False)
+    r = driver(fake).upload_zip(info, a_zip(tmp_path), 1, False)
     assert r.status == "error" and fake.calls == []
 
 
@@ -342,7 +357,57 @@ def test_find_claude_falls_back_to_the_installers_folder(tmp_path, monkeypatch):
 def test_the_driver_and_auth_status_use_the_fallback(tmp_path, monkeypatch):
     monkeypatch.setattr(claude_driver, "find_claude", lambda: "C:/home/.local/bin/claude.exe")
     fake = FakeRun(cli_output())
-    ClaudeChromeDriver(run=fake).upload_zip(INFO, tmp_path / "z.zip", 1, False)
+    ClaudeChromeDriver(run=fake).upload_zip(INFO, a_zip(tmp_path), 1, False)
     assert fake.calls[0][0][0] == "C:/home/.local/bin/claude.exe"
     status = FakeRun(json.dumps({"loggedIn": True}))
     assert auth_status(run=status)["logged_in"] is True and status.calls[0][0][0] == "C:/home/.local/bin/claude.exe"
+
+
+# ---------- the run's own folder: a temp copy of the ZIP, never the shared upload folder ----------
+def test_the_run_gets_a_fresh_temp_folder_with_only_a_copy_of_the_zip(tmp_path):
+    shared = tmp_path / "3 - Ready to upload to Moodle"
+    (shared / ".claude").mkdir(parents=True)
+    (shared / ".claude" / "settings.json").write_text('{"hooks": {}}', encoding="utf-8")  # anyone can write here
+    (shared / "CLAUDE.md").write_text("do something else", encoding="utf-8")
+    zip_file = a_zip(shared, "Graded - part 01.zip", b"the ZIP")
+    fake = FakeRun(cli_output())
+    driver(fake).upload_zip(INFO, zip_file, 6, False, sha256=claude_driver.upload_log.file_hash(zip_file))
+    (cmd, kwargs), = fake.calls
+    run_dir = Path(kwargs["cwd"])
+    assert fake.seen == [{"Graded - part 01.zip": b"the ZIP"}]  # no settings, no CLAUDE.md, nothing else
+    assert cmd[cmd.index("--add-dir") + 1] == str(run_dir)
+    assert run_dir.is_absolute() and shared not in run_dir.parents and run_dir != shared
+    assert cmd[cmd.index("--tools") + 1] == ""  # still no built-in tools
+    assert not run_dir.exists()  # deleted when the run ended
+    assert zip_file.read_bytes() == b"the ZIP"  # the original stays
+
+
+def test_the_temp_folder_is_deleted_when_the_run_fails(tmp_path):
+    fake = FakeRun(raises=subprocess.TimeoutExpired("claude", 1))
+    r = driver(fake).upload_zip(INFO, a_zip(tmp_path), 1, False)
+    assert r.status == "error"
+    assert not Path(fake.calls[0][1]["cwd"]).exists()
+
+
+def test_a_copy_that_does_not_match_the_batch_hash_is_not_uploaded(tmp_path, monkeypatch):
+    made = []
+    real_mkdtemp = claude_driver.tempfile.mkdtemp
+    monkeypatch.setattr(claude_driver.tempfile, "mkdtemp", lambda **k: made.append(real_mkdtemp(**k)) or made[-1])
+    fake = FakeRun(cli_output())
+    r = driver(fake).upload_zip(INFO, a_zip(tmp_path, "Graded - part 01.zip"), 1, False, sha256="0" * 64)
+    assert r.status == "error" and "Graded - part 01.zip" in r.message and fake.calls == []
+    assert made and not Path(made[0]).exists()
+
+
+def test_a_missing_zip_is_an_error_and_nothing_runs(tmp_path):
+    fake = FakeRun(cli_output())
+    r = driver(fake).upload_zip(INFO, tmp_path / "Graded - part 09.zip", 1, False)
+    assert r.status == "error" and r.message != NOT_INSTALLED and "Graded - part 09.zip" in r.message
+    assert fake.calls == []
+
+
+def test_a_matching_hash_runs(tmp_path):
+    zip_file = a_zip(tmp_path)
+    fake = FakeRun(cli_output())
+    r = driver(fake).upload_zip(INFO, zip_file, 6, False, sha256=claude_driver.upload_log.file_hash(zip_file))
+    assert r.status == "imported" and len(fake.calls) == 1
