@@ -1,6 +1,6 @@
 """שרת מקומי: מגיש את האתר ומחבר את הכפתורים שלו לתיקיית OneDrive.
 
-מפעילים אותו במחשב שמסנכרן את התיקייה (start.bat, או python -m pipeline serve),
+מפעילים אותו במחשב שמסנכרן את התיקייה (start.bat, או python -m dashboard serve),
 ונכנסים ל-http://localhost:8765. שם הכפתור "משוך הגשות" מושך באמת לתוך OneDrive,
 והכפתור "בדוק" שולח את ההגשות הממוספרות ל-Claude (צריך ANTHROPIC_API_KEY ב-.env).
 האתר הציבורי ב-GitHub Pages ממשיך לעבוד במצב הדגמה.
@@ -20,9 +20,11 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import grade as grading, service, settings as cfg, team
+from grading import grade as grading
 
-DOCS = cfg.REPO_DIR / "docs"
+from . import actions, folder_view, settings as cfg
+
+WEBSITE = cfg.REPO_DIR / "website"
 HEADER = "X-Assignment-Checker"
 _lock = threading.Lock()  # משיכה אחת בכל פעם
 
@@ -31,7 +33,7 @@ class Handler(SimpleHTTPRequestHandler):
     server_version = "AssignmentChecker"
 
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, directory=str(DOCS), **kwargs)
+        super().__init__(*args, directory=str(WEBSITE), **kwargs)
 
     def log_request(self, code="-", size="-"):  # שקט בקונסול, חוץ משגיאות
         try:
@@ -62,7 +64,7 @@ class Handler(SimpleHTTPRequestHandler):
         self.wfile.write(body)
 
     def _root(self):
-        root, err = service.root_info()
+        root, err = actions.root_info()
         if not root:
             self._json({"error": err}, HTTPStatus.SERVICE_UNAVAILABLE)
         return root
@@ -77,14 +79,14 @@ class Handler(SimpleHTTPRequestHandler):
             return self.send_error(HTTPStatus.FORBIDDEN)
         url = urlparse(self.path)
         if url.path == "/api/health":
-            root, err = service.root_info()
+            root, err = actions.root_info()
             return self._json({"ok": True, "root": str(root) if root else None, "error": err,
                                "moodle": False, "claude": bool(cfg.claude_key())})
         if url.path == "/api/state":
             root = self._root()
-            return root and self._json(service.state(root))
+            return root and self._json(actions.state(root))
         if url.path == "/api/grade":
-            return self._json(service.grade_status())
+            return self._json(actions.grade_status())
         if url.path == "/api/file":
             root = self._root()
             if not root:
@@ -92,7 +94,7 @@ class Handler(SimpleHTTPRequestHandler):
             rel = parse_qs(url.query).get("path", [""])[0]
             target = (root / rel).resolve()
             # רק קובצי PDF של הגשות (תיקיות 1-2-3). טבלת המפתח, עם השמות, לא יוצאת מהתיקייה
-            allowed = (team.SUBMISSIONS, team.GRADED, team.READY)
+            allowed = (folder_view.SUBMISSIONS, folder_view.GRADED, folder_view.READY)
             if (not target.is_file() or not target.is_relative_to(root.resolve())
                     or target.suffix.lower() != ".pdf" or target.parent.name not in allowed):
                 return self.send_error(HTTPStatus.NOT_FOUND)
@@ -124,9 +126,9 @@ class Handler(SimpleHTTPRequestHandler):
             if not _lock.acquire(blocking=False):
                 return self._json({"error": "פעולה אחרת כבר רצה. כדאי לנסות שוב בעוד רגע."}, HTTPStatus.CONFLICT)
             try:
-                run = service.pull if url.path == "/api/pull" else service.prepare_return
+                run = actions.pull if url.path == "/api/pull" else actions.prepare_return
                 return self._json(run(root, course, assignment))
-            except service.UserError as e:
+            except actions.UserError as e:
                 return self._json({"error": str(e)}, HTTPStatus.UNPROCESSABLE_ENTITY)
             except FileNotFoundError as e:
                 return self._json({"error": str(e)}, HTTPStatus.NOT_FOUND)
@@ -150,7 +152,7 @@ class Handler(SimpleHTTPRequestHandler):
             except (TypeError, ValueError):
                 parallel = grading.DEFAULT_PARALLEL
             try:
-                job = service.start_grading(root, course, assignment, ids, model=model, parallel=parallel,
+                job = actions.start_grading(root, course, assignment, ids, model=model, parallel=parallel,
                                             instructions=str(body.get("instructions") or "")[:5000],
                                             send_solution=body.get("sendSolution", True) is not False)
             except grading.NoApiKey as e:
@@ -163,12 +165,12 @@ class Handler(SimpleHTTPRequestHandler):
         if url.path == "/api/open":
             # פותח בסייר הקבצים: תיקיית ההורדות (לשם מודל מוריד את ה-ZIP), תיקיית המטלה, או תיקיית ההעלאה
             try:
-                asg = service.find_assignment(root, body.get("course", ""), body.get("assignment", ""))
+                asg = actions.find_assignment(root, body.get("course", ""), body.get("assignment", ""))
             except FileNotFoundError as e:
                 return self._json({"error": str(e)}, HTTPStatus.NOT_FOUND)
             which = body.get("which")
             target = (Path.home() / "Downloads" if which == "inbox"
-                      else asg.dir / team.READY if which == "upload" else asg.dir)
+                      else asg.dir / folder_view.READY if which == "upload" else asg.dir)
             target.mkdir(exist_ok=True)
             if hasattr(os, "startfile"):
                 os.startfile(target)  # noqa: S606 - תיקייה קבועה, לא מהמשתמש
@@ -178,7 +180,7 @@ class Handler(SimpleHTTPRequestHandler):
 
 def serve(port: int = 8765, open_browser: bool = True) -> None:
     cfg.load_env()
-    root, err = service.root_info()
+    root, err = actions.root_info()
     if root:
         print(f"תיקיית המערכת: {root}")
     else:

@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pymupdf
 
-from .types import Submission
+from .submission import Submission
 
 # ---------- הגדרות: כדי לשנות גודל או פורמט, משנים רק כאן ----------
 

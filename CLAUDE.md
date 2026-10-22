@@ -6,18 +6,18 @@ Courses are large (up to ~1,000 students per assignment). The team works in Hebr
 
 ## Repo layout
 
+Each folder has a README.md that explains it.
+
 | Path | What |
 |---|---|
-| `moodle/` | Moving files between Moodle and the grader. `python -m moodle ingest|status|upload <id>`, `guide` |
-| `moodle/paths.py` | Where student data lives, and every folder and file name (constants) |
-| `moodle/ingest.py` | Downloaded ZIP → the assignment's folder, numbered |
-| `moodle/anonymize.py` | Numbers submissions 0001..N and writes the key table |
-| `moodle/upload.py` | Grades + marked files → what goes back to Moodle |
-| `moodle/status.py` | What's done for an assignment; file names OneDrive would refuse |
-| `moodle/guide.py` | The Hebrew `README.txt` files in the data folder |
-| `docs/` | Static Hebrew (RTL) dashboard prototype on GitHub Pages; demo data only |
-| `main.py` | Python skeleton |
-| `test_*.py` | Tests; run each with `python test_<name>.py` |
+| `moodle/` | Steps 1 and 3: Moodle ZIP → numbered submissions (`ingest`), and grades + marked files → upload to Moodle (`upload`). `python -m moodle ingest|status|upload <id>`, `guide` |
+| `moodle/paths.py` | Every folder and file name in the shared folder (constants). Everything else imports names from here |
+| `grading/` | Step 2: grading with Claude. `python -m grading <id>` or the dashboard's "Grade" button. Its README has the input/output contract, the rubric format and the `Grades.csv` columns |
+| `dashboard/` | Local server that connects the website to the shared folder: `python -m dashboard serve` (or `start.bat`) |
+| `dashboard/actions.py` | Pull (`moodle ingest`, with a lock and a key-conflict check), prepare return (`moodle upload`), and the state the site shows (numbers only, no names) |
+| `website/` | The dashboard site (static HTML/JS, Hebrew RTL). Published to GitHub Pages from `main` by `.github/workflows/website.yml`; demo data unless it runs through `dashboard/` |
+| `tests/` | All tests (`tests/moodle/`, `tests/dashboard/`). Run `python -m pytest` from the repo root; CI runs them on every PR |
+| `start.bat` | Double-click: sets up `.venv` once and starts the dashboard |
 
 ## Student data: never in the repo
 
@@ -63,7 +63,7 @@ Anyone on the team can download from Moodle and pull: the dashboard's "Pull subm
 `python -m moodle ingest <id>` on their own computer. There is still **one** key table per assignment, in the
 shared folder, and `anonymize.prepare` reads it before numbering, so every student keeps their number no matter
 who pulls. What can break it is two pulls of the same assignment at once, before OneDrive synced the key between them.
-So `pipeline/service.py` guards the dashboard's pull:
+So `dashboard/actions.py` guards the dashboard's pull:
 - **Lock:** while a pull runs, the assignment folder has `Pull in progress.txt` (who and since when). Another
   pull of that assignment waits until it's gone (a lock older than 30 minutes counts as stuck and is ignored).
 - **Conflicts:** if OneDrive still made a conflict copy of the key (`Key - number to student-<PC>.csv`), the
@@ -189,4 +189,4 @@ and a line in a spreadsheet. So per submission the grader writes:
 ## Working in git
 
 Work on a branch and open a Pull Request; `main` changes only through reviewed PRs.
-Run all `test_*.py` before pushing.
+Run `python -m pytest` before pushing (CI runs it on every PR too).

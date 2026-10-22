@@ -16,8 +16,9 @@ import pymupdf
 import pytest
 
 from moodle import paths
-from pipeline import grade as grading, service, team
-from pipeline.demo import homework_pdf
+from dashboard import actions, folder_view
+from grading import grade as grading
+from tests.sample_files import homework_pdf
 
 COURSE, HW = "Linear Algebra", "Assignment 0 - Sets and Complex Numbers"
 NAMES = {"1001": "נועה כהן", "1002": "איתי לוי", "1003": "מאיה מזרחי"}
@@ -39,7 +40,7 @@ def root(tmp_path, monkeypatch):
     """עותק מוקטן של Exercise Checking System עם שלוש הגשות ממוספרות, כמו ש-moodle ingest משאיר."""
     course_folder = tmp_path / "נדב מאיר - YallaLinearit"
     r = course_folder / "Exercise Checking System"
-    a = team.Assignment(r / COURSE / HW)
+    a = folder_view.Assignment(r / COURSE / HW)
     for sub in (paths.TO_GRADE, paths.MARKED, paths.UPLOAD):
         (a.dir / sub).mkdir(parents=True)
     save_details(a, {"id": "3438636", "course": COURSE, "course_id": "67024", "name": HW,
@@ -60,11 +61,11 @@ def root(tmp_path, monkeypatch):
     return r
 
 
-def asg(root) -> team.Assignment:
-    return team.Assignment(root / COURSE / HW)
+def asg(root) -> folder_view.Assignment:
+    return folder_view.Assignment(root / COURSE / HW)
 
 
-def save_details(a: team.Assignment, d: dict) -> None:
+def save_details(a: folder_view.Assignment, d: dict) -> None:
     (a.dir / paths.INFO).write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
 
 
@@ -103,7 +104,7 @@ def read_csv(path) -> list[dict]:
 # ---------- מה נשלח ל-Claude ----------
 def test_request_has_only_the_pages_no_names_and_no_key(root):
     fake = FakeClaude()
-    grading.grade_assignment(asg(root), ["0001"], ask=fake)
+    grading.grade_assignment(asg(root).dir, ["0001"], ask=fake)
     (req,) = fake.requests
     # התמונות עצמן בצד: ב-base64 יכול להופיע במקרה כל רצף של ספרות
     text_only = [b for b in req["messages"][0]["content"] if b["type"] != "image"]
@@ -131,7 +132,7 @@ def test_rubric_and_solution_are_sent(root):
     d["grading_instructions"] = "להקפיד על נימוקים"
     save_details(a, d)
     (a.dir / grading.SOLUTION).write_bytes(homework_pdf("פתרון", HW, pages=1))
-    ctx = grading.load_context(a, instructions="הנחיה מהאתר")
+    ctx = grading.load_context(a.dir, instructions="הנחיה מהאתר")
     req = grading.build_request(ctx, [], "claude-haiku-5-5")
     content = req["messages"][0]["content"]
     assert content[0]["type"] == "document" and content[0]["source"]["media_type"] == "application/pdf"
@@ -139,12 +140,12 @@ def test_rubric_and_solution_are_sent(root):
     assert "1. קבוצות (40 נקודות): הכלה דו-כיוונית" in text and "2. מרוכבים (60 נקודות)" in text
     assert "לא מורידים על חישוב" in text and "להקפיד על נימוקים" in text and "הנחיה מהאתר" in text
     assert "fallbacks" not in req  # ל-Haiku אין fallback
-    assert "document" not in json.dumps(grading.build_request(grading.load_context(a, send_solution=False), []))
+    assert "document" not in json.dumps(grading.build_request(grading.load_context(a.dir, send_solution=False), []))
 
 
 # ---------- התשובה ----------
 def test_parse_answer_clamps_and_computes_the_grade(root):
-    ctx = grading.load_context(asg(root))
+    ctx = grading.load_context(asg(root).dir)
     text = json.dumps({
         "questions": [{"label": l, "points": p, "comment": ""} for l, p in zip(LABELS, (25, 15.3, -4, "x"))],  # רק 4 שאלות
         "feedback": "יפה",
@@ -167,11 +168,11 @@ def test_parse_answer_clamps_and_computes_the_grade(root):
 def test_names_are_removed_even_if_claude_copies_them(root):
     fake = FakeClaude(lambda req: answer(feedback="כל הכבוד נועה כהן, עבודה מסודרת. כהן נועה, שימו לב לשאלה 12.",
                                          marks=[{"page": 1, "x0": 10, "y0": 10, "x1": 500, "y1": 60, "text": "נועה כהן: חסר נימוק"}]))
-    grading.grade_assignment(asg(root), ["0001"], ask=fake)
+    grading.grade_assignment(asg(root).dir, ["0001"], ask=fake)
     row = grading.read_grades(asg(root).dir)["0001"]
     assert "נועה" not in row["feedback"] and "כהן" not in row["feedback"]
     assert row["feedback"].startswith("כל הכבוד, עבודה מסודרת.")
-    with pymupdf.open(asg(root).dir / team.GRADED / "0001.pdf") as doc:
+    with pymupdf.open(asg(root).dir / paths.MARKED / "0001.pdf") as doc:
         assert "נועה" not in doc[0].get_text()  # עמוד הסיכום
         # בעמוד של הסטודנט השם כתוב בעבודה עצמה (ונשאר), אבל ההערה האדומה בלי השם
         assert "חסר נימוק" in text(doc[1]) and text(doc[1]).count("נועה") == 1
@@ -181,7 +182,7 @@ def test_names_are_removed_even_if_claude_copies_them(root):
 def test_grading_writes_grades_csv_and_marked_pdfs(root):
     a = asg(root)
     fake = FakeClaude()
-    rep = grading.grade_assignment(a, ask=fake, parallel=3)
+    rep = grading.grade_assignment(a.dir, ask=fake, parallel=3)
     assert rep.graded == ["0001", "0002", "0003"] and not rep.failed and len(fake.requests) == 3
 
     rows = read_csv(a.dir / grading.GRADES)
@@ -190,7 +191,7 @@ def test_grading_writes_grades_csv_and_marked_pdfs(root):
     assert [(r["number"], r["grade"], r["points"]) for r in rows] == [(n, "85", "20;15;20;20;10") for n in ("0001", "0002", "0003")]
     assert rows[0]["approved"] == "" and rows[0]["review"] == ""
 
-    out = a.dir / team.GRADED / "0001.pdf"
+    out = a.dir / paths.MARKED / "0001.pdf"
     assert out.stat().st_size <= grading.MAX_BYTES
     with pymupdf.open(a.submissions / "0001.pdf") as src, pymupdf.open(out) as doc:
         assert doc.page_count == src.page_count + 1  # עמוד סיכום בהתחלה
@@ -211,15 +212,15 @@ def test_several_files_of_one_student_are_graded_together(root):
     (a.submissions / "0002-2.jpg").write_bytes(pix.tobytes("jpeg"))
     (a.submissions / "0002-3.docx").write_bytes(b"PK not graded")
     fake = FakeClaude()
-    rep = grading.grade_assignment(a, ["0002"], ask=fake)
+    rep = grading.grade_assignment(a.dir, ["0002"], ask=fake)
     assert rep.graded == ["0002"] and rep.review == ["0002"]
     with pymupdf.open(a.submissions / "0002.pdf") as first:
         pages = first.page_count + 1
     assert sum(b["type"] == "image" for b in fake.requests[0]["messages"][0]["content"]) == pages
-    with pymupdf.open(a.dir / team.GRADED / "0002.pdf") as marked:
+    with pymupdf.open(a.dir / paths.MARKED / "0002.pdf") as marked:
         assert marked.page_count == pages + 1
     assert "0002-3.docx" in grading.read_grades(a.dir)["0002"]["review"]
-    assert not (a.dir / team.GRADED / "0002-2.pdf").exists()  # עבודה מסומנת אחת לכל מספר
+    assert not (a.dir / paths.MARKED / "0002-2.pdf").exists()  # עבודה מסומנת אחת לכל מספר
 
 
 def test_approved_rows_are_kept_and_not_regraded(root):
@@ -229,19 +230,19 @@ def test_approved_rows_are_kept_and_not_regraded(root):
         "0003": {"number": "3", "grade": "40", "feedback": "ישן", "approved": ""},
     })
     fake = FakeClaude()
-    rep = grading.grade_assignment(a, ["0002", "3"], ask=fake)
+    rep = grading.grade_assignment(a.dir, ["0002", "3"], ask=fake)
     assert rep.skipped == ["0002"] and rep.graded == ["0003"] and len(fake.requests) == 1
     rows = grading.read_grades(a.dir)
     assert rows["0002"]["grade"] == "70" and rows["0002"]["feedback"] == "אושר ידנית" and rows["0002"]["extra"] == "של המרצה"
     assert rows["0003"]["grade"] == "85"
-    assert not (a.dir / team.GRADED / "0002.pdf").exists()
+    assert not (a.dir / paths.MARKED / "0002.pdf").exists()
 
 
 def test_pending_skips_graded_and_extra_marked_files(root):
     a = asg(root)
-    (a.dir / team.GRADED / "0001-2.pdf").write_bytes(b"%PDF marked by hand")
+    (a.dir / paths.MARKED / "0001-2.pdf").write_bytes(b"%PDF marked by hand")
     grading.write_grades(a.dir, {"0002": {"number": "0002", "grade": "90", "feedback": ""}})
-    assert grading.pending(a) == ["0003"]
+    assert grading.pending(a.dir) == ["0003"]
     assert a.graded_numbers() == {"0001"}
 
 
@@ -253,7 +254,7 @@ def test_one_failure_does_not_stop_the_rest(root):
         if len(calls) == 2:
             raise grading.GradingError("Claude סירב לבדוק את העבודה הזו. צריך לבדוק אותה ידנית.")
         return answer(review="כתב יד לא קריא בעמוד 2")
-    rep = grading.grade_assignment(asg(root), ask=ask, parallel=1)
+    rep = grading.grade_assignment(asg(root).dir, ask=ask, parallel=1)
     assert len(rep.graded) == 2 and len(rep.failed) == 1 and rep.review == rep.graded
     assert "סירב" in next(iter(rep.failed.values()))
     assert all(r["review"] == "כתב יד לא קריא בעמוד 2" for r in grading.read_grades(asg(root).dir).values())
@@ -297,7 +298,7 @@ def test_rotated_page_is_marked_where_it_is_seen():
 def test_no_key_gives_a_clear_message(root, monkeypatch):
     monkeypatch.setattr(grading, "claude_ask", _real_claude_ask)
     with pytest.raises(grading.NoApiKey) as e:
-        grading.grade_assignment(asg(root))
+        grading.grade_assignment(asg(root).dir)
     assert "ANTHROPIC_API_KEY" in str(e.value) and ".env" in str(e.value)
     assert not (asg(root).dir / grading.GRADES).exists()
 
@@ -308,10 +309,10 @@ def test_state_reads_grades_and_marked_files(root):
     grading.write_grades(a.dir, {"0001": {"number": "0001", "grade": "85", "feedback": "יפה", "points": "20;15;20;20;10",
                                           "approved": "כן", "review": ""},
                                  "0002": {"number": "0002", "grade": "72.5", "feedback": "", "review": "כתב יד לא קריא"}})
-    (a.dir / team.GRADED / "0001.pdf").write_bytes(b"%PDF")
-    (a.dir / team.GRADED / "0001-2.pdf").write_bytes(b"%PDF")
-    (a.dir / team.GRADED / "0003-2.pdf").write_bytes(b"%PDF")
-    st = service.state(root)
+    (a.dir / paths.MARKED / "0001.pdf").write_bytes(b"%PDF")
+    (a.dir / paths.MARKED / "0001-2.pdf").write_bytes(b"%PDF")
+    (a.dir / paths.MARKED / "0003-2.pdf").write_bytes(b"%PDF")
+    st = actions.state(root)
     (A,) = st["assignments"]
     subs = {s["id"]: s for s in A["subs"]}
     assert subs["0001"]["status"] == "graded" and subs["0001"]["score"] == 85 and subs["0001"]["approved"] is True
@@ -326,7 +327,7 @@ def test_state_reads_grades_and_marked_files(root):
 
 @pytest.fixture
 def server(root):
-    from pipeline.server import Handler
+    from dashboard.web_server import Handler
     srv = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     yield srv.server_port

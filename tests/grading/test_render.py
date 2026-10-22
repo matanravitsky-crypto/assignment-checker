@@ -3,9 +3,9 @@ from __future__ import annotations
 
 import pymupdf
 
-from pipeline.demo import homework_pdf
-from pipeline.render import MAX_SIDE, render_pdf, render_submission
-from pipeline.types import SubmittedFile, Submission
+from tests.sample_files import homework_pdf
+from grading.render import MAX_SIDE, render_pdf, render_submission
+from grading.submission import SubmittedFile, Submission
 
 PNG_START = b"\x89PNG"  # כל קובץ PNG מתחיל בבייטים האלה
 
