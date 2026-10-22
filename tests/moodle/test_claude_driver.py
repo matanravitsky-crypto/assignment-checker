@@ -11,6 +11,7 @@ from moodle.claude_driver import (
     NOT_LOGGED_IN,
     RESULT_SCHEMA,
     UPLOAD_URL,
+    DRY_RUN_MODE,
     ClaudeChromeDriver,
     auth_status,
     build_command,
@@ -75,16 +76,37 @@ def test_a_flag_that_takes_a_list_never_swallows_the_prompt(tmp_path, flag):
 
 def test_prompt_has_the_assignment_zip_and_count(tmp_path):
     p = render_prompt(INFO, tmp_path / "Graded - part 01.zip", 6, dry_run=True)
-    assert "id=3438636" in p and "Graded - part 01.zip" in p and "Expected rows: 6" in p and "dry run" in p
+    assert "id=3438636" in p and "Graded - part 01.zip" in p and "rows = 6" in p and "This is a dry run" in p
 
 
 def test_prompt_names_one_address_and_the_assignment_title(tmp_path):
     p = render_prompt(INFO, tmp_path / "z.zip", 2, dry_run=False)
     assert UPLOAD_URL.format(id="3438636") in p
     assert "id=3438636" in p and '"הגשה 0 - קבוצות ומרוכבים"' in p
-    assert "העלאת קובץ זה" in p and "ייבוא" in p
-    assert "dry run" not in p
+    assert "העלאת קובץ זה" in p and "יבוא קבצי משוב" in p
+    assert DRY_RUN_MODE.split(":")[0] not in p  # "This is a dry run" is the dry-run text only
     assert "{" not in p and "}" not in p  # every placeholder was filled
+
+
+def test_dry_run_never_imports_and_says_so_twice(tmp_path):
+    p = render_prompt(INFO, tmp_path / "z.zip", 6, dry_run=True)
+    assert "Never click יבוא קבצי משוב" in p and "ביטול" in p
+    assert "In a dry run never click יבוא קבצי משוב" in p  # also in the rules, so it holds in any mode
+    assert 'return "dry_run_ok" with rows = 6'.lower() in p.lower()
+
+
+def test_real_run_clicks_import_once_and_reads_moodles_message(tmp_path):
+    p = render_prompt(INFO, tmp_path / "z.zip", 6, dry_run=False)
+    assert "This is a dry run" not in p and "Never click יבוא קבצי משוב." not in p
+    assert "exactly once" in p and "never retry" in p
+    assert "rows = imported + skipped" in p and "cannot be cancelled" in p
+    assert "לא נמצאה הודעת תוצאה ממודל" in p
+
+
+def test_template_knows_there_is_no_confirmation_screen():
+    text = claude_driver.TEMPLATE.read_text(encoding="utf-8").lower()
+    for gone in ("confirmation list", "count the rows", "javascript_tool", "get_page_text", "click cancel"):
+        assert gone not in text
 
 
 def test_urls_follow_the_global_constraints():
@@ -164,7 +186,7 @@ def test_upload_zip_runs_one_locked_down_command_in_the_upload_folder(tmp_path):
     (cmd, kwargs), = fake.calls
     assert cmd[0] == "claude" and cmd[cmd.index("--add-dir") + 1] == str(tmp_path)
     assert cmd[cmd.index("--model") + 1] == "the-model" and cmd[cmd.index("--max-budget-usd") + 1] == "1.5"
-    assert "Expected rows: 6" in cmd[-1] and "Graded - part 01.zip" in cmd[-1] and "dry run" not in cmd[-1]
+    assert "expected 6" in cmd[-1] and "Graded - part 01.zip" in cmd[-1] and "This is a dry run" not in cmd[-1]
     assert kwargs["capture_output"] is True and kwargs["text"] is True and kwargs["encoding"] == "utf-8"
     assert kwargs["timeout"] == 77 and Path(kwargs["cwd"]) == tmp_path
 
@@ -172,7 +194,7 @@ def test_upload_zip_runs_one_locked_down_command_in_the_upload_folder(tmp_path):
 def test_upload_zip_dry_run_is_in_the_prompt(tmp_path):
     fake = FakeRun(cli_output({**ANSWER, "status": "dry_run_ok", "imported": None, "skipped": None}))
     r = driver(fake).upload_zip(INFO, tmp_path / "z.zip", 6, True)
-    assert r.status == "dry_run_ok" and "dry run" in fake.calls[0][0][-1]
+    assert r.status == "dry_run_ok" and "This is a dry run" in fake.calls[0][0][-1]
 
 
 def test_upload_zip_without_claude_installed(tmp_path, monkeypatch):

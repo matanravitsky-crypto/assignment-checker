@@ -65,7 +65,9 @@ CHECK_SCHEMA = {
 }
 
 TEMPLATE = Path(__file__).with_name("claude_upload.md")
-DRY_RUN_MODE = 'This is a dry run: whatever the count, click cancel here, and return "dry_run_ok" if it matched.'
+# {expected} is filled in render_prompt. the button יבוא קבצי משוב imports at once in BGU's Moodle: there is no screen to check first
+DRY_RUN_MODE = ('This is a dry run: attach the file, then click ביטול. Never click יבוא קבצי משוב. '
+                'Return "dry_run_ok" with rows = {expected}, and stop.')
 CHECK_PROMPT = """You check that the Chrome tools and Moodle are ready. Use only the Chrome tools.
 
 Rules (never break them):
@@ -107,7 +109,7 @@ def render_prompt(info: dict, zip_path: Path, expected: int, dry_run: bool) -> s
         title=info.get("title") or info.get("name") or "",
         zip_path=zip_path,
         expected=expected,
-        mode=DRY_RUN_MODE if dry_run else "",
+        mode=DRY_RUN_MODE.format(expected=expected) if dry_run else "",
     )
 
 
