@@ -54,7 +54,15 @@ SOLUTION = "Official solution.pdf"
 #   points    ניקוד לכל שאלה, לפי הסדר, מופרד ב-";"
 #   approved  ריק עד שמישהו מאשר את הציון. שורה מאושרת לא נדרסת
 #   review    למה Claude ביקש שאדם יבדוק את העבודה (ריק אם לא ביקש)
-GRADE_COLUMNS = ["number", "grade", "feedback", "points", "approved", "review"]
+GRADE_COLUMNS = ["number", "grade", "feedback", "points", "approved", "review", "special", "missing"]
+# מקרה מיוחד: רק הם מגיעים לבדיקה ידנית (".claude/skills/decisions"). special ב-Grades.csv הוא הקוד, missing מה חסר
+SPECIAL_CASES = {
+    "missing_question": "חסר תרגיל או סעיף",
+    "missing_page": "חסר עמוד",
+    "other_assignment": "הגשה של מטלה אחרת",
+    "unreadable_file": "עמוד שאי אפשר לקרוא",
+    "other": "מקרה מיוחד אחר",
+}
 
 DEFAULT_MODEL = "claude-opus-5-5"
 EFFORT = "high"
@@ -280,10 +288,12 @@ SCHEMA = {
             "required": ["page", "x0", "y0", "x1", "y1", "text", "points_off"], "additionalProperties": False,
         }},
         "needs_review": {"type": "boolean"},
+        "special_case": {"type": "string", "enum": ["", *SPECIAL_CASES]},
+        "missing": {"type": "string"},
         "review_reason": {"type": "string"},
         "unreadable": {"type": "boolean"},
     },
-    "required": ["questions", "feedback", "annotations", "needs_review", "review_reason", "unreadable"],
+    "required": ["questions", "feedback", "annotations", "needs_review", "special_case", "missing", "review_reason", "unreadable"],
     "additionalProperties": False,
 }
 
@@ -409,6 +419,8 @@ class Graded:
     marks: list[Mark]
     review: str = ""
     unreadable: bool = False  # Claude לא הצליח לקרוא בגודל שקיבל, ובגודל גדול יותר אולי כן
+    special: str = ""         # מקרה מיוחד (SPECIAL_CASES), ורק אז review: משימה לאדם
+    missing: str = ""         # מה חסר, בשמות של המטלה ("שאלה 12 סעיף ג")
 
 
 def _round_half_up(x: float) -> float:
@@ -427,10 +439,15 @@ def parse_answer(text: str, ctx: Context, pages: int) -> Graded:
     except json.JSONDecodeError as e:
         raise GradingError("התשובה של Claude לא הייתה בפורמט הנכון. כדאי לנסות שוב.") from e
     got = [q for q in data.get("questions") or [] if isinstance(q, dict)]
-    review = str(data.get("review_reason") or "").strip()
-    if data.get("needs_review") and not review:
-        review = "Claude ביקש שאדם יבדוק את העבודה."
+    # לאדם מגיע רק מקרה מיוחד מהרשימה. התלבטות בלי מקרה מיוחד היא לא סיבה: Claude כבר החליט על הציון
+    special = str(data.get("special_case") or "").strip()
+    special = special if data.get("needs_review") and special in SPECIAL_CASES else ""
+    missing = str(data.get("missing") or "").strip() if special else ""
+    review = str(data.get("review_reason") or "").strip() if special else ""
+    if special and not review:
+        review = f"{SPECIAL_CASES[special]}{f': {missing}' if missing else ''}. בדוק ואשר."
     if len(got) != len(ctx.questions):
+        special = special or "other"
         review = (review + " " if review else "") + f"Claude החזיר ניקוד ל-{len(got)} שאלות במקום {len(ctx.questions)}."
     points, comments = [], []
     for i, q in enumerate(ctx.questions):
@@ -452,7 +469,7 @@ def parse_answer(text: str, ctx: Context, pages: int) -> Graded:
         marks.append(Mark(page, x0, y0, x1, y1, str(a.get("text") or "").strip(),
                           _round_half_up(_num(a.get("points_off")))))
     return Graded(points, comments, compute_grade(points, ctx), str(data.get("feedback") or "").strip(), marks, review.strip(),
-                  data.get("unreadable") is True)
+                  data.get("unreadable") is True, special, missing)
 
 
 # ---------- בלי שמות ----------
@@ -750,6 +767,7 @@ def grade_one(pdf: bytes, ctx: Context, ask: Ask, model: str = DEFAULT_MODEL, na
         if not g.unreadable:
             break
     else:
+        g.special = g.special or "unreadable_file"
         g.review = (g.review + " " if g.review else "") + "Claude לא הצליח לקרוא חלק מהעבודה גם בגודל המלא."
     scrub_graded(g, names or [])
     return g, mark_pdf(pdf, g, ctx)
@@ -792,6 +810,7 @@ def grade_assignment(assignment_dir: Path, numbers: list[str] | None = None, *, 
             raise GradingError(f"אין בהגשה קובץ שאפשר לבדוק ({', '.join(skipped)}).")
         g, out = grade_one(pdf, ctx, ask, model, names.get(n))
         if skipped:
+            g.special = g.special or "unreadable_file"
             g.review = " ".join(filter(None, [g.review, f"קבצים שלא נבדקו: {', '.join(skipped)}."]))
         return n, g, out
 
@@ -806,7 +825,8 @@ def grade_assignment(assignment_dir: Path, numbers: list[str] | None = None, *, 
             name = grades.part_file(assignment_dir, part).name
             rows = grades.read_file(assignment_dir / name)
             rows[n] = {"number": n, "grade": _pts(g.grade), "feedback": g.feedback,
-                       "points": ";".join(_pts(p) for p in g.points), "approved": "", "review": g.review}
+                       "points": ";".join(_pts(p) for p in g.points), "approved": "", "review": g.review,
+                       "special": g.special, "missing": g.missing}
             write_grades(assignment_dir, rows, name)
             moodle_lock.refresh(held)  # עבודה ארוכה: המנעול לא נחשב תקוע
             return True

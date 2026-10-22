@@ -73,12 +73,13 @@ def save_details(a: folder_view.Assignment, d: dict) -> None:
     (a.dir / paths.INFO).write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
 
 
-def answer(points=(20, 15, 20, 20, 10), feedback="עבודה טובה. בשאלה 12 חסר נימוק.", marks=None, review=""):
+def answer(points=(20, 15, 20, 20, 10), feedback="עבודה טובה. בשאלה 12 חסר נימוק.", marks=None, review="", special="other",
+           missing=""):
     return json.dumps({
         "questions": [{"label": l, "points": p, "comment": "חסר נימוק" if p < 20 else "נכון"} for l, p in zip(LABELS, points)],
         "feedback": feedback,
         "annotations": marks if marks is not None else [{"page": 1, "x0": 100, "y0": 100, "x1": 900, "y1": 160, "text": "חסר נימוק"}],
-        "needs_review": bool(review), "review_reason": review,
+        "needs_review": bool(review), "review_reason": review, "special_case": special if review else "", "missing": missing,
     }, ensure_ascii=False)
 
 
@@ -582,6 +583,33 @@ def test_server_grades_in_the_background(root, server, monkeypatch):
 def test_the_decisions_skill_reaches_claude():
     """The rules of .claude/skills/decisions are sent with every submission, and they decide what a person sees."""
     rules = grading.decision_rules()
-    assert rules.startswith("קשיחות והחלטות") and "needs_review=true רק כשאי אפשר לבדוק בכלל" in rules
+    assert rules.startswith("קשיחות והחלטות") and "needs_review=true רק במקרה מיוחד מהרשימה הזו" in rules
+    assert all(code in rules for code in grading.SPECIAL_CASES)  # every code the schema allows is explained to Claude
     assert grading.SYSTEM.endswith(rules)
     assert "<!--" not in grading.SYSTEM
+
+
+def test_only_a_listed_special_case_reaches_a_person(root):
+    """Hesitation is not a reason: needs_review without a special case is dropped, and Claude's grade stands.
+    A special case keeps its code, what is missing and the task, and they go to Grades.csv."""
+    ctx = grading.load_context(asg(root).dir)
+    unsure = grading.parse_answer(answer(review="לא ברור אם זו שורה 3 או 4 במחוון", special=""), ctx, 1)
+    assert (unsure.review, unsure.special, unsure.missing) == ("", "", "")
+    bad_code = grading.parse_answer(answer(review="משהו", special="hesitation"), ctx, 1)
+    assert bad_code.review == "" and bad_code.special == ""
+    g = grading.parse_answer(answer(review="", special=""), ctx, 1)
+    assert g.special == ""
+    missing = json.loads(answer(points=(20, 0, 20, 20, 10), review="חסר שאלה 12 סעיף ג. בדוק במודל אם הוגש בקובץ נפרד.",
+                                special="missing_question", missing="שאלה 12 סעיף ג"))
+    m = grading.parse_answer(json.dumps(missing), ctx, 1)
+    assert m.special == "missing_question" and m.missing == "שאלה 12 סעיף ג" and m.review.startswith("חסר שאלה 12")
+    no_task = {**json.loads(answer()), "needs_review": True, "special_case": "missing_page", "missing": "עמוד 3 מתוך 5"}
+    n = grading.parse_answer(json.dumps(no_task), ctx, 1)
+    assert n.special == "missing_page" and n.review == "חסר עמוד: עמוד 3 מתוך 5. בדוק ואשר."
+
+    a = asg(root)
+    grading.grade_assignment(a.dir, ["0001"], ask=lambda req: answer(
+        review="חסר שאלה 12 סעיף ג. בדוק במודל אם הוגש בקובץ נפרד.", special="missing_question", missing="שאלה 12 סעיף ג"))
+    grading.merge_parts(a.dir)
+    row = grading.read_grades(a.dir)["0001"]
+    assert (row["special"], row["missing"]) == ("missing_question", "שאלה 12 סעיף ג") and row["review"].startswith("חסר")
