@@ -40,11 +40,15 @@ Exercise Checking System/                  the data folder (ASSIGNMENT_DATA, def
       Assignment details.json     Moodle id, course, name, Hebrew title, due date, questions, rules, max_grade, rubric
       Grades.csv                  number,grade,feedback  ← grading output
       Key - number to student.csv number → Moodle participant id → original folder  ← the one key
-      Backup - Moodle downloads/  every ZIP exactly as Moodle gave it (backup only; parts as "part N")
+
 
 Moodle originals/                          on the downloader's computer only (ASSIGNMENT_WORK)
   <course>/<assignment>/   the extracted ZIP: one folder per student, "<full name>_<participant id>_assignsubmission_file"
+  Backup - Moodle downloads/<course>/<assignment>/   every ZIP exactly as Moodle gave it ("part N" when downloaded in parts)
 ```
+
+The Moodle ZIPs stay out of the shared folder (Ori's decision, 22/10): they repeat the submissions several times
+over (2.8 GB for one assignment) and nobody grades from them. Never upload `Backup - Moodle downloads`.
 
 The extracted ZIP never goes to OneDrive: students' file names break its sync (see below). It can be rebuilt
 from the ZIP. Commands take the assignment's Moodle id; `paths.find_assignment` finds its folder through

@@ -49,15 +49,32 @@ def participants_in(zip_path: Path) -> set[str]:
     return set(re.findall(r"^Path = [^\r\n]*?_(\d+)_assignsubmission_", listing, re.M))
 
 
-def check_parts_dont_overlap(zips: list[Path]) -> None:
-    """Parts must hold different students; an old full download mixed in would duplicate them."""
-    seen: dict[str, str] = {}
-    for zip_path in zips:
-        for participant in participants_in(zip_path):
-            if participant in seen:
-                raise ValueError(f"{zip_path.name} and {seen[participant]} have the same student. "
-                                 f"Keep only this download's parts in Downloads. Nothing was changed.")
-            seen[participant] = zip_path.name
+# Parts of one download are minutes apart; an older ZIP left in Downloads would be hours or days older
+PARTS_WINDOW_SECONDS = 2 * 60 * 60
+
+
+def check_parts_belong_together(zips: list[Path]) -> None:
+    """Parts must come from one sitting, so a student in two of them has the same submission in both.
+
+    While pages are downloaded one by one, new submissions shift Moodle's table, so a student at a
+    page edge can land in two parts (and another can be skipped: compare the total with Moodle).
+    """
+    times = [p.stat().st_mtime for p in zips]
+    if max(times) - min(times) > PARTS_WINDOW_SECONDS:
+        raise ValueError("These ZIPs were downloaded more than 2 hours apart, so they are not parts of one "
+                         "download. Keep only this download's parts in Downloads. Nothing was changed.")
+
+
+def extract_parts(zips: list[Path], original: Path) -> None:
+    """Extract parts into one folder per student; a student in two parts keeps the newer part's copy."""
+    for index, part in enumerate(sorted(zips, key=lambda p: p.stat().st_mtime)):
+        staging = original / f"_part {index}"
+        subprocess.run([seven_zip(), "x", str(part), f"-o{staging}", "-y", "-bso0", "-bsp0"], check=True)
+        for student in staging.iterdir():
+            if (original / student.name).exists():
+                remove_tree(original / student.name)
+            shutil.move(student, original / student.name)
+        staging.rmdir()
 
 
 def seven_zip() -> str:
@@ -122,24 +139,25 @@ def ingest(assignment_id: str, zip_path: Path | list[Path] | None = None,
     for part in zips:
         check_zip(part)
     if len(zips) > 1:
-        check_parts_dont_overlap(zips)
+        check_parts_belong_together(zips)
     target = assignment_folder(assignment_id, zips[0], course, name)
 
     # Keep every download: a later one (after the due date) must not erase the first
     stamp = datetime.now().strftime("%Y-%m-%d %H-%M")
-    (target / paths.BACKUP).mkdir(exist_ok=True)
+    paths.backup_dir(target).mkdir(parents=True, exist_ok=True)
     kept = []
+    # Oldest first, so "part 1" is the first page downloaded (shutil.move keeps the file times)
+    zips = sorted(zips, key=lambda p: p.stat().st_mtime)
     for index, part in enumerate(zips, start=1):
         suffix = f" part {index}" if len(zips) > 1 else ""
-        kept.append(target / paths.BACKUP / f"{paths.DOWNLOAD_PREFIX} {stamp}{suffix}.zip")
+        kept.append(paths.backup_dir(target) / f"{paths.DOWNLOAD_PREFIX} {stamp}{suffix}.zip")
         shutil.move(part, kept[-1])
 
     original = paths.original_dir(target)
     if original.exists():
         remove_tree(original)
     original.mkdir(parents=True)
-    for part in kept:
-        subprocess.run([seven_zip(), "x", str(part), f"-o{original}", "-y", "-bso0", "-bsp0"], check=True)
+    extract_parts(kept, original)
 
     rows = anonymize.prepare(original, target)
     guide.write_guides(paths.data_dir())

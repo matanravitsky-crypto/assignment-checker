@@ -131,21 +131,42 @@ def test_parts_come_together_into_one_numbered_set():
         try:
             rows = ingest("3438636", [one, two], "Linear Algebra", "Assignment 0")
             folder = paths.assignment_dir("3438636")
+            backups = sorted(p.name for p in paths.backup_dir(folder).glob("*.zip"))
         finally:
             del os.environ["ASSIGNMENT_DATA"], os.environ["ASSIGNMENT_WORK"]
         assert sorted(r["participant_id"] for r in rows) == ["100", "200"]
-        assert sorted(p.name for p in (folder / paths.BACKUP).glob("*.zip"))[-1].endswith("part 2.zip")
-        assert not list(folder.glob("*.zip"))
+        assert backups[-1].endswith("part 2.zip")
+        assert not list(folder.rglob("*.zip"))
 
 
 @pytest.mark.skipif(not has_seven_zip(), reason="needs 7-Zip")
-def test_parts_with_the_same_student_are_refused():
+def test_student_in_two_parts_keeps_the_newer_copy_once():
+    with tempfile.TemporaryDirectory() as tmp:
+        one = make_zip(Path(tmp) / "a-3438636.zip", {"א_100_assignsubmission_file": b"old",
+                                                       "ב_200_assignsubmission_file": b"b"})
+        two = make_zip(Path(tmp) / "a-3438636 (1).zip", {"א_100_assignsubmission_file": b"new"})
+        os.utime(one, (time.time() - 60, time.time() - 60))
+        os.environ["ASSIGNMENT_DATA"] = str(Path(tmp) / "data")
+        os.environ["ASSIGNMENT_WORK"] = str(Path(tmp) / "work")
+        try:
+            rows = ingest("3438636", [one, two], "Linear Algebra", "Assignment 0")
+            folder = paths.assignment_dir("3438636")
+        finally:
+            del os.environ["ASSIGNMENT_DATA"], os.environ["ASSIGNMENT_WORK"]
+        assert sorted(r["participant_id"] for r in rows) == ["100", "200"]
+        number = next(r["number"] for r in rows if r["participant_id"] == "100")
+        assert (folder / paths.TO_GRADE / f"{number}.pdf").read_bytes() == b"new"
+
+
+@pytest.mark.skipif(not has_seven_zip(), reason="needs 7-Zip")
+def test_parts_hours_apart_are_refused():
     with tempfile.TemporaryDirectory() as tmp:
         one = make_zip(Path(tmp) / "a-3438636.zip", {"א_100_assignsubmission_file": b"old"})
-        two = make_zip(Path(tmp) / "a-3438636 (1).zip", {"א_100_assignsubmission_file": b"new"})
+        two = make_zip(Path(tmp) / "a-3438636 (1).zip", {"ב_200_assignsubmission_file": b"new"})
+        os.utime(one, (time.time() - 5 * 3600, time.time() - 5 * 3600))
         os.environ["ASSIGNMENT_DATA"] = str(Path(tmp) / "data")
         try:
-            with pytest.raises(ValueError, match="same student"):
+            with pytest.raises(ValueError, match="2 hours apart"):
                 ingest("3438636", [one, two], "Linear Algebra", "Assignment 0")
             assert one.exists() and two.exists()
         finally:

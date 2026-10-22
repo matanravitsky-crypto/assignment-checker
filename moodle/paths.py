@@ -13,12 +13,12 @@ a folder per assignment, with plain English names that say what each one is
           Assignment details.json                    Moodle id, questions, rules, rubric
           Grades.csv                                 number,grade,feedback (from grading)
           Key - number to student.csv                the key: number -> Moodle participant
-          Backup - Moodle downloads/                 every ZIP exactly as Moodle gave it (backup only)
           README.txt
 
-The extracted ZIP stays on the downloader's computer only, in the same
-course/assignment layout under the work folder (ASSIGNMENT_WORK): students'
-file names there break OneDrive sync, and it can be rebuilt from the ZIP.
+On the downloader's computer only, under the work folder (ASSIGNMENT_WORK):
+    <course>/<assignment>/                            the extracted ZIP (students' file names
+                                                      there break OneDrive sync)
+    Backup - Moodle downloads/<course>/<assignment>/  every ZIP exactly as Moodle gave it
 """
 
 import json
@@ -33,7 +33,8 @@ GRADES = "Grades.csv"
 KEY = "Key - number to student.csv"
 README = "README.txt"
 DOWNLOAD_PREFIX = "Moodle download"
-# The ZIPs as Moodle gave them: a backup only, nobody grades from them
+# The ZIPs as Moodle gave them: a backup kept on the downloader's computer only. They repeat
+# "1 - Submissions to grade" several times over (2.8 GB for one assignment), so they stay out of OneDrive.
 BACKUP = "Backup - Moodle downloads"
 
 
@@ -69,10 +70,15 @@ def assignment_dir(assignment_id: str) -> Path:
     return found
 
 
+def backup_dir(assignment_dir: Path) -> Path:
+    """Where the assignment's Moodle ZIPs are kept, on this computer only."""
+    return work_dir() / BACKUP / assignment_dir.parent.name / assignment_dir.name
+
+
 def download_zips(assignment_dir: Path) -> list[Path]:
     """The assignment's backed-up Moodle ZIPs (older ones may still sit in the assignment folder itself)."""
-    return sorted([*assignment_dir.glob(f"{BACKUP}/{DOWNLOAD_PREFIX} *.zip"),
-                   *assignment_dir.glob(f"{DOWNLOAD_PREFIX} *.zip")], key=lambda p: p.name)
+    places = [backup_dir(assignment_dir), assignment_dir / BACKUP, assignment_dir]
+    return sorted((z for place in places for z in place.glob(f"{DOWNLOAD_PREFIX} *.zip")), key=lambda p: p.name)
 
 
 def original_dir(assignment_dir: Path) -> Path:
