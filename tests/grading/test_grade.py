@@ -237,8 +237,11 @@ def test_grading_writes_grades_csv_and_marked_pdfs(root):
         red = [d for d in doc[1].get_drawings() if d.get("color") and d["color"][0] > 0.8 and d["color"][1] < 0.1]
         assert red, "לא צויר מלבן אדום"
         r = red[0]["rect"]
-        w, h = doc[1].rect.width, doc[1].rect.height
-        assert abs(r.x0 - 0.1 * w) < 2 and abs(r.y0 - 0.1 * h) < 2 and abs(r.x1 - 0.9 * w) < 2 and abs(r.y1 - 0.16 * h) < 2
+        # העמוד המקורי, אחרי השוליים להערות שנוספו משמאל
+        w, h = src[0].rect.width, src[0].rect.height
+        left = w * grading.NOTES_MARGIN
+        assert doc[1].rect.width == pytest.approx(left + w)
+        assert abs(r.x0 - (left + 0.1 * w)) < 2 and abs(r.y0 - 0.1 * h) < 2 and abs(r.x1 - (left + 0.9 * w)) < 2 and abs(r.y1 - 0.16 * h) < 2
     assert rep.summary() == "נבדקו 3 מתוך 3"
 
 
@@ -325,11 +328,36 @@ def test_rotated_page_is_marked_where_it_is_seen():
     with pymupdf.open(stream=grading.mark_pdf(doc.tobytes(), g, ctx), filetype="pdf") as out:
         page = out[1]
         pix = page.get_pixmap(dpi=36)
-        # מלבן אדום ליד הפינה השמאלית העליונה של העמוד כפי שהוא מוצג
-        x, y = int(0.1 * pix.width), int(0.15 * pix.height)
+        # מלבן אדום ליד הפינה השמאלית העליונה של העמוד כפי שהוא מוצג, אחרי השוליים שנוספו משמאל
+        m = grading.NOTES_MARGIN
+        x, y = int((m + 0.1) / (1 + m) * pix.width), int(0.15 * pix.height)
         reds = [(i, j) for i in range(pix.width) for j in range(pix.height)
                 if (lambda c: c[0] > 150 and c[1] < 90 and c[2] < 90)(pix.pixel(i, j))]
         assert reds and min(abs(i - x) for i, _ in reds) <= 3
+
+
+def test_note_says_the_points_off_and_sits_in_the_margin_beside_the_mistake():
+    doc = pymupdf.open(stream=homework_pdf("x", HW, pages=2), filetype="pdf")
+    width = doc[0].rect.width
+    ctx = grading.Context("מטלה", "קורס", [grading.Question("שאלה 1", 100)])
+    g = grading.Graded([98], [""], 98, "", [grading.Mark(1, 550, 300, 900, 340, "לא נכון עבור t=0", 2)])
+    with pymupdf.open(stream=grading.mark_pdf(doc.tobytes(), g, ctx), filetype="pdf") as out:
+        page = out[1]
+        # לעמוד המסומן נוספו שוליים משמאל, ולעמוד בלי סימונים לא
+        assert page.rect.width == pytest.approx(width * (1 + grading.NOTES_MARGIN)) and out[2].rect.width == width
+        words = page.get_text("words")
+        note = [w for w in words if w[4] in ("ירדו", "נכון")]
+        assert {w[4] for w in note} == {"ירדו", "נכון"} and "2" in {w[4] for w in words}
+        # ההערה כולה בשוליים, בגובה של הטעות או מתחתיה
+        assert all(w[2] <= width * grading.NOTES_MARGIN for w in note)
+        assert all(w[1] >= 0.30 * page.rect.height - 2 for w in note)
+
+
+def test_points_off_is_read_from_the_answer(root):
+    ctx = grading.load_context(asg(root).dir)
+    marks = [{"page": 1, "x0": 100, "y0": 100, "x1": 900, "y1": 160, "text": "חסר", "points_off": 2.3}]
+    g = grading.parse_answer(answer(marks=marks), ctx, pages=1)
+    assert [(m.text, m.points_off) for m in g.marks] == [("חסר", 2.5)]
 
 
 # ---------- בלי מפתח ----------

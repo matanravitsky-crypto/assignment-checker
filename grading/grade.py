@@ -61,6 +61,8 @@ MAX_TOKENS = 32000
 DEFAULT_PARALLEL = 4
 # גודל מרבי לקובץ מסומן. מעליו התמונות בקובץ נדחסות
 MAX_BYTES = 2_000_000
+# רוחב השוליים להערות שנוספים משמאל לעמוד מסומן, ביחס לרוחב העמוד
+NOTES_MARGIN = 0.4
 # תמונת עמוד גדולה מזה נשלחת כ-JPEG, כדי שהבקשה לא תעבור את המגבלה של Claude (32 MB)
 MAX_IMAGE_BYTES = 1_500_000
 
@@ -226,6 +228,7 @@ annotations, סימונים על גבי העבודה:
 - page: מספר העמוד, מ-1, לפי סדר התמונות.
 - x0, y0, x1, y1: המלבן שמקיף את המקום, באלפיות של רוחב העמוד ושל גובהו. (0, 0) היא הפינה השמאלית העליונה ו-(1000, 1000) הימנית התחתונה. המלבן צמוד לשורות הרלוונטיות, לא לחצי עמוד.
 - text: הערה קצרה בעברית, עד 12 מילים, שאומרת מה לא נכון. מתמטיקה בטקסט פשוט (A^-1, det(A)), בלי LaTeX.
+- points_off: כמה נקודות ירדו על הטעות הזו, לפי המחוון (0 אם היא לא עלתה בנקודות). בכל שאלה, סכום ההורדות בסימונים שלה שווה לניקוד המרבי של השאלה פחות הניקוד שניתן לה. הורדה שאין לה מקום בעבודה (למשל שאלה שחסרה) לא מסמנים.
 
 feedback, המשוב לסטודנט:
 - בעברית, בגוף שני רבים, ענייני ומעודד. קודם מה שנעשה טוב, ואז מה צריך לתקן, לפי שאלות. עד 120 מילים, בלי LaTeX.
@@ -243,8 +246,9 @@ SCHEMA = {
         "annotations": {"type": "array", "items": {
             "type": "object",
             "properties": {"page": {"type": "integer"}, "x0": {"type": "number"}, "y0": {"type": "number"},
-                           "x1": {"type": "number"}, "y1": {"type": "number"}, "text": {"type": "string"}},
-            "required": ["page", "x0", "y0", "x1", "y1", "text"], "additionalProperties": False,
+                           "x1": {"type": "number"}, "y1": {"type": "number"}, "text": {"type": "string"},
+                           "points_off": {"type": "number"}},
+            "required": ["page", "x0", "y0", "x1", "y1", "text", "points_off"], "additionalProperties": False,
         }},
         "needs_review": {"type": "boolean"},
         "review_reason": {"type": "string"},
@@ -358,6 +362,7 @@ class Mark:
     x1: float
     y1: float
     text: str
+    points_off: float = 0  # כמה נקודות ירדו על הטעות הזו, לפי המחוון
 
 
 @dataclass
@@ -408,7 +413,8 @@ def parse_answer(text: str, ctx: Context, pages: int) -> Graded:
         y0, y1 = sorted(min(_num(a.get(k)), 1000) for k in ("y0", "y1"))
         if x1 - x0 < 1 or y1 - y0 < 1:
             continue
-        marks.append(Mark(page, x0, y0, x1, y1, str(a.get("text") or "").strip()))
+        marks.append(Mark(page, x0, y0, x1, y1, str(a.get("text") or "").strip(),
+                          _round_half_up(_num(a.get("points_off")))))
     return Graded(points, comments, compute_grade(points, ctx), str(data.get("feedback") or "").strip(), marks, review.strip())
 
 
@@ -456,35 +462,40 @@ def _archive():
     return pymupdf.Archive(str(_FONTS)) if (_FONTS / "arial.ttf").exists() else None
 
 
-def _html(text: str, size: float = 10) -> str:
-    return f'<div dir="rtl" style="color: #d90000; font-size: {size}px; line-height: 1.25">{_esc(text)}</div>'
-
-
 def _esc(s: str) -> str:
     from html import escape
     return escape(str(s)).replace("\n", "<br>")
 
 
-def _note_rect(box: pymupdf.Rect, page: pymupdf.Rect, width: float = 180, height: float = 40) -> pymupdf.Rect:
-    """איפה לכתוב את ההערה: מתחת למלבן, ואם אין מקום אז מעליו. מיושר לצד ימין, כמו עברית."""
-    margin = 4
-    w = min(max(box.width, width), page.width - 2 * margin)
-    x1 = min(box.x1, page.width - margin)
-    x0 = max(x1 - w, margin)
-    x1 = x0 + w
-    if box.y1 + 2 + height <= page.height - margin:
-        y0 = box.y1 + 2
-    elif box.y0 - 2 - height >= margin:
-        y0 = box.y0 - 2 - height
-    else:
-        y0 = max(min(box.y0, page.height - margin - height), margin)
-    return pymupdf.Rect(x0, y0, x1, y0 + height)
+def _note_html(mark: Mark, size: float) -> str:
+    """ההערה בשוליים: כמה נקודות ירדו (מודגש), ואז מה לא נכון."""
+    off = f"<b>ירדו {_pts(mark.points_off)} נק'</b><br>" if mark.points_off else ""
+    return f'<div dir="rtl" style="color: #d90000; font-size: {size:.1f}px; line-height: 1.2">{off}{_esc(mark.text)}</div>'
 
 
-def _write(page: pymupdf.Page, rect: pymupdf.Rect, html: str, archive) -> None:
-    """כותב טקסט במקום שמחושב לפי העמוד כפי שהוא מוצג (גם אם העמוד מסובב).
-    בלי רקע, כמו עט אדום: לא מסתירים שום דבר ממה שהסטודנט כתב."""
-    page.insert_htmlbox(rect * page.derotation_matrix, html, css=_CSS, archive=archive, rotate=page.rotation, scale_low=0)
+def _marked_page(out: pymupdf.Document, src: pymupdf.Document, index: int, marks: list[Mark], archive) -> None:
+    """העמוד עם שוליים ריקים משמאל: המלבנים על העבודה, וההערות בשוליים בגובה של כל טעות, עם קו אל המלבן.
+    בלי רקע ובלי לכתוב על העבודה עצמה: לא מסתירים שום דבר ממה שהסטודנט כתב."""
+    shown = src[index].rect  # העמוד כפי שהוא מוצג, אחרי סיבוב
+    extra = shown.width * NOTES_MARGIN
+    page = out.new_page(width=shown.width + extra, height=shown.height)
+    page.show_pdf_page(pymupdf.Rect(extra, 0, extra + shown.width, shown.height), src, index)
+    # הגופן גדל עם העמוד: סריקה מהטלפון יכולה להיות ברוחב של אלפי נקודות
+    size = max(14.0, shown.width / 32)
+    pad = size / 2
+    free_y = pad
+    for mark in sorted(marks, key=lambda m: m.y0):
+        box = pymupdf.Rect(extra + mark.x0 / 1000 * shown.width, mark.y0 / 1000 * shown.height,
+                           extra + mark.x1 / 1000 * shown.width, mark.y1 / 1000 * shown.height)
+        page.draw_rect(box, color=RED, width=1.4, overlay=True)
+        if not (mark.text or mark.points_off) or free_y >= shown.height - size:
+            continue
+        note = pymupdf.Rect(pad, max(box.y0, free_y), extra - pad, shown.height - pad)
+        spare, _ = page.insert_htmlbox(note, _note_html(mark, size), css=_CSS, archive=archive, scale_low=0)
+        used = note.height - max(spare, 0)
+        page.draw_line(pymupdf.Point(extra - pad, note.y0 + size * 0.6), pymupdf.Point(box.x0, box.y0 + min(box.height, size) / 2),
+                       color=RED, width=0.8)
+        free_y = note.y0 + used + pad
 
 
 def _summary_page(doc: pymupdf.Document, g: Graded, ctx: Context, archive) -> None:
@@ -508,17 +519,17 @@ def _summary_page(doc: pymupdf.Document, g: Graded, ctx: Context, archive) -> No
 
 
 def mark_pdf(pdf: bytes, g: Graded, ctx: Context, max_bytes: int = MAX_BYTES) -> bytes:
-    """מצייר את הסימונים באדום על העבודה, מוסיף עמוד סיכום בהתחלה, ושומר עד max_bytes אם אפשר."""
+    """מצייר את הסימונים באדום על העבודה, עם ההערות בשוליים, מוסיף עמוד סיכום בהתחלה, ושומר עד max_bytes אם אפשר."""
     archive = _archive()
-    with pymupdf.open(stream=pdf, filetype="pdf") as doc:
-        for mark in g.marks:
-            page = doc[mark.page - 1]
-            shown = page.rect  # העמוד כפי שהוא מוצג, אחרי סיבוב
-            box = pymupdf.Rect(mark.x0 / 1000 * shown.width, mark.y0 / 1000 * shown.height,
-                               mark.x1 / 1000 * shown.width, mark.y1 / 1000 * shown.height)
-            page.draw_rect(box * page.derotation_matrix, color=RED, width=1.4, overlay=True)
-            if mark.text:
-                _write(page, _note_rect(box, shown), _html(mark.text), archive)
+    by_page: dict[int, list[Mark]] = {}
+    for mark in g.marks:
+        by_page.setdefault(mark.page, []).append(mark)
+    with pymupdf.open(stream=pdf, filetype="pdf") as src, pymupdf.open() as doc:
+        for index in range(src.page_count):
+            if index + 1 in by_page:
+                _marked_page(doc, src, index, by_page[index + 1], archive)
+            else:
+                doc.insert_pdf(src, from_page=index, to_page=index)
         _summary_page(doc, g, ctx, archive)
         doc.subset_fonts()
         out = doc.tobytes(garbage=4, deflate=True)
