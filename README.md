@@ -33,7 +33,7 @@ Needs Python 3.10+ and 7-Zip (`winget install 7zip.7zip`).
 python -m moodle ingest <assignment id> --course "Linear Algebra" --name "Assignment 0 - Sets and Complex Numbers"
 ```
 
-(`--course` and `--name` only the first time.) It takes the newest `…-<assignment id>.zip` from Downloads into `<course>/<assignment name>/`, keeps the ZIP there, and writes `1 - Submissions to grade/0001.pdf …` for grading plus the key table `Key - number to student.csv` (number → Moodle participant id). The numbers follow the participant id, so a second download gives every student the same number.
+(`--course` and `--name` only the first time.) It takes the newest `…-<assignment id>.zip` from Downloads into `<course>/<assignment name>/`, keeps the ZIP there, and writes `1 - Submissions to grade/0001.pdf …` for grading plus the key table `Key - number to student.csv` (number → Moodle participant id). On a later download every student keeps their number, and students who submitted since then get the next numbers.
 
 **Out** — grading writes `Grades.csv` (`number,grade,feedback`) and `2 - Graded with comments/0001.pdf …`; download the grading worksheet from Moodle, then:
 

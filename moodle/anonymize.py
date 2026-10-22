@@ -35,14 +35,27 @@ def prepare(original: Path, assignment_dir: Path) -> list[dict]:
         shutil.rmtree(anon)
     anon.mkdir()
 
-    # Sort by participant id so the numbers are the same on every run
     folders = sorted(
         (f for f in original.iterdir() if f.is_dir()),
         key=lambda f: int(parse_folder(f.name)),
     )
 
+    # A student keeps their number across downloads, even after grading started;
+    # students who submitted since the last download get the next free numbers
+    known = existing_numbers(assignment_dir)
+    next_number = max(known.values(), default=0) + 1
+    numbers = {}
+    for folder in folders:
+        participant = parse_folder(folder.name)
+        if participant in known:
+            numbers[folder] = known[participant]
+        else:
+            numbers[folder] = next_number
+            next_number += 1
+
     rows = []
-    for number, folder in enumerate(folders, start=1):
+    for folder in sorted(folders, key=numbers.get):
+        number = numbers[folder]
         files = sorted(p for p in folder.rglob("*") if p.is_file())
         for index, file in enumerate(files):
             # A second file from the same student becomes 0001-2.pdf
@@ -62,6 +75,14 @@ def prepare(original: Path, assignment_dir: Path) -> list[dict]:
         writer.writeheader()
         writer.writerows(rows)
     return rows
+
+
+def existing_numbers(assignment_dir: Path) -> dict[str, int]:
+    """{participant id: number} from the key table, if the assignment has one."""
+    if not (assignment_dir / paths.KEY).exists():
+        return {}
+    with open(assignment_dir / paths.KEY, encoding="utf-8-sig") as f:
+        return {row["participant_id"]: int(row["number"]) for row in csv.DictReader(f)}
 
 
 def read_mapping(assignment_dir: Path) -> dict[str, dict]:

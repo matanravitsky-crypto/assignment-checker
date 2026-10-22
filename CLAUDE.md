@@ -53,8 +53,9 @@ from the ZIP. Commands take the assignment's Moodle id; `paths.find_assignment` 
 (its Hebrew title comes from the ZIP's file name).
 
 The **key** that links a number back to a student is the Moodle *participant id* in the folder name
-(not the ת"ז). It lives only in the key table. Numbers are assigned in participant-id order, so
-re-downloading gives everyone the same number.
+(not the ת"ז). It lives only in the key table. A student keeps their number on every later download:
+`anonymize.prepare` reads the existing key, and students who submitted since then get the next free numbers.
+Never delete or rebuild the key table of an assignment that is being graded.
 
 ## One downloader, one key
 

@@ -45,7 +45,27 @@ def test_prepare_numbers_by_participant_id():
         assert read_mapping(assignment)["0001"]["anon_file"] == "0001.pdf"
 
 
+def test_numbers_stay_when_new_students_submit():
+    with tempfile.TemporaryDirectory() as tmp:
+        assignment = Path(tmp) / "assignment"
+        assignment.mkdir()
+        original = Path(tmp) / "original"
+        make_submission(original, "ב_200_assignsubmission_file", {"b.pdf": "b"})
+        make_submission(original, "ד_400_assignsubmission_file", {"d.pdf": "d"})
+        prepare(original, assignment)
+
+        # Two more students submit, with ids before and between the first two
+        make_submission(original, "א_100_assignsubmission_file", {"a.pdf": "a"})
+        make_submission(original, "ג_300_assignsubmission_file", {"c.pdf": "c"})
+        rows = prepare(original, assignment)
+
+        by_id = {row["participant_id"]: row["number"] for row in rows}
+        assert by_id == {"200": "0001", "400": "0002", "100": "0003", "300": "0004"}
+        assert (assignment / paths.TO_GRADE / "0002.pdf").read_text(encoding="utf-8") == "d"
+
+
 if __name__ == "__main__":
+    test_numbers_stay_when_new_students_submit()
     test_parse_folder()
     test_parse_folder_rejects_other_names()
     test_prepare_numbers_by_participant_id()
