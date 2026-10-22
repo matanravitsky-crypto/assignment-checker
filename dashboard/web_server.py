@@ -220,7 +220,9 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json({"error": "פעולה אחרת כבר רצה. כדאי לנסות שוב בעוד רגע."}, HTTPStatus.CONFLICT)
             run, what = _LOCKED_STEPS[url.path]
             try:
-                return self._json(getattr(actions, run)(root, course, assignment))
+                # הגשה שעוד לא נמשכה: המשיכה הראשונה שולחת גם את מזהה המטלה במודל
+                extra = {"moodle_id": str(body["moodleId"])} if url.path == "/api/pull" and body.get("moodleId") else {}
+                return self._json(getattr(actions, run)(root, course, assignment, **extra))
             except actions.UserError as e:
                 return self._json({"error": str(e)}, HTTPStatus.UNPROCESSABLE_ENTITY)
             except FileNotFoundError as e:

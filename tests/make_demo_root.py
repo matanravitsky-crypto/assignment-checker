@@ -162,6 +162,7 @@ def build(root: Path, pad_mb: float = 5.0) -> Path:
     assignment = root / COURSE / ASSIGNMENT
     root.mkdir(parents=True, exist_ok=True)
     (root / MARKER).write_text("A fictional demo folder made by tests/make_demo_root.py. Safe to delete.\n", encoding="utf-8")
+    (root / "Discrete Mathematics").mkdir()  # the second course, still without assignments, like the shared folder
     for sub in (paths.TO_GRADE, paths.MARKED, paths.UPLOAD, paths.NOTES):
         (assignment / sub).mkdir(parents=True)
 
