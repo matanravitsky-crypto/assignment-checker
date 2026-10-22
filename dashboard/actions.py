@@ -368,7 +368,8 @@ def start_send(root: Path, course: str, assignment: str, batch_id: str,
 # והאדם מאשר שם), ובדיקת הכרום היא ריצה קצרה של Claude. את התוצאה של בדיקת הכרום זוכרים 30 דקות לכל מטלה.
 MOODLE_STATUS_SECONDS = 60
 READY_MINUTES = 30  # כמה זמן תוצאה של בדיקת הכרום נחשבת טרייה
-BACKGROUND_MINUTES = 10  # התחברות או התקנה שלא נגמרו אחרי זמן הזה נהרגות
+LOGIN_MINUTES = 10  # התחברות שלא נגמרה אחרי זמן הזה נהרגת
+INSTALL_MINUTES = 20  # וכך גם התקנה (היא מורידה קובץ, ויכולה לקחת יותר)
 LOGIN_STARTED = "נפתח דף התחברות בדפדפן. אחרי ההתחברות המערכת תזהה לבד שזה הסתיים."
 INSTALL_COMMAND = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "irm https://claude.ai/install.ps1 | iex"]
 SIM_LOGIN_SECONDS = 2.0  # MOODLE_READY=simulate: כמה זמן "ההתחברות" נמשכת
@@ -382,13 +383,22 @@ _sim_login_at: float | None = None
 class _Background:
     """תהליך רקע של האתר (`claude auth login` או ההתקנה): אחד בכל פעם, ונהרג אחרי BACKGROUND_MINUTES."""
 
-    def __init__(self) -> None:
+    def __init__(self, minutes: float) -> None:
+        self.minutes = minutes
+        self.ended_seen = False  # כבר דיווחנו (take_ended) שהתהליך הנוכחי נגמר
         self.proc: subprocess.Popen | None = None
         self.timer: threading.Timer | None = None
         self.lock = threading.Lock()
 
     def running(self) -> bool:
         return self.proc is not None and self.proc.poll() is None
+
+    def take_ended(self) -> bool:
+        """True פעם אחת, אחרי שהתהליך שרץ נגמר (לבד, או נהרג בגלל הזמן): הסטטוס ששמרנו בזמן שרץ כבר לא נכון."""
+        if self.proc is not None and self.proc.poll() is not None and not self.ended_seen:
+            self.ended_seen = True
+            return True
+        return False
 
     def stop(self) -> None:
         proc, self.proc = self.proc, None
@@ -409,7 +419,8 @@ class _Background:
                 self.stop()
             # stdin סגור, והפלט לא נשמר: ההתחברות נעשית בדפדפן, והתהליך נגמר לבד כשהיא הסתיימה
             self.proc = proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            self.timer = threading.Timer(BACKGROUND_MINUTES * 60, self._kill, args=(proc,))
+            self.ended_seen = False
+            self.timer = threading.Timer(self.minutes * 60, self._kill, args=(proc,))
             self.timer.daemon = True
             self.timer.start()
             return True
@@ -423,8 +434,8 @@ class _Background:
                 pass
 
 
-_login = _Background()
-_install = _Background()
+_login = _Background(LOGIN_MINUTES)
+_install = _Background(INSTALL_MINUTES)
 
 
 def _simulated_ready() -> bool:
@@ -439,7 +450,7 @@ def _sim_logged_in() -> bool:
 class _SimChecker:
     def check(self, info: dict) -> dict:
         time.sleep(1.0)
-        return {"chrome": True, "moodle": True, "message": "Chrome ו-Moodle מוכנים."}
+        return {"chrome": True, "moodle": True, "message": "Chrome ו-Moodle מוכנים.", "answered": True}
 
 
 def _make_checker():
@@ -451,6 +462,10 @@ def moodle_status() -> dict:
 
     בזמן התחברות או התקנה (ואחרי שההתקנה הסתיימה) שואלים מחדש כל פעם, כדי שהאתר יראה את השינוי מהר."""
     global _moodle_cache
+    # תהליך התחברות או התקנה שזה עתה נגמר: מה ששמרנו בזמן שהוא רץ ("לא מחובר") כבר לא נכון, גם אם עברה פחות מדקה
+    ended = [_login.take_ended(), _install.take_ended()]
+    if any(ended):
+        _moodle_cache = None
     cached = _moodle_cache
     if cached and time.monotonic() - cached[0] < MOODLE_STATUS_SECONDS:
         installed_since = cached[1].get("message") == claude_driver.NOT_INSTALLED and claude_driver.find_claude() is not None
@@ -459,6 +474,11 @@ def moodle_status() -> dict:
     status = claude_driver.auth_status()
     _moodle_cache = (time.monotonic(), status)
     return status
+
+
+def _drop_status_cache() -> None:
+    global _moodle_cache
+    _moodle_cache = None
 
 
 def _fresh_check(course: str, assignment: str) -> tuple[dict, str] | None:
@@ -508,15 +528,22 @@ def check_moodle(root: Path, course: str, assignment: str) -> dict:
     finally:
         with _send_lock:
             _checking = False
-    stored = {k: result.get(k) for k in ("chrome", "moodle", "message")}
-    _ready_cache[(course, assignment)] = (time.monotonic(), stored, datetime.now().isoformat(timespec="seconds"))
+    if result.get("answered") is True:
+        # רק תשובה אמיתית של Claude נשמרת 30 דקות. כשל (זמן קצוב, שגיאה, לא מחובר) לא נשמר, וההעלאה הבאה בודקת מחדש
+        stored = {k: result.get(k) for k in ("chrome", "moodle", "message")}
+        _ready_cache[(course, assignment)] = (time.monotonic(), stored, datetime.now().isoformat(timespec="seconds"))
+    elif result.get("message") == claude_driver.NOT_LOGGED_IN:
+        _drop_status_cache()  # Claude Code כבר לא מחובר: הסטטוס ששמרנו התיישן
     return result
 
 
 def check_ready(root: Path, course: str, assignment: str) -> dict:
     """בודק עכשיו את הכרום והמודל (עולה ריצה קצרה של Claude), מרענן את הזיכרון, ומחזיר את המוכנות."""
-    check_moodle(root, course, assignment)
-    return readiness(root, course, assignment)
+    result = check_moodle(root, course, assignment)
+    out = readiness(root, course, assignment)
+    if result.get("answered") is not True:
+        out["check_error"] = result.get("message") or "הבדיקה נכשלה."  # הבדיקה לא נענתה, ולכן chrome ו-moodle נשארים None
+    return out
 
 
 def start_claude_login(restart: bool = False) -> dict:
@@ -531,6 +558,9 @@ def start_claude_login(restart: bool = False) -> dict:
     claude = claude_driver.find_claude()
     if not claude:
         return {"started": False, "running": False, "message": claude_driver.NOT_INSTALLED}
+    if claude_driver.auth_status()["logged_in"]:  # בלי התחברות מיותרת (ובלי להרוג התחברות שכבר הצליחה)
+        _moodle_cache = None
+        return {"started": False, "running": _login.running(), "message": "כבר מחובר ל-Claude."}
     try:
         started = _login.start([claude, "auth", "login"], restart)
     except OSError as e:

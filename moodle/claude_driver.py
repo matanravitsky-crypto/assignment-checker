@@ -279,7 +279,8 @@ class ClaudeChromeDriver:
             message = "אין התחברות ל-Moodle בכרום. מתחברים ל-Moodle ידנית ובודקים שוב."
         else:
             message = "Chrome ו-Moodle מוכנים."
-        return {"chrome": chrome, "moodle": moodle, "message": message}
+        # "answered": Claude really looked (the other results above are failures to run). Only these are worth remembering
+        return {"chrome": chrome, "moodle": moodle, "message": message, "answered": True}
 
 
 def auth_status(run=subprocess.run, claude: str | None = None) -> dict:

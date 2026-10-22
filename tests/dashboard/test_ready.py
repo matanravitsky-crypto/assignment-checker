@@ -13,7 +13,7 @@ from moodle import claude_driver
 from moodle.send import SimulatedDriver
 from tests.dashboard.helpers import BODY, COURSE, HDR, HW, call, mark
 
-OK = {"chrome": True, "moodle": True, "message": "Chrome ו-Moodle מוכנים."}
+OK = {"chrome": True, "moodle": True, "message": "Chrome ו-Moodle מוכנים.", "answered": True}
 
 
 class FakeChrome:
@@ -101,10 +101,29 @@ def test_readiness_cache_expires_after_30_minutes_and_is_per_assignment(root, lo
     assert chrome.calls == 1
 
 
-def test_a_failed_check_is_remembered_with_its_message(root, logged_in, chrome):
-    chrome.answer = {"chrome": False, "moodle": False, "message": "הכלים של Chrome לא עבדו."}
+def test_an_answered_no_is_remembered_with_its_message(root, logged_in, chrome):
+    chrome.answer = {"chrome": False, "moodle": False, "message": "הכלים של Chrome לא עבדו.", "answered": True}
     out = actions.check_ready(root, COURSE, HW)
     assert (out["chrome"], out["moodle"], out["message"]) == (False, False, "הכלים של Chrome לא עבדו.")
+    assert "check_error" not in out
+    assert actions.readiness(root, COURSE, HW)["chrome"] is False  # a real answer stays for 30 minutes
+
+
+def test_a_failed_check_is_not_remembered_and_its_message_comes_back(root, logged_in, chrome):
+    chrome.answer = {"chrome": False, "moodle": False, "message": "Claude Code לא הצליח לרוץ (TimeoutExpired)."}
+    out = actions.check_ready(root, COURSE, HW)
+    assert (out["chrome"], out["moodle"], out["checked_at"]) == (None, None, None)
+    assert out["check_error"] == "Claude Code לא הצליח לרוץ (TimeoutExpired)."
+    assert actions.readiness(root, COURSE, HW)["chrome"] is None  # nothing cached: the next click checks again
+    chrome.answer = OK
+    assert actions.check_ready(root, COURSE, HW)["chrome"] is True and chrome.calls == 2
+
+
+def test_a_check_that_finds_claude_logged_out_drops_the_status_cache(root, logged_in, chrome, monkeypatch):
+    assert actions.moodle_status()["logged_in"] is True
+    chrome.answer = {"chrome": False, "moodle": False, "message": claude_driver.NOT_LOGGED_IN}
+    monkeypatch.setattr(claude_driver, "auth_status", lambda *a, **k: {"logged_in": False, "message": claude_driver.NOT_LOGGED_IN})
+    assert actions.check_ready(root, COURSE, HW)["logged_in"] is False
 
 
 def test_readiness_of_a_missing_assignment(root):
@@ -201,7 +220,7 @@ def test_login_that_cannot_start_says_so(monkeypatch):
 
 def test_a_login_that_runs_too_long_is_killed(monkeypatch, popen):
     monkeypatch.setattr(claude_driver, "find_claude", lambda: "claude")
-    monkeypatch.setattr(actions, "BACKGROUND_MINUTES", 0.0005)  # about 30 ms
+    monkeypatch.setattr(actions._login, "minutes", 0.0005)  # about 30 ms
     actions.start_claude_login()
     proc = popen.made[0]
     end = time.time() + 3
@@ -322,3 +341,67 @@ def test_server_ready_posts_need_the_header_and_a_local_origin(root, server, pop
 def test_server_ready_check_errors(root, server, logged_in, chrome):
     assert call(server, "POST", "/api/ready/check", {"course": COURSE}, HDR)[0] == 400
     assert call(server, "POST", "/api/ready/check", {**BODY, "assignment": "nope"}, HDR)[0] == 404
+
+
+# ---------- a login or install that just ended ----------
+def test_a_login_that_just_ended_asks_auth_again_at_once(root, monkeypatch, popen):
+    state = {"logged_in": False}
+    monkeypatch.setattr(claude_driver, "find_claude", lambda: "claude")
+    monkeypatch.setattr(claude_driver, "auth_status", lambda *a, **k: {"logged_in": state["logged_in"], "message": "x"})
+    actions.start_claude_login()
+    proc = popen.made[0]
+    out = actions.readiness(root, COURSE, HW)  # while it runs: "not logged in" gets stored
+    assert (out["logged_in"], out["login_running"]) == (False, True)
+    state["logged_in"] = True  # the person authorized, and `claude auth login` exited
+    proc.alive = False
+    out = actions.readiness(root, COURSE, HW)  # well under 60 s later
+    assert (out["logged_in"], out["login_running"]) == (True, False)
+
+
+def test_the_status_cache_is_dropped_only_once_per_ended_process(root, monkeypatch, popen):
+    calls = []
+    monkeypatch.setattr(claude_driver, "find_claude", lambda: "claude")
+    monkeypatch.setattr(claude_driver, "auth_status", lambda *a, **k: calls.append(1) or {"logged_in": True, "message": "x"})
+    actions.start_claude_login()  # (auth_status is asked once here, and says logged in: nothing starts)
+    calls.clear()
+    popen.made.clear()
+    monkeypatch.setattr(claude_driver, "auth_status", lambda *a, **k: calls.append(1) or {"logged_in": False, "message": "x"})
+    actions.start_claude_login()
+    popen.made[0].alive = False
+    actions.moodle_status()
+    n = len(calls)
+    actions.moodle_status()
+    actions.moodle_status()
+    assert len(calls) == n  # the ended process is reported once, then the cache works again
+
+
+def test_an_install_that_just_ended_is_seen_at_once(root, monkeypatch, popen):
+    monkeypatch.setattr(claude_driver, "find_claude", lambda: None)
+    actions.start_claude_install()
+    assert actions.readiness(root, COURSE, HW)["installing"] is True
+    popen.made[0].alive = False
+    monkeypatch.setattr(claude_driver, "find_claude", lambda: "C:/x/claude.exe")
+    monkeypatch.setattr(claude_driver, "auth_status", lambda *a, **k: {"logged_in": True, "message": "x"})
+    out = actions.readiness(root, COURSE, HW)
+    assert (out["installed"], out["installing"], out["logged_in"]) == (True, False, True)
+
+
+def test_login_is_refused_when_already_logged_in(monkeypatch, popen):
+    monkeypatch.setattr(claude_driver, "find_claude", lambda: "claude")
+    monkeypatch.setattr(claude_driver, "auth_status", lambda *a, **k: {"logged_in": True, "message": "x"})
+    out = actions.start_claude_login()
+    assert out["started"] is False and out["message"] == "כבר מחובר ל-Claude." and popen.made == []
+    assert actions.start_claude_login(restart=True)["started"] is False and popen.made == []
+
+
+def test_time_limits_login_ten_minutes_install_twenty():
+    assert (actions._login.minutes, actions._install.minutes) == (10, 20)
+
+
+def test_login_and_install_endpoints_do_not_need_the_shared_folder(root, server, monkeypatch, popen, tmp_path):
+    monkeypatch.setenv("ASSIGNMENT_CHECKER_ROOT", str(tmp_path / "does-not-exist"))
+    monkeypatch.setattr(claude_driver, "find_claude", lambda: "claude")
+    assert call(server, "POST", "/api/upload/stop", {}, HDR)[0] == 503  # a call that does need it
+    st, rep = call(server, "POST", "/api/claude/login", {}, HDR)
+    assert st == 200 and rep["started"] is True
+    assert call(server, "POST", "/api/claude/install", {}, HDR)[0] == 200

@@ -149,10 +149,14 @@ class Handler(SimpleHTTPRequestHandler):
             self._discard_body()  # else Windows may reset the connection before the client reads the 403
             return self.send_error(HTTPStatus.FORBIDDEN)
         url = urlparse(self.path)
+        body = self._body()
+        if url.path == "/api/claude/login":  # these two work on this computer, not on the shared folder: no root needed
+            return self._json(actions.start_claude_login(restart=body.get("restart") is True))
+        if url.path == "/api/claude/install":
+            return self._json(actions.start_claude_install())
         root = self._root()
         if not root:
             return
-        body = self._body()
         if url.path in _LOCKED_STEPS:
             # משיכה: moodle ingest. החזרה: moodle upload. הכנת העלאה: moodle send. אחת בכל פעם
             course, assignment = body.get("course"), body.get("assignment")
@@ -201,10 +205,6 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json({"error": str(e)}, HTTPStatus.CONFLICT)
             except Exception as e:
                 return self._json({"error": f"הבדיקה נכשלה: {e}"}, HTTPStatus.INTERNAL_SERVER_ERROR)
-        if url.path == "/api/claude/login":
-            return self._json(actions.start_claude_login(restart=body.get("restart") is True))
-        if url.path == "/api/claude/install":
-            return self._json(actions.start_claude_install())
         if url.path == "/api/grade":
             course, assignment = body.get("course"), body.get("assignment")
             if not course or not assignment:

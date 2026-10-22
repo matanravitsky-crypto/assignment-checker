@@ -268,7 +268,7 @@ CHECK_OK = {"chrome": True, "moodle_logged_in": True}
 def test_check_reports_chrome_and_moodle(tmp_path):
     fake = FakeRun(cli_output(CHECK_OK))
     out = driver(fake).check(INFO)
-    assert out["chrome"] is True and out["moodle"] is True and out["message"]
+    assert out["chrome"] is True and out["moodle"] is True and out["message"] and out["answered"] is True
     cmd = fake.calls[0][0]
     assert GRADING_URL.format(id="3438636") in cmd[-1]
     assert cmd[cmd.index("--allowedTools") + 1] == "mcp__claude-in-chrome"
@@ -282,6 +282,7 @@ def test_check_says_what_is_missing():
     assert out["chrome"] is True and out["moodle"] is False and "Moodle" in out["message"]
     out = driver(FakeRun(cli_output({"chrome": False, "moodle_logged_in": False}))).check(INFO)
     assert out["chrome"] is False and out["moodle"] is False and "Chrome" in out["message"]
+    assert out["answered"] is True  # Claude really looked: "no" is an answer
 
 
 @pytest.mark.parametrize("run", [
@@ -294,6 +295,7 @@ def test_check_says_what_is_missing():
 def test_check_never_raises(run):
     out = driver(run).check(INFO)
     assert out["chrome"] is False and out["moodle"] is False and out["message"]
+    assert "answered" not in out  # a failure to run is not an answer: the site does not remember it
 
 
 def test_check_without_claude_installed(monkeypatch):

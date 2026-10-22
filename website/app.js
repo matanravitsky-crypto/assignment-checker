@@ -551,7 +551,7 @@
   // הלחיצה על "העלה N למודל". אם הכול כבר מוכן (גם לפי הזיכרון של 30 הדקות), ממשיכים ישר להכנה
   async function startSendFlow() {
     const A = cur();
-    if (!A || state.run[A.id] || LOCAL.sending?.running || LOCAL.starting || LOCAL.rd?.flow) return;
+    if (!A || state.run[A.id] || LOCAL.sending?.running || LOCAL.starting || (LOCAL.rd?.flow && LOCAL.rd.assignmentId === A.id)) return;
     LOCAL.batch = null;
     const rd = (LOCAL.rd = newReady(A, true));
     state.run[A.id] = { stage: "ret", steps: RET_LOCAL_STEPS.map(() => "pending"), progress: "בודק שהמחשב מוכן…" };
@@ -586,7 +586,11 @@
           if (d.installed && d.logged_in && d.chrome == null && !rd.checking && !rd.checkTried) { acted = true; rd.checkTried = true; checkReady(rd); }
         }
         render();
-        if (!(acted || d.installing || d.login_running || rd.checking)) break;
+        // עוד סיבוב אחרי שהתחברות או התקנה נגמרו: ככה רואים את התוצאה שלהן גם אם הסטטוס התעדכן באיחור
+        const running = !!(d.installing || d.login_running);
+        const justEnded = rd.wasRunning && !running;
+        rd.wasRunning = running;
+        if (!(acted || running || rd.checking || justEnded)) break;
         await sleep(READY_POLL_MS);
       }
     } catch (e) {
@@ -594,6 +598,7 @@
       toast(e.message, ICON.warn);
     } finally {
       rd.looping = false;
+      if (rd.assignmentId !== state.assignmentId) rd.flow = false;  // עברו למטלה אחרת באמצע: לא משאירים זרימה תקועה
       render();
     }
   }
@@ -639,6 +644,7 @@
     try {
       const A = readyAssignment(rd);
       rd.data = await api("api/ready/check", { method: "POST", body: JSON.stringify({ course: A.courseFolder, assignment: A.folder }) });
+      if (rd.data.check_error) rd.checkError = rd.data.check_error;  // הבדיקה לא נענתה (זמן קצוב, שגיאה): מציגים את ההודעה שלה
     } catch (e) {
       rd.checkError = e.message;
     } finally {
@@ -701,10 +707,10 @@
     else if (d.chrome === true && d.moodle === true) chrome = row("ok", "הכרום והמודל מחוברים", d.checked_at ? `נבדק ${when(d.checked_at)}` : "");
     else if (rd.checkError) chrome = row("bad", "הכרום והמודל מחוברים", esc(rd.checkError), btn("ready-check", "בדוק שוב", true));
     else if (d.chrome === false) {
-      chrome = row("bad", "הכרום והמודל מחוברים", "צריך את התוסף Claude in Chrome בכרום. אחרי ההתקנה והחיבור שלו לוחצים 'בדוק שוב'.",
+      chrome = row("bad", "הכרום והמודל מחוברים", `צריך את התוסף Claude in Chrome בכרום. אחרי ההתקנה והחיבור שלו לוחצים 'בדוק שוב'.${d.message ? `<div>${esc(d.message)}</div>` : ""}`,
         `${link(CHROME_EXT_URL, "פתח את claude.ai/chrome")}${btn("ready-check", "בדוק שוב", true)}`);
     } else if (d.moodle === false) {
-      chrome = row("bad", "הכרום והמודל מחוברים", "צריך להתחבר למודל בכרום. אחרי ההתחברות לוחצים 'בדוק שוב'.",
+      chrome = row("bad", "הכרום והמודל מחוברים", `צריך להתחבר למודל בכרום. אחרי ההתחברות לוחצים 'בדוק שוב'.${d.message ? `<div>${esc(d.message)}</div>` : ""}`,
         `${link(MOODLE_LOGIN_URL, "פתח את מודל")}${btn("ready-check", "בדוק שוב", true)}`);
     } else chrome = row("wait", "הכרום והמודל מחוברים", "עוד לא נבדק. הבדיקה לא מעלה כלום למודל.", btn("ready-check", "בדוק חיבור"));
 
