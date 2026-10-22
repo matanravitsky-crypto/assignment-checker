@@ -13,17 +13,15 @@
 """
 from __future__ import annotations
 
-import getpass
 import os
 import re
-import socket
 import threading
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 from grading import grade as grading
-from moodle import ingest as moodle_ingest, paths, upload as moodle_upload
+from moodle import ingest as moodle_ingest, lock as moodle_lock, paths, upload as moodle_upload
 
 from . import folder_view, settings as cfg, shared_folder
 
@@ -71,7 +69,6 @@ def _hebrew_error(e: Exception, mid: str) -> str:
 #   * נעילה: בזמן משיכה יש בתיקיית המטלה קובץ שאומר מי מושך. אחרים מחכים.
 #   * התנגשות: אם OneDrive בכל זאת יצר עותק כפול של טבלת המפתח, לא מושכים עד שמתקנים.
 LOCK_FILE = "Pull in progress.txt"
-LOCK_MINUTES = 30
 
 
 def key_conflicts(a: folder_view.Assignment) -> list[str]:
@@ -80,20 +77,12 @@ def key_conflicts(a: folder_view.Assignment) -> list[str]:
     return sorted(p.name for p in a.dir.glob(f"{stem}*.csv") if p.name != paths.KEY)
 
 
-def _me() -> str:
-    return f"{getpass.getuser()} ({socket.gethostname()})"
-
-
 def _take_lock(a: folder_view.Assignment) -> Path:
-    lock = a.dir / LOCK_FILE
-    if lock.exists():
-        started = datetime.fromtimestamp(lock.stat().st_mtime)
-        who = lock.read_text(encoding="utf-8").strip() or "מישהו אחר"
-        if datetime.now() - started < timedelta(minutes=LOCK_MINUTES) and who != _me():
-            raise UserError(f"{who} מושך את המטלה הזו עכשיו (התחיל ב-{started:%H:%M}). "
-                            f"כדאי לחכות כמה דקות, לתת ל-OneDrive לסנכרן, ולנסות שוב.")
-    lock.write_text(_me(), encoding="utf-8")
-    return lock
+    try:
+        return moodle_lock.take(a.dir, LOCK_FILE)
+    except moodle_lock.Locked as e:
+        raise UserError(f"{e.who} מושך את המטלה הזו עכשיו (התחיל ב-{e.since:%H:%M}). "
+                        f"כדאי לחכות כמה דקות, לתת ל-OneDrive לסנכרן, ולנסות שוב.") from e
 
 
 # ---------- משיכה ----------
