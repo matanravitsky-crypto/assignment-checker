@@ -21,6 +21,8 @@
     on: false, health: null, report: null,
     batch: null,       // ההעלאה שהוכנה וממתינה ל"כן" של אדם: {...תשובת api/upload/prepare, assignmentId}
     sending: null,     // מצב ההעלאה למודל כפי שהשרת מדווח (GET api/upload)
+    grading: null,     // מצב הבדיקה עם Claude כפי שהשרת מדווח (GET api/grade), והאם האתר עוקב אחריה עכשיו
+    gradePolling: false,
     polling: false, starting: false, stopping: false,
     rd: null,          // מוכנות המחשב להעלאה (Claude Code, התחברות, כרום ומודל), למטלה הנוכחית
     probing: false,    // מנסים עכשיו להתחבר למערכת במחשב
@@ -1278,11 +1280,31 @@
   }
 
   // ---------- הגרסה המחוברת: תיקיית OneDrive דרך השרת המקומי ----------
+  // פס הבדיקה: כל זמן שבדיקה עם Claude רצה, בכל דף. כמה נבדקו, כמה נשארו, וכפתור לעצור
+  function gradeBarHTML() {
+    const j = LOCAL.grading;
+    if (!LOCAL.on || !j?.running) return "";
+    const results = Object.values(j.done || {}), done = results.length, total = j.total || 0;
+    const failed = results.filter((x) => x === "failed").length, working = (j.working || []).length;
+    const A = D.assignments.find((a) => a.courseFolder === j.course && a.folder === j.assignment);
+    return `<div class="gbar" role="status">
+      <span class="gbar-icon">${ICON.spin}</span>
+      <div class="gbar-text">
+        <b>${j.stopping ? "עוצר את הבדיקה…" : "Claude בודק עבודות"}${A ? `<span class="muted"> · ${esc(A.title)}</span>` : ""}</b>
+        <span class="num">נבדקו ${done} מתוך ${total} · נשארו ${Math.max(0, total - done)}${failed ? ` · ${failed} נכשלו` : ""}</span>
+        ${j.stopping ? `<small>${working ? `מחכה ${working === 1 ? "לעבודה אחת" : `ל-${working} עבודות`} שכבר בבדיקה.` : ""} השאר לא יישלחו ל-Claude ויחכו לבדיקה הבאה.</small>` : ""}
+      </div>
+      <div class="gbar-track" role="progressbar" aria-label="כמה עבודות נבדקו" aria-valuemin="0" aria-valuemax="${total}" aria-valuenow="${done}"><i style="width:${total ? (100 * done) / total : 0}%"></i></div>
+      <button type="button" class="btn secondary small" data-act="grade-stop" ${j.stopping ? "disabled" : ""}>${j.stopping ? `${ICON.spin}עוצר…` : `${ICON.close}עצור`}</button>
+    </div>`;
+  }
+
   function bannerHTML() {
+    const bar = gradeBarHTML();
     if (LOCAL.on && !LOCAL.health?.root) {
-      return `<div class="banner warn">${ICON.warn}<div><b>המערכת פועלת, אבל תיקיית OneDrive של הקורס עוד לא נמצאה במחשב.</b><pre class="banner-pre">${esc(LOCAL.health?.error || "")}</pre></div><button class="btn secondary small" data-act="recheck">בדוק שוב</button></div>`;
+      return bar + `<div class="banner warn">${ICON.warn}<div><b>המערכת פועלת, אבל תיקיית OneDrive של הקורס עוד לא נמצאה במחשב.</b><pre class="banner-pre">${esc(LOCAL.health?.error || "")}</pre></div><button class="btn secondary small" data-act="recheck">בדוק שוב</button></div>`;
     }
-    return "";
+    return bar;
   }
 
   function drivePanelHTML() {
@@ -1818,6 +1840,7 @@
       if (a === "send-confirm" && LOCAL.batch?.assignmentId === cur().id) startLocalSend(LOCAL.batch.id);
       if (a === "send-cancel") { LOCAL.batch = null; render(); }
       if (a === "send-stop") stopLocalSend();
+      if (a === "grade-stop") stopLocalGrade();
       if (a === "send-resume" && LOCAL.sending?.batch_id) startLocalSend(LOCAL.sending.batch_id);
       if (a === "ready-close" && LOCAL.rd) { LOCAL.rd.flow = false; render(); }
       if (a === "ready-install-ask" && LOCAL.rd) { LOCAL.rd.installAsk = true; render(); }
@@ -2007,6 +2030,7 @@
       // מודל מחובר = Claude Code מחובר במחשב (דרכו Claude in Chrome עובד במודל)
       LOCAL.health = { ...LOCAL.health, ...(health || {}), root: data.root, claude: data.claude, claudeVia: data.claudeVia };
       if (!LOCAL.polling) LOCAL.sending = data.sending || null;
+      if (!LOCAL.gradePolling) LOCAL.grading = data.grading || null;
       if (!D.assignments.some((a) => a.id === state.assignmentId)) {
         const first = D.assignments.find((a) => a.subs.length) || D.assignments[0];
         state.assignmentId = first?.id;
@@ -2018,6 +2042,7 @@
     renderPickers();
     render();
     if (LOCAL.sending?.running && !LOCAL.polling) followSend();  // העלאה שרצה כשהדף נטען: ממשיכים לעקוב אחריה
+    if (LOCAL.grading?.running && !LOCAL.gradePolling) followGrade();  // וכך גם בדיקה (גם אם התחילה בלשונית אחרת)
   }
 
   // "משוך הגשות" אמיתי: השרת מושך ממודל (אם יש טוקן) ומקובצי ZIP בקליטה, ישר לתיקיית OneDrive
@@ -2080,25 +2105,55 @@
         model: c.model, parallel: c.parallel, sendSolution: c.sendSolution, instructions: state.instr.grade,
       }) });
       run.steps[0] = "done"; run.steps[1] = "running";
-      let job;
-      for (;;) {
-        await new Promise((r) => setTimeout(r, 1500));
-        job = await api("api/grade");
-        const done = Object.keys(job.done || {}).length;
-        run.progress = `נבדקו ${done} מתוך ${job.total}…`;
-        if (done) { run.steps[1] = "done"; run.steps[2] = "running"; }
-        render();
-        if (!job.running) break;
-      }
-      delete state.run[A.id];
-      await loadLocal();
-      refreshDrawer();
-      const failed = Object.keys(job.report?.failed || {}).length;
-      toast(job.error || `הבדיקה הסתיימה: ${job.summary}`, job.error || failed ? ICON.warn : ICON.check);
+      await followGrade();
     } catch (e) {
       delete state.run[A.id];
       await loadLocal();
       refreshDrawer();
+      toast(e.message, ICON.warn);
+    }
+  }
+
+  // עוקב אחרי הבדיקה שרצה בשרת עד שהיא נגמרת: הפס למעלה, והשלבים בכרטיס של המטלה אם התחילה מכאן
+  async function followGrade() {
+    if (LOCAL.gradePolling) return;
+    LOCAL.gradePolling = true;
+    let job = LOCAL.grading;
+    try {
+      for (;;) {
+        job = LOCAL.grading = await api("api/grade");
+        const A = D.assignments.find((a) => a.courseFolder === job.course && a.folder === job.assignment);
+        const run = A && state.run[A.id]?.stage === "grade" ? state.run[A.id] : null;
+        const done = Object.keys(job.done || {}).length;
+        if (run) {
+          run.progress = `נבדקו ${done} מתוך ${job.total}…`;
+          if (done) { run.steps[1] = "done"; run.steps[2] = "running"; }
+        }
+        render();
+        if (!job.running) break;
+        await new Promise((r) => setTimeout(r, 1500));
+      }
+    } catch (e) {
+      toast(e.message, ICON.warn);
+    } finally {
+      LOCAL.gradePolling = false;
+    }
+    D.assignments.forEach((a) => { if (state.run[a.id]?.stage === "grade") delete state.run[a.id]; });
+    await loadLocal();
+    refreshDrawer();
+    if (job && !job.running && job.finished_at) {
+      const failed = Object.keys(job.report?.failed || {}).length;
+      toast(job.error || `הבדיקה הסתיימה: ${job.summary}`, job.error || failed || job.report?.stopped?.length ? ICON.warn : ICON.check);
+    }
+  }
+
+  // "עצור": השרת לא שולח ל-Claude עבודות חדשות. העבודות שכבר בבדיקה מסתיימות ונשמרות
+  async function stopLocalGrade() {
+    try {
+      LOCAL.grading = await api("api/grade/stop", { method: "POST", body: "{}" });
+      render();
+      toast("עוצר: העבודות שכבר בבדיקה יסתיימו וישמרו, והשאר יחכו לבדיקה הבאה.");
+    } catch (e) {
       toast(e.message, ICON.warn);
     }
   }
@@ -2136,7 +2191,8 @@
     if (LOCAL.probing || LOCAL.on) return;
     LOCAL.probing = true;
     renderStatus();
-    const ok = await detectLocal(ON_LOCAL_HOST ? 1500 : 60000);
+    // התשובה הראשונה של המערכת יכולה לקחת כמה שניות (היא בודקת אם Claude Code מחובר), ובכתובת המקומית אין ניסיון נוסף
+    const ok = await detectLocal(ON_LOCAL_HOST ? 15000 : 60000);
     LOCAL.probing = false;
     if (ok) {
       LOCAL.on = true;

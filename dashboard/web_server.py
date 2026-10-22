@@ -261,6 +261,8 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json({"error": str(e)}, HTTPStatus.CONFLICT)
             except Exception as e:
                 return self._json({"error": f"הבדיקה נכשלה: {e}"}, HTTPStatus.INTERNAL_SERVER_ERROR)
+        if url.path == "/api/grade/stop":
+            return self._json(actions.stop_grading())
         if url.path == "/api/grade":
             course, assignment = body.get("course"), body.get("assignment")
             if not course or not assignment:

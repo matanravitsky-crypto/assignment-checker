@@ -38,7 +38,7 @@ import math
 import os
 import re
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -677,6 +677,7 @@ class GradeReport:
     review: list[str] = field(default_factory=list)     # Claude ביקש בדיקה של אדם
     skipped: list[str] = field(default_factory=list)    # כבר אושרו, ולכן לא נבדקו שוב
     failed: dict[str, str] = field(default_factory=dict)
+    stopped: list[str] = field(default_factory=list)    # עצרו את הבדיקה לפני שהגיעה אליהן: מחכות לבדיקה הבאה
     notes: list[str] = field(default_factory=list)
 
     def summary(self) -> str:
@@ -687,6 +688,8 @@ class GradeReport:
             parts.append(f"{len(self.skipped)} כבר אושרו ולא נבדקו שוב")
         if self.failed:
             parts.append(f"{len(self.failed)} נכשלו")
+        if self.stopped:
+            parts.append(f"נעצרה: {len(self.stopped)} לא נבדקו ומחכות לבדיקה הבאה")
         return ", ".join(parts)
 
 
@@ -701,8 +704,14 @@ def grade_one(pdf: bytes, ctx: Context, ask: Ask, model: str = DEFAULT_MODEL, na
 
 def grade_assignment(assignment_dir: Path, numbers: list[str] | None = None, *, ask: Ask | None = None,
                      model: str = DEFAULT_MODEL, parallel: int = DEFAULT_PARALLEL, instructions: str = "",
-                     send_solution: bool = True, on_progress: Callable[[str, str], None] | None = None) -> GradeReport:
-    """בודק הגשות של מטלה. numbers=None: כל מה שעוד לא נבדק. on_progress(number, "graded"/"failed"/"skipped")."""
+                     send_solution: bool = True, on_progress: Callable[[str, str], None] | None = None,
+                     on_start: Callable[[str], None] | None = None,
+                     stop: threading.Event | None = None) -> GradeReport:
+    """בודק הגשות של מטלה. numbers=None: כל מה שעוד לא נבדק. on_progress(number, "graded"/"failed"/"skipped"),
+    on_start(number) כשעבודה נשלחת ל-Claude.
+
+    stop: אחרי שהוא נקבע לא נשלחת אף עבודה חדשה ל-Claude. העבודות שכבר בבדיקה מסתיימות ונשמרות (הטוקנים
+    שלהן כבר הוצאו), והשאר נכנסות ל-stopped בלי שום כתיבה: הן נשארות "מחכות לבדיקה" לפעם הבאה."""
     if ask is None:
         ask = claude_ask()
     rep = GradeReport()
@@ -729,6 +738,9 @@ def grade_assignment(assignment_dir: Path, numbers: list[str] | None = None, *, 
     files = submission_files(assignment_dir)
 
     def work(n: str) -> tuple[str, Graded, bytes]:
+        if stop is not None and stop.is_set():
+            raise _Stopped
+        on_start and on_start(n)
         pdf, skipped = submission_pdf(files[n])
         if not pdf:
             raise GradingError(f"אין בהגשה קובץ שאפשר לבדוק ({', '.join(skipped)}).")
@@ -766,6 +778,9 @@ def grade_assignment(assignment_dir: Path, numbers: list[str] | None = None, *, 
                 for f in futures:
                     f.cancel()
                 raise
+            except (_Stopped, CancelledError):
+                rep.stopped.append(n)
+                continue
             except Exception as e:  # עבודה אחת שנכשלה לא עוצרת את השאר
                 rep.failed[n] = str(e)
                 failed(n, str(e))
@@ -782,7 +797,12 @@ def grade_assignment(assignment_dir: Path, numbers: list[str] | None = None, *, 
 
     rep.graded.sort()
     rep.review.sort()
+    rep.stopped.sort()
     return rep
+
+
+class _Stopped(Exception):
+    """עבודה שלא נשלחה ל-Claude, כי עצרו את הבדיקה."""
 
 
 # ---------- בדיקה ידנית ----------
