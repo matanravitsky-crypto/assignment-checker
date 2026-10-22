@@ -58,15 +58,22 @@ never downloads from Moodle themselves: a second download would make a second ke
 
 The shared data folder is the lecturer's OneDrive (5 TB), not this repo (public, and one assignment is ~2.5 GB).
 
-## Connecting the lecturer's OneDrive
+## The shared folder (lecturer's OneDrive)
 
-Once the lecturer shares the folder with Ori's university account:
-1. In OneDrive on the web, open the shared folder → "Add shortcut to My files", so it syncs to this computer
-   (OneDrive signed in with the university account; it shows up under `C:\Users\<user>\OneDrive - <university>\`).
-2. Move everything in `~/assignment-data` into that folder, then point the scripts at it:
-   `setx ASSIGNMENT_DATA "<that folder>"` (new terminals pick it up).
-3. Run `python -m moodle status <id>` for each assignment: counts must match and all names must be safe.
-4. Teammates add the same shortcut on their computers and set `ASSIGNMENT_DATA` the same way; they don't need `ASSIGNMENT_WORK`.
+`YallaLinearit/מערכת בדיקת תרגילים/` in the lecturer's (Nadav Meir) OneDrive holds the project's data:
+https://bgu365-my.sharepoint.com/personal/mein_bgu_ac_il/_layouts/15/onedrive.aspx?id=%2Fpersonal%2Fmein%5Fbgu%5Fac%5Fil%2FDocuments%2FYallaLinearit%2F%D7%9E%D7%A2%D7%A8%D7%9B%D7%AA%20%D7%91%D7%93%D7%99%D7%A7%D7%AA%20%D7%AA%D7%A8%D7%92%D7%99%D7%9C%D7%99%D7%9D
+Inside it, `assignment-data/` mirrors Ori's `~/assignment-data` (raw/, submissions/<id>/...).
+Next to it, `YallaLinearit/Course Material (tex)/exercises and solutions/` has the questions and solutions as .tex.
+
+For now it is **not synced** to anyone's computer: the team's student accounts have no OneDrive of their own
+(the "Add shortcut to My files" button fails, and `bgu365-my.sharepoint.com/my` returns 404). So:
+- Ori works locally in `~/assignment-data` and uploads to the shared folder from the web
+  (Create or upload → Folder upload → `assignment-data`). Re-uploading replaces files with the same name.
+- Teammates open the link above (the lecturer shares it with them) and view or download what they need,
+  e.g. `assignment-data/submissions/3438636/anon/0023.pdf`. No install needed.
+
+When university OneDrive is enabled for the team, sync instead: the folder → "Add shortcut to My files",
+then `setx ASSIGNMENT_DATA "<synced path to assignment-data>"`, and `python -m moodle status <id>` to check.
 
 When working with this data:
 - Grade from `anon/` only. Don't open `original/` or print names, ת"ז or emails into chat, commits or logs.
