@@ -568,12 +568,14 @@ def _mark_page(page: pymupdf.Page, marks: list[Mark], archive) -> None:
         notes.block(taken, tuple(box * zoom))
     # גדול וברור, אבל לא יותר מדי: בערך 13 נקודות בעמוד A4, וגדל עם העמוד (סריקה יכולה להיות ברוחב של אלפי נקודות)
     size = max(12.0, shown.width / 40)
+    placed: list[tuple[int, int, int, int]] = []  # ההערות שכבר נכתבו: הערה לא נכתבת על הערה אחרת
     for mark, box in sorted(zip(marks, boxes), key=lambda mb: (mb[1].y0, mb[1].x0)):
         if not (mark.text or mark.points_off):
             continue
         html = _note_html(mark, size)
         width, height = _note_size(mark, html, size, shown.width, archive)
-        spot = notes.find_spot(taken, tuple(box * zoom), (math.ceil(width * zoom), math.ceil(height * zoom)))
+        spot = notes.find_spot(taken, tuple(box * zoom), (math.ceil(width * zoom), math.ceil(height * zoom)), placed)
+        placed.append(spot.note)
         note = pymupdf.Rect(spot.note) / zoom
         if spot.backed:  # יש כתב מתחת להערה: רקע לבן שקוף למחצה, כדי שאפשר יהיה לקרוא אותה
             page.draw_rect((note + (-2, -1, 2, 1)) * page.derotation_matrix, color=None, fill=(1, 1, 1), fill_opacity=0.85, overlay=True)

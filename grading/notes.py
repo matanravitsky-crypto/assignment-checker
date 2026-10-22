@@ -110,31 +110,36 @@ def _path_is_clear(mask: np.ndarray, start, end) -> bool:
     return True
 
 
-def _attached(mask: np.ndarray, box, nw: int, nh: int) -> tuple[int, int, int, int]:
-    """ההערה צמודה למלבן, במקום שהכי פחות תפוס סביבו: מתחתיו, מעליו, משמאלו או מימינו, וגם שורה אחת רחוק יותר
-    מתחת או מעל. ככה שתי הערות של מלבנים קרובים לא נכתבות אחת על השנייה (ההערה הקודמת כבר מסומנת כתפוסה ב-mask).
-    בשוויון הסדר הזה קובע, ומתחת קודם. מיושרת לצד ימין של המלבן, כמו עברית."""
+def _overlap(a, b) -> int:
+    return max(0, min(a[2], b[2]) - max(a[0], b[0])) * max(0, min(a[3], b[3]) - max(a[1], b[1]))
+
+
+def _attached(mask: np.ndarray, box, nw: int, nh: int, avoid=()) -> tuple[int, int, int, int]:
+    """ההערה צמודה למלבן: מתחתיו, מעליו, משמאלו או מימינו, שורה אחת רחוק יותר מתחת או מעל, ובסוף בתוך הפינה
+    של המלבן עצמו (עדיף לכסות קצת מהטעות המסומנת מאשר הערה אחרת). אף פעם לא על הערה קודמת (`avoid`) אם יש
+    מקום אחר; בין המקומות שלא נוגעים בהערות, זה שהכי פחות תפוס סביבו, ובשוויון לפי הסדר. מיושרת לימין, כמו עברית."""
     h, w = mask.shape
     x0, y0, x1, y1 = (int(v) for v in box)
     right = min(max(x1, nw), w) - nw
     middle = (y0 + y1) // 2 - nh // 2
     spots = [(right, y1 + 1), (right, y0 - 1 - nh), (x0 - 1 - nw, middle), (x1 + 1, middle),
-             (right, y1 + 2 + nh), (right, y0 - 2 - 2 * nh)]
+             (right, y1 + 2 + nh), (right, y0 - 2 - 2 * nh), (x1 - nw, y0), (x1 - nw, y1 - nh)]
     best = None
     for sx, sy in spots:
         sx, sy = max(0, min(sx, w - nw)), max(0, min(sy, h - nh))
-        taken = int(mask[sy:sy + nh, sx:sx + nw].sum())
-        if best is None or taken < best[0]:
-            best = (taken, sx, sy)
-    _, sx, sy = best
-    return sx, sy, sx + nw, sy + nh
+        note = (sx, sy, sx + nw, sy + nh)
+        score = (sum(_overlap(note, a) for a in avoid), int(mask[sy:sy + nh, sx:sx + nw].sum()))
+        if best is None or score < best[0]:
+            best = (score, note)
+    return best[1]
 
 
-def find_spot(mask: np.ndarray, box: tuple[float, float, float, float], size: tuple[int, int]) -> Spot:
+def find_spot(mask: np.ndarray, box: tuple[float, float, float, float], size: tuple[int, int], avoid=()) -> Spot:
     """המקום הריק הקרוב ביותר למלבן `box` להערה בגודל `size` (רוחב, גובה), עם חץ שלא עובר על שום דבר.
     לא רחוק מהמלבן יותר מ-REACH. בלי מקום נקי שם: המקום הקרוב עם הכי מעט דיו, או צמוד למלבן על רקע לבן.
 
-    `mask` הוא מה שתפוס בעמוד (דיו, מלבנים, הערות וחצים קודמים), והמלבן עצמו בתוכו.
+    `mask` הוא מה שתפוס בעמוד (דיו, מלבנים, הערות וחצים קודמים), והמלבן עצמו בתוכו. `avoid`: ההערות שכבר נכתבו
+    בעמוד. ב-mask הן נראות כמו כתב, אבל עליהן ההערה לא נכתבת לעולם (אלא אם אין שום מקום אחר).
     """
     h, w = mask.shape
     nw, nh = min(size[0], w), min(size[1], h)
@@ -154,6 +159,8 @@ def find_spot(mask: np.ndarray, box: tuple[float, float, float, float], size: tu
     dist = np.hypot(dx, dy)
 
     near = dist <= max(REACH * max(h, w), float(dist.min()))
+    for a in avoid:  # על הערה קודמת לא כותבים, גם אם מתחתיה מעט כתב
+        near &= ~((nx0 < a[2]) & (nx0 + nw > a[0]) & (ny0 < a[3]) & (ny0 + nh > a[1]))
 
     free = np.argwhere((taken == 0) & near)
     order = free[np.argsort(dist[free[:, 0], free[:, 1]], kind="stable")]
@@ -165,11 +172,11 @@ def find_spot(mask: np.ndarray, box: tuple[float, float, float, float], size: tu
     # אין ליד המלבן מקום נקי: הכי מעט דיו, ואחריו הכי קרוב
     inked = np.where(near, taken, np.iinfo(np.int32).max)
     i, j = np.unravel_index(np.lexsort((dist.ravel(), inked.ravel()))[0], taken.shape)
-    if taken[i, j] <= MAX_INK * padded[0] * padded[1]:
+    if near[i, j] and taken[i, j] <= MAX_INK * padded[0] * padded[1]:
         note = (int(nx0[i, j]), int(ny0[i, j]), int(nx0[i, j]) + nw, int(ny0[i, j]) + nh)
         return Spot(note, _arrow(note, box), False, backed=bool(taken[i, j]))
     # גם שם יש הרבה כתב: צמוד למלבן, על רקע לבן, בלי חץ
-    note = _attached(mask, box, nw, nh)
+    note = _attached(mask, box, nw, nh, avoid)
     return Spot(note, _arrow(note, box), False, backed=True)
 
 

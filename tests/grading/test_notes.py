@@ -122,3 +122,20 @@ def test_two_attached_notes_of_close_boxes_do_not_land_on_each_other():
     assert one.backed and two.backed
     assert not overlaps(one.note, two.note)
     assert not overlaps(two.note, second) and gap(two.note, second) <= notes.REACH * 400
+
+
+def test_a_note_never_covers_an_earlier_one_even_at_the_bottom_of_a_full_width_page():
+    """Seen on a real submission (from the other session's trace): two boxes almost the full width of the page,
+    the second at the bottom. Every spot around the second box is off the page or on the first note, so the
+    note goes into the corner of its own box rather than onto the other note."""
+    rnd = np.random.default_rng(0)
+    mask = rnd.random((800, 619)) < 0.17
+    first, second = (36, 588, 538, 640), (23, 743, 538, 795)
+    for b in (first, second):
+        notes.block(mask, b)
+    one = notes.find_spot(mask, first, (211, 65))
+    notes.block(mask, one.note)
+    two = notes.find_spot(mask, second, (211, 65), avoid=[one.note])
+    assert not overlaps(one.note, two.note)
+    assert 0 <= two.note[0] and two.note[2] <= 619 and 0 <= two.note[1] and two.note[3] <= 800
+    assert gap(two.note, second) <= notes.REACH * 800
