@@ -31,11 +31,28 @@ python -m dashboard serve
 | `POST /api/upload/start` | מתחיל להעלות ברקע את האצווה: `{course, assignment, batchId}`. 202 עם המצב. 409 אם כבר רצה העלאה או אם האצווה כבר לא העדכנית |
 | `GET /api/upload` | מצב ההעלאה שרצה: `running`, `done` מתוך `total`, `current`, `stopped`, `message` |
 | `POST /api/upload/stop` | מבקש לעצור אחרי ה-ZIP שמועלה עכשיו |
-| `GET /api/moodle` | האם Claude Code מחובר במחשב (נשמר דקה) |
-| `POST /api/moodle/check` | האם Chrome ומודל מוכנים: `{course, assignment}` |
+| `GET /api/moodle` | האם Claude Code מותקן ומחובר במחשב (נשמר דקה) |
+| `POST /api/moodle/check` | האם Chrome ומודל מוכנים: `{course, assignment}` (ריצה קצרה של Claude) |
+| `GET /api/ready?course=&assignment=` | רשימת המוכנות להעלאה, מהירה: Claude Code מותקן, מחובר, ותוצאת הבדיקה האחרונה של Chrome ומודל (נשמרת 30 דקות) |
+| `POST /api/ready/check` | מריץ את בדיקת Chrome ומודל מחדש: `{course, assignment}` |
+| `POST /api/claude/login` | מתחיל את ההתחברות של Claude Code (`claude auth login`). ההתחברות מסתיימת בכניסה בדפדפן |
+| `POST /api/claude/install` | מתקין את Claude Code במחשב |
 | `POST /api/open` | פותח תיקייה בסייר הקבצים |
 
 **אבטחה:** השרת מאזין רק למחשב עצמו. כל בקשה שמשנה משהו חייבת את הכותרת `X-Assignment-Checker`, ו-Host ו-Origin של המחשב, כדי שאתרים אחרים לא יוכלו להפעיל אותו.
+
+## הדגמה בלי מודל
+
+`MOODLE_DRIVER=simulate` מחליף את Claude במדמה שלא נוגע במודל, ו-`MOODLE_READY=simulate` (רק יחד איתו) מדמה גם את רשימת המוכנות וההתחברות. שניהם להדגמה בלבד. להפעלה:
+
+```bash
+python -m tests.make_demo_root data/demo-root
+python -m tests.serve_demo
+```
+
+## העלאה למודל מהאתר
+
+בשלב 3, כשהאתר רץ דרך השרת, לחיצה על "העלה N למודל" מציגה קודם רשימת מוכנות: האם Claude Code מותקן (עם כפתור התקנה), האם הוא מחובר (ההתחברות מתחילה לבד והכניסה בדפדפן משלימה אותה), והאם Chrome ומודל מחוברים. אחר כך חלון אישור, התקדמות, עצירה והמשך.
 
 ## פקודות נוספות
 

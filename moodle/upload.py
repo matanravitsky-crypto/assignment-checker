@@ -170,8 +170,9 @@ def write_instructions(out: Path, report: dict, max_bytes: int) -> None:
     ]
     lines += [f"  [ ] {z.name}  ({z.stat().st_size / 1_000_000:.1f} MB)" for z in zips]
     lines += [
-        "אחרי כל העלאה מודל מציג רשימה: איזה קובץ הולך לאיזה סטודנט.",
-        "בודקים שמספר השורות תואם, ולוחצים אישור. כל העלאה מוסיפה לקודמות ולא מוחקת אותן.",
+        "היבוא במודל מתבצע מיד, כשלוחצים \"יבוא קבצי משוב\": אין מסך אישור לפני היבוא.",
+        "אחרי היבוא מודל מציג הודעה \"N קבצים יובאו\". בודקים ש-N שווה למספר הקבצים ב-ZIP (פותחים אותו ורואים כמה קבצים יש בו).",
+        "אם המספר שונה, עוצרים ולא ממשיכים ל-ZIP הבא. כל העלאה מוסיפה לקודמות ולא מוחקת אותן, וההעלאה של אותו ZIP שוב מחליפה את אותם קבצים.",
     ]
     # `record` needs the batch list that prepare_batch writes, so only a prepared batch (it has the id) gets this line
     if report.get("assignment_id"):

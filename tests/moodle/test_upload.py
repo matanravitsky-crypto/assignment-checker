@@ -54,6 +54,9 @@ def test_prepare_upload_matches_by_number_not_order():
         instructions = (upload / INSTRUCTIONS_FILE).read_text(encoding="utf-8-sig")
         assert "Graded - part 01.zip" in instructions
         assert f"\"{GRADES_FOR_MOODLE}\" מוכן (2 ציונים)" in instructions
+        # BGU Moodle imports at once: the steps must not promise a list to check before importing
+        assert "רשימה: איזה קובץ" not in instructions and "מסך אישור" in instructions
+        assert "קבצים יובאו" in instructions
         with zipfile.ZipFile(report["feedback_zips"][0]) as archive:
             assert archive.namelist() == ["בת_200_assignsubmission_file/feedback.pdf"]
 
