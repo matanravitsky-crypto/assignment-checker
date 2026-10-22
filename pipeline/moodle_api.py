@@ -15,7 +15,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime
 
-from .workspace import Submission, SubmittedFile
+from .types import Submission, SubmittedFile
 
 
 class MoodleError(Exception):

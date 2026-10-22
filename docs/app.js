@@ -325,6 +325,8 @@
   // ---------- Tables ----------
   function statusPill(s) { return `<span class="status ${s.status}">${STATUS[s.status]}</span>`; }
   function who(s) {
+    // בגרסה המחוברת אין שמות: רק מספר ההגשה, כמו בתיקייה
+    if (LOCAL.on) return `<div class="who"><span class="ini num">${esc(String(s.id).slice(-2))}</span><div><b>${esc(s.name)}</b></div></div>`;
     return `<div class="who"><span class="ini">${initials(s.name)}</span><div><b>${esc(s.name)}</b><small class="num">${s.studentId}</small></div></div>`;
   }
   function scoreHTML(s) {
@@ -332,7 +334,7 @@
     return `<span class="score ${s.score < 60 ? "low" : ""}">${s.score}</span>`;
   }
   function searchBox(stage) {
-    return `<label class="search">${ICON.search}<span class="sr">חיפוש סטודנט</span><input type="search" id="q-${stage}" data-query="${stage}" value="${esc(state.query[stage])}" placeholder="חיפוש לפי שם או ת.ז."></label>`;
+    return `<label class="search">${ICON.search}<span class="sr">חיפוש סטודנט</span><input type="search" id="q-${stage}" data-query="${stage}" value="${esc(state.query[stage])}" placeholder="${LOCAL.on ? "חיפוש לפי מספר הגשה" : "חיפוש לפי שם או ת.ז."}"></label>`;
   }
   const matches = (s, q) => !q.trim() || s.name.includes(q.trim()) || s.studentId.includes(q.trim());
 
@@ -340,8 +342,8 @@
     if (LOCAL.on) {
       return `<div class="empty"><strong>עוד אין הגשות במטלה הזו</strong>${LOCAL.health?.moodle
         ? "לחיצה על \"משוך הגשות\" תביא ממודל את כל מה שהוגש עד עכשיו, ישר לתיקיית OneDrive."
-        : "במודל: \"הצגת כל ההגשות\" ← \"הורדת כל ההגשות\". שמים את קובץ ה-ZIP בתיקיית הקליטה ולוחצים \"משוך הגשות\"."}
-        <div class="empty-act">${stageButton("pull")}<button class="btn secondary" data-act="open-inbox">${ICON.folder}פתח את תיקיית הקליטה</button></div></div>`;
+        : "במודל: \"הצגת כל ההגשות\" ← \"הורדת כל ההגשות\". שמים את קובץ ה-ZIP בתיקייה \"0 - Moodle download\" של המטלה ולוחצים \"משוך הגשות\"."}
+        <div class="empty-act">${stageButton("pull")}<button class="btn secondary" data-act="open-inbox">${ICON.folder}פתח את תיקיית ההורדה ממודל</button></div></div>`;
     }
     return `<div class="empty"><strong>עוד לא נמשכו הגשות למטלה הזו</strong>לחיצה על "משוך הגשות" תביא ממודל את כל מה שהוגש עד עכשיו.<div class="empty-act">${stageButton("pull")}</div></div>`;
   }
@@ -378,7 +380,7 @@
             <tr class="${s.fresh ? "flash" : ""}">
               <td>${who(s)}</td>
               <td class="muted num">${when(s.submittedAt)}${s.late ? ` <span class="flag">באיחור</span>` : ""}</td>
-              <td class="col-hide"><div class="files">${s.files.map((f) => `<span class="file">${f.name.endsWith(".jpg") ? ICON.img : ICON.file}<span dir="ltr">${esc(f.name)}</span>${f.name.endsWith(".pdf") ? `<em class="num">${f.pages} עמ׳</em>` : ""}</span>`).join("")}</div>${s.scanned ? `<small class="muted">סריקות, יאוחדו ל-PDF</small>` : ""}</td>
+              <td class="col-hide"><div class="files">${s.files.map((f) => `<span class="file">${f.name.endsWith(".jpg") ? ICON.img : ICON.file}<span dir="ltr">${esc(f.name)}</span>${f.name.endsWith(".pdf") && f.pages ? `<em class="num">${f.pages} עמ׳</em>` : ""}</span>`).join("")}</div>${s.scanned ? `<small class="muted">סריקות, יאוחדו ל-PDF</small>` : ""}</td>
               <td>${s.issue ? `<span class="check bad">${ICON.warn}${esc(s.issue)}</span>` : `<span class="check ok">${ICON.check}תקין</span>`}</td>
             </tr>`).join("") || `<tr><td colspan="4"><div class="empty slim">אין תוצאות לחיפוש הזה.</div></td></tr>`}
           </tbody>
@@ -812,7 +814,7 @@
             <div class="path-line" dir="ltr">${esc(h.root)}</div>
             <div class="row-start">
               <button class="btn secondary small" data-act="open-folder">${ICON.folder}פתח את תיקיית המטלה</button>
-              <button class="btn secondary small" data-act="open-inbox">${ICON.upload}פתח את תיקיית הקליטה</button>
+              <button class="btn secondary small" data-act="open-inbox">${ICON.upload}פתח את תיקיית ההורדה ממודל</button>
             </div>` : `<pre class="prompt">${esc(h.error || "")}</pre>`}
         </div>
       </section>`;
@@ -848,7 +850,7 @@
           <div class="grade-card">
             <h3 class="gc-title">ציון</h3>
             ${s.score != null ? `<div class="grade-top"><span class="big num">${s.score}</span><span class="lbl"><b>${s.approved ? "מאושר" : "עוד לא אושר"}</b>מתוך 100</span></div>` : `<p class="muted" style="margin:0">עוד לא נבדקה.</p>`}
-            <p class="hint">ציונים ומשוב עורכים בקובץ ציונים.xlsx שבתיקיית המטלה.</p>
+            <p class="hint">אחרי הבדיקה, העבודה עם ההערות נשמרת ב-"2 - Graded with comments" באותו מספר.</p>
           </div>
         </aside>
       </div>
@@ -863,6 +865,7 @@
           <div>
             <h1>${A.title}</h1>
             <p>${esc(course().name)}. מועד הגשה ${dueText(A)}. ${rubric().questions.length} שאלות, 100 נקודות.</p>
+            ${LOCAL.on && A.notes ? `<p class="muted">${esc(A.notes)}</p>` : ""}
           </div>
         </div>
         ${pipelineHTML()}
@@ -975,7 +978,7 @@
       <div class="drawer-head">
         <div>
           <h2>${esc(s.name)}</h2>
-          <div class="sub"><span class="num">ת.ז. ${s.studentId}</span><span>הוגשה ${when(s.submittedAt)}${s.late ? " (באיחור)" : ""}</span><span>${files}</span>${statusPill(s)}</div>
+          <div class="sub">${LOCAL.on ? "" : `<span class="num">ת.ז. ${s.studentId}</span>`}<span>הוגשה ${when(s.submittedAt)}${s.late ? " (באיחור)" : ""}</span><span>${files}</span>${statusPill(s)}</div>
         </div>
         <button class="btn ghost close" data-act="close" aria-label="סגור">${ICON.close}</button>
       </div>`;
@@ -1317,7 +1320,13 @@
         ...a, phase: a.subs.length ? "current" : "new", gradedAt: null, returnedAt: null, lastFresh: null,
       })));
       Object.keys(D.rubrics).forEach((k) => delete D.rubrics[k]);
-      data.courses.forEach((c) => (D.rubrics[c.id] = rubricFor(c.name)));
+      data.courses.forEach((c) => {
+        // השאלות של המטלה (מתוך Assignment details.json), או מחוון ברירת מחדל
+        const labels = data.assignments.find((a) => a.courseId === c.id && a.questionLabels?.length)?.questionLabels;
+        D.rubrics[c.id] = labels
+          ? { questions: labels.map((l, i) => ({ n: i + 1, pts: Math.round(100 / labels.length), req: l })), emphases: [], mistakes: [] }
+          : rubricFor(c.name);
+      });
       D.runs.splice(0, D.runs.length, ...data.assignments
         .flatMap((a) => (a.log || []).map((l) => ({ ...l, where: `${a.course}, ${a.title}` })))
         .sort((x, y) => (y.at || "").localeCompare(x.at || "")));
@@ -1346,21 +1355,21 @@
       if (i < run.steps.length - 1) { run.steps[i] = "done"; i += 1; run.steps[i] = "running"; render(); }
     }, 700);
     try {
-      const rep = await api("api/pull", { method: "POST", body: JSON.stringify({ course: A.course, assignment: A.title }) });
+      const rep = await api("api/pull", { method: "POST", body: JSON.stringify({ course: A.courseFolder, assignment: A.folder }) });
       LOCAL.report = { ...rep, assignmentId: A.id };
       clearInterval(timer);
       delete state.run[A.id];
       await loadLocal();
       // ה-ZIP היה של מטלה אחרת: עוברים אליה, כדי לראות את מה שנקלט
       const other = !rep.result.total && rep.routed?.find((x) => x.total);
-      const target = other && D.assignments.find((a) => a.course === other.course && a.title === other.assignment);
+      const target = other && D.assignments.find((a) => a.courseFolder === other.course && a.folder === other.assignment);
       if (target) {
         state.assignmentId = target.id;
         state.courseId = target.courseId;
         LOCAL.report.assignmentId = target.id;
         renderPickers();
         render();
-        toast(`ה-ZIP שייך ל${other.assignment}, אז עברתי אליה: ${plural(other.total, "הגשה אחת נקלטה", "הגשות נקלטו")}`);
+        toast(`ה-ZIP שייך ל${target.title}, אז עברתי אליה: ${plural(other.total, "הגשה אחת נקלטה", "הגשות נקלטו")}`);
       } else {
         toast(rep.result.total ? `המשיכה הסתיימה: ${rep.summary}` : "המשיכה הסתיימה: לא נמצאו הגשות חדשות");
       }
@@ -1375,8 +1384,8 @@
   function openFolder(which) {
     const A = cur();
     if (!LOCAL.on || !A) return;
-    api("api/open", { method: "POST", body: JSON.stringify({ course: A.course, assignment: A.title, which }) })
-      .then(() => toast(which === "inbox" ? "תיקיית הקליטה נפתחה בסייר הקבצים" : "תיקיית המטלה נפתחה בסייר הקבצים", ICON.folder))
+    api("api/open", { method: "POST", body: JSON.stringify({ course: A.courseFolder, assignment: A.folder, which }) })
+      .then(() => toast(which === "inbox" ? "תיקיית ההורדה ממודל נפתחה בסייר הקבצים" : "תיקיית המטלה נפתחה בסייר הקבצים", ICON.folder))
       .catch((e) => toast(e.message, ICON.warn));
   }
 
