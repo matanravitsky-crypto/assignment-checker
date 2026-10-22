@@ -1,13 +1,6 @@
-// שכבת החיבור בין המסך לצד השרת.
-//
-// כרגע הכל מדומה בדפדפן (mode: "demo"). כשיהיה צד שרת, כל פונקציה כאן תוחלף
-// בקריאה אמיתית, והמסך לא ישתנה:
-//   pull         → POST /api/pull    { assignmentId, instructions }        מושך הגשות ממודל
-//   grade        → POST /api/grade   { assignmentId, ids, rubric, ... }    שולח עבודות ל-Claude
-//   returnGrades → POST /api/return  { assignmentId, ids, format }         מעלה ציונים וקבצים למודל
-//
-// כל פונקציה מדווחת התקדמות דרך onStep(index, "running" | "done") לפי שלבי הריצה,
-// ומעדכנת עבודות בודדות דרך onItem(submission).
+// הדמיה של שלושת השלבים, לאתר הציבורי בלבד (GitHub Pages).
+// בגרסה המחוברת (start.bat) הכפתורים פונים לשרת המקומי (dashboard/web_server.py): /api/pull ו-/api/return,
+// שמפעילים את הקוד האמיתי ב-moodle/. ראו runLocalPull ו-runLocalReturn ב-app.js.
 window.PipelineAPI = (() => {
   const D = window.DEMO;
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
