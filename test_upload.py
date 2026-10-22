@@ -50,9 +50,9 @@ def test_prepare_upload_matches_by_number_not_order():
         assert rows[1][2:5:2] == ["90", "טוב"]
         assert rows[2][2] == "70"
         assert rows[3][2] == ""
-        assert [z.name for z in report["feedback_zips"]] == ["עבודות בדוקות - חלק 01.zip"]
+        assert [z.name for z in report["feedback_zips"]] == ["Graded - part 01.zip"]
         instructions = (upload / INSTRUCTIONS_FILE).read_text(encoding="utf-8-sig")
-        assert "עבודות בדוקות - חלק 01.zip" in instructions
+        assert "Graded - part 01.zip" in instructions
         assert f"\"{GRADES_FOR_MOODLE}\" מוכן (2 ציונים)" in instructions
         with zipfile.ZipFile(report["feedback_zips"][0]) as archive:
             assert archive.namelist() == ["בת_200_assignsubmission_file/feedback.pdf"]
@@ -70,7 +70,7 @@ def test_feedback_zips_split_under_the_size_limit():
 
         zips, too_big = build_feedback_zips(marked, assignment, mapping, max_bytes=1000)
 
-        assert [z.name for z in zips] == ["עבודות בדוקות - חלק 01.zip", "עבודות בדוקות - חלק 02.zip"]
+        assert [z.name for z in zips] == ["Graded - part 01.zip", "Graded - part 02.zip"]
         assert too_big == ["0002-2.pdf"]
         with zipfile.ZipFile(zips[1]) as archive:
             assert archive.namelist() == ["בת_200_assignsubmission_file/feedback.pdf"]

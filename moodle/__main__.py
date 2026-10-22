@@ -1,17 +1,17 @@
 """Command line for the Moodle steps. Assignments are named by their Moodle id.
 
-    python -m moodle ingest <assignment id> [--course "אלגברה לינארית"] [--zip PATH]
+    python -m moodle ingest <assignment id> [--course "Linear Algebra" --name "Assignment 1 - Vectors"] [--zip PATH]
         Downloaded ZIP -> the assignment's folder, numbered for grading.
-        --course is needed the first time an assignment comes in.
+        --course and --name (folder names) are needed the first time an assignment comes in.
 
     python -m moodle status <assignment id>
         What's done for the assignment, and any file names OneDrive would refuse.
 
     python -m moodle upload <assignment id> [--worksheet PATH] [--for-claude]
-        Grades and marked files -> "3 - מוכן להעלאה למודל", with upload steps.
+        Grades and marked files -> "3 - Ready to upload to Moodle", with upload steps.
 
     python -m moodle guide
-        Rewrites the Hebrew "read me" files.
+        Rewrites the README files (in Hebrew).
 """
 
 import argparse
@@ -26,7 +26,8 @@ def main() -> None:
 
     ingest_cmd = commands.add_parser("ingest", help="prepare a downloaded submissions ZIP")
     ingest_cmd.add_argument("assignment_id")
-    ingest_cmd.add_argument("--course", help="course folder name, for a new assignment")
+    ingest_cmd.add_argument("--course", help="course folder name in English, for a new assignment")
+    ingest_cmd.add_argument("--name", help="assignment folder name in English, for a new assignment")
     ingest_cmd.add_argument("--zip", type=Path, help="default: newest matching ZIP in Downloads")
 
     status_cmd = commands.add_parser("status", help="show what's done for an assignment")
@@ -40,7 +41,7 @@ def main() -> None:
     upload_cmd.add_argument("--for-claude", action="store_true",
                             help="split for Claude in Chrome, which uploads up to 10 MB per file")
 
-    commands.add_parser("guide", help="rewrite the Hebrew read-me files")
+    commands.add_parser("guide", help="rewrite the README files")
 
     args = parser.parse_args()
 
@@ -50,7 +51,7 @@ def main() -> None:
         return
 
     if args.command == "ingest":
-        rows = ingest.ingest(args.assignment_id, args.zip, args.course)
+        rows = ingest.ingest(args.assignment_id, args.zip, args.course, args.name)
         students = len({row["number"] for row in rows})
         print(f"{students} submissions, {len(rows)} files -> {paths.assignment_dir(args.assignment_id) / paths.TO_GRADE}")
         return

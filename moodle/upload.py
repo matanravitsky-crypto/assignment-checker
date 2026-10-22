@@ -1,18 +1,18 @@
 """Build what goes back to Moodle from results kept by number.
 
 Inputs in the assignment folder:
-    ציונים.csv                    columns: number, grade, feedback (feedback may be empty)
-    2 - עבודות בדוקות עם הערות/   marked files named by number: 0001.pdf, 0001-2.pdf, ...
+    Grades.csv                        columns: number, grade, feedback (feedback may be empty)
+    2 - Graded with comments/         marked files named by number: 0001.pdf, 0001-2.pdf, ...
     the grading worksheet, downloaded from Moodle (Actions > Download grading
     worksheet; needs "Offline grading worksheet" on in the assignment settings)
 
-Outputs in "3 - מוכן להעלאה למודל/":
-    ציונים לגיליון של מודל.csv    the worksheet with grades and feedback filled in
-                                  -> Moodle: Actions > Upload grading worksheet
-    עבודות בדוקות - חלק 1.zip ...  one folder per student, named as in Moodle's
-                                  download, each ZIP under the upload limit
-                                  -> Moodle: Actions > Upload multiple feedback files in a zip
-    הוראות העלאה.txt              step-by-step for whoever uploads (TA or lecturer)
+Outputs in "3 - Ready to upload to Moodle/":
+    Grades for Moodle worksheet.csv   the worksheet with grades and feedback filled in
+                                      -> Moodle: Actions > Upload grading worksheet
+    Graded - part 01.zip ...          one folder per student, named as in Moodle's
+                                      download, each ZIP under the upload limit
+                                      -> Moodle: Actions > Upload multiple feedback files in a zip
+    Upload steps.txt                  step-by-step in Hebrew for whoever uploads (TA or lecturer)
 
 Nothing here talks to Moodle: a person uploads, and confirms Moodle's list
 of which file goes to which student before it imports.
@@ -34,9 +34,9 @@ MAX_ZIP_BYTES = 30_000_000
 # When Claude uploads through Claude in Chrome, each file can be at most 10 MB
 CLAUDE_MAX_ZIP_BYTES = 9_000_000
 
-INSTRUCTIONS_FILE = "הוראות העלאה.txt"
-GRADES_FOR_MOODLE = "ציונים לגיליון של מודל.csv"
-ZIP_PREFIX = "עבודות בדוקות - חלק"
+INSTRUCTIONS_FILE = "Upload steps.txt"
+GRADES_FOR_MOODLE = "Grades for Moodle worksheet.csv"
+ZIP_PREFIX = "Graded - part"
 
 
 def find_worksheet(assignment_id: str, downloads: Path | None = None) -> Path | None:
@@ -96,7 +96,7 @@ def build_feedback_zips(
     """Zip marked files under each student's original Moodle folder name.
 
     Moodle limits each upload, so the files are split into numbered parts
-    ("עבודות בדוקות - חלק 01.zip", ...), each under max_bytes. Moodle adds each
+    ("Graded - part 01.zip", ...), each under max_bytes. Moodle adds each
     upload to the earlier ones. Files bigger than max_bytes on their own can't
     go through Moodle at all; they are returned by name to be saved smaller.
     """

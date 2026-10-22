@@ -50,24 +50,31 @@ def name_from_zip(zip_path: Path, assignment_id: str) -> str:
     return name.strip() or stem
 
 
-def assignment_folder(assignment_id: str, zip_path: Path, course: str | None) -> Path:
-    """The assignment's folder: the existing one, or a new <course>/<assignment name>."""
+def assignment_folder(assignment_id: str, zip_path: Path, course: str | None, name: str | None) -> Path:
+    """The assignment's folder: the existing one, or a new <course>/<name>.
+
+    Folder names are in English, so a new assignment needs both, e.g.
+    --course "Linear Algebra" --name "Assignment 1 - Vectors". Its Hebrew
+    title, as Moodle shows it, comes from the ZIP's file name.
+    """
     existing = paths.find_assignment(assignment_id)
     if existing:
         return existing
-    if not course:
-        raise ValueError(f"New assignment {assignment_id}: give its course, e.g. --course \"אלגברה לינארית\"")
-    name = name_from_zip(zip_path, assignment_id)
+    if not course or not name:
+        raise ValueError(f"New assignment {assignment_id}: give --course and --name in English, "
+                         f"e.g. --course \"Linear Algebra\" --name \"Assignment 1 - Vectors\"")
     folder = paths.data_dir() / course / name
     folder.mkdir(parents=True, exist_ok=True)
-    info = {"id": str(assignment_id), "course": course, "name": name}
+    info = {"id": str(assignment_id), "course": course, "name": name,
+            "title": name_from_zip(zip_path, assignment_id)}
     (folder / paths.INFO).write_text(json.dumps(info, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return folder
 
 
-def ingest(assignment_id: str, zip_path: Path | None = None, course: str | None = None) -> list[dict]:
+def ingest(assignment_id: str, zip_path: Path | None = None,
+           course: str | None = None, name: str | None = None) -> list[dict]:
     zip_path = zip_path or find_download(assignment_id)
-    target = assignment_folder(assignment_id, zip_path, course)
+    target = assignment_folder(assignment_id, zip_path, course, name)
 
     # Keep every download: a later one (after the due date) must not erase the first
     stamp = datetime.now().strftime("%Y-%m-%d %H-%M")

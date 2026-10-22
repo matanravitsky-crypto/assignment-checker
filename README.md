@@ -23,27 +23,27 @@ npx http-server docs
 
 ## Moodle in and out (`moodle/`)
 
-There is no Moodle API, so Claude in Chrome does the clicking and these scripts do the rest. Student files never enter this repo (it is public). They live in `מערכת בדיקת תרגילים`, a folder per course and per assignment with plain Hebrew names, shared through the lecturer's OneDrive; see `moodle/paths.py` and `CLAUDE.md`.
+There is no Moodle API, so Claude in Chrome does the clicking and these scripts do the rest. Student files never enter this repo (it is public). They live in `Exercise Checking System`, a folder per course and per assignment with plain English names, shared through the lecturer's OneDrive; see `moodle/paths.py` and `CLAUDE.md`.
 
 Needs Python 3.10+ and 7-Zip (`winget install 7zip.7zip`).
 
 **In** — after the due date, in the assignment's Submissions page: Actions → *Download all submissions*, then:
 
 ```bash
-python -m moodle ingest <assignment id> --course "אלגברה לינארית"
+python -m moodle ingest <assignment id> --course "Linear Algebra" --name "Assignment 0 - Sets and Complex Numbers"
 ```
 
-(`--course` only the first time.) It takes the newest `…-<assignment id>.zip` from Downloads into `<course>/<assignment name>/`, keeps the ZIP there, and writes `1 - עבודות לבדיקה/0001.pdf …` for grading plus the key table `טבלת מפתח - מספר לסטודנט.csv` (number → Moodle participant id). The numbers follow the participant id, so a second download gives every student the same number.
+(`--course` and `--name` only the first time.) It takes the newest `…-<assignment id>.zip` from Downloads into `<course>/<assignment name>/`, keeps the ZIP there, and writes `1 - Submissions to grade/0001.pdf …` for grading plus the key table `Key - number to student.csv` (number → Moodle participant id). The numbers follow the participant id, so a second download gives every student the same number.
 
-**Out** — grading writes `ציונים.csv` (`number,grade,feedback`) and `2 - עבודות בדוקות עם הערות/0001.pdf …`; download the grading worksheet from Moodle, then:
+**Out** — grading writes `Grades.csv` (`number,grade,feedback`) and `2 - Graded with comments/0001.pdf …`; download the grading worksheet from Moodle, then:
 
 ```bash
 python -m moodle upload <assignment id>
 ```
 
-It fills `3 - מוכן להעלאה למודל/` with `ציונים לגיליון של מודל.csv` (Actions → *Upload grading worksheet*), `עבודות בדוקות - חלק 01.zip …` (Actions → *Upload multiple feedback files in a zip*; each under Moodle's 31 MB limit) and `הוראות העלאה.txt`, the steps for whoever uploads. Grades are matched by number, never by row order.
+It fills `3 - Ready to upload to Moodle/` with `Grades for Moodle worksheet.csv` (Actions → *Upload grading worksheet*), `Graded - part 01.zip …` (Actions → *Upload multiple feedback files in a zip*; each under Moodle's 31 MB limit) and `Upload steps.txt`, the steps for whoever uploads. Grades are matched by number, never by row order.
 
-**Check** — `python -m moodle status <assignment id>` shows what's done and flags file names OneDrive would refuse. `python -m moodle guide` rewrites the Hebrew `קרא אותי.txt` files.
+**Check** — `python -m moodle status <assignment id>` shows what's done and flags file names OneDrive would refuse. `python -m moodle guide` rewrites the `README.txt` files (in Hebrew).
 
 One person downloads and uploads, so there is one key table per assignment; the team works from the shared folder.
 

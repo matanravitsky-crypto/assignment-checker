@@ -42,15 +42,28 @@ def test_new_assignment_gets_a_named_folder_and_is_found_again():
         os.environ["ASSIGNMENT_DATA"] = tmp
         try:
             zip_path = Path("214193210120271-הגשה 1 - וקטורים-3438638.zip")
-            folder = assignment_folder("3438638", zip_path, "אלגברה לינארית")
+            folder = assignment_folder("3438638", zip_path, "Linear Algebra", "Assignment 1 - Vectors")
 
-            assert folder == Path(tmp) / "אלגברה לינארית" / "הגשה 1 - וקטורים"
+            assert folder == Path(tmp) / "Linear Algebra" / "Assignment 1 - Vectors"
             info = json.loads((folder / paths.INFO).read_text(encoding="utf-8"))
-            assert info == {"id": "3438638", "course": "אלגברה לינארית", "name": "הגשה 1 - וקטורים"}
-            # The next download finds it by id, with no course needed
-            assert assignment_folder("3438638", zip_path, None) == folder
+            assert info == {"id": "3438638", "course": "Linear Algebra", "name": "Assignment 1 - Vectors",
+                            "title": "הגשה 1 - וקטורים"}
+            # The next download finds it by id, with no names needed
+            assert assignment_folder("3438638", zip_path, None, None) == folder
         finally:
             del os.environ["ASSIGNMENT_DATA"]
+
+
+def test_new_assignment_needs_english_names():
+    with tempfile.TemporaryDirectory() as tmp:
+        os.environ["ASSIGNMENT_DATA"] = tmp
+        try:
+            assignment_folder("3438638", Path("x-הגשה 1-3438638.zip"), "Linear Algebra", None)
+        except ValueError:
+            return
+        finally:
+            del os.environ["ASSIGNMENT_DATA"]
+    raise AssertionError("expected ValueError")
 
 
 if __name__ == "__main__":
@@ -58,4 +71,5 @@ if __name__ == "__main__":
     test_find_download_reports_missing_zip()
     test_name_from_zip_keeps_dashes_in_the_assignment_name()
     test_new_assignment_gets_a_named_folder_and_is_found_again()
+    test_new_assignment_needs_english_names()
     print("All tests passed.")
