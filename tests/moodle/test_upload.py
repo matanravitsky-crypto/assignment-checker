@@ -152,3 +152,11 @@ if __name__ == "__main__":
     test_plan_parts_starts_a_new_part_when_the_next_file_does_not_fit()
     test_write_zips_replaces_the_earlier_zips_and_leaves_other_files()
     print("All tests passed.")
+
+
+def test_write_zips_never_deletes_an_onedrive_conflict_copy(tmp_path):
+    (tmp_path / "Graded - part 01.zip").write_bytes(b"old")
+    (tmp_path / "Graded - part 01-DESKTOP-ABC.zip").write_bytes(b"conflict copy")
+    (tmp_path / "a.pdf").write_bytes(b"marked")
+    write_zips(tmp_path, [])
+    assert sorted(p.name for p in tmp_path.glob("*.zip")) == ["Graded - part 01-DESKTOP-ABC.zip"]

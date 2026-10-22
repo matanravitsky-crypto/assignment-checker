@@ -14,10 +14,11 @@
         Marked files -> Moodle, through Claude in Chrome. Prepares the batch (new or changed work only), prints
         its summary (numbers only), asks "להעלות למודל? (y/N)" unless --yes, uploads ZIP by ZIP and logs each one.
         --dry-run only checks the page and attaches the file, then cancels (Moodle imports at once): nothing is imported or logged; --simulate never touches Moodle.
-        Exit code 1 if it stopped before the end.
+        Refused while an upload or a pull of the assignment runs (the lock files). Exit code 1 if it stopped before the end.
 
     python -m moodle record <assignment id> "<zip name>"
-        After uploading a ZIP by hand: writes its files to "Upload log.csv".
+        After uploading a ZIP of the current batch by hand (from its "Upload batch <id>" folder): writes its files to
+        "Upload log.csv". Refused when the ZIP there is missing or changed since the batch was prepared.
 
     python -m moodle guide
         Rewrites the README files (in Hebrew).
@@ -138,7 +139,8 @@ def main() -> None:
 
     if args.command == "record":
         try:
-            rows = upload_log.record_zip(target, args.zip_name, lock.me())
+            zip_path = upload_log.batch_zip(target, args.zip_name)  # in the current batch's folder, unchanged since prepared
+            rows = upload_log.record_zip(target, zip_path.name, lock.me())
         except ValueError as unknown:
             print(unknown)
             raise SystemExit(1)

@@ -122,6 +122,12 @@ def pull(root: Path, course: str, assignment: str) -> dict:
 def prepare_return(root: Path, course: str, assignment: str) -> dict:
     a = find_assignment(root, course, assignment)
     mid = _moodle_id(a)
+    who = _upload_lock_holder(a)
+    with _send_lock:
+        if not who and _send.running and (_send.course, _send.assignment) == (course, assignment):
+            who = moodle_lock.me()  # ההעלאה שלנו רצה
+    if who:  # ההכנה כותבת לתיקיית ההעלאה, וזה לא הזמן לגעת בה
+        raise UserError(f"{who} מעלה את המטלה הזו עכשיו. אפשר להכין החזרה כשההעלאה תסתיים.")
     _use_root(root)
     worksheet = moodle_upload.find_worksheet(mid)
     rep = moodle_upload.prepare_upload(a.dir, worksheet)
@@ -294,10 +300,11 @@ class _Tracking:
     def __init__(self, inner: moodle_send.MoodleDriver, job: SendJob):
         self.inner, self.job = inner, job
 
-    def upload_zip(self, info: dict, zip_path: Path, expected: int, dry_run: bool) -> moodle_send.UploadResult:
+    def upload_zip(self, info: dict, zip_path: Path, expected: int, dry_run: bool,
+                   sha256: str | None = None) -> moodle_send.UploadResult:
         with _send_lock:
             self.job.current = Path(zip_path).name
-        return self.inner.upload_zip(info, zip_path, expected, dry_run)
+        return self.inner.upload_zip(info, zip_path, expected, dry_run, sha256=sha256)
 
 
 def start_send(root: Path, course: str, assignment: str, batch_id: str,

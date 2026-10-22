@@ -134,3 +134,25 @@ def test_record_of_an_unknown_zip_prints_the_message_and_exits_1(data, capsys, r
     prepare_batch(assignment_dir(ID))
     assert run_cli(["record", ID, "Nope.zip"]) == 1
     assert "Nope.zip" in capsys.readouterr().out
+
+
+def test_record_finds_the_zip_in_the_batch_folder_and_refuses_a_changed_one(data, capsys, run_cli):
+    from moodle.upload_log import batch_folder, read_batch
+    a = assignment_dir(ID)
+    prepare_batch(a)
+    folder = batch_folder(a, read_batch(a))
+    assert run_cli(["record", ID, f"{folder.name}/Graded - part 01.zip"]) == 0  # a path inside the folder works too
+    (a / paths.UPLOAD / "Upload log.csv").unlink()
+    (folder / "Graded - part 01.zip").write_bytes(b"not the ZIP that was prepared")
+    capsys.readouterr()
+    assert run_cli(["record", ID, "Graded - part 01.zip"]) == 1
+    assert "השתנה" in capsys.readouterr().out
+    assert read_log(a) == []
+
+
+def test_send_is_refused_while_an_upload_runs(data, capsys, run_cli):
+    (data / paths.UPLOAD_LOCK).write_text("uri (URI-LAPTOP) pid=4242", encoding="utf-8")
+    assert run_cli(["send", ID, "--yes", "--simulate"]) == 1
+    out = capsys.readouterr().out
+    assert "uri (URI-LAPTOP) מעלה" in out and "pid" not in out
+    assert read_log(data) == []

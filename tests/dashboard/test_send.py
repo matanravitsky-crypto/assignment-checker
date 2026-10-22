@@ -39,7 +39,7 @@ class GateDriver:
         self.inside = threading.Event()
         self.release = threading.Event()
 
-    def upload_zip(self, info, zip_path, expected, dry_run):
+    def upload_zip(self, info, zip_path, expected, dry_run, sha256=None):
         self.inside.set()
         self.release.wait(5)
         return UploadResult("imported", rows=expected, imported=expected)
@@ -48,13 +48,13 @@ class GateDriver:
 class StopsAfterFirst:
     """Presses "stop" in the site while the first ZIP uploads."""
 
-    def upload_zip(self, info, zip_path, expected, dry_run):
+    def upload_zip(self, info, zip_path, expected, dry_run, sha256=None):
         actions.stop_send()
         return UploadResult("imported", rows=expected, imported=expected)
 
 
 class Exploding:
-    def upload_zip(self, info, zip_path, expected, dry_run):
+    def upload_zip(self, info, zip_path, expected, dry_run, sha256=None):
         raise OSError("disk gone")
 
 
@@ -231,7 +231,7 @@ def test_default_driver_is_claude_in_chrome(root, monkeypatch):
     seen = []
 
     class FakeChrome:
-        def upload_zip(self, info, zip_path, expected, dry_run):
+        def upload_zip(self, info, zip_path, expected, dry_run, sha256=None):
             seen.append(zip_path.name)
             return UploadResult("imported", rows=expected, imported=expected)
     monkeypatch.setattr(claude_driver, "ClaudeChromeDriver", FakeChrome)
@@ -421,3 +421,28 @@ def test_prepare_refuses_while_the_key_has_a_conflict_copy(root):
         actions.prepare_send(root, COURSE, HW)
     assert "עותק כפול של טבלת המפתח" in str(e.value)
     assert upload_log.read_batch(a_dir(root)) is None
+
+
+
+def test_prepare_return_is_refused_while_an_upload_runs(root):
+    mark(root, "0001")
+    lock_file = a_dir(root) / UPLOAD_LOCK
+    lock_file.write_text("uri (URI-LAPTOP) pid=4242", encoding="utf-8")
+    with pytest.raises(actions.UserError) as e:
+        actions.prepare_return(root, COURSE, HW)
+    assert str(e.value) == "uri (URI-LAPTOP) מעלה את המטלה הזו עכשיו. אפשר להכין החזרה כשההעלאה תסתיים."
+    assert not list((a_dir(root) / paths.UPLOAD).glob("*.zip"))
+
+
+def test_prepare_return_is_refused_while_this_dashboard_uploads(root):
+    mark(root, "0001")
+    rep = actions.prepare_send(root, COURSE, HW)
+    gate = GateDriver()
+    actions.start_send(root, COURSE, HW, rep["id"], driver=gate)
+    try:
+        assert gate.inside.wait(5)
+        with pytest.raises(actions.UserError):
+            actions.prepare_return(root, COURSE, HW)
+    finally:
+        gate.release.set()
+        wait_idle()

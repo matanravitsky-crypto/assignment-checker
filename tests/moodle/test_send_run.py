@@ -7,7 +7,7 @@ import pytest
 from moodle import paths
 from moodle.lock import me
 from moodle.send import UPLOAD_LOCK, SimulatedDriver, UploadResult, prepare_batch, run_batch
-from moodle.upload_log import read_batch, read_log, record_zip, write_batch
+from moodle.upload_log import batch_folder, read_batch, read_log, record_zip, write_batch
 from test_send_prepare import STUDENTS, assignment  # noqa: F401  (assignment: the fixture, used by `batch` below)
 
 PART_1, PART_2 = "Graded - part 01.zip", "Graded - part 02.zip"
@@ -24,9 +24,11 @@ class RecordingDriver:
 
     def __init__(self):
         self.calls = []
+        self.hashes = []
 
-    def upload_zip(self, info, zip_path, expected, dry_run):
+    def upload_zip(self, info, zip_path, expected, dry_run, sha256=None):
         self.calls.append((info, zip_path, expected, dry_run))
+        self.hashes.append(sha256)
         return UploadResult("imported", rows=expected, imported=expected)
 
 
@@ -227,10 +229,10 @@ def test_progress_is_reported_after_each_zip_with_the_lock_fresh(batch):
     progress = []
 
     class SlowDriver(SimulatedDriver):
-        def upload_zip(self, *args):
+        def upload_zip(self, *args, **kwargs):
             old = time.time() - 20 * 60
             os.utime(lock, (old, old))  # a ZIP that took long: the lock has not been touched for 20 minutes
-            return super().upload_zip(*args)
+            return super().upload_zip(*args, **kwargs)
 
     def on_progress(index, total, name):
         progress.append((index, total, name, time.time() - lock.stat().st_mtime < 60))
@@ -259,8 +261,8 @@ def test_a_batch_prepared_again_while_a_zip_uploads_is_not_recorded(batch):
     a, s = batch
 
     class PreparedAgainDuringUpload(SimulatedDriver):
-        def upload_zip(self, *args):
-            result = super().upload_zip(*args)  # Moodle imported the ZIP built from the old files...
+        def upload_zip(self, *args, **kwargs):
+            result = super().upload_zip(*args, **kwargs)  # Moodle imported the ZIP built from the old files...
             write_batch(a, {**read_batch(a), "id": "prepared-again"})  # ...and meanwhile someone prepared again
             return result
 
@@ -277,14 +279,16 @@ def test_the_driver_gets_the_details_the_zip_path_and_the_expected_count(assignm
     d = RecordingDriver()
     run_batch(assignment, s.id, d, dry_run=True)
     [(info, zip_path, expected, dry_run)] = d.calls
-    assert (info["id"], zip_path, expected, dry_run) == ("555", assignment / paths.UPLOAD / PART_1, 3, True)
+    batch = read_batch(assignment)
+    assert (info["id"], zip_path, expected, dry_run) == ("555", batch_folder(assignment, batch) / PART_1, 3, True)
+    assert d.hashes == [batch["zips"][0]["sha256"]]  # the driver gets the hash to check its copy against
 
 
 def test_the_lock_is_released_when_the_driver_blows_up(batch):
     a, s = batch
 
     class Broken(SimulatedDriver):
-        def upload_zip(self, *args):
+        def upload_zip(self, *args, **kwargs):
             raise RuntimeError("boom")
 
     with pytest.raises(RuntimeError):
@@ -301,3 +305,51 @@ def test_reports_have_numbers_and_no_student_names(batch):
     messages = " ".join(r.message for r in reports)
     log = (a / paths.UPLOAD / "Upload log.csv").read_text(encoding="utf-8-sig")
     assert not any(name in messages or name in log or p in messages for _, p, name in STUDENTS)
+
+
+# ---------- the ZIP is checked by its hash, not only by its name ----------
+def zip_path(a, name):
+    return batch_folder(a, read_batch(a)) / name
+
+
+def test_a_zip_changed_after_the_yes_is_not_uploaded(batch):
+    a, s = batch
+    zip_path(a, PART_1).write_bytes(b"another ZIP with the same name")
+    d = SimulatedDriver()
+    r = run_batch(a, s.id, d)
+    assert (r.stopped, d.calls, read_log(a)) == ("stale", [], [])
+    assert r.message.startswith(f"{PART_1}: ")
+    assert not (a / UPLOAD_LOCK).exists()
+
+
+def test_a_missing_zip_is_not_uploaded(batch):
+    a, s = batch
+    zip_path(a, PART_2).unlink()
+    d = SimulatedDriver()
+    r = run_batch(a, s.id, d)
+    assert (r.stopped, d.calls, r.done_zips) == ("stale", [PART_1], [PART_1])
+
+
+def test_a_zip_that_changes_while_it_uploads_is_not_recorded(batch):
+    a, s = batch
+
+    class ChangesTheZip(SimulatedDriver):
+        def upload_zip(self, info, path, *args, **kwargs):
+            result = super().upload_zip(info, path, *args, **kwargs)
+            path.write_bytes(b"changed during the upload")
+            return result
+
+    d = ChangesTheZip()
+    r = run_batch(a, s.id, d)
+    assert (r.stopped, r.done_zips, r.recorded, d.calls, read_log(a)) == ("stale", [], 0, [PART_1], [])
+    assert "ייתכן שמודל כבר ייבא" in r.message
+
+
+def test_a_batch_list_from_before_zip_hashes_is_stale(batch):
+    a, s = batch
+    old = read_batch(a)
+    write_batch(a, {**old, "zips": [{k: v for k, v in z.items() if k != "sha256"} for z in old["zips"]]})
+    d = SimulatedDriver()
+    assert (run_batch(a, s.id, d).stopped, d.calls) == ("stale", [])
+    write_batch(a, {k: v for k, v in old.items() if k != "folder"})
+    assert (run_batch(a, s.id, d).stopped, d.calls) == ("stale", [])

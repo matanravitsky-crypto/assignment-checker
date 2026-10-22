@@ -4,8 +4,13 @@
     - numbers already returned: every marked file still equals what the log says was uploaded
     - numbers the student resubmitted after the work was marked (the marked file is of the old submission)
 and packs the rest into ZIPs of at most `max_bytes` in "3 - Ready to upload to Moodle/", with
-    Upload batch.json    which ZIP holds which files, with each file's hash (see upload_log.py)
+    Upload batch <id>/   the batch's ZIPs, in a folder of their own (the manual "Prepare return" can't overwrite
+                         them); the folders of earlier batches are removed, but only the ZIPs this code wrote
+    Upload batch.json    which ZIP holds which files, with the hash of each ZIP and of each file (see upload_log.py)
     Upload steps.txt     the steps for whoever uploads by hand
+It refuses (BatchBlocked) while a pull or an upload of the assignment runs, while OneDrive left a conflict copy of
+the key, the log or the batch list, and when the key does not hold together (a number with two participants, a
+participant with two numbers, or a folder whose participant id is not the row's). Conflict copies are never deleted.
 
 It also reports what to know before uploading, by number only (no names): files too big for one
 upload (their whole number stays out), resubmitted numbers, and numbers nobody approved yet in Grades.csv.
@@ -13,7 +18,10 @@ Unapproved work is still uploaded: that list is for the person who confirms the 
 
 `run_batch` then hands each ZIP to a driver, which does the upload in Moodle (the driver of Claude in Chrome
 comes separately; `SimulatedDriver` stands in for it in tests and in the site's demo). A ZIP goes into the log
-(`upload_log.record_zip`) only when the driver's answer matches the number of files in it. A stopped run resumes
+(`upload_log.record_zip`) only when the driver's answer matches the number of files in it. Right before each upload
+and again before logging it, the ZIP is hashed: if it is no longer the one the person confirmed, the run stops
+("stale") and logs nothing. Moodle imported but the numbers are off: "mismatch", which a person checks in Moodle
+before anything runs again (the site offers no "resume" for it). A stopped run resumes
 where it stopped: ZIPs whose files are all in the log with the same hash are skipped. While it runs, the
 assignment has `Upload in progress.txt` (see lock.py), so two people don't upload the same assignment at once.
 
@@ -33,6 +41,8 @@ from moodle import anonymize, lock, paths, upload, upload_log
 
 UPLOAD_LOCK = paths.UPLOAD_LOCK
 STALE_MESSAGE = "הקבצים השתנו מאז ההכנה. צריך להכין שוב."
+ZIP_CHANGED_DURING_UPLOAD = ("קובץ ה-ZIP השתנה בזמן ההעלאה, ולכן הוא לא נרשם ביומן. ייתכן שמודל כבר ייבא אותו: "
+                             "צריך לבדוק במודל ולהכין שוב.")
 
 
 class BatchBlocked(ValueError):
@@ -134,19 +144,26 @@ def prepare_batch(assignment_dir: Path, max_bytes: int = upload.CLAUDE_MAX_ZIP_B
     parts, too_big = upload.plan_parts(marked_dir, mapping, max_bytes, going)
     # Hash before zipping: if a file changes in between, the log then holds the older hash and the number goes up again
     hashes = {src: upload_log.file_hash(src) for part in parts for src, _ in part}
-    zips = upload.write_zips(upload_dir, parts)
 
     info = paths.read_info(assignment_dir)
     created = datetime.now()
+    batch_id = f"{created:%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:8]}"
+    # The batch's ZIPs get a folder of their own, so "Prepare return" (which rewrites the ZIPs in the upload folder)
+    # can't replace them between the person's yes and the upload
+    zip_dir = upload_dir / upload_log.batch_dir_name(batch_id)
+    zip_dir.mkdir()
+    zips = upload.write_zips(zip_dir, parts)
     batch = {
-        "id": f"{created:%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:8]}",
+        "id": batch_id,
         "assignment_id": str(info["id"]),
         "created_at": created.isoformat(timespec="seconds"),
-        "zips": [{"name": z.name,
+        "folder": zip_dir.name,
+        "zips": [{"name": z.name, "sha256": upload_log.file_hash(z),
                   "files": [{"number": src.stem[:4], "file": src.name, "sha256": hashes[src]} for src, _ in part]}
                  for z, part in zip(zips, parts)],
     }
     upload_log.write_batch(assignment_dir, batch)
+    upload_log.remove_old_batch_folders(assignment_dir, keep=zip_dir.name)
 
     grades = upload.read_results(assignment_dir) if (assignment_dir / paths.GRADES).exists() else {}
     in_batch = {f["number"] for z in batch["zips"] for f in z["files"]}
@@ -157,6 +174,7 @@ def prepare_batch(assignment_dir: Path, max_bytes: int = upload.CLAUDE_MAX_ZIP_B
         "missing_results": sorted(set(mapping) - set(grades)),
         "grades_filled": None,
         "feedback_zips": zips,
+        "zip_folder": zip_dir.name,
         "too_big": too_big,
     }, max_bytes)
 
@@ -191,8 +209,12 @@ class UploadResult:
 
 
 class MoodleDriver(Protocol):
-    def upload_zip(self, info: dict, zip_path: Path, expected: int, dry_run: bool) -> UploadResult:
-        """Upload one ZIP of `expected` files (or, with dry_run, check the page and attach the file, then cancel: nothing is imported)."""
+    def upload_zip(self, info: dict, zip_path: Path, expected: int, dry_run: bool,
+                   sha256: str | None = None) -> UploadResult:
+        """Upload one ZIP of `expected` files (or, with dry_run, check the page and attach the file, then cancel: nothing is imported).
+
+        `sha256` is the ZIP's hash in the batch list (run_batch always passes it): a driver that copies the ZIP checks its copy against it.
+        """
         ...
 
 
@@ -207,7 +229,8 @@ class SimulatedDriver:
         self.delay = delay
         self.calls: list[str] = []  # names of the ZIPs it was given
 
-    def upload_zip(self, info: dict, zip_path: Path, expected: int, dry_run: bool) -> UploadResult:
+    def upload_zip(self, info: dict, zip_path: Path, expected: int, dry_run: bool,
+                   sha256: str | None = None) -> UploadResult:
         self.calls.append(zip_path.name)
         if self.delay:
             time.sleep(self.delay)
@@ -258,13 +281,16 @@ def run_batch(
     batch = current_batch(assignment_dir, batch_id)
     if batch is None:
         return RunReport(0, stopped="stale", message=STALE_MESSAGE)
+    if upload_log.batch_folder(assignment_dir, batch) is None or not all(z.get("sha256") for z in batch["zips"]):
+        return RunReport(len(batch["zips"]), stopped="stale", message=STALE_MESSAGE)  # a list from before ZIPs had hashes
     try:
         lock_file = lock.take(assignment_dir, UPLOAD_LOCK)
     except lock.Locked as busy:
         return RunReport(len(batch["zips"]), stopped="locked",
                          message=f"{busy.who} מעלה את המטלה הזו עכשיו (מ-{busy.since:%H:%M}).")
     try:
-        return upload_zips(assignment_dir, batch_id, batch["zips"], driver, dry_run, should_stop, on_progress, lock_file)
+        return upload_zips(assignment_dir, batch_id, upload_log.batch_folder(assignment_dir, batch), batch["zips"],
+                           driver, dry_run, should_stop, on_progress, lock_file)
     finally:
         lock_file.unlink(missing_ok=True)
 
@@ -272,6 +298,7 @@ def run_batch(
 def upload_zips(
     assignment_dir: Path,
     batch_id: str,
+    zip_dir: Path,
     zips: list[dict],
     driver: MoodleDriver,
     dry_run: bool,
@@ -303,8 +330,13 @@ def upload_zips(
         if current_batch(assignment_dir, batch_id) is None:  # prepared again meanwhile: these ZIPs are not the ones confirmed
             return stop("stale", STALE_MESSAGE)
 
+        # The ZIP is found by name, so check it is still the one the person confirmed (same hash as when prepared)
+        zip_path = zip_dir / name
+        if upload_log.zip_hash(zip_path) != entry["sha256"]:
+            return stop("stale", f"{name}: {STALE_MESSAGE}")
+
         expected = len(files)
-        result = driver.upload_zip(info, assignment_dir / paths.UPLOAD / name, expected, dry_run)
+        result = driver.upload_zip(info, zip_path, expected, dry_run, sha256=entry["sha256"])
         if dry_run and result.status == "dry_run_ok" and result.rows == expected:
             report.message = f"בדיקה יבשה עברה: הדף והקובץ נבדקו ({result.rows} קבצים ב-ZIP), שום דבר לא יובא"
             finished(index, name)
@@ -315,6 +347,8 @@ def upload_zips(
             # Record nothing; uploading the ZIP again later is safe.
             if current_batch(assignment_dir, batch_id) is None:
                 return stop("stale", STALE_MESSAGE)
+            if upload_log.zip_hash(zip_path) != entry["sha256"]:  # the ZIP changed while it uploaded: what went up is unknown
+                return stop("stale", f"{name}: {ZIP_CHANGED_DURING_UPLOAD}")
             report.recorded += upload_log.record_zip(assignment_dir, name, by=lock.me())
             report.done_zips.append(name)
             finished(index, name)

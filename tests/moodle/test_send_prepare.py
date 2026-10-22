@@ -10,7 +10,8 @@ import pytest
 from moodle import paths
 from moodle.send import BatchBlocked, prepare_batch
 from moodle.upload import INSTRUCTIONS_FILE
-from moodle.upload_log import BATCH_FILE, file_hash, last_hashes, read_batch, read_log, record_zip
+from moodle.upload_log import (BATCH_FILE, batch_folder, file_hash, last_hashes, read_batch, read_log, record_zip,
+                               write_batch)
 
 # Fictional names (from tests.sample_files.NAMES, copied so these tests don't load PyMuPDF)
 STUDENTS = [("0001", "100", "נועה כהן"), ("0002", "200", "איתי לוי"), ("0003", "300", "מאיה מזרחי")]
@@ -44,6 +45,11 @@ def assignment(tmp_path):
         (a / paths.MARKED / f"{n}.pdf").write_bytes(b"marked " + n.encode())
         os.utime(a / paths.MARKED / f"{n}.pdf", (now - 60, now - 60))
     return a
+
+
+def zip_dir(a):
+    """The folder of the current batch's ZIPs."""
+    return batch_folder(a, read_batch(a))
 
 
 def batch_numbers(a):
@@ -145,13 +151,16 @@ def test_batch_lists_hashes_by_number_and_the_zip_holds_the_files_under_moodle_f
     datetime.fromisoformat(batch["created_at"])
     assert (s.assignment_id, s.title) == ("555", "הגשה 1")
     [zip_entry] = batch["zips"]
+    assert batch["folder"] == f"Upload batch {s.id}" and zip_dir(assignment) == assignment / paths.UPLOAD / batch["folder"]
+    assert zip_entry["sha256"] == file_hash(zip_dir(assignment) / "Graded - part 01.zip")
     assert zip_entry["files"] == [
         {"number": n, "file": f, "sha256": file_hash(assignment / paths.MARKED / f)}
         for n, f in [("0001", "0001.pdf"), ("0002", "0002.pdf"), ("0002", "0002-2.pdf")]]
     assert (s.students, s.files) == (2, 3)
     assert s.zips == [{"name": "Graded - part 01.zip", "count": 3,
-                       "mb": round((assignment / paths.UPLOAD / "Graded - part 01.zip").stat().st_size / 1_000_000, 1)}]
-    with zipfile.ZipFile(assignment / paths.UPLOAD / "Graded - part 01.zip") as archive:
+                       "mb": round((zip_dir(assignment) / "Graded - part 01.zip").stat().st_size / 1_000_000, 1)}]
+    assert not list((assignment / paths.UPLOAD).glob("*.zip"))  # nothing straight in the upload folder
+    with zipfile.ZipFile(zip_dir(assignment) / "Graded - part 01.zip") as archive:
         assert sorted(archive.namelist()) == sorted([
             FOLDER.format(name="נועה כהן", participant="100") + "/feedback.pdf",
             FOLDER.format(name="איתי לוי", participant="200") + "/feedback.pdf",
@@ -168,9 +177,12 @@ def test_the_batch_file_has_numbers_and_no_student_names(assignment):
 def test_each_run_makes_a_new_batch_id_and_replaces_the_old_zips(assignment):
     first = prepare_batch(assignment, max_bytes=20)  # two marked files of 11 bytes don't fit one ZIP together
     assert [z["name"] for z in first.zips] == ["Graded - part 01.zip", "Graded - part 02.zip"]
+    first_dir = zip_dir(assignment)
     second = prepare_batch(assignment, max_bytes=10_000_000)
     assert second.id != first.id
-    assert sorted(p.name for p in (assignment / paths.UPLOAD).glob("Graded - part *.zip")) == ["Graded - part 01.zip"]
+    assert not first_dir.exists()  # the earlier batch's folder is gone
+    assert sorted(p.name for p in zip_dir(assignment).glob("Graded - part *.zip")) == ["Graded - part 01.zip"]
+    assert [p.name for p in (assignment / paths.UPLOAD).iterdir() if p.is_dir()] == [f"Upload batch {second.id}"]
     assert read_batch(assignment)["id"] == second.id
 
 
@@ -264,3 +276,52 @@ def test_a_pull_in_progress_blocks_prepare(assignment):
 def test_an_upload_in_progress_blocks_prepare(assignment):
     (assignment / paths.UPLOAD_LOCK).write_text("uri (URI-LAPTOP)", encoding="utf-8")
     assert_blocked_without_names(assignment, "uri (URI-LAPTOP) מעלה")
+
+
+# ---------- the batch's own folder ----------
+def test_prepare_return_cannot_overwrite_the_batch_zips(assignment):
+    from moodle.upload import prepare_upload
+    s = prepare_batch(assignment)
+    part = zip_dir(assignment) / "Graded - part 01.zip"
+    before = file_hash(part)
+    write_grades(assignment, [("0001", "90", "yes"), ("0002", "80", "yes")])
+    (assignment / paths.MARKED / "0001.pdf").write_bytes(b"marked differently")
+    prepare_upload(assignment)  # the manual "Prepare return": writes its own ZIPs straight into the upload folder
+    assert (assignment / paths.UPLOAD / "Graded - part 01.zip").exists()
+    assert file_hash(part) == before == read_batch(assignment)["zips"][0]["sha256"]
+    assert read_batch(assignment)["id"] == s.id
+
+
+def test_a_new_prepare_keeps_conflict_copies_and_foreign_folders(assignment):
+    prepare_batch(assignment)
+    old_dir = zip_dir(assignment)
+    (old_dir / "Graded - part 01-DESKTOP-ABC.zip").write_bytes(b"conflict copy")
+    upload = assignment / paths.UPLOAD
+    (upload / "Upload batch notes").mkdir()  # not a name this code makes
+    (upload / "Upload batch notes" / "Graded - part 01.zip").write_bytes(b"not ours")
+    (upload / "Graded - part 01-DESKTOP-ABC.zip").write_bytes(b"conflict copy of a manual ZIP")
+    (upload / "Upload batch-DESKTOP-ABC.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(BatchBlocked):  # the batch list's conflict copy is reported, not deleted
+        prepare_batch(assignment)
+    assert (upload / "Upload batch-DESKTOP-ABC.json").exists()
+    (upload / "Upload batch-DESKTOP-ABC.json").unlink()  # a person dealt with it
+    (assignment / paths.MARKED / "0001.pdf").write_bytes(b"marked again")
+    s = prepare_batch(assignment)
+    assert sorted(p.name for p in old_dir.iterdir()) == ["Graded - part 01-DESKTOP-ABC.zip"]  # only our ZIP went
+    assert (upload / "Upload batch notes" / "Graded - part 01.zip").exists()
+    assert (upload / "Graded - part 01-DESKTOP-ABC.zip").exists()
+    assert zip_dir(assignment).name == f"Upload batch {s.id}"
+
+
+def test_the_upload_steps_say_where_the_zips_are(assignment):
+    s = prepare_batch(assignment)
+    steps = (assignment / paths.UPLOAD / INSTRUCTIONS_FILE).read_text(encoding="utf-8-sig")
+    assert f"Upload batch {s.id}" in steps
+
+
+def test_a_batch_list_with_a_folder_name_that_is_not_ours_has_no_folder(assignment):
+    prepare_batch(assignment)
+    batch = read_batch(assignment)
+    for bad in ("..", "../..", "Upload batch x", "C:/Windows", None):
+        write_batch(assignment, {**batch, "folder": bad})
+        assert zip_dir(assignment) is None

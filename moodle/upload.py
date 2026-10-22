@@ -37,6 +37,7 @@ CLAUDE_MAX_ZIP_BYTES = 9_000_000
 INSTRUCTIONS_FILE = "Upload steps.txt"
 GRADES_FOR_MOODLE = "Grades for Moodle worksheet.csv"
 ZIP_PREFIX = "Graded - part"
+ZIP_NAME = re.compile(rf"{re.escape(ZIP_PREFIX)} \d{{2,}}\.zip")
 
 
 def find_worksheet(assignment_id: str, downloads: Path | None = None) -> Path | None:
@@ -125,10 +126,16 @@ def plan_parts(
     return [part for part in parts if part], too_big
 
 
+def is_zip_we_wrote(path: Path) -> bool:
+    """A "Graded - part NN.zip" exactly. OneDrive's conflict copies ("Graded - part 01-DESKTOP.zip") are not ours to delete."""
+    return path.is_file() and ZIP_NAME.fullmatch(path.name) is not None
+
+
 def write_zips(upload_dir: Path, parts: list[list[tuple[Path, str]]]) -> list[Path]:
-    """Write one "Graded - part NN.zip" per part, after deleting the earlier ones."""
+    """Write one "Graded - part NN.zip" per part, after deleting the earlier ones (never a conflict copy)."""
     for old in upload_dir.glob(f"{ZIP_PREFIX} *.zip"):
-        old.unlink()
+        if is_zip_we_wrote(old):
+            old.unlink()
     zips = []
     for index, files in enumerate(parts):
         out = upload_dir / f"{ZIP_PREFIX} {index + 1:02d}.zip"
@@ -168,6 +175,8 @@ def write_instructions(out: Path, report: dict, max_bytes: int) -> None:
         "במודל, במטלה: הגשות ← פעולות ← \"העלאת מספר קובצי משוב כקובץ 7Zip אחד\".",
         f"מעלים כל קובץ בנפרד, לפי הסדר (מודל מקבל עד {limit_mb} MB בכל העלאה):",
     ]
+    if report.get("zip_folder"):
+        lines.append(f"קובצי ה-ZIP נמצאים בתיקייה \"{report['zip_folder']}\" שבתוך \"{paths.UPLOAD}\".")
     lines += [f"  [ ] {z.name}  ({z.stat().st_size / 1_000_000:.1f} MB)" for z in zips]
     lines += [
         "היבוא במודל מתבצע מיד, כשלוחצים \"יבוא קבצי משוב\": אין מסך אישור לפני היבוא.",
