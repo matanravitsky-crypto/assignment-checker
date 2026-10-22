@@ -38,7 +38,7 @@ from typing import Callable
 
 import pymupdf
 
-from moodle import paths
+from moodle import claude_driver, paths
 
 from .render import PageImage, render_pdf
 
@@ -65,8 +65,9 @@ RED = (0.85, 0, 0)
 _FONTS = Path("C:/Windows/Fonts")
 _CSS = "@font-face {font-family: heb; src: url(arial.ttf);} * {font-family: heb, sans-serif;}"
 
-NO_KEY = ("אין מפתח של Claude, ולכן אי אפשר לבדוק.\n"
-          "מוסיפים לקובץ .env שבתיקיית הריפו שורה כזו:\n"
+NO_KEY = ("אין חיבור ל-Claude, ולכן אי אפשר לבדוק. אחת משתי הדרכים:\n"
+          "1. Claude Code מחובר במחשב (כמו להעלאה למודל): מריצים פעם אחת claude auth login.\n"
+          "2. מפתח API: מוסיפים לקובץ .env שבתיקיית הריפו שורה כזו:\n"
           "    ANTHROPIC_API_KEY=...\n"
           "ומפעילים מחדש את start.bat.")
 
@@ -276,10 +277,17 @@ Ask = Callable[[dict], str]
 
 
 def claude_ask() -> Ask:
-    """שולח בקשה ל-Claude ומחזיר את ה-JSON שחזר. זורק NoApiKey אם אין מפתח."""
+    """שולח בקשה ל-Claude ומחזיר את ה-JSON שחזר.
+
+    עם ANTHROPIC_API_KEY: דרך ה-API. בלי מפתח: דרך Claude Code שמחובר במחשב (claude_cli.py, במנוי של הצוות).
+    זורק NoApiKey אם אין אף אחד מהשניים."""
     key = os.environ.get("ANTHROPIC_API_KEY")
     if not key:
-        raise NoApiKey()
+        from . import claude_cli
+        if not claude_cli.available():
+            raise NoApiKey()
+        return claude_cli.cli_ask(claude_driver.find_claude(), SCHEMA, EFFORT, error=GradingError,
+                                  not_logged_in=NoApiKey)
     import anthropic
 
     client = anthropic.Anthropic(api_key=key, max_retries=4)

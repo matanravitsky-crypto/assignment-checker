@@ -3,10 +3,12 @@
 מפעילים אותו במחשב שמסנכרן את התיקייה (start.bat, או python -m dashboard serve),
 ונכנסים ל-http://localhost:8765. שם הכפתור "משוך הגשות" מושך באמת לתוך OneDrive,
 והכפתור "בדוק" שולח את ההגשות הממוספרות ל-Claude (צריך ANTHROPIC_API_KEY ב-.env).
-האתר הציבורי ב-GitHub Pages ממשיך לעבוד במצב הדגמה.
+האתר הציבורי (https://bodek-hacham.vercel.app) מתחבר לשרת הזה כשהוא פועל במחשב,
+ובלעדיו לא מציג נתונים.
 
 השרת מאזין רק למחשב עצמו (127.0.0.1), ואתרים אחרים לא יכולים להפעיל אותו:
-כל בקשה שמשנה משהו חייבת כותרת מיוחדת ומקור (Origin) של השרת עצמו.
+כל בקשה שמשנה משהו חייבת כותרת מיוחדת ומקור (Origin) של השרת עצמו או של האתר הציבורי,
+ורק האתר הציבורי מקבל הרשאת CORS לקרוא את התשובות.
 """
 from __future__ import annotations
 
@@ -26,7 +28,16 @@ from . import actions, folder_view, settings as cfg
 
 WEBSITE = cfg.REPO_DIR / "website"
 HEADER = "X-Assignment-Checker"
+# האתר הציבורי ב-Vercel: רק הכתובת הזו בדיוק (לא כתובות תצוגה מקדימה של Vercel)
+SITE_ORIGINS = ("https://bodek-hacham.vercel.app",)
 _lock = threading.Lock()  # משיכה אחת בכל פעם
+STALE_UPLOAD = "הקבצים השתנו מאז ההכנה. צריך ללחוץ שוב על 'העלה למודל'."
+# כתובת → (הפעולה ב-actions, איך קוראים לה בהודעת שגיאה). אלה רצות תחת _lock
+_LOCKED_STEPS = {
+    "/api/pull": ("pull", "המשיכה"),
+    "/api/return": ("prepare_return", "הכנת ההחזרה"),
+    "/api/upload/prepare": ("prepare_send", "הכנת ההעלאה"),
+}
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -51,7 +62,28 @@ class Handler(SimpleHTTPRequestHandler):
         if self.headers.get(HEADER) != "1":
             return False
         origin = self.headers.get("Origin")
-        return origin is None or urlparse(origin).hostname in ("127.0.0.1", "localhost")
+        return origin is None or origin in SITE_ORIGINS or urlparse(origin).hostname in ("127.0.0.1", "localhost")
+
+    def end_headers(self):
+        # האתר הציבורי קורא את התשובות (CORS). אתרים אחרים לא
+        headers = getattr(self, "headers", None)
+        origin = headers.get("Origin") if headers else None
+        if origin in SITE_ORIGINS:
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
+        super().end_headers()
+
+    def do_OPTIONS(self):
+        """בקשת ה-preflight של הדפדפן לפני שהאתר הציבורי פונה לשרת (כולל Private Network Access של Chrome)."""
+        if not self._host_ok() or self.headers.get("Origin") not in SITE_ORIGINS:
+            return self.send_error(HTTPStatus.FORBIDDEN)
+        self.send_response(HTTPStatus.NO_CONTENT)
+        self.send_header("Access-Control-Allow-Methods", "GET, POST")
+        self.send_header("Access-Control-Allow-Headers", f"Content-Type, {HEADER}")
+        self.send_header("Access-Control-Allow-Private-Network", "true")
+        self.send_header("Access-Control-Max-Age", "600")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     # ---------- תשובות ----------
     def _json(self, data, status=HTTPStatus.OK):
@@ -73,6 +105,16 @@ class Handler(SimpleHTTPRequestHandler):
         n = int(self.headers.get("Content-Length") or 0)
         return json.loads(self.rfile.read(n) or b"{}") if n else {}
 
+    def _discard_body(self) -> None:
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = 0
+        if 0 < n <= 1_000_000:
+            self.rfile.read(n)
+        elif n:
+            self.close_connection = True
+
     # ---------- GET ----------
     def do_GET(self):
         if not self._host_ok():
@@ -81,7 +123,24 @@ class Handler(SimpleHTTPRequestHandler):
         if url.path == "/api/health":
             root, err = actions.root_info()
             return self._json({"ok": True, "root": str(root) if root else None, "error": err,
-                               "moodle": False, "claude": bool(cfg.claude_key())})
+                               "moodle": actions.moodle_status()["logged_in"], "claude": actions.grading_via() is not None, "claudeVia": actions.grading_via()})
+        if url.path == "/api/upload":
+            return self._json(actions.send_status())
+        if url.path == "/api/moodle":
+            return self._json(actions.moodle_status())
+        if url.path == "/api/ready":
+            # מהירה: לא מפעילה בדיקת כרום. מי שרוצה בדיקה קורא ל-POST /api/ready/check
+            root = self._root()
+            if not root:
+                return
+            query = parse_qs(url.query)
+            course, assignment = query.get("course", [""])[0], query.get("assignment", [""])[0]
+            if not course or not assignment:
+                return self._json({"error": "חסרים קורס ומטלה"}, HTTPStatus.BAD_REQUEST)
+            try:
+                return self._json(actions.readiness(root, course, assignment))
+            except FileNotFoundError as e:
+                return self._json({"error": str(e)}, HTTPStatus.NOT_FOUND)
         if url.path == "/api/state":
             root = self._root()
             return root and self._json(actions.state(root))
@@ -112,31 +171,65 @@ class Handler(SimpleHTTPRequestHandler):
     # ---------- POST ----------
     def do_POST(self):
         if not self._host_ok() or not self._write_ok():
+            self._discard_body()  # else Windows may reset the connection before the client reads the 403
             return self.send_error(HTTPStatus.FORBIDDEN)
         url = urlparse(self.path)
+        body = self._body()
+        if url.path == "/api/claude/login":  # these two work on this computer, not on the shared folder: no root needed
+            return self._json(actions.start_claude_login(restart=body.get("restart") is True))
+        if url.path == "/api/claude/install":
+            return self._json(actions.start_claude_install())
         root = self._root()
         if not root:
             return
-        body = self._body()
-        if url.path in ("/api/pull", "/api/return"):
-            # משיכה: moodle ingest. החזרה: moodle upload. אחת בכל פעם
+        if url.path in _LOCKED_STEPS:
+            # משיכה: moodle ingest. החזרה: moodle upload. הכנת העלאה: moodle send. אחת בכל פעם
             course, assignment = body.get("course"), body.get("assignment")
             if not course or not assignment:
                 return self._json({"error": "חסרים קורס ומטלה"}, HTTPStatus.BAD_REQUEST)
             if not _lock.acquire(blocking=False):
                 return self._json({"error": "פעולה אחרת כבר רצה. כדאי לנסות שוב בעוד רגע."}, HTTPStatus.CONFLICT)
+            run, what = _LOCKED_STEPS[url.path]
             try:
-                run = actions.pull if url.path == "/api/pull" else actions.prepare_return
-                return self._json(run(root, course, assignment))
+                return self._json(getattr(actions, run)(root, course, assignment))
             except actions.UserError as e:
                 return self._json({"error": str(e)}, HTTPStatus.UNPROCESSABLE_ENTITY)
             except FileNotFoundError as e:
                 return self._json({"error": str(e)}, HTTPStatus.NOT_FOUND)
             except Exception as e:  # השגיאה מוצגת באתר במקום שהשרת ייפול
-                what = "המשיכה" if url.path == "/api/pull" else "הכנת ההחזרה"
                 return self._json({"error": f"{what} נכשלה: {e}"}, HTTPStatus.INTERNAL_SERVER_ERROR)
             finally:
                 _lock.release()
+        if url.path == "/api/upload/start":
+            # אחרי "כן" של אדם על האצווה שהוכנה. ההעלאה רצה ברקע, והאתר שואל על המצב ב-GET /api/upload
+            course, assignment, batch_id = body.get("course"), body.get("assignment"), body.get("batchId")
+            if not course or not assignment or not isinstance(batch_id, str) or not batch_id:
+                return self._json({"error": "חסרים קורס, מטלה ומזהה אצווה"}, HTTPStatus.BAD_REQUEST)
+            try:
+                return self._json(actions.start_send(root, course, assignment, batch_id), HTTPStatus.ACCEPTED)
+            except ValueError as e:
+                if str(e) == "stale":
+                    return self._json({"error": STALE_UPLOAD}, HTTPStatus.CONFLICT)
+                return self._json({"error": f"ההעלאה לא התחילה: {e}"}, HTTPStatus.UNPROCESSABLE_ENTITY)
+            except FileNotFoundError as e:
+                return self._json({"error": str(e)}, HTTPStatus.NOT_FOUND)
+            except RuntimeError as e:
+                return self._json({"error": str(e)}, HTTPStatus.CONFLICT)
+        if url.path == "/api/upload/stop":
+            return self._json(actions.stop_send())
+        if url.path in ("/api/moodle/check", "/api/ready/check"):
+            course, assignment = body.get("course"), body.get("assignment")
+            if not course or not assignment:
+                return self._json({"error": "חסרים קורס ומטלה"}, HTTPStatus.BAD_REQUEST)
+            check = actions.check_moodle if url.path == "/api/moodle/check" else actions.check_ready
+            try:
+                return self._json(check(root, course, assignment))
+            except FileNotFoundError as e:
+                return self._json({"error": str(e)}, HTTPStatus.NOT_FOUND)
+            except RuntimeError as e:  # העלאה רצה עכשיו: הבדיקה וההעלאה היו מפעילות את אותו כרום
+                return self._json({"error": str(e)}, HTTPStatus.CONFLICT)
+            except Exception as e:
+                return self._json({"error": f"הבדיקה נכשלה: {e}"}, HTTPStatus.INTERNAL_SERVER_ERROR)
         if url.path == "/api/grade":
             course, assignment = body.get("course"), body.get("assignment")
             if not course or not assignment:
@@ -188,7 +281,7 @@ def serve(port: int = 8765, open_browser: bool = True) -> None:
         print("\nהאתר יעלה בכל זאת, ויציג את ההסבר הזה עד שהתיקייה תסתנכרן.")
     httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     url = f"http://localhost:{port}/"
-    print(f"\nבודק העבודות פועל: {url}\nכדי לעצור: Ctrl+C או לסגור את החלון.")
+    print(f"\nבודק חכם פועל: {url}\nכדי לעצור: Ctrl+C או לסגור את החלון.")
     if open_browser:
         webbrowser.open(url)
     try:

@@ -10,6 +10,7 @@ import os
 import shutil
 import stat
 import subprocess
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -20,11 +21,62 @@ SEVEN_ZIP_PATHS = [r"C:\Program Files\7-Zip\7z.exe", r"C:\Program Files (x86)\7-
 
 def find_download(assignment_id: str, downloads: Path | None = None) -> Path:
     """Return the newest finished ZIP for this assignment in Downloads."""
-    downloads = downloads or Path.home() / "Downloads"
+    downloads = downloads or downloads_dir()
     zips = [p for p in downloads.glob("*.zip") if p.stem.endswith(f"-{assignment_id}")]
     if not zips:
         raise FileNotFoundError(f"No ZIP ending in -{assignment_id}.zip in {downloads}")
     return max(zips, key=lambda p: p.stat().st_mtime)
+
+
+def downloads_dir() -> Path:
+    return Path.home() / "Downloads"
+
+
+def wait_for_download(assignment_id: str, since: float, downloads: Path | None = None, *,
+                      start_s: float = 180, total_s: float = 1800, poll_s: float = 2.0,
+                      clock=time.monotonic, sleep=time.sleep) -> Path:
+    """Wait for the ZIP that Chrome is downloading to Downloads, and return it once it is whole.
+
+    `since` is a time.time() from before the download was asked for: only a ZIP modified after it counts.
+    Chrome writes "<name>.crdownload" (or "Unconfirmed <n>.crdownload") while it downloads, and renames it
+    when it is done. Nothing at all within `start_s` means the download never started (say, Chrome asks where to
+    save); a ZIP whose size holds still for two polls is done. Raises TimeoutError with the reason in English.
+    """
+    downloads = downloads or downloads_dir()
+    started = clock()
+    seen_partial = False
+    last_size = None
+    while True:
+        zips = [p for p in downloads.glob("*.zip") if p.stem.endswith(f"-{assignment_id}") and _mtime(p) >= since - 2]
+        newest = max(zips, key=_mtime, default=None)
+        if newest is not None:
+            size = _size(newest)
+            if size and size == last_size:
+                return newest
+            last_size = size
+        else:
+            last_size = None
+            seen_partial = seen_partial or any(_mtime(p) >= since - 2 for p in downloads.glob("*.crdownload"))
+        waited = clock() - started
+        if newest is None and not seen_partial and waited > start_s:
+            raise TimeoutError("The download did not start in Chrome")
+        if waited > total_s:
+            raise TimeoutError("The download did not finish in time")
+        sleep(poll_s)
+
+
+def _mtime(p: Path) -> float:
+    try:
+        return p.stat().st_mtime
+    except OSError:  # Chrome renamed or removed it between glob and stat
+        return 0.0
+
+
+def _size(p: Path) -> int:
+    try:
+        return p.stat().st_size
+    except OSError:
+        return 0
 
 
 def seven_zip() -> str:

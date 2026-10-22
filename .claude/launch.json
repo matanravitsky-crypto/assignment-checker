@@ -1,0 +1,15 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "dashboard-demo",
+      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeArgs": ["-m", "tests.serve_demo"],
+      "port": 8765,
+      "env": {
+        "ASSIGNMENT_CHECKER_ROOT": "data/demo-root",
+        "MOODLE_DRIVER": "simulate"
+      }
+    }
+  ]
+}
