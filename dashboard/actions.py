@@ -8,6 +8,8 @@
   החזרה  → moodle.upload.prepare_upload(<תיקיית המטלה>)
            בונה ב-"3 - Ready to upload to Moodle" את גיליון הציונים, את קובצי המשוב ואת
            הוראות ההעלאה. מישהו מהצוות מעלה אותם למודל ומאשר.
+  העתקות → copying.check.check_assignment: משווה את ההגשות זו לזו (קובץ זהה, מטא-דאטה, עמודים זהים), בלי Claude.
+           רץ ברקע, והתוצאה נכתבת ב-Copying check.json בתיקיית המטלה.
   העלאה  → moodle.send.prepare_batch / run_batch
            מכינים אצווה של עבודות מסומנות שהן חדשות או השתנו, ואחרי "כן" של אדם מעלים אותה ברקע
            דרך Claude in Chrome (מי שהעלה נרשם ב-Upload log.csv). האתר שואל מה המצב עד שהיא נגמרת.
@@ -28,6 +30,7 @@ from pathlib import Path
 
 import pymupdf
 
+from copying import check as copying
 from grading import grade as grading
 from moodle import (anonymize as moodle_anonymize, claude_driver, ingest as moodle_ingest, lock as moodle_lock, paths,
                     send as moodle_send, upload as moodle_upload, upload_log)
@@ -271,6 +274,82 @@ def start_grading(root: Path, course: str, assignment: str, numbers: list[str] |
     if wait:
         t.join()
     return grade_status()
+
+
+# ---------- העתקות ----------
+# בדיקת העתקות אחת בכל פעם בתהליך הזה. היא כותבת רק את Copying check.json, אז שתי בדיקות בשני מחשבים
+# לכל היותר דורסות זו את התוצאה של זו, באותו תוכן
+@dataclass
+class CopyJob:
+    course: str = ""
+    assignment: str = ""
+    running: bool = False
+    done: int = 0
+    total: int = 0
+    summary: str = ""
+    error: str = ""
+    started_at: str = ""
+    finished_at: str = ""
+
+
+_copy = CopyJob()
+_copy_lock = threading.Lock()
+
+
+def copying_status() -> dict:
+    with _copy_lock:
+        return asdict(_copy)
+
+
+def start_copying(root: Path, course: str, assignment: str, wait: bool = False) -> dict:
+    """מתחיל בדיקת העתקות ברקע. RuntimeError אם כבר רצה אחת."""
+    global _copy
+    a = find_assignment(root, course, assignment)
+    with _copy_lock:
+        if _copy.running:
+            raise RuntimeError("בדיקת העתקות כבר רצה. כדאי לחכות שתסתיים.")
+        _copy = CopyJob(course, assignment, running=True, started_at=datetime.now().isoformat(timespec="seconds"))
+        job = _copy
+
+    def progress(done: int, total: int) -> None:
+        with _copy_lock:
+            job.done, job.total = done, total
+
+    def run() -> None:
+        try:
+            job.summary = copying.check_assignment(a.dir, on_progress=progress).summary()
+        except Exception as e:  # השגיאה מוצגת באתר במקום שהבדיקה תיעלם בשקט
+            job.error = f"בדיקת ההעתקות נכשלה: {e}"
+        finally:
+            with _copy_lock:
+                job.running = False
+                job.finished_at = datetime.now().isoformat(timespec="seconds")
+
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    if wait:
+        t.join()
+    return copying_status()
+
+
+_copy_reports: dict[str, tuple[int, int, dict]] = {}
+
+
+def copying_state(assignment_dir: Path) -> dict | None:
+    """מה שהאתר מציג בדף "העתקות": הזוגות החשודים (מספרים בלבד), מתי נבדק, והאם הגיעו קבצים מאז."""
+    path = copying.report_path(assignment_dir)
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    hit = _copy_reports.get(str(path))
+    if not hit or hit[:2] != (st.st_size, st.st_mtime_ns):
+        hit = (st.st_size, st.st_mtime_ns, copying.read_report(assignment_dir))
+        _copy_reports[str(path)] = hit
+    rep = hit[2]
+    return {"checkedAt": rep.get("checked_at"), "by": rep.get("by") or "", "summary": rep.get("summary") or "",
+            "checked": rep.get("checked") or 0, "repeated": rep.get("repeated") or [],
+            "pairs": rep.get("pairs") or [], "stale": copying.is_stale(assignment_dir, rep)}
 
 
 # ---------- העלאה למודל ----------
@@ -840,10 +919,10 @@ def state(root: Path) -> dict:
                             + [f"עותק כפול של יומן ההעלאה: {c}" for c in upload_log.log_conflicts(a.dir)]
                             + ([f"משיכה בתהליך: {moodle_lock.parse((a.dir / LOCK_FILE).read_text(encoding='utf-8'))[0]}"] if (a.dir / LOCK_FILE).exists() else [])
                             + ([f"העלאה בתהליך: {who}"] if (who := _upload_lock_holder(a)) else []),
-                "subs": subs, "log": _activity(a, results, log),
+                "subs": subs, "log": _activity(a, results, log), "copying": copying_state(a.dir),
             })
     return {"root": str(root), "courses": courses, "assignments": out,
-            "moodle": False, "claude": grading_via() is not None, "claudeVia": grading_via(), "grading": grade_status(), "sending": send_status()}
+            "moodle": False, "claude": grading_via() is not None, "claudeVia": grading_via(), "grading": grade_status(), "sending": send_status(), "copyCheck": copying_status()}
 
 
 def _score(raw: str | None) -> float | int | None:

@@ -147,6 +147,8 @@ class Handler(SimpleHTTPRequestHandler):
             return root and self._json(actions.state(root))
         if url.path == "/api/grade":
             return self._json(actions.grade_status())
+        if url.path == "/api/copying":
+            return self._json(actions.copying_status())
         if url.path in ("/api/pages", "/api/page"):
             # עמודי הגשה כתמונות, לבדיקה הידנית: /api/pages אומר כמה עמודים, /api/page מחזיר עמוד אחד
             root = self._root()
@@ -284,6 +286,17 @@ class Handler(SimpleHTTPRequestHandler):
             except RuntimeError as e:
                 return self._json({"error": str(e)}, HTTPStatus.CONFLICT)
             return self._json(job, HTTPStatus.ACCEPTED)
+        if url.path == "/api/copying":
+            # בדיקת העתקות (copying/check.py): בלי Claude, רצה ברקע, והאתר שואל על המצב ב-GET /api/copying
+            course, assignment = body.get("course"), body.get("assignment")
+            if not course or not assignment:
+                return self._json({"error": "חסרים קורס ומטלה"}, HTTPStatus.BAD_REQUEST)
+            try:
+                return self._json(actions.start_copying(root, course, assignment), HTTPStatus.ACCEPTED)
+            except FileNotFoundError as e:
+                return self._json({"error": str(e)}, HTTPStatus.NOT_FOUND)
+            except RuntimeError as e:
+                return self._json({"error": str(e)}, HTTPStatus.CONFLICT)
         if url.path == "/api/review":
             # בדיקה ידנית: אדם קבע ניקוד, הערות ומשוב לעבודה אחת. נשמר ב-Grades.csv כמאושר
             course, assignment, number = body.get("course"), body.get("assignment"), body.get("number")

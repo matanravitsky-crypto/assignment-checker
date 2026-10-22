@@ -14,6 +14,7 @@ a folder per assignment, with plain English names that say what each one is
           Grades.csv                                 number,grade,feedback (from grading)
           Grading notes/              0001.json ...  per-question comments, mistakes, marks, why a person should look
           Key - number to student.csv                the key: number -> Moodle participant
+          Copying check.json                         suspected copying between numbers (python -m copying)
           Moodle download <date>.zip                 the ZIP exactly as Moodle gave it
           README.txt
 
@@ -36,6 +37,9 @@ GRADES = "Grades.csv"
 # on the pages, and why it needs a person. Numbers only, never names. The site's manual review reads it
 NOTES = "Grading notes"
 KEY = "Key - number to student.csv"
+# Suspected copying: pairs of numbers whose files, PDF metadata or page images match, and what each file looked like
+# (hashes only: no names, no metadata values). Written by copying/check.py, read by the site's "העתקות" page
+COPYING = "Copying check.json"
 README = "README.txt"
 DOWNLOAD_PREFIX = "Moodle download"
 PULL_LOCK = "Pull in progress.txt"      # in the assignment folder while a pull runs (see lock.py)

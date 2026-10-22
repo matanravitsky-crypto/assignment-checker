@@ -50,6 +50,8 @@
     mistakeOpen: null,
     // הבדיקה הידנית: העבודה שפתוחה, סינון לפי סוג הבעיה, מה מוצג (מסומנת/מקורית) והטיוטה של כל עבודה עד השמירה
     review: { id: null, edits: {}, saving: false, pages: {}, marks: true, open: {}, fbOpen: false },
+    // העתקות: איזו שכבה מוצגת, איזה זוג פתוח, ובדיקה שרצה עכשיו
+    copy: { filter: "all", open: null, running: false, progress: "" },
   };
 
   // מה כל שלב עושה באמת (moodle/ingest.py, grading/grade.py, moodle/send.py)
@@ -1549,8 +1551,134 @@
     }
   }
 
+  // ---------- העתקות (copying/check.py): זוגות של הגשות שנראות כמו אותה עבודה. בלי Claude ובלי טוקנים ----------
+  // שכבה 0: אותו קובץ או אותו מקור (קובץ, מטא-דאטה). שכבה 1: אותה סריקה בקובץ אחר (עמודים)
+  const COPY_KIND = {
+    file: { layer: 0, text: "אותו קובץ בדיוק" },
+    doc_id: { layer: 0, text: "אותו מזהה מסמך פנימי: הקבצים נוצרו מאותו מסמך" },
+    author: { layer: 0, text: "אותו מחבר במטא-דאטה של ה-PDF" },
+    created: { layer: 0, text: "אותו רגע יצירה במטא-דאטה של ה-PDF" },
+    page: { layer: 1, text: "עמודים זהים: אותה סריקה או תמונה" },
+    text: { layer: 1, text: "עמוד מוקלד עם כמעט אותו טקסט" },
+  };
+  const COPY_LAYERS = [
+    { key: "l0", layer: 0, name: "אותו קובץ או אותו מקור", what: "קובץ זהה אצל שני מספרים, או PDF שנוצר מאותו מסמך (מזהה פנימי, מחבר, רגע יצירה)" },
+    { key: "l1", layer: 1, name: "אותו עמוד", what: "סריקה שנראית כמעט זהה לעמוד בהגשה אחרת (גם אחרי דחיסה או צילום מסך), או עמוד מוקלד עם אותו טקסט נדיר" },
+  ];
+  const inLayer = (p, layer) => p.reasons.some((r) => COPY_KIND[r.kind]?.layer === layer);
+  const pairKey = (p) => `${p.a}-${p.b}`;
+
+  // שתי ההגשות זו לצד זו: העמודים שנמצאו זהים, ובלי עמודים זהים העמוד הראשון של כל אחת
+  function copyCompareHTML(A, p) {
+    const found = p.reasons.find((r) => r.pages), pages = found?.pages || [[1, 1, null]];
+    const score = (d) => (d == null ? "" : found.kind === "text" ? ` · ${d}% מהטקסט הנדיר משותף` : ` · ${d ? `${d} ביטים שונים מתוך 256` : "זהה"}`);
+    const sub = (id) => A.subs.find((s) => s.id === id);
+    const open = (id) => {
+      const f = sub(id) && origFiles(sub(id))[0];
+      return f ? `<a class="link" href="${fileUrl(f)}" target="_blank" rel="noopener">${ICON.file}פתח את ${id}</a>` : "";
+    };
+    return `<div class="cp-compare">
+      <div class="cp-cols cp-cols-head"><div><b class="num">${p.a}</b>${open(p.a)}</div><div><b class="num">${p.b}</b>${open(p.b)}</div></div>
+      ${pages.slice(0, 4).map(([pa, pb, d]) => `<div class="cp-cols">
+        <figure><img loading="lazy" src="${pageUrl(A, p.a, pa)}" alt="עמוד ${pa} בהגשה ${p.a}"><figcaption>עמוד ${pa}</figcaption></figure>
+        <figure><img loading="lazy" src="${pageUrl(A, p.b, pb)}" alt="עמוד ${pb} בהגשה ${p.b}"><figcaption>עמוד ${pb}${score(d)}</figcaption></figure>
+      </div>`).join("")}
+      ${pages.length > 4 ? `<p class="muted">ועוד ${pages.length - 4} זוגות של עמודים זהים</p>` : ""}
+    </div>`;
+  }
+
+  function copyPairHTML(A, p) {
+    const k = pairKey(p), isOpen = state.copy.open === k;
+    const reasons = p.reasons.map((r) => COPY_KIND[r.kind]?.text + (r.pages ? ` (${r.pages.map(([a, b]) => (a === b ? `עמוד ${a}` : `${a}↔${b}`)).join(", ")})` : ""));
+    return `<article class="cp-pair ${isOpen ? "open" : ""}">
+      <button type="button" class="cp-pair-head" data-copy-open="${k}" aria-expanded="${isOpen}">
+        <span class="cp-nums num">${p.a}<i>↔</i>${p.b}</span>
+        <span class="tag ${p.level === "strong" ? "bad" : "warn"}">${p.level === "strong" ? "חשד חזק" : "כדאי להסתכל"}</span>
+        <span class="cp-why">${reasons.map(esc).join(" · ")}</span>
+        <span class="cp-chev" aria-hidden="true">${ICON.chev}</span>
+      </button>
+      ${isOpen ? copyCompareHTML(A, p) : ""}
+    </article>`;
+  }
+
+  function copyingView() {
+    const A = cur();
+    if (!A) return offlineHTML();
+    const C = A.copying, run = state.copy, pairs = C?.pairs || [];
+    const shown = run.filter === "all" ? pairs : pairs.filter((p) => inLayer(p, COPY_LAYERS.find((l) => l.key === run.filter).layer));
+    const strong = pairs.filter((p) => p.level === "strong").length;
+    const button = (cls) => `<button type="button" class="btn ${cls}" data-copy-run ${run.running || !LOCAL.on ? "disabled" : ""}>
+      ${run.running ? ICON.spin : ICON.search}${run.running ? esc(run.progress || "בודק…") : C ? "בדוק שוב" : "בדוק העתקות"}</button>`;
+    const head = `<div class="page-head cp-top">
+        <div><h1>העתקות</h1>
+          <p>משווה את ההגשות זו לזו ומחפש עבודות שהן בעצם אותה עבודה. בלי Claude ובלי טוקנים: רק השוואה של הקבצים במחשב.</p>
+          ${C ? `<p class="muted">נבדק ${when(C.checkedAt)} · ${plural(C.checked, "הגשה אחת", "הגשות")}${C.by ? ` · ${esc(C.by)}` : ""}</p>` : ""}</div>
+        ${C ? button("secondary") : ""}
+      </div>
+      ${C?.stale ? `<div class="notice">${ICON.warn}<div>הגיעו הגשות חדשות או שקבצים השתנו מאז הבדיקה. כדאי לבדוק שוב: רק הקבצים החדשים ייקראו.</div></div>` : ""}`;
+    if (!A.subs.length) return `${head}<section class="panel">${emptyPulled()}</section>`;
+    if (!C) return `${head}<section class="rv-empty cp-empty">${ICON.search}<b>עוד לא נבדק</b>
+      <p>הבדיקה משווה כל הגשה לכל האחרות: קבצים זהים, PDF שנוצר מאותו מסמך, ועמודים שהם אותה סריקה.<br>בפעם הראשונה זה לוקח כמה דקות. אחר כך רק הגשות חדשות נקראות.</p>
+      ${button("primary")}</section>`;
+    const layers = `<div class="cp-layers" role="group" aria-label="סוג החשד">
+      <button type="button" class="cp-layer" data-copy-filter="all" aria-pressed="${run.filter === "all"}">
+        <span class="cp-layer-n num">${pairs.length}</span><span><b>כל החשדות</b><small>${strong ? `${strong} מהם חשד חזק` : "אין חשד חזק"}</small></span></button>
+      ${COPY_LAYERS.map((l) => `<button type="button" class="cp-layer" data-copy-filter="${l.key}" aria-pressed="${run.filter === l.key}">
+        <span class="cp-layer-n num">${pairs.filter((p) => inLayer(p, l.layer)).length}</span>
+        <span><b><span class="cp-layer-no">שכבה ${l.layer}</span>${l.name}</b><small>${l.what}</small></span></button>`).join("")}
+    </div>`;
+    const list = shown.length
+      ? `<div class="cp-list">${shown.map((p) => copyPairHTML(A, p)).join("")}</div>`
+      : `<section class="rv-empty">${ICON.check}<b>לא נמצא חשד להעתקה</b><p>${pairs.length ? "אין זוגות חשודים בשכבה הזו." : `אף הגשה לא זהה לאחרת, מתוך ${plural(C.checked, "הגשה אחת", "הגשות")}.`}</p></section>`;
+    return `${head}${layers}${list}${copyRepeatedHTML(A, C.repeated || [])}
+      <p class="cp-foot muted">זה רק חשד: ההחלטה אם זו העתקה היא של אדם. העתקה בכתב יד אחר (חבר שהעתיק את הפתרון בכתב ידו) לא נתפסת כאן.</p>`;
+  }
+
+  // עמודים שחוזרים אצל הרבה הגשות: בדרך כלל דף שאלות, אבל גם פתרון שעבר בקבוצה. לא זוגות: אדם מחליט
+  function copyRepeatedHTML(A, groups) {
+    if (!groups.length) return "";
+    return `<section class="panel cp-repeated">
+      <div class="panel-head"><h3>עמודים שחוזרים אצל הרבה הגשות</h3><span class="meta">בדרך כלל דף שאלות. אם זה פתרון, זו העתקה של קבוצה</span></div>
+      <div class="panel-body">${groups.slice(0, 10).map((g) => {
+        const [n, pg] = g.pages[0];
+        return `<div class="cp-group">
+          <img loading="lazy" src="${pageUrl(A, n, pg)}" alt="עמוד ${pg} בהגשה ${n}">
+          <div><b>${g.numbers} הגשות</b> <span class="muted">${g.kind === "text" ? "אותו טקסט" : "אותה סריקה"}</span>
+            <p class="num">${g.pages.slice(0, 40).map(([x, y]) => `${x}${y > 1 ? `/${y}` : ""}`).join(" · ")}${g.pages.length > 40 ? " …" : ""}</p></div>
+        </div>`;
+      }).join("")}</div>
+    </section>`;
+  }
+
+  // "בדוק העתקות": השרת משווה את ההגשות ברקע (api/copying), והאתר שואל מה המצב עד שזה נגמר
+  async function runCopying() {
+    const A = cur();
+    if (!A || state.copy.running || !LOCAL.on) return;
+    Object.assign(state.copy, { running: true, progress: "" });
+    render();
+    try {
+      await api("api/copying", { method: "POST", body: JSON.stringify({ course: A.courseFolder, assignment: A.folder }) });
+      let job;
+      for (;;) {
+        await new Promise((r) => setTimeout(r, 1000));
+        job = await api("api/copying");
+        state.copy.progress = job.total ? `קורא קבצים ${job.done} מתוך ${job.total}…` : "בודק…";
+        if (route() === "/copying") render();
+        if (!job.running) break;
+      }
+      state.copy.running = false;
+      await loadLocal();
+      toast(job.error || job.summary, job.error ? ICON.warn : ICON.check);
+    } catch (e) {
+      state.copy.running = false;
+      render();
+      toast(e.message, ICON.warn);
+    }
+  }
+
   const views = {
     "/review": () => reviewView(),
+    "/copying": () => copyingView(),
     "/"() {
       const A = cur(), I = info(A);
       return `
@@ -1695,6 +1823,9 @@
     const rb = $("#nav-review-badge"), waiting = A.subs.filter(needsReview).length;
     rb.textContent = waiting || "";
     rb.title = waiting ? `${waiting} עבודות מחכות לבדיקה ידנית` : "";
+    const cb = $("#nav-copy-badge"), strong = (A.copying?.pairs || []).filter((p) => p.level === "strong").length;
+    cb.textContent = strong || "";
+    cb.title = strong ? `${strong} זוגות עם חשד חזק להעתקה` : "";
     const I = info(A), run = state.run[A.id];
     $$(".nav-stage").forEach((a) => {
       const st = a.dataset.stage, done = I.done[st];
@@ -1754,6 +1885,11 @@
     const t = e.target;
     const runBtn = t.closest("[data-run]");
     if (runBtn) { runStage(runBtn.dataset.run); return; }
+    if (t.closest("[data-copy-run]")) { runCopying(); return; }
+    const cpFilter = t.closest("[data-copy-filter]");
+    if (cpFilter) { state.copy.filter = cpFilter.dataset.copyFilter; state.copy.open = null; render(); return; }
+    const cpOpen = t.closest("[data-copy-open]");
+    if (cpOpen) { const k = cpOpen.dataset.copyOpen; state.copy.open = state.copy.open === k ? null : k; render(); return; }
 
     // לוח הבקרה: טעות נפוצה שנפתחה
     const mk = t.closest("[data-mistake]");
