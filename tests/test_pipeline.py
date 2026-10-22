@@ -31,6 +31,7 @@ def root(tmp_path, monkeypatch):
     r.mkdir(parents=True)
     monkeypatch.setenv("ASSIGNMENT_CHECKER_ROOT", str(r))
     monkeypatch.delenv("MOODLE_TOKEN", raising=False)
+    service.init(r)  # תיקייה שהמערכת עצמה ארגנה
     return r
 
 
@@ -330,3 +331,19 @@ def test_find_root_uses_team_subfolder(tmp_path, monkeypatch):
     (course / config.SYSTEM_SUBFOLDER).mkdir(parents=True)
     monkeypatch.setenv("ASSIGNMENT_CHECKER_ROOT", str(course))
     assert config.find_root() == course / config.SYSTEM_SUBFOLDER
+
+
+def test_does_not_write_into_a_folder_with_another_structure(tmp_path, monkeypatch):
+    # תיקייה שהצוות כבר ארגן במבנה אחר: המערכת לא יוצרת בה כלום
+    course = tmp_path / config.FOLDER_NAME
+    team = course / "Exercise Checking System"
+    (team / "Linear Algebra" / "Assignment 0").mkdir(parents=True)
+    (team / "README.txt").write_text("x", encoding="utf-8")
+    monkeypatch.setenv("ASSIGNMENT_CHECKER_ROOT", str(course))
+    assert config.find_root() == team
+    before = sorted(p.relative_to(course) for p in course.rglob("*"))
+    root, err = service.root_info()
+    assert root is None and "מבנה אחר" in err
+    with pytest.raises(service.ForeignStructure):
+        service.pull(team, COURSE, HW)
+    assert sorted(p.relative_to(course) for p in course.rglob("*")) == before

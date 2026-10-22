@@ -62,16 +62,35 @@ class PullReport:
     pulled_at: str = ""
 
 
+class ForeignStructure(Exception):
+    """התיקייה כבר מאורגנת במבנה של מישהו אחר. המערכת לא כותבת אליה, כדי לא לבלגן."""
+
+
+def check_ownership(root: Path) -> None:
+    """המערכת כותבת רק לתיקייה ריקה, או לתיקייה שהיא עצמה ארגנה (יש בה הגדרות.json)."""
+    if (root / cfg.SETTINGS_FILE).exists():
+        return
+    others = sorted(p.name for p in root.iterdir() if not p.name.startswith("."))
+    if others:
+        raise ForeignStructure(
+            f"התיקייה {root} כבר מאורגנת במבנה אחר ({', '.join(others[:5])}).\n"
+            "המערכת לא כותבת אליה, כדי לא ליצור מבנה כפול. צריך קודם להתאים את המערכת למבנה הקיים."
+        )
+
+
 # ---------- תיקייה והגדרות ----------
 def root_info() -> tuple[Path | None, str | None]:
     try:
-        return config.find_root(), None
-    except config.FolderNotFound as e:
+        root = config.find_root()
+        check_ownership(root)
+        return root, None
+    except (config.FolderNotFound, ForeignStructure) as e:
         return None, str(e)
 
 
 def init(root: Path) -> cfg.Settings:
     """מכין את התיקייה: קובץ הגדרות, קובץ הסבר, ותיקייה לכל קורס ומטלה."""
+    check_ownership(root)
     s = cfg.load(root)
     if not (root / cfg.SETTINGS_FILE).exists():
         cfg.save(root, s)

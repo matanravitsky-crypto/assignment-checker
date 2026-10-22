@@ -16,6 +16,7 @@ from pathlib import Path
 FOLDER_NAME = "YallaLinearit"
 # אם בתוך תיקיית הקורס יש תיקייה בשם הזה, המערכת עובדת בתוכה ולא נוגעת בשאר התיקייה של המרצה
 SYSTEM_SUBFOLDER = "מערכת בדיקת תרגילים"
+SYSTEM_SUBFOLDERS = (SYSTEM_SUBFOLDER, "Exercise Checking System")
 
 # שמות התיקיות בתוך כל מטלה. המספר בתחילת השם שומר על הסדר של השלבים.
 INBOX = "0-קליטה"          # כאן שמים את קובץ ה-ZIP שהורד ממודל
@@ -52,8 +53,10 @@ def _is_course_folder(name: str) -> bool:
 
 
 def _system_dir(course_folder: Path) -> Path:
-    sub = course_folder / SYSTEM_SUBFOLDER
-    return sub if sub.is_dir() else course_folder
+    for name in SYSTEM_SUBFOLDERS:
+        if (course_folder / name).is_dir():
+            return course_folder / name
+    return course_folder
 
 
 def find_root() -> Path:
