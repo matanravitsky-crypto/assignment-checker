@@ -2,12 +2,14 @@ import json
 import os
 import tempfile
 import time
+import zipfile
 from pathlib import Path
 
 import pytest
 
 from moodle import paths
-from moodle.ingest import assignment_folder, find_download, name_from_zip, wait_for_download
+from moodle.ingest import (assignment_folder, find_download, find_parts, ingest, name_from_zip, seven_zip,
+                           wait_for_download)
 
 
 def test_find_download_picks_newest_zip_for_the_assignment():
@@ -121,3 +123,98 @@ if __name__ == "__main__":
     test_new_assignment_gets_a_named_folder_and_is_found_again()
     test_new_assignment_needs_english_names()
     print("All tests passed.")
+
+
+def has_seven_zip() -> bool:
+    try:
+        seven_zip()
+        return True
+    except FileNotFoundError:
+        return False
+
+
+@pytest.mark.skipif(not has_seven_zip(), reason="needs 7-Zip")
+def test_cut_off_zip_is_refused_before_anything_changes():
+    with tempfile.TemporaryDirectory() as tmp:
+        zip_path = Path(tmp) / "x-הגשה 0-3438636.zip"
+        with zipfile.ZipFile(zip_path, "w") as archive:
+            archive.writestr("אב_100_assignsubmission_file/a.pdf", b"a" * 5000)
+        data = zip_path.read_bytes()
+        zip_path.write_bytes(data[: len(data) // 2])  # a download that ended early
+        os.environ["ASSIGNMENT_DATA"] = str(Path(tmp) / "data")
+        try:
+            with pytest.raises(ValueError, match="incomplete or damaged"):
+                ingest("3438636", zip_path, "Linear Algebra", "Assignment 0")
+            assert zip_path.exists()
+            assert not (Path(tmp) / "data").exists()
+        finally:
+            del os.environ["ASSIGNMENT_DATA"]
+
+
+def make_zip(path: Path, students: dict[str, bytes]) -> Path:
+    with zipfile.ZipFile(path, "w") as archive:
+        for folder, data in students.items():
+            archive.writestr(f"{folder}/work.pdf", data)
+    return path
+
+
+def test_find_parts_takes_every_zip_of_the_assignment():
+    with tempfile.TemporaryDirectory() as tmp:
+        downloads = Path(tmp)
+        for name in ["x-הגשה 0-3438636.zip", "x-הגשה 0-3438636 (1).zip", "x-הגשה 0-3438636 (2).zip",
+                     "x-הגשה 1-3438638.zip", "BROKEN 3438636.zip"]:
+            (downloads / name).write_bytes(b"")
+        assert [p.name for p in find_parts("3438636", downloads)] == [
+            "x-הגשה 0-3438636 (1).zip", "x-הגשה 0-3438636 (2).zip", "x-הגשה 0-3438636.zip"]
+
+
+@pytest.mark.skipif(not has_seven_zip(), reason="needs 7-Zip")
+def test_parts_come_together_into_one_numbered_set():
+    with tempfile.TemporaryDirectory() as tmp:
+        one = make_zip(Path(tmp) / "x-הגשה 0-3438636.zip", {"א_100_assignsubmission_file": b"a"})
+        two = make_zip(Path(tmp) / "x-הגשה 0-3438636 (1).zip", {"ב_200_assignsubmission_file": b"b"})
+        os.environ["ASSIGNMENT_DATA"] = str(Path(tmp) / "data")
+        os.environ["ASSIGNMENT_WORK"] = str(Path(tmp) / "work")
+        try:
+            rows = ingest("3438636", [one, two], "Linear Algebra", "Assignment 0")
+            folder = paths.assignment_dir("3438636")
+            backups = sorted(p.name for p in paths.backup_dir(folder).glob("*.zip"))
+        finally:
+            del os.environ["ASSIGNMENT_DATA"], os.environ["ASSIGNMENT_WORK"]
+        assert sorted(r["participant_id"] for r in rows) == ["100", "200"]
+        assert backups[-1].endswith("part 2.zip")
+        assert not list(folder.rglob("*.zip"))
+
+
+@pytest.mark.skipif(not has_seven_zip(), reason="needs 7-Zip")
+def test_student_in_two_parts_keeps_the_newer_copy_once():
+    with tempfile.TemporaryDirectory() as tmp:
+        one = make_zip(Path(tmp) / "a-3438636.zip", {"א_100_assignsubmission_file": b"old",
+                                                       "ב_200_assignsubmission_file": b"b"})
+        two = make_zip(Path(tmp) / "a-3438636 (1).zip", {"א_100_assignsubmission_file": b"new"})
+        os.utime(one, (time.time() - 60, time.time() - 60))
+        os.environ["ASSIGNMENT_DATA"] = str(Path(tmp) / "data")
+        os.environ["ASSIGNMENT_WORK"] = str(Path(tmp) / "work")
+        try:
+            rows = ingest("3438636", [one, two], "Linear Algebra", "Assignment 0")
+            folder = paths.assignment_dir("3438636")
+        finally:
+            del os.environ["ASSIGNMENT_DATA"], os.environ["ASSIGNMENT_WORK"]
+        assert sorted(r["participant_id"] for r in rows) == ["100", "200"]
+        number = next(r["number"] for r in rows if r["participant_id"] == "100")
+        assert (folder / paths.TO_GRADE / f"{number}.pdf").read_bytes() == b"new"
+
+
+@pytest.mark.skipif(not has_seven_zip(), reason="needs 7-Zip")
+def test_parts_hours_apart_are_refused():
+    with tempfile.TemporaryDirectory() as tmp:
+        one = make_zip(Path(tmp) / "a-3438636.zip", {"א_100_assignsubmission_file": b"old"})
+        two = make_zip(Path(tmp) / "a-3438636 (1).zip", {"ב_200_assignsubmission_file": b"new"})
+        os.utime(one, (time.time() - 5 * 3600, time.time() - 5 * 3600))
+        os.environ["ASSIGNMENT_DATA"] = str(Path(tmp) / "data")
+        try:
+            with pytest.raises(ValueError, match="2 hours apart"):
+                ingest("3438636", [one, two], "Linear Algebra", "Assignment 0")
+            assert one.exists() and two.exists()
+        finally:
+            del os.environ["ASSIGNMENT_DATA"]

@@ -44,11 +44,14 @@ Exercise Checking System/                  the data folder (ASSIGNMENT_DATA, def
       Key - number to student.csv number → Moodle participant id → original folder  ← the one key
       Upload in progress.txt      exists only while an upload runs ("<user> (<PC>) pid=<pid>", since when; 30 minutes without an update = stuck)
       Pull in progress.txt        the same while a pull runs
-      Moodle download <date>.zip  the ZIP exactly as Moodle gave it (every download is kept)
 
 Moodle originals/                          on the downloader's computer only (ASSIGNMENT_WORK)
   <course>/<assignment>/   the extracted ZIP: one folder per student, "<full name>_<participant id>_assignsubmission_file"
+  Backup - Moodle downloads/<course>/<assignment>/   every ZIP exactly as Moodle gave it ("part N" when downloaded in parts)
 ```
+
+The Moodle ZIPs stay out of the shared folder (Ori's decision, 22/10): they repeat the submissions several times
+over (2.8 GB for one assignment) and nobody grades from them. Never upload `Backup - Moodle downloads`.
 
 The extracted ZIP never goes to OneDrive: students' file names break its sync (see below). It can be rebuilt
 from the ZIP. Commands take the assignment's Moodle id; `paths.find_assignment` finds its folder through

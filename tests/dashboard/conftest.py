@@ -79,6 +79,8 @@ def root(tmp_path, monkeypatch):
     write_key(a, rows)
     (a / "Moodle download 2026-10-21 16-28.zip").write_bytes(b"original download")
     monkeypatch.setenv("ASSIGNMENT_CHECKER_ROOT", str(course_folder))
+    # The Moodle ZIP backups live in the work folder: keep the real one on this computer out of the tests
+    monkeypatch.setenv("ASSIGNMENT_WORK", str(tmp_path / "work"))
     return r
 
 

@@ -669,12 +669,12 @@ def returned_numbers(assignment_dir: Path, marked: dict[str, list[Path]]) -> set
 
 
 # ---------- מצב לאתר ----------
-_DOWNLOAD = re.compile(re.escape(paths.DOWNLOAD_PREFIX) + r" (\d{4}-\d{2}-\d{2} \d{2}-\d{2})\.zip$")
+_DOWNLOAD = re.compile(re.escape(paths.DOWNLOAD_PREFIX) + r" (\d{4}-\d{2}-\d{2} \d{2}-\d{2})( part \d+)?\.zip$")
 
 
 def _downloads(a: folder_view.Assignment) -> list[str]:
-    """מתי נמשכו ה-ZIP-ים של המטלה (כל הורדה נשמרת בתיקיית המטלה), מהישן לחדש."""
-    stamps = sorted(m.group(1) for p in a.dir.glob("*.zip") if (m := _DOWNLOAD.match(p.name)))
+    """מתי נמשכו ה-ZIP-ים של המטלה (הגיבויים נשמרים במחשב של מי שהוריד), מהישן לחדש. הורדה בחלקים נספרת פעם אחת."""
+    stamps = sorted({m.group(1) for p in paths.download_zips(a.dir) if (m := _DOWNLOAD.match(p.name))})
     return [datetime.strptime(s, "%Y-%m-%d %H-%M").isoformat(timespec="minutes") for s in stamps]
 
 

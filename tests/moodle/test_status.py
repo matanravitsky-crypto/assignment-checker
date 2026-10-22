@@ -21,7 +21,7 @@ def test_status_counts_each_stage():
         (assignment / paths.TO_GRADE / "0001.pdf").write_bytes(b"")
         (assignment / paths.TO_GRADE / "0002.pdf").write_bytes(b"")
         (assignment / paths.KEY).write_text("number,participant_id\n0001,1\n0002,2\n", encoding="utf-8")
-        (assignment / f"{paths.DOWNLOAD_PREFIX} 2026-10-21 16-28.zip").write_bytes(b"")
+        (assignment / f"{paths.DOWNLOAD_PREFIX} 2026-10-21 16-28.zip").write_bytes(b"")  # an older one, left in place
 
         report = status(assignment)
 

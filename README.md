@@ -68,7 +68,6 @@ Exercise Checking System/
       Official solution.pdf           הפתרון הרשמי, אם יש. נשלח ל-Claude עם כל הגשה
       3 - Ready to upload to Moodle/  מה שמוכן להעלאה (שלב ההחזרה)
       Grades.csv                      number,grade,feedback (מה שהבדיקה מחזירה)
-      Moodle download <תאריך>.zip     ה-ZIP בדיוק כפי שמודל נתן
 ```
 
 השמות של כל התיקיות והקבצים מוגדרים במקום אחד: [`moodle/paths.py`](moodle/paths.py).
