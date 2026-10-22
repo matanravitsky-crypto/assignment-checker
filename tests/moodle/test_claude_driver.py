@@ -66,8 +66,14 @@ def test_command_is_limited_to_chrome_and_the_upload_folder(tmp_path):
     assert {"-p", "--chrome", "--no-session-persistence"} <= set(cmd)
     assert cmd[cmd.index("--add-dir") + 1] == str(tmp_path)
     assert cmd[cmd.index("--allowedTools") + 1] == "mcp__claude-in-chrome"
-    assert cmd[cmd.index("--tools") + 1] == ""  # built-in tools off: only the Chrome tools remain
+    assert cmd[cmd.index("--tools") + 1] == ""  # the default: built-in tools off, only the Chrome tools remain
     assert "Bash" not in " ".join(cmd)
+
+
+def test_build_command_can_give_the_run_the_read_tool_only(tmp_path):
+    cmd = build_command("p", tmp_path, model="m", budget_usd=2.0, schema=RESULT_SCHEMA, claude="claude", tools="Read")
+    assert cmd[cmd.index("--tools") + 1] == "Read"
+    assert cmd[cmd.index("--allowedTools") + 1] == "mcp__claude-in-chrome"  # Read is not added here
 
 
 def test_command_has_the_baseline_flags_and_the_prompt_last(tmp_path):
@@ -288,6 +294,8 @@ def test_check_reports_chrome_and_moodle(tmp_path):
     assert GRADING_URL.format(id="3438636") in cmd[-1]
     assert cmd[cmd.index("--allowedTools") + 1] == "mcp__claude-in-chrome"
     assert "--chrome" in cmd and "--no-session-persistence" in cmd
+    assert cmd[cmd.index("--tools") + 1] == ""  # the check never uploads: no built-in tools at all
+    assert not {"Bash", "Edit", "Write", "Read"} & set(" ".join(cmd[:-1]).split())  # cmd[-1] is the prompt
     # No ZIP to carry here, so the only folder it may see is an empty one made for the check
     assert cmd[cmd.index("--add-dir") + 1] == str(fake.calls[0][1]["cwd"])
 
@@ -377,7 +385,9 @@ def test_the_run_gets_a_fresh_temp_folder_with_only_a_copy_of_the_zip(tmp_path):
     assert fake.seen == [{"Graded - part 01.zip": b"the ZIP"}]  # no settings, no CLAUDE.md, nothing else
     assert cmd[cmd.index("--add-dir") + 1] == str(run_dir)
     assert run_dir.is_absolute() and shared not in run_dir.parents and run_dir != shared
-    assert cmd[cmd.index("--tools") + 1] == ""  # still no built-in tools
+    assert cmd[cmd.index("--tools") + 1] == "Read"  # the Read tool only: it reaches run_dir, which holds just the ZIP
+    assert cmd[cmd.index("--allowedTools") + 1] == "mcp__claude-in-chrome"
+    assert not {"Bash", "Edit", "Write"} & set(" ".join(cmd[:-1]).split())  # cmd[-1] is the prompt
     assert not run_dir.exists()  # deleted when the run ended
     assert zip_file.read_bytes() == b"the ZIP"  # the original stays
 

@@ -169,7 +169,7 @@ CLI: `python -m moodle send <id> [--dry-run] [--yes] [--simulate]`.
   with `feedback.pdf`) was imported by BGU Moodle into the right student's feedback on assignment 3438636.
 - **Headless Claude.** `claude -p --chrome` reaches the user's Chrome and their logged-in Moodle. The structured
   answer is in `structured_output`. `--allowedTools` alone does not restrict tools; `--tools` does, so the driver
-  passes `--tools` (built-ins off) plus `--allowedTools mcp__claude-in-chrome`, `--no-session-persistence`,
+  passes `--tools "Read"` (all other built-ins off) plus `--allowedTools mcp__claude-in-chrome`, `--no-session-persistence`,
   `--json-schema`, `--max-budget-usd` and `--model claude-sonnet-5-5`. With the default (Opus) model a run cost about
   $0.5 in 4 turns; with Sonnet about $0.10-0.35 per run. That counts against the Claude subscription's usage and is
   not billed separately.
@@ -182,10 +182,9 @@ CLI: `python -m moodle send <id> [--dry-run] [--yes] [--simulate]`.
   `--add-dir`, and it is deleted afterwards. The run never starts in the shared upload folder: anyone on the team
   can write there, and with `--setting-sources project` a `.claude/settings.json` (hooks) or `CLAUDE.md` there would
   be loaded.
-- **Known open issue:** on the first fully automatic test, `file_upload` was refused because the run had no file-read
-  permission (`--tools ""`). The upload run needs read access to its own temp folder only (it holds just the ZIP's
-  copy), so the fix is one more flag. It is waiting for the user's explicit approval, and `--tools ""` stays as it
-  is until then.
+- **Resolved (read permission):** the first fully automatic test had `file_upload` refused because `--tools ""` left
+  the run no file-read permission. The upload run now has `--tools "Read"` only (no Bash, Edit or Write), scoped to its
+  temp folder with the single ZIP. The user approved this on 2026-10-22. The connection check keeps `--tools ""`.
 
 **Before the first real upload:** do it once on a test assignment (ask the lecturer for one). Never try it for the
 first time on an assignment with real students.

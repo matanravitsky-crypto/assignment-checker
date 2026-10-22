@@ -7,8 +7,11 @@ Moodle has no API, so `ClaudeChromeDriver.upload_zip` (the `MoodleDriver` of sen
 in the user's own logged-in Chrome and turns the CLI's JSON output into an `UploadResult`.
 
 What the run gets (the flags are in `build_command`):
-- Tools: the Chrome tools only. `--tools ""` switches every built-in tool off (Bash, Read, Edit, Write...), so the
-  run has no file tools at all, and `--strict-mcp-config` keeps other MCP servers out.
+- Tools: the Chrome tools plus the built-in Read tool (`--tools "Read"`), nothing else: no Bash, no Edit, no Write.
+  Read is there because Chrome's `file_upload` reads the ZIP through the session's Read permission; in `-p` mode
+  reads inside the working folder and `--add-dir` need no prompt, so Read is not in `--allowedTools`. The run can
+  read only its temp folder (below), which holds the one ZIP. `--strict-mcp-config` keeps other MCP servers out.
+  The connection check (`check`) never uploads, so it keeps `--tools ""`: no built-in tools at all.
 - Folder: a fresh temporary folder outside OneDrive (`tempfile.mkdtemp`), holding only a copy of the ZIP. It is
   the run's working folder and its only `--add-dir`, and it is deleted when the run ends. The run never starts in
   the shared upload folder: anyone on the team can write there, and with `--setting-sources project` a
@@ -17,9 +20,8 @@ What the run gets (the flags are in `build_command`):
 - Settings: `--setting-sources project` (the empty temp folder has none), so not the user's settings, hooks or plugins.
 Claude never types a Moodle password: a login page ends the run with "needs_login".
 
-Known open issue: with `--tools ""` the run has no file-read permission, and on the first real test Chrome's
-`file_upload` was refused for that reason. Letting the run read its own temp folder (one more flag) waits for the
-user's explicit approval; until then the tools stay as they are.
+Resolved: with `--tools ""` the first real test had Chrome's `file_upload` refused ("no permission to read the
+file"). The user approved read access for the upload run on 2026-10-22, scoped to the temp folder with the one ZIP.
 
 The driver never raises. `run_batch` lets a driver's exception propagate, so every failure (no `claude`, a
 timeout, a non-zero exit, output nobody can read, Claude not logged in) comes back as `UploadResult("error")`
@@ -143,10 +145,12 @@ def render_prompt(info: dict, zip_path: Path, expected: int, dry_run: bool) -> s
     )
 
 
-def build_command(prompt: str, add_dir: Path, *, model: str, budget_usd: float, schema: dict, claude: str) -> list[str]:
+def build_command(prompt: str, add_dir: Path, *, model: str, budget_usd: float, schema: dict, claude: str,
+                  tools: str = "") -> list[str]:
     """The command line of one run. Every flag of the locked-down run is here, so the findings of plan task 1 change one place.
 
     --tools, --allowedTools and --add-dir take a list: each is followed by another flag, so the prompt (last) is not read as one more value.
+    `tools` is the built-in tools of the run: "" for none (the connection check), "Read" for an upload (file_upload needs it).
     """
     return [
         claude, "-p",
@@ -154,12 +158,12 @@ def build_command(prompt: str, add_dir: Path, *, model: str, budget_usd: float, 
         "--no-session-persistence",                         # nothing of the run is kept
         "--setting-sources", "project",                     # not the user's settings, hooks or plugins
         "--strict-mcp-config",                              # no MCP servers beyond the ones named for the run
-        "--tools", "",                                      # switches every built-in tool off (Bash, Edit, Write, Read...). --allowedTools alone does not
-        "--allowedTools", "mcp__claude-in-chrome",          # what is left: the Chrome tools only. Needs no permission prompt
+        "--tools", tools,                                   # the built-in tools: "" = none, "Read" = Read only (never Bash, Edit, Write). --allowedTools alone does not restrict
+        "--allowedTools", "mcp__claude-in-chrome",          # the Chrome tools need no permission prompt. Read is not listed: reads inside cwd and --add-dir are allowed in -p mode
         "--output-format", "json",
         "--max-budget-usd", str(budget_usd),
         "--json-schema", json.dumps(schema, separators=(",", ":")),
-        "--add-dir", str(add_dir),                          # the run's own temp folder only (a copy of the ZIP, or nothing)
+        "--add-dir", str(add_dir),                          # the run's own temp folder only (a copy of the ZIP, or nothing): all that Read can reach
         "--model", model,
         prompt,
     ]
@@ -248,9 +252,11 @@ class ClaudeChromeDriver:
         self.run = run
         self.claude = claude
 
-    def execute(self, claude: str, prompt: str, folder: Path, schema: dict, budget_usd: float, timeout_s: float):
+    def execute(self, claude: str, prompt: str, folder: Path, schema: dict, budget_usd: float, timeout_s: float,
+                tools: str = ""):
         """Run the CLI with `folder` as its only folder. May raise: the callers turn that into a result."""
-        cmd = build_command(prompt, folder, model=self.model, budget_usd=budget_usd, schema=schema, claude=claude)
+        cmd = build_command(prompt, folder, model=self.model, budget_usd=budget_usd, schema=schema, claude=claude,
+                            tools=tools)
         # stdin closed: a headless run must not wait for input nobody types
         return self.run(cmd, capture_output=True, text=True, encoding="utf-8", timeout=timeout_s,
                         cwd=folder, stdin=subprocess.DEVNULL)
@@ -274,7 +280,8 @@ class ClaudeChromeDriver:
             if sha256 is not None and upload_log.file_hash(copy) != sha256:
                 return UploadResult("error", message=COPY_CHANGED.format(name=name))
             prompt = render_prompt(info, copy, expected, dry_run)
-            proc = self.execute(claude, prompt, run_dir, RESULT_SCHEMA, self.budget_usd, self.timeout_s)
+            # Read only: file_upload reads the ZIP through it, and it reaches only run_dir
+            proc = self.execute(claude, prompt, run_dir, RESULT_SCHEMA, self.budget_usd, self.timeout_s, tools="Read")
         except Exception as error:  # the driver must never raise (see the module docstring)
             message = failure_message(error, self.timeout_s)
             if isinstance(error, subprocess.TimeoutExpired):
@@ -293,7 +300,7 @@ class ClaudeChromeDriver:
         timeout_s = min(self.timeout_s, CHECK_TIMEOUT_S)
         try:
             prompt = CHECK_PROMPT.format(grading_url=GRADING_URL.format(id=assignment_id(info)))
-            # No ZIP to carry, so the run gets an empty folder and nothing else
+            # No ZIP to carry and nothing to upload, so the run gets an empty folder and no built-in tools (tools="")
             with tempfile.TemporaryDirectory(prefix="moodle-check-", ignore_cleanup_errors=True) as empty:
                 proc = self.execute(claude, prompt, Path(empty), CHECK_SCHEMA, CHECK_BUDGET_USD, timeout_s)
         except Exception as error:  # never raise: the answer is a dict for the site
