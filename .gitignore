@@ -9,3 +9,7 @@ venv/
 Thumbs.db
 .pytest_cache/
 *.tmp.xlsx
+
+# Student submissions and grades from Moodle: never commit (the repo is public)
+data/
+*.zip

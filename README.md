@@ -111,3 +111,42 @@ python -m pipeline pull "Linear Algebra" "Assignment 0 - Sets and Complex Number
 python -m pytest
 ```
 מריץ את הבדיקות.
+
+## Browser download and numbered submissions (`moodle/`)
+
+Without a Moodle token, Claude in Chrome does the clicking and these scripts do the rest. Student files never enter this repo (it is public). They live in `Exercise Checking System`, a folder per course and per assignment with plain English names, shared through the lecturer's OneDrive; see `moodle/paths.py` and `CLAUDE.md`.
+
+Needs Python 3.10+ and 7-Zip (`winget install 7zip.7zip`).
+
+**In** — after the due date, in the assignment's Submissions page: Actions → *Download all submissions*, then:
+
+```bash
+python -m moodle ingest <assignment id> --course "Linear Algebra" --name "Assignment 0 - Sets and Complex Numbers"
+```
+
+(`--course` and `--name` only the first time.) It takes the newest `…-<assignment id>.zip` from Downloads into `<course>/<assignment name>/`, keeps the ZIP there, and writes `1 - Submissions to grade/0001.pdf …` for grading plus the key table `Key - number to student.csv` (number → Moodle participant id). On a later download every student keeps their number, and students who submitted since then get the next numbers.
+
+**Out** — grading writes `Grades.csv` (`number,grade,feedback`) and `2 - Graded with comments/0001.pdf …`; download the grading worksheet from Moodle, then:
+
+```bash
+python -m moodle upload <assignment id>
+```
+
+It fills `3 - Ready to upload to Moodle/` with `Grades for Moodle worksheet.csv` (Actions → *Upload grading worksheet*), `Graded - part 01.zip …` (Actions → *Upload multiple feedback files in a zip*; each under Moodle's 31 MB limit) and `Upload steps.txt`, the steps for whoever uploads. Grades are matched by number, never by row order.
+
+**Check** — `python -m moodle status <assignment id>` shows what's done and flags file names OneDrive would refuse. `python -m moodle guide` rewrites the `README.txt` files (in Hebrew).
+
+One person downloads and uploads, so there is one key table per assignment; the team works from the shared folder.
+
+`CLAUDE.md` has the full picture for working on this with Claude.
+
+Tests for this part:
+
+```bash
+python test_main.py
+python test_anonymize.py
+python test_ingest.py
+python test_upload.py
+python test_status.py
+python test_guide.py
+```
