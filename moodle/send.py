@@ -11,17 +11,28 @@ It also reports what to know before uploading, by number only (no names): files 
 upload (their whole number stays out), resubmitted numbers, and numbers nobody approved yet in Grades.csv.
 Unapproved work is still uploaded: that list is for the person who confirms the batch.
 
-Nothing here talks to Moodle, and nothing here writes the log: a ZIP is logged by `upload_log.record_zip`
-once someone has uploaded it.
+`run_batch` then hands each ZIP to a driver, which does the upload in Moodle (the driver of Claude in Chrome
+comes separately; `SimulatedDriver` stands in for it in tests and in the site's demo). A ZIP goes into the log
+(`upload_log.record_zip`) only when the driver's answer matches the number of files in it. A stopped run resumes
+where it stopped: ZIPs whose files are all in the log with the same hash are skipped. While it runs, the
+assignment has `Upload in progress.txt` (see lock.py), so two people don't upload the same assignment at once.
+
+Nothing in `prepare_batch` talks to Moodle or writes the log.
 """
 
 import csv
+import time
 import uuid
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import Protocol
 
-from moodle import anonymize, paths, upload, upload_log
+from moodle import anonymize, lock, paths, upload, upload_log
+
+UPLOAD_LOCK = "Upload in progress.txt"
+STALE_MESSAGE = "הקבצים השתנו מאז ההכנה. צריך להכין שוב."
 
 
 class BatchBlocked(ValueError):
@@ -127,3 +138,159 @@ def prepare_batch(assignment_dir: Path, max_bytes: int = upload.CLAUDE_MAX_ZIP_B
         resubmitted=resubmitted,
         not_approved=sorted(n for n in in_batch if not is_approved(grades.get(n))),
     )
+
+
+# ---------- העלאה ----------
+@dataclass
+class UploadResult:
+    """What the driver saw in Moodle for one ZIP.
+
+    status: "imported" | "dry_run_ok" | "needs_login" | "mismatch" | "error"
+    rows: lines in Moodle's confirmation list; imported / skipped: how many files Moodle imported / left as they were.
+    """
+    status: str
+    rows: int | None = None
+    imported: int | None = None
+    skipped: int | None = None
+    message: str = ""
+
+
+class MoodleDriver(Protocol):
+    def upload_zip(self, info: dict, zip_path: Path, expected: int, dry_run: bool) -> UploadResult:
+        """Upload one ZIP of `expected` files (or, with dry_run, go as far as Moodle's confirmation list and stop)."""
+        ...
+
+
+class SimulatedDriver:
+    """A driver that never touches Moodle: gives `results` one by one, then says every ZIP went through.
+
+    For tests, and for the site with MOODLE_DRIVER=simulate. `delay` seconds per ZIP make progress visible.
+    """
+
+    def __init__(self, results: list[UploadResult] | None = None, delay: float = 0.0):
+        self.results = list(results or [])
+        self.delay = delay
+        self.calls: list[str] = []  # names of the ZIPs it was given
+
+    def upload_zip(self, info: dict, zip_path: Path, expected: int, dry_run: bool) -> UploadResult:
+        self.calls.append(zip_path.name)
+        if self.delay:
+            time.sleep(self.delay)
+        if self.results:
+            return self.results.pop(0)
+        if dry_run:
+            return UploadResult("dry_run_ok", rows=expected)
+        return UploadResult("imported", rows=expected, imported=expected)
+
+
+@dataclass
+class RunReport:
+    """How a run ended. `done_zips`: every ZIP of the batch that is finished, in this run or an earlier one.
+    `recorded`: log rows this run wrote. `stopped`: None when all went through, else why it stopped:
+    "user" | "needs_login" | "mismatch" | "error" | "stale" | "locked"."""
+    total_zips: int
+    done_zips: list[str] = field(default_factory=list)
+    recorded: int = 0
+    stopped: str | None = None
+    message: str = ""
+
+
+def current_batch(assignment_dir: Path, batch_id: str) -> dict | None:
+    """The batch list, if it is still the one the person confirmed (a new prepare changes the id)."""
+    batch = upload_log.read_batch(assignment_dir)
+    return batch if batch and batch["id"] == batch_id else None
+
+
+def counts_match(result: UploadResult, expected: int) -> bool:
+    return result.rows == expected and (result.imported or 0) + (result.skipped or 0) == expected
+
+
+def run_batch(
+    assignment_dir: Path,
+    batch_id: str,
+    driver: MoodleDriver,
+    *,
+    dry_run: bool = False,
+    should_stop: Callable[[], bool] = lambda: False,
+    on_progress: Callable[[int, int, str], None] | None = None,
+) -> RunReport:
+    """Upload the ZIPs of the prepared batch `batch_id` one by one, and log each one Moodle accepted.
+
+    `should_stop` is asked before every ZIP that is still to upload; `on_progress(index, total, zip_name)` is
+    called after each ZIP this run finished (index counts from 1 in the batch). With `dry_run` only the first ZIP
+    that is still to upload goes as far as Moodle's confirmation list, and nothing is logged.
+    """
+    batch = current_batch(assignment_dir, batch_id)
+    if batch is None:
+        return RunReport(0, stopped="stale", message=STALE_MESSAGE)
+    try:
+        lock_file = lock.take(assignment_dir, UPLOAD_LOCK)
+    except lock.Locked as busy:
+        return RunReport(len(batch["zips"]), stopped="locked",
+                         message=f"{busy.who} מעלה את המטלה הזו עכשיו (מ-{busy.since:%H:%M}).")
+    try:
+        return upload_zips(assignment_dir, batch_id, batch["zips"], driver, dry_run, should_stop, on_progress, lock_file)
+    finally:
+        lock_file.unlink(missing_ok=True)
+
+
+def upload_zips(
+    assignment_dir: Path,
+    batch_id: str,
+    zips: list[dict],
+    driver: MoodleDriver,
+    dry_run: bool,
+    should_stop: Callable[[], bool],
+    on_progress: Callable[[int, int, str], None] | None,
+    lock_file: Path,
+) -> RunReport:
+    """The loop of run_batch, with the lock already taken."""
+    report = RunReport(len(zips))
+    info = paths.read_info(assignment_dir)
+    uploaded = upload_log.last_hashes(assignment_dir)
+
+    def stop(why: str, message: str) -> RunReport:
+        report.stopped, report.message = why, message
+        return report
+
+    def finished(index: int, name: str) -> None:
+        lock.refresh(lock_file)  # a long run keeps its lock alive
+        if on_progress:
+            on_progress(index, report.total_zips, name)
+
+    for index, entry in enumerate(zips, 1):
+        name, files = entry["name"], entry["files"]
+        if all(uploaded.get(f["file"]) == f["sha256"] for f in files):
+            report.done_zips.append(name)  # an earlier run did this one: that is how a stopped batch resumes
+            continue
+        if should_stop():
+            return stop("user", f"נעצר לבקשתך אחרי {len(report.done_zips)} מתוך {report.total_zips} קבצי ZIP.")
+        if current_batch(assignment_dir, batch_id) is None:  # prepared again meanwhile: these ZIPs are not the ones confirmed
+            return stop("stale", STALE_MESSAGE)
+
+        expected = len(files)
+        result = driver.upload_zip(info, assignment_dir / paths.UPLOAD / name, expected, dry_run)
+        if dry_run and result.status == "dry_run_ok" and result.rows == expected:
+            report.message = f"בדיקה יבשה עברה: {result.rows} שורות ברשימת האישור"
+            finished(index, name)
+            return report
+        if not dry_run and result.status == "imported" and counts_match(result, expected):
+            report.recorded += upload_log.record_zip(assignment_dir, name, by=lock.me())
+            report.done_zips.append(name)
+            finished(index, name)
+            continue
+
+        # Anything else stops the run; a result that says imported (or checked) but fails the numbers is an error
+        detail = result.message
+        if not detail and result.status in ("imported", "dry_run_ok"):
+            detail = (f"קבצים צפויים: {expected}, שורות ברשימת האישור: {result.rows}, "
+                      f"יובאו: {result.imported or 0}, דולגו: {result.skipped or 0}")
+        why = result.status if result.status in ("needs_login", "mismatch", "error") else "error"
+        return stop(why, f"{name}: {detail}")
+
+    if dry_run or report.recorded == 0:
+        report.message = "אין מה להעלות: כל קבצי ה-ZIP כבר הועלו."
+    else:
+        report.message = (f"הסתיים: {len(report.done_zips)} מתוך {report.total_zips} קבצי ZIP הועלו, "
+                          f"{report.recorded} קבצים נרשמו ביומן.")
+    return report
