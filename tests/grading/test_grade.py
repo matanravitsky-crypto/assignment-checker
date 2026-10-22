@@ -25,6 +25,9 @@ COURSE, HW = "Linear Algebra", "Assignment 0 - Sets and Complex Numbers"
 NAMES = {"1001": "נועה כהן", "1002": "איתי לוי", "1003": "מאיה מזרחי"}
 LABELS = ["דף קבוצות 11", "דף קבוצות 12", "דף מספרים מרוכבים 6", "דף מספרים מרוכבים 7", "דף מספרים מרוכבים 8"]
 _real_claude_ask = grading.claude_ask
+# המחוון של מטלת הבדיקות: 20 נקודות לכל שאלה. בלי מחוון אין ציונים בכלל
+RUBRIC = {"questions": [{"label": l, "points": 20, "deductions": [{"text": "חסר נימוק", "points": 5}, "רק הערה"] if i == 1 else []}
+                        for i, l in enumerate(LABELS)]}
 
 
 @pytest.fixture(autouse=True)
@@ -48,7 +51,7 @@ def root(tmp_path, monkeypatch):
         (a.dir / sub).mkdir(parents=True)
     save_details(a, {"id": "3438636", "course": COURSE, "course_id": "67024", "name": HW,
                      "questions": [{"sheet": "דף קבוצות", "numbers": [11, 12]}, {"sheet": "דף מספרים מרוכבים", "numbers": [6, 7, 8]}],
-                     "submission_rules": ["כתב יד, קובץ PDF אחד"], "max_grade": None, "rubric": None,
+                     "submission_rules": ["כתב יד, קובץ PDF אחד"], "max_grade": None, "rubric": RUBRIC,
                      "title": "הגשה 0 - קבוצות ומרוכבים", "course_title": "אלגברה לינארית להנדסה"})
     rows = []
     for i, pid in enumerate(NAMES, start=1):
@@ -381,8 +384,6 @@ def test_server_grades_in_the_background(root, server, monkeypatch):
 
 
 # ---------- Grading notes, טעויות נפוצות ובדיקה ידנית ----------
-RUBRIC = {"questions": [{"label": l, "points": 20, "deductions": [{"text": "חסר נימוק", "points": 5}, "רק הערה"] if i == 1 else []}
-                        for i, l in enumerate(LABELS)]}
 
 
 def detailed(points=(20, 15, 20, 20, 10), review="", kind="", unsure=(), mistakes=None):
@@ -444,9 +445,9 @@ def test_grading_writes_notes_and_a_failure_reaches_the_review_queue(root):
 def test_save_review_approves_with_who_and_rewrites_the_summary_page(root):
     a = asg(root)
     grading.grade_assignment(a.dir, ["0001"], ask=lambda req: detailed(review="לא בטוח", kind="uncertain"))
-    out = grading.save_review(a.dir, "1", [20, 14.7, 20, 99, 0], ["", "חסר נימוק.", "", "", "השאלה לא נמצאה"],
+    out = grading.save_review(a.dir, "1", [20, 14.7, 20, 20, 0], ["", "חסר נימוק.", "", "", "השאלה לא נמצאה"],
                               "עבודה טובה.", by="dana (PC)", mistakes=[[], ["חסר נימוק"], [], [], []])
-    assert out == {"number": "0001", "grade": 75}  # 14.7 → 14.5, 99 → 20 (הניקוד המרבי)
+    assert out == {"number": "0001", "grade": 75}  # 14.7 → 14.5
     row = grading.read_grades(a.dir)["0001"]
     assert row["points"] == "20;14.5;20;20;0" and row["grade"] == "75" and row["feedback"] == "עבודה טובה."
     assert row["approved"].startswith("dana (PC) ") and row["review"] == "לא בטוח" and grading.is_approved(row)
@@ -524,3 +525,42 @@ def test_server_review_and_downloads(root, server):
         assert conn.getresponse().status in (400, 404)
     for path in (paths.KEY, f"{paths.MARKED}/0003-2.jpg", f"{paths.NOTES}/0003.json"):
         assert get(rel + path)[0] == 404  # רק הגשות ועבודות מסומנות יוצאות. לא המפתח ולא שום דבר אחר
+
+
+# ---------- ניקוד רק לפי המחוון ----------
+def test_without_a_rubric_there_are_no_grades(root, server):
+    """בלי מחוון אין חלוקה שווה ואין שום חלוקה אחרת: לא בודקים, לא מאשרים, והאתר יודע למה."""
+    a = asg(root)
+    save_details(a, {**a.details(), "rubric": None})
+    ctx = grading.load_context(a.dir)
+    assert [q.points for q in ctx.questions] == [0] * 5 and "אין מחוון" in ctx.no_rubric
+    fake = FakeClaude()
+    with pytest.raises(grading.NoRubric):
+        grading.grade_assignment(a.dir, ["0001"], ask=fake)
+    assert not fake.requests and not (a.dir / grading.GRADES).exists()
+    with pytest.raises(grading.NoRubric):
+        grading.save_review(a.dir, "0001", [20] * 5, [], "", by="x")
+    st, out = call(server, "POST", "/api/grade", {"course": COURSE, "assignment": HW})
+    assert st == 422 and out["noRubric"] and "אך ורק לפי המחוון" in out["error"]
+    (A,) = actions.state(root)["assignments"]
+    assert "אין מחוון" in A["noRubric"] and [q["points"] for q in A["rubric"]] == [0] * 5
+
+
+def test_a_question_without_points_in_the_rubric_blocks_grading(root):
+    a = asg(root)
+    rubric = json.loads(json.dumps(RUBRIC))
+    rubric["questions"][4]["points"] = None
+    save_details(a, {**a.details(), "rubric": rubric})
+    with pytest.raises(grading.NoRubric) as e:
+        grading.grade_assignment(a.dir, ["0001"], ask=FakeClaude())
+    assert LABELS[4] in str(e.value)
+
+
+def test_points_above_the_rubric_are_never_kept(root):
+    a = asg(root)
+    ctx = grading.load_context(a.dir)
+    g = grading.parse_answer(detailed(points=(20, 20, 20, 20, 23)), ctx, 1)
+    assert g.points[4] == 20 and "יותר מהמחוון" in g.review and f"{LABELS[4]}: 23 מתוך 20" in g.review
+    with pytest.raises(grading.GradingError) as e:
+        grading.save_review(a.dir, "0001", [20, 20, 20, 20, 24], [], "", by="x")
+    assert f"{LABELS[4]}: 24 מתוך 20" in str(e.value) and not (a.dir / grading.GRADES).exists()

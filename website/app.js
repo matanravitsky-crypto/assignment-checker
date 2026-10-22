@@ -16,6 +16,8 @@
     "אם כתב היד לא קריא או שהביטחון בציון נמוך, לסמן את העבודה לבדיקה ידנית.",
     "משוב בעברית, ענייני ומעודד. לפתוח במה שנעשה טוב.",
   ].join("\n");
+  // הכלל, כמו RUBRIC_RULE ב-grading/grade.py: ניקוד רק לפי המחוון. האתר אף פעם לא מחלק ניקוד בעצמו
+  const RUBRIC_RULE = "הניקוד ניתן אך ורק לפי המחוון של המטלה: לכל שאלה הניקוד שלה במחוון, ולא יותר. המערכת לא מחלקת ניקוד בעצמה, ובלי מחוון אין ציונים.";
   // המערכת במחשב: האם היא עונה, ומה היא יודעת
   const LOCAL = {
     on: false, health: null, report: null,
@@ -111,6 +113,12 @@
   const course = () => D.courses.find((c) => c.id === state.courseId);
   const cur = () => D.assignments.find((a) => a.id === state.assignmentId);
   const rubric = () => (LOCAL.on && cur()?.rubricQ) || D.rubrics[state.courseId];
+  // למה אין ציונים במטלה (אין מחוון עם ניקוד לכל שאלה). ריק = יש מחוון
+  const noRubric = () => rubric().missing || "";
+  // שאלות שהניקוד בהן עובר את המחוון: נבדקו לפי חלוקה אחרת, ואסור לאשר אותן ככה
+  const overRubric = (points) => rubric().questions.map((q, i) => ({ q, i, p: points?.[i] })).filter((x) => x.p > x.q.pts);
+  const rubricNoticeHTML = () => `<div class="notice rule-notice">${ICON.warn}<div><b>אין ציונים בלי מחוון.</b> ${esc(noRubric())}
+    <span class="muted" style="display:block">כדי לתת ציונים, המרצה מוסיף מחוון עם ניקוד לכל שאלה (rubric) ל-Assignment details.json שבתיקיית המטלה.</span></div></div>`;
   const pad = (n) => String(n).padStart(2, "0");
   const hhmm = (d) => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
   function when(iso) {
@@ -973,6 +981,7 @@
         <section class="panel">
           <div class="panel-head"><h2>מחוון</h2><span class="meta">${esc(course().name)}, ${esc(A.title)}</span></div>
           <div class="panel-body">
+            ${R.missing ? rubricNoticeHTML() : ""}
             ${R.questions.map((q) => `
               <div class="rubric-row">
                 <span class="rq">שאלה ${q.n}</span>
@@ -980,7 +989,7 @@
                 <span>${esc(q.req)}${q.criteria ? `<small class="muted" style="display:block">${esc(q.criteria)}</small>` : ""}</span>
               </div>`).join("")}
             <div class="total-line"><span>סך הכל</span><span class="num">${total} נק׳</span></div>
-            <p class="hint">כך הבדיקה קוראת את המחוון מהקובץ Assignment details.json שבתיקיית המטלה. כל עוד אין בו מחוון (rubric), הניקוד מתחלק שווה בין השאלות. כדי לשנות, עורכים את הקובץ.</p>
+            <p class="hint">כך הבדיקה קוראת את המחוון מהקובץ Assignment details.json שבתיקיית המטלה. ${esc(RUBRIC_RULE)} כדי לשנות, עורכים את הקובץ.</p>
             <div class="row-start"><button class="btn secondary small" data-act="open-folder">${ICON.folder}פתח את תיקיית המטלה</button></div>
           </div>
         </section>
@@ -1169,6 +1178,7 @@
     const qs = rubric().questions;
     // רק עבודות עם ניקוד לכל שאלה (ב-Grades.csv יש רק ציון סופי)
     const withQ = I.graded.filter((s) => Array.isArray(s.q) && s.q.length === qs.length);
+    if (noRubric()) return `<p class="muted empty-line">אין מחוון, אז אין ניקוד לפי שאלה.</p>`;
     if (!withQ.length) return `<p class="muted empty-line">יופיע אחרי שיהיה ניקוד לכל שאלה.</p>`;
     const rates = qs.map((q, i) => avg(withQ.map((s) => Math.round((s.q[i] / q.pts) * 100))));
     const worst = rates.indexOf(Math.min(...rates));
@@ -1318,7 +1328,7 @@
             <h3 class="gc-title">ציון</h3>
             ${busy ? `<p class="muted" style="margin:0">Claude בודק את העבודה עכשיו.</p>`
               : s.score != null ? `<div class="grade-top"><span class="big num">${s.score}</span><span class="lbl"><b>${s.approved ? "מאושר" : "עוד לא אושר"}</b>מתוך ${cur().maxGrade || 100}</span></div>
-                ${s.q && s.q.length === qs.length ? `<ul class="breakdown">${qs.map((q, i) => `<li><label>${esc(q.req || `שאלה ${q.n}`)}</label><span class="num">${s.q[i]} / ${q.pts}</span><span class="track"><i class="${s.q[i] < q.pts ? "short" : ""}" style="width:${(s.q[i] / q.pts) * 100}%"></i></span></li>`).join("")}</ul>` : ""}
+                ${s.q && s.q.length === qs.length && !noRubric() ? `<ul class="breakdown">${qs.map((q, i) => `<li><label>${esc(q.req || `שאלה ${q.n}`)}</label><span class="num">${s.q[i]} / ${q.pts}</span><span class="track"><i class="${s.q[i] < q.pts ? "short" : ""}" style="width:${Math.min(100, (s.q[i] / q.pts) * 100)}%"></i></span></li>`).join("")}</ul>` : ""}
                 ${s.review ? `<p class="hint"><span class="flag" style="white-space: normal">${s.approved ? "נבדקה ידנית" : "לבדיקה ידנית"}: ${esc(s.review)}</span></p>` : ""}`
               : `<p class="muted" style="margin:0">עוד לא נבדקה.</p>`}
             <p class="hint">אחרי הבדיקה, העבודה עם ההערות נשמרת ב-"2 - Graded with comments" באותו מספר, והציון ב-Grades.csv.</p>
@@ -1438,7 +1448,7 @@
     const head = `<button type="button" class="rq-head" data-rq-toggle="${qi}" aria-expanded="${open}">
       <span class="rq-n num">${qi + 1}</span>
       <span class="rq-label">${esc(q.req || `שאלה ${qi + 1}`)}${unsure ? `<em class="rq-flag">לבדוק</em>` : ""}</span>
-      <span class="rq-pts num ${pts < q.pts ? "lost" : ""}">${fmt(pts)}<small>/${q.pts}</small></span>
+      <span class="rq-pts num ${pts > q.pts ? "over" : pts < q.pts ? "lost" : ""}" ${pts > q.pts ? `title="יותר מהניקוד של השאלה במחוון"` : ""}>${fmt(pts)}<small>/${q.pts}</small></span>
       <span class="rq-chev" aria-hidden="true">${ICON.chev}</span>
     </button>`;
     if (!open) {
@@ -1493,6 +1503,14 @@
     const at = list.indexOf(s), prev = list[at - 1], next = list[at + 1];
     const k = kindOf(s), flagged = needsReview(s) || s.review || s.failed;
     const unsure = (s.unsure || []).map((u, i) => (u ? i : -1)).filter((i) => i >= 0);
+    const over = overRubric(d.points), blocked = !!noRubric() || over.length > 0;
+    // הכלל קודם לכל: בלי מחוון אין טופס ניקוד, וניקוד שעובר את המחוון לא מאושר
+    const rule = noRubric() ? rubricNoticeHTML()
+      : over.length ? `<div class="notice rule-notice">${ICON.warn}<div><b>הניקוד בעבודה הזו לא לפי המחוון.</b>
+          ${over.map((x) => `${esc(x.q.req || `שאלה ${x.i + 1}`)} קיבלה ${fmt(x.p)}, ובמחוון יש לה ${fmt(x.q.pts)}.`).join(" ")}
+          כנראה היא נבדקה לפי חלוקה אחרת של הניקוד, אז צריך לתת ניקוד מחדש לכל השאלות לפי המחוון, או לבדוק אותה שוב עם Claude.
+          ${LOCAL.health?.claude && !s.approved ? `<button type="button" class="btn secondary small" data-act="grade-one" data-id="${s.id}" ${state.run[A.id] ? "disabled" : ""}>${ICON.redo}לבדוק שוב עם Claude</button>` : ""}</div></div>`
+      : `<p class="rv-rule">${ICON.lock}הניקוד לפי המחוון בלבד: לכל שאלה עד הניקוד שלה במחוון.</p>`;
     return `${top}
       <nav class="rv-steps" aria-label="העבודות בתור">
         ${prev ? `<a class="rv-arrow" href="#/review?n=${prev.id}" aria-label="העבודה הקודמת">${ICON.chev}</a>` : `<span class="rv-arrow" aria-hidden="true"></span>`}
@@ -1511,12 +1529,13 @@
         </section>
         <form class="rv-panel" data-rv-form="${s.id}" autocomplete="off">
           <div class="rv-panel-head"><h2>ציון</h2>${unsure.length ? `<span>Claude לא בטוח ב${unsure.map((i) => `<button type="button" class="link-btn" data-rv-jump="${i}">שאלה ${i + 1}</button>`).join(", ")}</span>` : ""}</div>
-          <ol class="rq-list">${qs.map((q, qi) => questionHTML(s, d, qi, open.has(qi))).join("")}</ol>
+          ${rule}
+          ${noRubric() ? "" : `<ol class="rq-list">${qs.map((q, qi) => questionHTML(s, d, qi, open.has(qi))).join("")}</ol>
           <details class="rv-fb" ${state.review.fbOpen ? "open" : ""}><summary>משוב לסטודנט</summary>
-            <textarea id="rv-fb" data-rv-feedback rows="4" aria-label="משוב לסטודנט">${esc(d.feedback)}</textarea></details>
+            <textarea id="rv-fb" data-rv-feedback rows="4" aria-label="משוב לסטודנט">${esc(d.feedback)}</textarea></details>`}
           <div class="rv-bar">
-            <div class="rv-total"><b class="num" id="rv-total">${draftTotal(d)}</b><span>/ ${max}</span></div>
-            <button type="submit" class="btn primary" ${state.review.saving ? "disabled" : ""} title="Ctrl+Enter">${state.review.saving ? ICON.spin : ICON.check}${needsReview(s) ? (next ? "אשר ועבור לבאה" : "אשר") : "שמור"}</button>
+            <div class="rv-total"><b class="num" id="rv-total">${noRubric() ? "—" : draftTotal(d)}</b><span>/ ${max}</span></div>
+            <button type="submit" class="btn primary" ${state.review.saving || blocked ? "disabled" : ""} title="${blocked ? "אפשר לאשר רק ניקוד לפי המחוון" : "Ctrl+Enter"}">${state.review.saving ? ICON.spin : ICON.check}${needsReview(s) ? (next ? "אשר ועבור לבאה" : "אשר") : "שמור"}</button>
           </div>
         </form>
       </div>`;
@@ -1526,6 +1545,7 @@
     const A = cur(), s = A?.subs.find((x) => x.id === id);
     if (!s || state.review.saving) return;
     const d = draft(s), wasQueued = needsReview(s);
+    if (noRubric() || overRubric(d.points).length) { toast(noRubric() || `אפשר לאשר רק ניקוד לפי המחוון. ${RUBRIC_RULE}`, ICON.warn); return; }
     const { queue } = reviewList(A);
     const at = queue.findIndex((x) => x.id === id);
     const next = wasQueued ? (queue[at + 1] || queue.find((x) => x.id !== id)) : null;
@@ -1561,6 +1581,7 @@
             ${A.notes ? `<p class="muted">${esc(A.notes)}</p>` : ""}
           </div>
         </div>
+        ${noRubric() ? rubricNoticeHTML() : ""}
         ${pipelineHTML()}
         ${statsRowHTML(A, I)}
         ${reviewCalloutHTML(A)}
@@ -1965,8 +1986,8 @@
     }
   }
 
-  // בלי מחוון: הניקוד מתחלק שווה בין השאלות, כמו בבדיקה עצמה (grading/grade.py)
-  const equalRubric = (labels) => ({ questions: labels.map((l, i) => ({ n: i + 1, pts: Math.round(100 / labels.length), req: l })) });
+  // בלי מחוון יש רק את שמות השאלות. ניקוד 0 לכל אחת: לא מחלקים את הציון בעצמנו, ואין ציונים
+  const noRubricQ = (labels, why) => ({ questions: labels.map((l, i) => ({ n: i + 1, pts: 0, req: l })), missing: why || `למטלה אין מחוון. ${RUBRIC_RULE}` });
 
   async function loadLocal() {
     try {
@@ -1974,12 +1995,12 @@
       D.courses.splice(0, D.courses.length, ...data.courses);
       D.assignments.splice(0, D.assignments.length, ...data.assignments.map((a) => ({
         ...a, phase: a.subs.length ? "current" : "new", gradedAt: a.gradedAt || null, returnedAt: a.returnedAt || null, lastFresh: null,
-        rubricQ: a.rubric?.length ? { questions: a.rubric.map((q, i) => ({ n: i + 1, pts: q.points, req: q.label, criteria: q.criteria || "", deductions: q.deductions || [] })) } : null,
+        rubricQ: a.rubric?.length ? { questions: a.rubric.map((q, i) => ({ n: i + 1, pts: q.points, req: q.label, criteria: q.criteria || "", deductions: q.deductions || [] })), missing: a.noRubric || "" } : null,
       })));
       Object.keys(D.rubrics).forEach((k) => delete D.rubrics[k]);
       data.courses.forEach((c) => {
         const labels = data.assignments.find((a) => a.courseId === c.id && a.questionLabels?.length)?.questionLabels;
-        D.rubrics[c.id] = equalRubric(labels || ["שאלה 1"]);
+        D.rubrics[c.id] = noRubricQ(labels || ["שאלה 1"]);
       });
       D.runs.splice(0, D.runs.length, ...data.assignments
         .flatMap((a) => (a.log || []).map((l) => ({ ...l, where: `${a.course}, ${a.title}` })))
@@ -2040,6 +2061,7 @@
     const A = cur();
     if (!A || state.run[A.id] || !ids.length) return;
     if (!LOCAL.health?.claude) { toast(NO_KEY, ICON.warn); return; }
+    if (noRubric()) { toast(noRubric(), ICON.warn); return; }
     const run = (state.run[A.id] = { stage: "grade", steps: STAGES.grade.steps.map(() => "pending") });
     run.steps[0] = "running";
     A.subs.filter((s) => ids.includes(s.id)).forEach((s) => { s.status = "grading"; });

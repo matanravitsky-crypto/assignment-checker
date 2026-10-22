@@ -279,6 +279,8 @@ class Handler(SimpleHTTPRequestHandler):
                                             send_solution=body.get("sendSolution", True) is not False)
             except grading.NoApiKey as e:
                 return self._json({"error": str(e), "noKey": True}, HTTPStatus.BAD_REQUEST)
+            except grading.NoRubric as e:
+                return self._json({"error": str(e), "noRubric": True}, HTTPStatus.UNPROCESSABLE_ENTITY)
             except FileNotFoundError as e:
                 return self._json({"error": str(e)}, HTTPStatus.NOT_FOUND)
             except RuntimeError as e:

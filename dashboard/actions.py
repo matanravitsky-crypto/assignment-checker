@@ -232,9 +232,10 @@ def grade_status() -> dict:
 
 def start_grading(root: Path, course: str, assignment: str, numbers: list[str] | None = None,
                   ask: grading.Ask | None = None, wait: bool = False, **opts) -> dict:
-    """מתחיל לבדוק ברקע. זורק NoApiKey אם אין מפתח, ו-RuntimeError אם כבר רצה בדיקה."""
+    """מתחיל לבדוק ברקע. זורק NoRubric אם למטלה אין מחוון, NoApiKey אם אין מפתח, ו-RuntimeError אם כבר רצה בדיקה."""
     global _job
     a = find_assignment(root, course, assignment)
+    grading.require_rubric(grading.load_context(a.dir, send_solution=False))
     if ask is None:
         ask = grading.claude_ask()
     todo = grading.pending(a.dir) if numbers is None else [grading.number_key(n) for n in numbers]
@@ -834,7 +835,7 @@ def state(root: Path) -> dict:
                 "gradedAt": datetime.fromtimestamp(grades_file.stat().st_mtime).isoformat(timespec="minutes") if grades_file.exists() else None,
                 "rubric": [{"label": q.label, "points": q.points, "criteria": q.criteria, "deductions": q.deductions}
                            for q in ctx.questions],
-                "maxGrade": ctx.max_grade, "solution": (a.dir / grading.SOLUTION).is_file(),
+                "noRubric": ctx.no_rubric, "maxGrade": ctx.max_grade, "solution": (a.dir / grading.SOLUTION).is_file(),
                 "notes": d.get("notes") or "", "rules": d.get("submission_rules") or [],
                 "warnings": [f"עותק כפול של טבלת המפתח: {c}" for c in key_conflicts(a)]
                             + [f"עותק כפול של יומן ההעלאה: {c}" for c in upload_log.log_conflicts(a.dir)]
