@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import base64
 import csv
 import http.client
 import json
@@ -237,11 +238,8 @@ def test_grading_writes_grades_csv_and_marked_pdfs(root):
         red = [d for d in doc[1].get_drawings() if d.get("color") and d["color"][0] > 0.8 and d["color"][1] < 0.1]
         assert red, "לא צויר מלבן אדום"
         r = red[0]["rect"]
-        # העמוד המקורי, אחרי השוליים להערות שנוספו משמאל
-        w, h = src[0].rect.width, src[0].rect.height
-        left = w * grading.NOTES_MARGIN
-        assert doc[1].rect.width == pytest.approx(left + w)
-        assert abs(r.x0 - (left + 0.1 * w)) < 2 and abs(r.y0 - 0.1 * h) < 2 and abs(r.x1 - (left + 0.9 * w)) < 2 and abs(r.y1 - 0.16 * h) < 2
+        w, h = doc[1].rect.width, doc[1].rect.height
+        assert abs(r.x0 - 0.1 * w) < 2 and abs(r.y0 - 0.1 * h) < 2 and abs(r.x1 - 0.9 * w) < 2 and abs(r.y1 - 0.16 * h) < 2
     assert rep.summary() == "נבדקו 3 מתוך 3"
 
 
@@ -328,29 +326,34 @@ def test_rotated_page_is_marked_where_it_is_seen():
     with pymupdf.open(stream=grading.mark_pdf(doc.tobytes(), g, ctx), filetype="pdf") as out:
         page = out[1]
         pix = page.get_pixmap(dpi=36)
-        # מלבן אדום ליד הפינה השמאלית העליונה של העמוד כפי שהוא מוצג, אחרי השוליים שנוספו משמאל
-        m = grading.NOTES_MARGIN
-        x, y = int((m + 0.1) / (1 + m) * pix.width), int(0.15 * pix.height)
+        # מלבן אדום ליד הפינה השמאלית העליונה של העמוד כפי שהוא מוצג
+        x, y = int(0.1 * pix.width), int(0.15 * pix.height)
         reds = [(i, j) for i in range(pix.width) for j in range(pix.height)
                 if (lambda c: c[0] > 150 and c[1] < 90 and c[2] < 90)(pix.pixel(i, j))]
         assert reds and min(abs(i - x) for i, _ in reds) <= 3
 
 
-def test_note_says_the_points_off_and_sits_in_the_margin_beside_the_mistake():
-    doc = pymupdf.open(stream=homework_pdf("x", HW, pages=2), filetype="pdf")
-    width = doc[0].rect.width
+def test_note_goes_to_the_nearest_empty_spot_with_an_arrow():
+    # עמוד עם "כתב" שחור בכל החצי השמאלי, וטעות מסומנת בתוכו: ההערה נכתבת בחצי הימני הריק, עם חץ
+    doc = pymupdf.open()
+    page = doc.new_page(width=600, height=800)
+    ink = pymupdf.Rect(20, 20, 300, 780)
+    page.draw_rect(ink, color=(0, 0, 0), fill=(0, 0, 0))
     ctx = grading.Context("מטלה", "קורס", [grading.Question("שאלה 1", 100)])
-    g = grading.Graded([98], [""], 98, "", [grading.Mark(1, 550, 300, 900, 340, "לא נכון עבור t=0", 2)])
+    g = grading.Graded([98], [""], 98, "", [grading.Mark(1, 300, 450, 480, 500, "לא נכון עבור t=0", 2)])
     with pymupdf.open(stream=grading.mark_pdf(doc.tobytes(), g, ctx), filetype="pdf") as out:
-        page = out[1]
-        # לעמוד המסומן נוספו שוליים משמאל, ולעמוד בלי סימונים לא
-        assert page.rect.width == pytest.approx(width * (1 + grading.NOTES_MARGIN)) and out[2].rect.width == width
-        words = page.get_text("words")
-        note = [w for w in words if w[4] in ("ירדו", "נכון")]
-        assert {w[4] for w in note} == {"ירדו", "נכון"} and "2" in {w[4] for w in words}
-        # ההערה כולה בשוליים, בגובה של הטעות או מתחתיה
-        assert all(w[2] <= width * grading.NOTES_MARGIN for w in note)
-        assert all(w[1] >= 0.30 * page.rect.height - 2 for w in note)
+        marked = out[1]
+        assert marked.rect == page.rect  # בלי שוליים: אותו עמוד
+        words = marked.get_text("words")
+        note = [w for w in words if w[4] in ("ירדו", "נכון", "2")]
+        assert {w[4] for w in note} == {"ירדו", "נכון", "2"}
+        assert all(pymupdf.Rect(w[:4]).x0 >= ink.x1 for w in note)  # לא על הכתב
+        box = pymupdf.Rect(0.3 * 600, 0.45 * 800, 0.48 * 600, 0.5 * 800)
+        assert all(not pymupdf.Rect(w[:4]).intersects(box) for w in note)  # ולא על המלבן
+        assert min(abs(pymupdf.Rect(w[:4]).y0 - box.y0) for w in note) < 80  # קרוב לטעות
+        lines = [d for d in marked.get_drawings() if d.get("color") and d["color"][0] > 0.8 and d["color"][1] < 0.1
+                 and any(item[0] == "l" for item in d["items"])]
+        assert len(lines) >= 3  # החץ: קו וראש של שני קווים
 
 
 def test_points_off_is_read_from_the_answer(root):
@@ -358,6 +361,42 @@ def test_points_off_is_read_from_the_answer(root):
     marks = [{"page": 1, "x0": 100, "y0": 100, "x1": 900, "y1": 160, "text": "חסר", "points_off": 2.3}]
     g = grading.parse_answer(answer(marks=marks), ctx, pages=1)
     assert [(m.text, m.points_off) for m in g.marks] == [("חסר", 2.5)]
+
+
+def _sides(req) -> list[int]:
+    """הצד הארוך של כל תמונה בבקשה."""
+    out = []
+    for b in req["messages"][0]["content"]:
+        if b["type"] == "image":
+            pix = pymupdf.Pixmap(base64.b64decode(b["source"]["data"]))
+            out.append(max(pix.width, pix.height))
+    return out
+
+
+def test_small_pages_first_then_full_size_then_one_by_one(root):
+    pdf = (asg(root).submissions / "0001.pdf").read_bytes()
+    ctx = grading.load_context(asg(root).dir)
+
+    def reply(unreadable_times):
+        calls = iter(range(10))
+        return lambda req: json.dumps({**json.loads(answer()), "unreadable": next(calls) < unreadable_times})
+
+    # Claude קרא בגודל הקטן: בקשה אחת, כל העמודים בבת אחת
+    fake = FakeClaude(reply(0))
+    g, _ = grading.grade_one(pdf, ctx, fake)
+    assert len(fake.requests) == 1 and set(_sides(fake.requests[0])) == {1100}
+    assert "_one_by_one" not in fake.requests[0] and not g.review
+
+    # לא הצליח פעמיים: גודל מלא, ואז גודל מלא עמוד אחרי עמוד
+    fake = FakeClaude(reply(2))
+    g, _ = grading.grade_one(pdf, ctx, fake)
+    assert [set(_sides(r)) for r in fake.requests] == [{1100}, {1568}, {1568}]
+    assert [r.get("_one_by_one", False) for r in fake.requests] == [False, False, True] and not g.review
+
+    # לא הצליח אף פעם: נשאר התשובה האחרונה, ומסומן לבדיקה ידנית
+    fake = FakeClaude(reply(3))
+    g, _ = grading.grade_one(pdf, ctx, fake)
+    assert len(fake.requests) == 3 and "גם בגודל המלא" in g.review
 
 
 # ---------- בלי מפתח ----------

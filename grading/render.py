@@ -35,19 +35,19 @@ class PageImage:
         return f"image/{IMAGE_FORMAT}"
 
 
-def render_page(page: pymupdf.Page) -> PageImage:
-    """מקבלת עמוד אחד מתוך PDF ומחזירה תמונה שלו."""
-    # כמה להגדיל את העמוד, כדי שהצד הארוך שלו יהיה בדיוק MAX_SIDE
-    zoom = MAX_SIDE / max(page.rect.width, page.rect.height)
+def render_page(page: pymupdf.Page, max_side: int = MAX_SIDE) -> PageImage:
+    """מקבלת עמוד אחד מתוך PDF ומחזירה תמונה שלו, שהצד הארוך שלה max_side פיקסלים."""
+    # כמה להגדיל את העמוד, כדי שהצד הארוך שלו יהיה בדיוק max_side
+    zoom = max_side / max(page.rect.width, page.rect.height)
     # alpha=False: רקע לבן מלא, בלי שקיפות
     pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False)
     return PageImage(page.number + 1, pix.tobytes(IMAGE_FORMAT), pix.width, pix.height)
 
 
-def render_pdf(data: bytes) -> list[PageImage]:
+def render_pdf(data: bytes, max_side: int = MAX_SIDE) -> list[PageImage]:
     """מקבלת את התוכן של קובץ PDF ומחזירה רשימה של תמונות, אחת לכל עמוד, לפי הסדר."""
     with pymupdf.open(stream=data, filetype="pdf") as doc:
-        return [render_page(page) for page in doc]
+        return [render_page(page, max_side) for page in doc]
 
 
 def render_submission(sub: Submission) -> list[PageImage]:

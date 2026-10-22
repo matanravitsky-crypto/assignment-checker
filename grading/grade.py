@@ -39,11 +39,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
+import numpy as np
 import pymupdf
 
 from moodle import claude_driver, paths
 
-from .render import PageImage, render_pdf
+from . import notes
+from .render import MAX_SIDE, PageImage, render_pdf
 
 # ---------- הגדרות ----------
 GRADES = paths.GRADES
@@ -61,8 +63,12 @@ MAX_TOKENS = 32000
 DEFAULT_PARALLEL = 4
 # גודל מרבי לקובץ מסומן. מעליו התמונות בקובץ נדחסות
 MAX_BYTES = 2_000_000
-# רוחב השוליים להערות שנוספים משמאל לעמוד מסומן, ביחס לרוחב העמוד
-NOTES_MARGIN = 0.4
+# באיזה גודל (הצד הארוך, בפיקסלים) העמודים נשלחים ל-Claude, ואם לקרוא אותם אחד אחרי השני.
+# כל שלב נוסף רק אם Claude ענה בשלב הקודם שהתמונות קטנות מדי לקריאה (unreadable).
+# 1100 פיקסלים הם בערך חצי מהטוקנים של 1568, הגודל המלא שבו Claude קורא תמונה.
+READ_STEPS = ((1100, False), (MAX_SIDE, False), (MAX_SIDE, True))
+# באיזה גודל (הצד הארוך, בפיקסלים) סורקים עמוד מסומן כדי למצוא בו מקום ריק להערות
+NOTES_SCAN_SIDE = 800
 # תמונת עמוד גדולה מזה נשלחת כ-JPEG, כדי שהבקשה לא תעבור את המגבלה של Claude (32 MB)
 MAX_IMAGE_BYTES = 1_500_000
 
@@ -220,6 +226,7 @@ SYSTEM = """אתה מתרגל שבודק תרגילי בית במתמטיקה (�
 - ניקוד לכל שאלה בין 0 לניקוד המרבי שלה, בקפיצות של חצי נקודה לכל היותר.
 - שאלה שלא נמצאה בהגשה מקבלת 0, וכותבים בהערה שלה שהיא לא נמצאה.
 - אם כתב היד לא קריא, חסרים עמודים, או שהניקוד לא ודאי, מסמנים needs_review=true ומסבירים במשפט ב-review_reason. אחרת review_reason ריק.
+- unreadable=true רק אם התמונות קטנות או מטושטשות מכדי לקרוא חלק מהעבודה בגודל שקיבלת, כך שבגודל גדול יותר אפשר היה לקרוא. אז ההגשה נשלחת אליך שוב בגודל גדול יותר. כתב יד גרוע שגם הגדלה לא תעזור לו: unreadable=false ו-needs_review=true.
 
 questions: אחד לכל שאלה במטלה, באותו סדר ועם אותה תווית כמו ברשימת השאלות. comment: משפט קצר על התשובה.
 
@@ -252,8 +259,9 @@ SCHEMA = {
         }},
         "needs_review": {"type": "boolean"},
         "review_reason": {"type": "string"},
+        "unreadable": {"type": "boolean"},
     },
-    "required": ["questions", "feedback", "annotations", "needs_review", "review_reason"],
+    "required": ["questions", "feedback", "annotations", "needs_review", "review_reason", "unreadable"],
     "additionalProperties": False,
 }
 
@@ -284,8 +292,11 @@ def _image_block(img: PageImage) -> dict:
     return {"type": "image", "source": {"type": "base64", "media_type": media, "data": base64.b64encode(data).decode("ascii")}}
 
 
-def build_request(ctx: Context, images: list[PageImage], model: str = DEFAULT_MODEL) -> dict:
-    """הבקשה ל-Claude. מה שמשותף לכל ההגשות בא קודם ונשמר במטמון (cache), והעמודים אחריו."""
+def build_request(ctx: Context, images: list[PageImage], model: str = DEFAULT_MODEL, one_by_one: bool = False) -> dict:
+    """הבקשה ל-Claude. מה שמשותף לכל ההגשות בא קודם ונשמר במטמון (cache), והעמודים אחריו.
+
+    one_by_one: דרך Claude Code, לקרוא את העמודים אחד אחרי השני ולא את כולם בבת אחת (claude_cli.py).
+    מפתחות שמתחילים ב-"_" הם הוראות למערכת, ולא נשלחים ל-API."""
     shared: list[dict] = []
     if ctx.solution:
         shared.append({"type": "document", "title": SOLUTION,
@@ -307,6 +318,8 @@ def build_request(ctx: Context, images: list[PageImage], model: str = DEFAULT_MO
     if not model.startswith("claude-haiku"):
         req["betas"] = ["server-side-fallback-2026-07-01"]
         req["fallbacks"] = "default"
+    if one_by_one:
+        req["_one_by_one"] = True
     return req
 
 
@@ -331,7 +344,7 @@ def claude_ask() -> Ask:
 
     def ask(req: dict) -> str:
         try:
-            with client.beta.messages.stream(**req) as stream:
+            with client.beta.messages.stream(**{k: v for k, v in req.items() if not k.startswith("_")}) as stream:
                 msg = stream.get_final_message()
         except anthropic.AuthenticationError as e:
             raise NoApiKey() from e
@@ -373,6 +386,7 @@ class Graded:
     feedback: str
     marks: list[Mark]
     review: str = ""
+    unreadable: bool = False  # Claude לא הצליח לקרוא בגודל שקיבל, ובגודל גדול יותר אולי כן
 
 
 def _round_half_up(x: float) -> float:
@@ -415,7 +429,8 @@ def parse_answer(text: str, ctx: Context, pages: int) -> Graded:
             continue
         marks.append(Mark(page, x0, y0, x1, y1, str(a.get("text") or "").strip(),
                           _round_half_up(_num(a.get("points_off")))))
-    return Graded(points, comments, compute_grade(points, ctx), str(data.get("feedback") or "").strip(), marks, review.strip())
+    return Graded(points, comments, compute_grade(points, ctx), str(data.get("feedback") or "").strip(), marks, review.strip(),
+                  data.get("unreadable") is True)
 
 
 # ---------- בלי שמות ----------
@@ -468,34 +483,64 @@ def _esc(s: str) -> str:
 
 
 def _note_html(mark: Mark, size: float) -> str:
-    """ההערה בשוליים: כמה נקודות ירדו (מודגש), ואז מה לא נכון."""
+    """ההערה ליד המלבן: כמה נקודות ירדו (מודגש), ואז מה לא נכון."""
     off = f"<b>ירדו {_pts(mark.points_off)} נק'</b><br>" if mark.points_off else ""
     return f'<div dir="rtl" style="color: #d90000; font-size: {size:.1f}px; line-height: 1.2">{off}{_esc(mark.text)}</div>'
 
 
-def _marked_page(out: pymupdf.Document, src: pymupdf.Document, index: int, marks: list[Mark], archive) -> None:
-    """העמוד עם שוליים ריקים משמאל: המלבנים על העבודה, וההערות בשוליים בגובה של כל טעות, עם קו אל המלבן.
-    בלי רקע ובלי לכתוב על העבודה עצמה: לא מסתירים שום דבר ממה שהסטודנט כתב."""
-    shown = src[index].rect  # העמוד כפי שהוא מוצג, אחרי סיבוב
-    extra = shown.width * NOTES_MARGIN
-    page = out.new_page(width=shown.width + extra, height=shown.height)
-    page.show_pdf_page(pymupdf.Rect(extra, 0, extra + shown.width, shown.height), src, index)
-    # הגופן גדל עם העמוד: סריקה מהטלפון יכולה להיות ברוחב של אלפי נקודות
-    size = max(14.0, shown.width / 32)
-    pad = size / 2
-    free_y = pad
-    for mark in sorted(marks, key=lambda m: m.y0):
-        box = pymupdf.Rect(extra + mark.x0 / 1000 * shown.width, mark.y0 / 1000 * shown.height,
-                           extra + mark.x1 / 1000 * shown.width, mark.y1 / 1000 * shown.height)
-        page.draw_rect(box, color=RED, width=1.4, overlay=True)
-        if not (mark.text or mark.points_off) or free_y >= shown.height - size:
+def _note_size(mark: Mark, html: str, size: float, page_width: float, archive) -> tuple[float, float]:
+    """רוחב וגובה (בנקודות) שההערה צריכה: שורה אחת אם היא קצרה, ועד שליש מרוחב העמוד אם היא ארוכה."""
+    longest = max(len(mark.text), 12 if mark.points_off else 0)
+    width = min(max(longest * size * 0.5 + size, page_width * 0.12), page_width * 0.34)
+    with pymupdf.open() as scratch:
+        page = scratch.new_page(width=width + 10, height=2000)
+        spare, _ = page.insert_htmlbox(pymupdf.Rect(0, 0, width, 2000), html, css=_CSS, archive=archive)
+    return width, 2000 - max(spare, 0) + 2
+
+
+def _write(page: pymupdf.Page, rect: pymupdf.Rect, html: str, archive) -> None:
+    """כותב טקסט במקום שמחושב לפי העמוד כפי שהוא מוצג (גם אם העמוד מסובב).
+    בלי רקע, כמו עט אדום: לא מסתירים שום דבר ממה שהסטודנט כתב."""
+    page.insert_htmlbox(rect * page.derotation_matrix, html, css=_CSS, archive=archive, rotate=page.rotation, scale_low=0)
+
+
+def _arrow(page: pymupdf.Page, start: pymupdf.Point, end: pymupdf.Point, head: float) -> None:
+    """חץ אדום מההערה אל המלבן."""
+    d = page.derotation_matrix
+    page.draw_line(start * d, end * d, color=RED, width=1.2, overlay=True)
+    angle = math.atan2(end.y - start.y, end.x - start.x)
+    for side in (-0.45, 0.45):
+        tip = pymupdf.Point(end.x - head * math.cos(angle + side), end.y - head * math.sin(angle + side))
+        page.draw_line(end * d, tip * d, color=RED, width=1.2, overlay=True)
+
+
+def _mark_page(page: pymupdf.Page, marks: list[Mark], archive) -> None:
+    """המלבנים על העבודה, וכל הערה במקום הריק הקרוב ביותר לטעות שלה, עם חץ שלא עובר על הכתב (notes.py)."""
+    shown = page.rect  # העמוד כפי שהוא מוצג, אחרי סיבוב
+    zoom = NOTES_SCAN_SIDE / max(shown.width, shown.height)
+    pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), colorspace=pymupdf.csGRAY, alpha=False)
+    gray = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.stride)[:, :pix.width]
+    taken = notes.ink_mask(gray)
+    boxes = [pymupdf.Rect(m.x0 / 1000 * shown.width, m.y0 / 1000 * shown.height,
+                          m.x1 / 1000 * shown.width, m.y1 / 1000 * shown.height) for m in marks]
+    for box in boxes:
+        page.draw_rect(box * page.derotation_matrix, color=RED, width=1.4, overlay=True)
+        notes.block(taken, tuple(box * zoom))
+    # גדול וברור, אבל לא יותר מדי: בערך 13 נקודות בעמוד A4, וגדל עם העמוד (סריקה יכולה להיות ברוחב של אלפי נקודות)
+    size = max(12.0, shown.width / 40)
+    for mark, box in sorted(zip(marks, boxes), key=lambda mb: (mb[1].y0, mb[1].x0)):
+        if not (mark.text or mark.points_off):
             continue
-        note = pymupdf.Rect(pad, max(box.y0, free_y), extra - pad, shown.height - pad)
-        spare, _ = page.insert_htmlbox(note, _note_html(mark, size), css=_CSS, archive=archive, scale_low=0)
-        used = note.height - max(spare, 0)
-        page.draw_line(pymupdf.Point(extra - pad, note.y0 + size * 0.6), pymupdf.Point(box.x0, box.y0 + min(box.height, size) / 2),
-                       color=RED, width=0.8)
-        free_y = note.y0 + used + pad
+        html = _note_html(mark, size)
+        width, height = _note_size(mark, html, size, shown.width, archive)
+        spot = notes.find_spot(taken, tuple(box * zoom), (math.ceil(width * zoom), math.ceil(height * zoom)))
+        note = pymupdf.Rect(spot.note) / zoom
+        _write(page, note, html, archive)
+        start, end = (pymupdf.Point(p) / zoom for p in spot.arrow)
+        if start.distance_to(end) > size * 0.6:
+            _arrow(page, start, end, size * 0.5)
+        notes.block(taken, spot.note)
+        notes.block_line(taken, *spot.arrow)
 
 
 def _summary_page(doc: pymupdf.Document, g: Graded, ctx: Context, archive) -> None:
@@ -519,17 +564,14 @@ def _summary_page(doc: pymupdf.Document, g: Graded, ctx: Context, archive) -> No
 
 
 def mark_pdf(pdf: bytes, g: Graded, ctx: Context, max_bytes: int = MAX_BYTES) -> bytes:
-    """מצייר את הסימונים באדום על העבודה, עם ההערות בשוליים, מוסיף עמוד סיכום בהתחלה, ושומר עד max_bytes אם אפשר."""
+    """מצייר את הסימונים באדום על העבודה, מוסיף עמוד סיכום בהתחלה, ושומר עד max_bytes אם אפשר."""
     archive = _archive()
     by_page: dict[int, list[Mark]] = {}
     for mark in g.marks:
         by_page.setdefault(mark.page, []).append(mark)
-    with pymupdf.open(stream=pdf, filetype="pdf") as src, pymupdf.open() as doc:
-        for index in range(src.page_count):
-            if index + 1 in by_page:
-                _marked_page(doc, src, index, by_page[index + 1], archive)
-            else:
-                doc.insert_pdf(src, from_page=index, to_page=index)
+    with pymupdf.open(stream=pdf, filetype="pdf") as doc:
+        for number, marks in by_page.items():
+            _mark_page(doc[number - 1], marks, archive)
         _summary_page(doc, g, ctx, archive)
         doc.subset_fonts()
         out = doc.tobytes(garbage=4, deflate=True)
@@ -642,10 +684,17 @@ class GradeReport:
 
 
 def grade_one(pdf: bytes, ctx: Context, ask: Ask, model: str = DEFAULT_MODEL, names: list[str] | None = None) -> tuple[Graded, bytes]:
-    images = render_pdf(pdf)
-    if not images:
-        raise GradingError("אין עמודים בקובץ.")
-    g = parse_answer(ask(build_request(ctx, images, model)), ctx, len(images))
+    """בודקת הגשה אחת. קודם כל העמודים בבת אחת בגודל קטן; אם Claude לא הצליח לקרוא, שוב בגודל המלא,
+    ואם גם אז לא, בגודל המלא ועמוד אחרי עמוד (ראו READ_STEPS)."""
+    for side, one_by_one in READ_STEPS:
+        images = render_pdf(pdf, side)
+        if not images:
+            raise GradingError("אין עמודים בקובץ.")
+        g = parse_answer(ask(build_request(ctx, images, model, one_by_one)), ctx, len(images))
+        if not g.unreadable:
+            break
+    else:
+        g.review = (g.review + " " if g.review else "") + "Claude לא הצליח לקרוא חלק מהעבודה גם בגודל המלא."
     scrub_graded(g, names or [])
     return g, mark_pdf(pdf, g, ctx)
 
