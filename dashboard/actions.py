@@ -22,7 +22,7 @@ import subprocess
 import threading
 import time
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 from grading import grade as grading
@@ -223,15 +223,9 @@ SIMULATE_DELAY = 1.0  # שניות לכל ZIP כש-MOODLE_DRIVER=simulate, כד�
 
 
 def _upload_lock_holder(a: folder_view.Assignment) -> str | None:
-    """מי מעלה עכשיו את המטלה (נעילה שלא התיישנה), או None."""
-    lock_file = a.dir / moodle_send.UPLOAD_LOCK
-    try:
-        age = datetime.now() - datetime.fromtimestamp(lock_file.stat().st_mtime)
-        if age >= timedelta(minutes=moodle_lock.LOCK_MINUTES):
-            return None
-        return lock_file.read_text(encoding="utf-8").strip() or moodle_lock.SOMEONE_ELSE
-    except OSError:
-        return None
+    """מי מעלה עכשיו את המטלה (נעילה שלא התיישנה, של מישהו אחר או של תהליך אחר שלי שעוד רץ), או None. בלי ה-pid."""
+    held = moodle_lock.holder(a.dir / moodle_send.UPLOAD_LOCK)
+    return held[0] if held else None
 
 
 @dataclass
@@ -675,7 +669,7 @@ def state(root: Path) -> dict:
                 "notes": d.get("notes") or "", "rules": d.get("submission_rules") or [],
                 "warnings": [f"עותק כפול של טבלת המפתח: {c}" for c in key_conflicts(a)]
                             + [f"עותק כפול של יומן ההעלאה: {c}" for c in upload_log.log_conflicts(a.dir)]
-                            + ([f"משיכה בתהליך: {(a.dir / LOCK_FILE).read_text(encoding='utf-8').strip()}"] if (a.dir / LOCK_FILE).exists() else [])
+                            + ([f"משיכה בתהליך: {moodle_lock.parse((a.dir / LOCK_FILE).read_text(encoding='utf-8'))[0]}"] if (a.dir / LOCK_FILE).exists() else [])
                             + ([f"העלאה בתהליך: {who}"] if (who := _upload_lock_holder(a)) else []),
                 "subs": subs, "log": [],
             })

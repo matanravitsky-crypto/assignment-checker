@@ -403,3 +403,12 @@ def test_return_endpoint_still_works(root, server, monkeypatch):
     (a_dir(root) / paths.GRADES).write_text("number,grade,feedback\n0001,90,ok\n", encoding="utf-8")
     st, rep = call(server, "POST", "/api/return", BODY, HDR)
     assert st == 200 and rep["report"]["results"] == 1
+
+
+def test_lock_text_with_a_pid_is_shown_without_it(root):
+    mark(root, "0001")
+    (a_dir(root) / UPLOAD_LOCK).write_text("uri (URI-LAPTOP) pid=4242", encoding="utf-8")
+    with pytest.raises(actions.UserError) as e:
+        actions.prepare_send(root, COURSE, HW)
+    assert str(e.value) == "uri (URI-LAPTOP) מעלה את המטלה הזו עכשיו. אפשר להכין העלאה חדשה כשהיא תסתיים."
+    assert "העלאה בתהליך: uri (URI-LAPTOP)" in actions.state(root)["assignments"][0]["warnings"]
