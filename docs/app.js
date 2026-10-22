@@ -349,7 +349,9 @@
 
   // מה קרה במשיכה האחרונה (בגרסה המחוברת)
   function pullReportHTML() {
-    const rule = LOCAL.on ? `<div class="banner">${ICON.lock}<div><b>מוריד אחד, טבלת מפתח אחת.</b> לפי הכללים של הצוות, רק מי שאחראי על מודל (היום אורי) מושך הגשות ומחזיר למודל. משיכה ממחשב נוסף תיצור טבלת מפתח שנייה.</div></div>` : "";
+    // אזהרות מהתיקייה: משיכה שרצה עכשיו אצל מישהו אחר, או עותק כפול של טבלת המפתח
+    const warnings = (LOCAL.on && cur()?.warnings) || [];
+    const rule = warnings.length ? `<div class="banner warn">${ICON.warn}<div>${warnings.map((w) => `<div>${esc(w)}</div>`).join("")}</div></div>` : "";
     const r = LOCAL.report;
     if (!LOCAL.on || !r || r.assignmentId !== state.assignmentId) return rule;
     const lines = [...(r.notes || []), ...(r.result?.problems || []).map((p) => `דורשת טיפול: ${p}`)];

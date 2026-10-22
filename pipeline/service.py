@@ -12,9 +12,11 @@
 from __future__ import annotations
 
 import csv
+import getpass
 import os
 import re
-from datetime import datetime
+import socket
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from moodle import ingest as moodle_ingest, paths, upload as moodle_upload
@@ -58,16 +60,55 @@ def _hebrew_error(e: Exception, mid: str) -> str:
     return text
 
 
+# ---------- כל אחד בצוות יכול למשוך ----------
+# טבלת המפתח יושבת בתיקייה המשותפת, ו-ingest קורא אותה לפני שהוא ממספר, כך שכל סטודנט שומר
+# על המספר שלו לא משנה מי משך. הסיכון היחיד: שני אנשים מושכים את אותה מטלה באותו זמן, לפני
+# ש-OneDrive סנכרן את טבלת המפתח ביניהם. לכן:
+#   * נעילה: בזמן משיכה יש בתיקיית המטלה קובץ שאומר מי מושך. אחרים מחכים.
+#   * התנגשות: אם OneDrive בכל זאת יצר עותק כפול של טבלת המפתח, לא מושכים עד שמתקנים.
+LOCK_FILE = "Pull in progress.txt"
+LOCK_MINUTES = 30
+
+
+def key_conflicts(a: team.Assignment) -> list[str]:
+    """עותקים כפולים של טבלת המפתח ש-OneDrive יוצר בהתנגשות (למשל "...-DESKTOP-ABC.csv")."""
+    stem = Path(paths.KEY).stem
+    return sorted(p.name for p in a.dir.glob(f"{stem}*.csv") if p.name != paths.KEY)
+
+
+def _me() -> str:
+    return f"{getpass.getuser()} ({socket.gethostname()})"
+
+
+def _take_lock(a: team.Assignment) -> Path:
+    lock = a.dir / LOCK_FILE
+    if lock.exists():
+        started = datetime.fromtimestamp(lock.stat().st_mtime)
+        who = lock.read_text(encoding="utf-8").strip() or "מישהו אחר"
+        if datetime.now() - started < timedelta(minutes=LOCK_MINUTES) and who != _me():
+            raise UserError(f"{who} מושך את המטלה הזו עכשיו (התחיל ב-{started:%H:%M}). "
+                            f"כדאי לחכות כמה דקות, לתת ל-OneDrive לסנכרן, ולנסות שוב.")
+    lock.write_text(_me(), encoding="utf-8")
+    return lock
+
+
 # ---------- משיכה ----------
 def pull(root: Path, course: str, assignment: str) -> dict:
     a = find_assignment(root, course, assignment)
     mid = _moodle_id(a)
+    conflicts = key_conflicts(a)
+    if conflicts:
+        raise UserError(f"ב-OneDrive נוצר עותק כפול של טבלת המפתח ({', '.join(conflicts)}). "
+                        "לפני משיכה נוספת צריך לאחד אותו עם הטבלה הראשית ולמחוק את העותק, כדי ששני סטודנטים לא יקבלו אותו מספר.")
     _use_root(root)
     before = {r["number"] for r in a.key_rows()}
+    lock = _take_lock(a)
     try:
         rows = moodle_ingest.ingest(mid)
     except (FileNotFoundError, ValueError) as e:
         raise UserError(_hebrew_error(e, mid)) from e
+    finally:
+        lock.unlink(missing_ok=True)
     numbers = {r["number"] for r in rows}
     new = sorted(numbers - before)
     return {
@@ -169,6 +210,8 @@ def state(root: Path) -> dict:
                 "n": ai + 1, "due": d.get("due"), "questions": a.question_count(), "questionLabels": a.question_labels(),
                 "pulledAt": pulled, "returnedAt": None, "moodleId": d.get("id"),
                 "notes": d.get("notes") or "", "rules": d.get("submission_rules") or [],
+                "warnings": [f"עותק כפול של טבלת המפתח: {c}" for c in key_conflicts(a)]
+                            + ([f"משיכה בתהליך: {(a.dir / LOCK_FILE).read_text(encoding='utf-8').strip()}"] if (a.dir / LOCK_FILE).exists() else []),
                 "subs": subs, "log": [],
             })
     return {"root": str(root), "courses": courses, "assignments": out,
