@@ -45,6 +45,14 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "where":
         print(root)
+        return 0
+    try:
+        service.check_ownership(root)
+    except service.ForeignStructure as e:
+        print(e)
+        return 3
+    if False:
+        pass
     elif args.cmd == "init":
         s = service.init(root)
         print(f"התיקייה מוכנה: {root}")
