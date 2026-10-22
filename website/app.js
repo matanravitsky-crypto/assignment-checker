@@ -46,8 +46,7 @@
     instr: { grade: store.get("instr.grade", DEFAULT_GRADE_INSTR) },  // נשלחות ל-Claude עם כל בדיקה
     claude: store.get("claude", { model: "claude-opus-5-5", parallel: 5, sendSolution: true }),
     loading: false,
-    // לוח הבקרה: ריבוע של שלב שנפתח (גדל ומראה את העבודות), העבודה שנבחרה בו, וטעות נפוצה שנפתחה
-    open: { stage: null, tile: null, filter: "all", q: "" },
+    // לוח הבקרה: טעות נפוצה שנפתחה
     mistakeOpen: null,
     // הבדיקה הידנית: העבודה שפתוחה, סינון לפי סוג הבעיה, מה מוצג (מסומנת/מקורית) והטיוטה של כל עבודה עד השמירה
     review: { id: null, edits: {}, saving: false, pages: {}, marks: true, open: {}, fbOpen: false },
@@ -271,7 +270,29 @@
     if (stage === "grade") list = I.ok.map((s) => (s.status === "grading" ? "busy" : s.status === "pulled" ? "off" : "on"));
     if (stage === "ret") list = I.ok.map((s) => (s.status === "returned" ? "on" : "off"));
     const subs = stage === "pull" ? I.subs : I.ok;
-    return list.map((k, i) => `<i class="d ${k} ${subs[i].fresh ? "pop" : ""}" title="${esc(subs[i].name)}"></i>`).join("");
+    return list.map((k, i) => {
+      const s = subs[i], f = dotFile(stage, s);
+      const what = f?.marked ? "העבודה הבדוקה" : "ההגשה";
+      return `<i class="d ${k} ${s.fresh ? "pop" : ""}" ${f ? `data-dl="${s.id}" data-stage="${stage}"` : ""}
+        title="עבודה ${esc(s.id)}${s.score != null ? ` · ${s.score}` : ""}${f ? `\nלחיצה כפולה מורידה את ${what}` : ""}"></i>`;
+    }).join("");
+  }
+
+  // מה ריבוע מוריד: במשיכה את ההגשה, בבדיקה ובהחזרה את העבודה הבדוקה (ואם עוד אין, את ההגשה)
+  function dotFile(stage, s) {
+    const marked = markedFiles(s)[0], orig = origFiles(s)[0];
+    return stage === "pull" ? orig : marked || orig;
+  }
+  function downloadDot(el) {
+    const s = cur()?.subs.find((x) => x.id === el.dataset.dl), f = s && dotFile(el.dataset.stage, s);
+    if (!f) return;
+    const a = document.createElement("a");
+    a.href = fileUrl(f, true);
+    a.download = "";
+    document.body.append(a);
+    a.click();
+    a.remove();
+    toast(`מוריד את עבודה ${s.id}${f.marked ? " (בדוקה)" : ""}`, ICON.download);
   }
 
   function pipelineHTML() {
@@ -281,15 +302,12 @@
       grade: [I.graded.length, `מתוך ${I.ok.length} נבדקו`, ""],
       ret: [I.returned.length, `מתוך ${I.ok.length} הוחזרו`, ""],
     };
-    const open = state.open.stage;
-    // הריבוע שנפתח גדל, והשניים האחרים מצטמצמים לצדדים
-    const cols = open ? ["pull", "grade", "ret"].map((st) => (st === open ? "minmax(0, 4fr)" : "minmax(150px, 1fr)")).join(" ") : "";
     return `
-      <section class="pipeline ${open ? "has-open" : ""}" aria-label="מסלול הבדיקה" ${open ? `style="--cols: ${cols}"` : ""}>
+      <section class="pipeline" aria-label="מסלול הבדיקה">
         ${["pull", "grade", "ret"].map((st, idx) => {
-          const S = STAGES[st], ss = stageState(st), isOpen = open === st;
+          const S = STAGES[st], ss = stageState(st);
           return `
-          <article class="stage ${isOpen ? "open" : ""}" data-state="${ss.kind}" data-card="${st}">
+          <article class="stage" data-state="${ss.kind}">
             ${idx ? `<span class="stage-arrow" aria-hidden="true">${ICON.chev}</span>` : ""}
             <header class="stage-top">
               ${stageMark(st)}
@@ -297,13 +315,10 @@
                 <h2>${S.name}</h2>
                 <p class="stage-status ${ss.kind}">${ss.kind === "running" ? ICON.spin : ""}${esc(ss.text)}</p>
               </div>
-              <button class="stage-toggle" data-expand="${st}" aria-expanded="${isOpen}"
-                aria-label="${isOpen ? `סגור את ${S.name}` : `הצג את העבודות ב${S.name}`}" title="${isOpen ? "סגור" : "הצג את העבודות"}">${isOpen ? ICON.close : ICON.expand}</button>
             </header>
             <div class="stage-count num">${nums[st][0]}<small>${nums[st][1]}</small></div>
-            ${isOpen ? "" : `<div class="dots" aria-hidden="true">${dotsFor(st, I)}</div>`}
+            <div class="dots" aria-label="כל ריבוע הוא עבודה. לחיצה כפולה מורידה אותה">${dotsFor(st, I)}</div>
             ${nums[st][2] ? `<p class="stage-warn">${ICON.warn}${nums[st][2]}</p>` : ""}
-            ${isOpen ? stageWorksHTML(st, I) : ""}
             <footer class="stage-foot">
               ${stageButton(st)}
               <a class="link" href="#${S.route}">הנחיות והגדרות</a>
@@ -311,24 +326,6 @@
           </article>`;
         }).join("")}
       </section>`;
-  }
-
-  // ---------- ריבוע שנפתח: כל העבודות בשלב, ולכל עבודה הורדה של ההגשה ושל העבודה הבדוקה ----------
-  const STAGE_SETS = {
-    pull: [["all", "כל ההגשות", () => true], ["many", "כמה קבצים", (s) => origFiles(s).length > 1]],
-    grade: [["all", "הכל", () => true], ["graded", "נבדקו", (s) => s.score != null], ["pulled", "ממתינות לבדיקה", (s) => s.status === "pulled"],
-      ["review", "לבדיקה ידנית", needsReview], ["approved", "אושרו", (s) => s.approved]],
-    ret: [["all", "הכל", (s) => s.status === "graded" || s.status === "returned"], ["ready", "מוכנות להעלאה", (s) => s.status === "graded"],
-      ["returned", "הוחזרו", (s) => s.status === "returned"]],
-  };
-
-  function workTile(s, selected) {
-    const flag = needsReview(s);
-    return `<button class="work-tile st-${s.status} ${flag ? "flagged" : ""} ${s.approved ? "approved" : ""}" data-tile="${s.id}" aria-pressed="${selected}"
-      title="עבודה ${s.id}${flag ? ": לבדיקה ידנית" : ""}">
-      <span class="wt-label">עבודה</span><b class="num">${s.id}</b>
-      <span class="wt-meta num">${s.score != null ? s.score : s.status === "pulled" ? "—" : ""}${flag ? ICON.hand : s.approved ? ICON.check : ""}</span>
-    </button>`;
   }
 
   // ההורדות של עבודה אחת: הקבצים המקוריים שהסטודנט הגיש והעבודה אחרי הבדיקה, עם ההערות
@@ -344,46 +341,6 @@
         ${marked.map((f) => link(f, marked.length > 1 ? `בדוקה (${f.name})` : "הורד את העבודה הבדוקה")).join("")
           || `<span class="btn secondary small" aria-disabled="true">${ICON.clock}${s.score != null ? "אין עבודה מסומנת" : "עוד לא נבדקה"}</span>`}
       </div>`;
-  }
-
-  function tileDetailHTML(s) {
-    return `<div class="tile-detail" role="region" aria-label="עבודה ${s.id}">
-      <div class="td-head">
-        <h3>עבודה <span class="num">${s.id}</span></h3>
-        ${statusPill(s)}
-        ${s.score != null ? `<span class="td-score num">${s.score}<small> / ${cur().maxGrade || 100}</small></span>` : ""}
-        ${needsReview(s) ? `<span class="flag">${esc(REVIEW_KIND[kindOf(s)][0])}</span>` : s.approved ? `<span class="tag ok">אושרה</span>` : ""}
-        <button class="btn ghost small end" data-tile="${s.id}" aria-label="סגור">${ICON.close}</button>
-      </div>
-      <div class="td-body">${downloadsHTML(s)}</div>
-      <div class="td-foot">
-        <button class="btn secondary small" data-open="${s.id}">${ICON.eye}פתח לצפייה</button>
-        ${s.score != null || s.failed ? `<a class="btn ${needsReview(s) ? "primary" : "secondary"} small" href="#/review?n=${s.id}">${ICON.pen}${needsReview(s) ? "לבדיקה ידנית" : "ערוך ציון"}</a>` : ""}
-      </div>
-    </div>`;
-  }
-
-  function stageWorksHTML(st, I) {
-    const sets = STAGE_SETS[st];
-    if (!sets.some(([k]) => k === state.open.filter)) state.open.filter = sets[0][0];
-    const base = sets[0][2];
-    const pick = sets.find(([k]) => k === state.open.filter)[2];
-    const q = state.open.q.trim();
-    const list = I.subs.filter((s) => base(s) && pick(s) && (!q || s.id.includes(q)));
-    const sel = list.find((s) => s.id === state.open.tile) || I.subs.find((s) => s.id === state.open.tile);
-    return `<div class="stage-works">
-      <div class="sw-head">
-        <div class="chips" role="group" aria-label="סינון העבודות">
-          ${sets.map(([k, label, fn]) => {
-            const c = I.subs.filter((s) => base(s) && fn(s)).length;
-            return k !== sets[0][0] && !c ? "" : `<button class="chip" data-open-filter="${k}" aria-pressed="${state.open.filter === k}">${label}<span class="c num">${c}</span></button>`;
-          }).join("")}
-        </div>
-        <label class="search small">${ICON.search}<span class="sr">חיפוש עבודה</span><input type="search" id="q-open" data-open-q value="${esc(state.open.q)}" placeholder="מספר עבודה, למשל 0023" inputmode="numeric"></label>
-      </div>
-      ${sel ? tileDetailHTML(sel) : `<p class="sw-hint">לחיצה על עבודה מציגה את ההורדות שלה: ההגשה המקורית והעבודה אחרי הבדיקה.</p>`}
-      <div class="work-grid">${list.map((s) => workTile(s, s.id === sel?.id)).join("") || `<div class="empty slim">אין עבודות שמתאימות.</div>`}</div>
-    </div>`;
   }
 
   function runStepsHTML(stage) {
@@ -1798,13 +1755,7 @@
     const runBtn = t.closest("[data-run]");
     if (runBtn) { runStage(runBtn.dataset.run); return; }
 
-    // לוח הבקרה: ריבוע שנפתח, עבודה שנבחרה בו, סינון, וטעות נפוצה שנפתחה
-    const expand = t.closest("[data-expand]");
-    if (expand) { toggleStage(expand.dataset.expand); return; }
-    const tile = t.closest("[data-tile]");
-    if (tile) { state.open.tile = state.open.tile === tile.dataset.tile ? null : tile.dataset.tile; render(); return; }
-    const of = t.closest("[data-open-filter]");
-    if (of) { state.open.filter = of.dataset.openFilter; render(); return; }
+    // לוח הבקרה: טעות נפוצה שנפתחה
     const mk = t.closest("[data-mistake]");
     if (mk) { state.mistakeOpen = state.mistakeOpen === mk.dataset.mistake ? null : mk.dataset.mistake; render(); return; }
 
@@ -1881,20 +1832,16 @@
     const row = t.closest("[data-open]");
     if (row) { openDrawer(row.dataset.open); return; }
 
-    // לחיצה בכל מקום בריבוע של שלב (לא על כפתור או קישור) פותחת אותו
-    const card = t.closest("[data-card]");
-    if (card && !t.closest("button, a, input, label, .stage-works")) { toggleStage(card.dataset.card); return; }
 
     if (t.id === "scrim") closeDrawer();
     if (t.closest(".nav a")) $("#sidebar").classList.remove("open");
   });
 
-  function toggleStage(st) {
-    const opening = state.open.stage !== st;
-    state.open = { stage: opening ? st : null, tile: null, filter: "all", q: "" };
-    render();
-    if (opening) $(`[data-card="${st}"]`)?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-  }
+  // לחיצה כפולה על ריבוע במסלול: מורידה את העבודה למחשב
+  document.addEventListener("dblclick", (e) => {
+    const dot = e.target.closest?.("[data-dl]");
+    if (dot) { e.preventDefault(); downloadDot(dot); }
+  });
   const reviewSub = () => (route() === "/review" && cur()?.subs.find((x) => x.id === state.review.id)) || null;
 
   // המשוב לסטודנט נשאר פתוח גם כשהמסך מצויר מחדש
@@ -1908,7 +1855,6 @@
 
   document.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && reviewSub()) { e.preventDefault(); saveReview(state.review.id); return; }
-    if (e.key === "Escape" && state.open.stage && !state.openId) { toggleStage(state.open.stage); return; }
     if (e.key === "Escape") { closeDrawer(); $("#sidebar").classList.remove("open"); }
     if (e.key === "Enter" && e.target.matches("[data-open]")) openDrawer(e.target.dataset.open);
     if (e.key === "Enter" && e.target.matches("[data-assign]")) e.target.click();
@@ -1925,7 +1871,6 @@
 
   document.addEventListener("input", (e) => {
     const t = e.target;
-    if (t.matches("[data-open-q]")) { state.open.q = t.value; state.open.tile = null; render(); return; }
     // בבדיקה הידנית לא מציירים מחדש בכל הקשה: רק הציון הכולל מתעדכן
     const rvs = reviewSub();
     if (rvs && (t.dataset.rvPts != null || t.dataset.rvComment != null || t.matches("[data-rv-feedback]"))) {
@@ -1975,7 +1920,6 @@
   });
   $("#assignment-select").addEventListener("change", (e) => { state.assignmentId = e.target.value; state.filter = "all"; resetOpen(); closeDrawer(); render(); });
   function resetOpen() {
-    state.open = { stage: null, tile: null, filter: "all", q: "" };
     state.mistakeOpen = null;
     state.review.id = null;
     if (route() === "/review" && location.hash.includes("?")) history.replaceState(null, "", "#/review");
