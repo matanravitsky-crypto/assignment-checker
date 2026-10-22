@@ -57,14 +57,22 @@ The **key** that links a number back to a student is the Moodle *participant id*
 `anonymize.prepare` reads the existing key, and students who submitted since then get the next free numbers.
 Never delete or rebuild the key table of an assignment that is being graded.
 
-## One downloader, one key
+## Anyone can pull, one key
 
-There is **one** key table per assignment, and it belongs to the one person who downloads from Moodle
-and uploads back to it. Today that is Ori (orimes-source). Everyone else gets only the numbered files and
-never downloads from Moodle themselves: a second download would make a second key, and the two could disagree.
-- Ori: download (when he asks) → `python -m moodle ingest <id>` → upload the course folder to the shared folder.
+Anyone on the team can download from Moodle and pull: the dashboard's "Pull submissions" button or
+`python -m moodle ingest <id>` on their own computer. There is still **one** key table per assignment, in the
+shared folder, and `anonymize.prepare` reads it before numbering, so every student keeps their number no matter
+who pulls. What can break it is two pulls of the same assignment at once, before OneDrive synced the key between them.
+So `pipeline/service.py` guards the dashboard's pull:
+- **Lock:** while a pull runs, the assignment folder has `Pull in progress.txt` (who and since when). Another
+  pull of that assignment waits until it's gone (a lock older than 30 minutes counts as stuck and is ignored).
+- **Conflicts:** if OneDrive still made a conflict copy of the key (`Key - number to student-<PC>.csv`), the
+  dashboard shows it and refuses to pull until someone merges the copy into the main key and deletes it.
+- Let OneDrive finish syncing (the cloud icon) before pulling on another computer.
+
+Then:
 - Team: grade from `1 - Submissions to grade`, write `Grades.csv` and `2 - Graded with comments` next to it.
-- Ori: `python -m moodle upload <id>` → upload to Moodle (below).
+- Whoever returns: `python -m moodle upload <id>` (or "Prepare return" in the dashboard) → upload to Moodle (below).
 
 ## The shared folder (lecturer's OneDrive)
 
@@ -94,7 +102,7 @@ When working with this data:
 
 There is **no Moodle API**. Claude in Chrome works in the user's own logged-in Chrome.
 - The user logs in themselves. Claude never types Moodle passwords.
-- Download only when the downloader (see above) asks. No scheduled downloads: Moodle sessions expire, and
+- Download only when someone on the team asks. No scheduled downloads: Moodle sessions expire, and
   downloading per schedule wastes runs. Every **upload** to Moodle (grades or feedback) needs a person's yes.
 - Submissions page: `https://moodle.bgu.ac.il/moodle/mod/assign/view.php?id=<assignment id>&action=grading`.
   The assignment id is the `id=` in that URL (the number at the end of the ZIP name too).

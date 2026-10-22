@@ -205,3 +205,42 @@ def test_server_refuses_foreign_requests(root, server):
     assert call(server, "GET", "/api/state", headers={"Host": "evil.example"})[0] == 403
     assert call(server, "GET", "/api/file?path=../../Recordings")[0] == 404
     assert call(server, "GET", f"/api/file?path={quote(COURSE + '/' + HW + '/' + paths.KEY)}")[0] == 404  # טבלת המפתח לא נשלחת לאתר
+
+
+# ---------- כל אחד יכול למשוך: נעילה והתנגשויות ----------
+def _ok_ingest(assignment_id, *a, **k):
+    return team.Assignment(paths.find_assignment(assignment_id)).key_rows()
+
+
+def test_pull_waits_for_someone_elses_pull(root, monkeypatch):
+    import os, time
+    monkeypatch.setattr("moodle.ingest.ingest", _ok_ingest)
+    lock = root / COURSE / HW / service.LOCK_FILE
+    lock.write_text("uri (URI-LAPTOP)", encoding="utf-8")
+    with pytest.raises(service.UserError) as e:
+        service.pull(root, COURSE, HW)
+    assert "uri (URI-LAPTOP) מושך" in str(e.value)
+    assert service.state(root)["assignments"][0]["warnings"] == ["משיכה בתהליך: uri (URI-LAPTOP)"]
+    old = time.time() - 31 * 60  # נעילה ישנה (משיכה שנתקעה) לא חוסמת
+    os.utime(lock, (old, old))
+    service.pull(root, COURSE, HW)
+    assert not lock.exists()  # הנעילה משתחררת בסוף
+
+
+def test_lock_is_released_when_pull_fails(root, monkeypatch):
+    def no_zip(*a, **k):
+        raise FileNotFoundError(f"No ZIP ending in -{MID}.zip in Downloads")
+    monkeypatch.setattr("moodle.ingest.ingest", no_zip)
+    with pytest.raises(service.UserError):
+        service.pull(root, COURSE, HW)
+    assert not (root / COURSE / HW / service.LOCK_FILE).exists()
+
+
+def test_onedrive_conflict_copy_blocks_pull(root, monkeypatch):
+    monkeypatch.setattr("moodle.ingest.ingest", _ok_ingest)
+    a_dir = root / COURSE / HW
+    (a_dir / "Key - number to student-DESKTOP-ABC.csv").write_text("number\n", encoding="utf-8")
+    with pytest.raises(service.UserError) as e:
+        service.pull(root, COURSE, HW)
+    assert "עותק כפול" in str(e.value)
+    assert service.state(root)["assignments"][0]["warnings"] == ["עותק כפול של טבלת המפתח: Key - number to student-DESKTOP-ABC.csv"]
