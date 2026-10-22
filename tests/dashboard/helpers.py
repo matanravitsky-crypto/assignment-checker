@@ -38,3 +38,8 @@ def mark(root, *numbers):
     """A small marked PDF per number in MARKED, written after the submissions (so it is the newer one)."""
     for n in numbers:
         (root / COURSE / HW / paths.MARKED / f"{n}.pdf").write_bytes(b"%PDF-1.4 marked " + n.encode())
+
+
+def hw(state):
+    """The tests' one real assignment in the dashboard state (the other courses' assignments are empty slots)."""
+    return next(a for a in state["assignments"] if a["folder"] == HW)

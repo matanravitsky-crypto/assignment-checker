@@ -18,6 +18,7 @@ import pytest
 from moodle import claude_driver, paths
 from dashboard import actions, folder_view
 from grading import grade as grading
+from tests.dashboard.helpers import hw
 from tests.sample_files import homework_pdf
 
 COURSE, HW = "Linear Algebra", "Assignment 0 - Sets and Complex Numbers"
@@ -315,7 +316,7 @@ def test_state_reads_grades_and_marked_files(root):
     (a.dir / paths.MARKED / "0001-2.pdf").write_bytes(b"%PDF")
     (a.dir / paths.MARKED / "0003-2.pdf").write_bytes(b"%PDF")
     st = actions.state(root)
-    (A,) = st["assignments"]
+    A = hw(st)
     subs = {s["id"]: s for s in A["subs"]}
     assert subs["0001"]["status"] == "graded" and subs["0001"]["score"] == 85 and subs["0001"]["approved"] is True
     assert subs["0001"]["q"] == [20, 15, 20, 20, 10] and subs["0001"]["feedback"] == "יפה"
@@ -369,9 +370,9 @@ def test_server_grades_in_the_background(root, server, monkeypatch):
     assert {r["model"] for r in fake.requests} == {"claude-sonnet-5-5"}
     assert "בקפדנות" in json.dumps(fake.requests[0], ensure_ascii=False)
     _, state = call(server, "GET", "/api/state")
-    subs = {s["id"]: s for s in state["assignments"][0]["subs"]}
+    subs = {s["id"]: s for s in hw(state)["subs"]}
     assert subs["0001"]["status"] == "graded" and subs["0001"]["score"] == 85 and subs["0003"]["status"] == "pulled"
-    assert state["claude"] is True and state["assignments"][0]["gradedAt"]
+    assert state["claude"] is True and hw(state)["gradedAt"]
 
     st, out = call(server, "POST", "/api/grade", {"course": COURSE, "assignment": HW, "ids": ["../x"]})
     assert st == 400

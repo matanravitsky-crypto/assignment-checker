@@ -57,6 +57,14 @@ from the ZIP. Commands take the assignment's Moodle id; `paths.find_assignment` 
 `python -m moodle ingest <id> --course "Linear Algebra" --name "Assignment 1 - Vectors"`
 (its Hebrew title comes from the ZIP's file name).
 
+**Ten assignments per course, two courses.** The site shows every course folder (Linear Algebra and Discrete
+Mathematics, even before it has an assignment) with ten slots, "הגשה 0" to "הגשה 9" (`folder_view.SLOTS`). A folder
+named `Assignment N` or `Assignment N - <words>` fills slot N; a slot with no folder is an empty one (`"empty": true`
+in `/api/state`, no Moodle id). Its first pull takes the Moodle link or id from a field on the pull page
+(`POST /api/pull` with `moodleId`): `actions.new_assignment` creates `<course>/Assignment N/` with its details
+(id, course, name), refuses an id that another assignment already has, and the Hebrew title is filled from the ZIP's
+name. The id is saved even if the download then fails, so the next pull doesn't ask again.
+
 The **key** that links a number back to a student is the Moodle *participant id* in the folder name
 (not the ת"ז). It lives only in the key table. A student keeps their number on every later download:
 `anonymize.prepare` reads the existing key, and students who submitted since then get the next free numbers.
