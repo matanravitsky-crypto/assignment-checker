@@ -7,6 +7,7 @@ for 7-Zip to open it (Python's zipfile garbles some Hebrew names), so this uses
 
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -25,6 +26,38 @@ def find_download(assignment_id: str, downloads: Path | None = None) -> Path:
     if not zips:
         raise FileNotFoundError(f"No ZIP ending in -{assignment_id}.zip in {downloads}")
     return max(zips, key=lambda p: p.stat().st_mtime)
+
+
+def find_parts(assignment_id: str, downloads: Path | None = None) -> list[Path]:
+    """Every ZIP of this assignment in Downloads, for an assignment downloaded in parts.
+
+    A big assignment is too much for one Moodle ZIP (at ~2 GB it comes out cut off), so it is
+    downloaded 100 submissions at a time. Chrome names the repeats "<name> (1).zip", "(2)" ...
+    """
+    downloads = downloads or Path.home() / "Downloads"
+    pattern = re.compile(rf"-{assignment_id}( \(\d+\))?$")
+    zips = sorted(p for p in downloads.glob("*.zip") if pattern.search(p.stem))
+    if not zips:
+        raise FileNotFoundError(f"No ZIP ending in -{assignment_id}.zip in {downloads}")
+    return zips
+
+
+def participants_in(zip_path: Path) -> set[str]:
+    """Moodle participant ids of the student folders in a ZIP."""
+    listing = subprocess.run([seven_zip(), "l", "-slt", "-sccUTF-8", str(zip_path)],
+                             capture_output=True, text=True, encoding="utf-8", check=True).stdout
+    return set(re.findall(r"^Path = [^\r\n]*?_(\d+)_assignsubmission_", listing, re.M))
+
+
+def check_parts_dont_overlap(zips: list[Path]) -> None:
+    """Parts must hold different students; an old full download mixed in would duplicate them."""
+    seen: dict[str, str] = {}
+    for zip_path in zips:
+        for participant in participants_in(zip_path):
+            if participant in seen:
+                raise ValueError(f"{zip_path.name} and {seen[participant]} have the same student. "
+                                 f"Keep only this download's parts in Downloads. Nothing was changed.")
+            seen[participant] = zip_path.name
 
 
 def seven_zip() -> str:
@@ -82,22 +115,30 @@ def check_zip(zip_path: Path) -> None:
                          f"Nothing was changed.")
 
 
-def ingest(assignment_id: str, zip_path: Path | None = None,
+def ingest(assignment_id: str, zip_path: Path | list[Path] | None = None,
            course: str | None = None, name: str | None = None) -> list[dict]:
-    zip_path = zip_path or find_download(assignment_id)
-    check_zip(zip_path)
-    target = assignment_folder(assignment_id, zip_path, course, name)
+    """zip_path is one ZIP of the whole assignment, or the list of its parts (see find_parts)."""
+    zips = zip_path if isinstance(zip_path, list) else [zip_path or find_download(assignment_id)]
+    for part in zips:
+        check_zip(part)
+    if len(zips) > 1:
+        check_parts_dont_overlap(zips)
+    target = assignment_folder(assignment_id, zips[0], course, name)
 
     # Keep every download: a later one (after the due date) must not erase the first
     stamp = datetime.now().strftime("%Y-%m-%d %H-%M")
-    kept = target / f"{paths.DOWNLOAD_PREFIX} {stamp}.zip"
-    shutil.move(zip_path, kept)
+    kept = []
+    for index, part in enumerate(zips, start=1):
+        suffix = f" part {index}" if len(zips) > 1 else ""
+        kept.append(target / f"{paths.DOWNLOAD_PREFIX} {stamp}{suffix}.zip")
+        shutil.move(part, kept[-1])
 
     original = paths.original_dir(target)
     if original.exists():
         remove_tree(original)
     original.mkdir(parents=True)
-    subprocess.run([seven_zip(), "x", str(kept), f"-o{original}", "-y", "-bso0", "-bsp0"], check=True)
+    for part in kept:
+        subprocess.run([seven_zip(), "x", str(part), f"-o{original}", "-y", "-bso0", "-bsp0"], check=True)
 
     rows = anonymize.prepare(original, target)
     guide.write_guides(paths.data_dir())

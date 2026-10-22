@@ -1,8 +1,9 @@
 """Command line for the Moodle steps. Assignments are named by their Moodle id.
 
-    python -m moodle ingest <assignment id> [--course "Linear Algebra" --name "Assignment 1 - Vectors"] [--zip PATH]
+    python -m moodle ingest <assignment id> [--course "Linear Algebra" --name "Assignment 1 - Vectors"] [--zip PATH] [--parts]
         Downloaded ZIP -> the assignment's folder, numbered for grading.
         --course and --name (folder names) are needed the first time an assignment comes in.
+        --parts takes every ZIP of the assignment in Downloads, for one downloaded 100 submissions at a time.
 
     python -m moodle status <assignment id>
         What's done for the assignment, and any file names OneDrive would refuse.
@@ -29,6 +30,8 @@ def main() -> None:
     ingest_cmd.add_argument("--course", help="course folder name in English, for a new assignment")
     ingest_cmd.add_argument("--name", help="assignment folder name in English, for a new assignment")
     ingest_cmd.add_argument("--zip", type=Path, help="default: newest matching ZIP in Downloads")
+    ingest_cmd.add_argument("--parts", action="store_true",
+                            help="the assignment was downloaded in parts: take all its ZIPs in Downloads")
 
     status_cmd = commands.add_parser("status", help="show what's done for an assignment")
     status_cmd.add_argument("assignment_id")
@@ -51,7 +54,8 @@ def main() -> None:
         return
 
     if args.command == "ingest":
-        rows = ingest.ingest(args.assignment_id, args.zip, args.course, args.name)
+        zips = ingest.find_parts(args.assignment_id) if args.parts else args.zip
+        rows = ingest.ingest(args.assignment_id, zips, args.course, args.name)
         students = len({row["number"] for row in rows})
         print(f"{students} submissions, {len(rows)} files -> {paths.assignment_dir(args.assignment_id) / paths.TO_GRADE}")
         return
