@@ -275,6 +275,11 @@ def upload_zips(
             finished(index, name)
             return report
         if not dry_run and result.status == "imported" and counts_match(result, expected):
+            # An upload takes minutes: if the batch was prepared again meanwhile, the list now on disk is not the
+            # one this ZIP was built from, and record_zip would log the wrong hashes (or fail after Moodle imported).
+            # Record nothing; uploading the ZIP again later is safe.
+            if current_batch(assignment_dir, batch_id) is None:
+                return stop("stale", STALE_MESSAGE)
             report.recorded += upload_log.record_zip(assignment_dir, name, by=lock.me())
             report.done_zips.append(name)
             finished(index, name)

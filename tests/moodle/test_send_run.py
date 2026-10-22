@@ -255,6 +255,22 @@ def test_a_batch_prepared_again_during_the_run_stops_it_before_the_next_zip(batc
     assert r.message == "הקבצים השתנו מאז ההכנה. צריך להכין שוב."
 
 
+def test_a_batch_prepared_again_while_a_zip_uploads_is_not_recorded(batch):
+    a, s = batch
+
+    class PreparedAgainDuringUpload(SimulatedDriver):
+        def upload_zip(self, *args):
+            result = super().upload_zip(*args)  # Moodle imported the ZIP built from the old files...
+            write_batch(a, {**read_batch(a), "id": "prepared-again"})  # ...and meanwhile someone prepared again
+            return result
+
+    d = PreparedAgainDuringUpload()
+    r = run_batch(a, s.id, d)
+    assert (r.stopped, r.done_zips, r.recorded, d.calls) == ("stale", [], 0, [PART_1])
+    assert r.message == "הקבצים השתנו מאז ההכנה. צריך להכין שוב."
+    assert read_log(a) == [] and not (a / UPLOAD_LOCK).exists()
+
+
 def test_the_driver_gets_the_details_the_zip_path_and_the_expected_count(assignment):
     (assignment / paths.MARKED / "0002-2.pdf").write_bytes(b"second marked file")
     s = prepare_batch(assignment)  # one ZIP with 3 files
