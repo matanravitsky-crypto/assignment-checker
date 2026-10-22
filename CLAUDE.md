@@ -85,16 +85,24 @@ Then:
 https://bgu365-my.sharepoint.com/personal/mein_bgu_ac_il/_layouts/15/onedrive.aspx?id=%2Fpersonal%2Fmein%5Fbgu%5Fac%5Fil%2FDocuments%2FYallaLinearit%2FExercise%20Checking%20System
 Next to it, `YallaLinearit/Course Material (tex)/exercises and solutions/` has the linear algebra questions and solutions as .tex.
 
-For now it is **not synced** to anyone's computer: the team's student accounts have no OneDrive of their own
-(the "Add shortcut to My files" button fails, and `bgu365-my.sharepoint.com/my` returns 404). So:
-- Ori works locally and uploads from the web: in the shared folder, Create or upload → Folder upload → the course
-  folder (e.g. `~/Exercise Checking System/Linear Algebra`). Re-uploading replaces files with the same name.
-  The folder picker is a native Windows dialog Claude can't see, so Ori picks the folder himself.
+**How data gets into the shared folder: Ori drags it in, in the browser, and nothing else.** `PROTOCOL.md`
+("בבוקר: העלאה לוואן דרייב") has the steps, and every Claude follows them:
+- After an ingest, tell Ori which course folder to drag (from `~/Exercise Checking System`) into
+  `YallaLinearit/Exercise Checking System` in the browser, choosing "Replace", and to keep that tab open until
+  "Uploaded ... items". Then compare the counts in OneDrive with `python -m moodle status <id>`, from a new tab.
+- Drag only a course folder. Never delete or replace `Exercise Checking System` itself in OneDrive: the team's
+  `Grades.csv` and `2 - Graded with comments` live there and nowhere else.
+- Never upload `Moodle originals` (students' names, and the Moodle ZIPs under `Backup - Moodle downloads`).
+- While an upload runs, don't navigate or close that OneDrive tab: it stops the upload.
 - Teammates open the link above (the lecturer shares it with them) and view or download what they need,
   e.g. `Linear Algebra/Assignment 0 - Sets and Complex Numbers/1 - Submissions to grade/0023.pdf`. No install needed.
 
-When university OneDrive is enabled for the team, sync instead: the folder → "Add shortcut to My files",
-then `setx ASSIGNMENT_DATA "<synced path to Exercise Checking System>"`, and `python -m moodle status <id>` to check.
+Why not sync or upload from code (checked 22/10; don't retry): Ori's university account is a guest in the staff
+tenant. His own OneDrive is in the students' tenant (`postbguacil-my.sharepoint.com`); the lecturer's folder is in the
+staff tenant (`bgu365-my.sharepoint.com`). OneDrive doesn't sync across tenants ("Sync" and "Add shortcut to My files"
+both fail), and Microsoft Graph upload needs admin consent ("נדרש אישור"). The fix is a TA account in `bgu365`;
+with one, press "Sync" on the folder, `setx ASSIGNMENT_DATA "<synced path to Exercise Checking System>"`,
+and `python -m moodle status <id>` to check.
 
 When working with this data:
 - Grade from `1 - Submissions to grade` only. Don't open the extracted originals or print names, ת"ז or emails into chat, commits or logs.
