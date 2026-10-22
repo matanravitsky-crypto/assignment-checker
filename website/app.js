@@ -7,6 +7,7 @@
   const BASE = ON_LOCAL_HOST ? "" : "http://127.0.0.1:8765/";
   // אותו אתר, ישירות מהמערכת: עובד בלי הרשאת "גישה למכשיר" של כרום
   const LOCAL_SITE = "http://localhost:8765/";
+  const REPO_URL = "https://github.com/matanravitsky-crypto/assignment-checker";
   const DEFAULT_GRADE_INSTR = [
     "לבדוק כל שאלה בנפרד, לפי המחוון ולפי הפתרון הרשמי.",
     "פתרון נכון בדרך אחרת מקבל ניקוד מלא.",
@@ -1102,6 +1103,18 @@
             <button class="btn secondary small" data-act="recheck">${ICON.redo}נסה להתחבר מכאן</button>
           </div>
           <p class="hint">אפשר גם לעבוד מהכתובת הזו: אם כרום שואל אם לאפשר לאתר לגשת לאפליקציות ולשירותים במכשיר, לוחצים "אפשר", והאתר מתחבר לבד תוך כמה שניות.</p>
+        </div>
+      </section>
+      <section class="panel" style="margin-bottom:24px">
+        <div class="panel-head"><h2>פעם ראשונה במחשב הזה?</h2><span class="meta">פעם אחת לכל אחד מהצוות</span></div>
+        <div class="panel-body">
+          <ol class="todo">
+            <li><b>גישה לתיקייה:</b> מבקשים מהמרצה גישה לתיקייה YallaLinearit. בדפדפן, על התיקייה: Add shortcut to My files. באפליקציית OneDrive במחשב מתחברים עם חשבון האוניברסיטה.</li>
+            <li><b>התוכנות</b>, בחלון PowerShell: <code dir="ltr">winget install Python.Python.3.12</code>, <code dir="ltr">winget install 7zip.7zip</code>, <code dir="ltr">winget install Git.Git</code></li>
+            <li><b>המערכת:</b> בחלון חדש, בתיקייה שבה רוצים לשמור אותה: <code dir="ltr">git clone ${REPO_URL}</code></li>
+            <li><b>מפעילים:</b> לחיצה כפולה על <code dir="ltr">start.bat</code> בתיקייה assignment-checker. בכל הפעלה הוא מעדכן את המערכת מ-GitHub, כך שכולם עובדים על אותה גרסה.</li>
+          </ol>
+          <div class="row-start"><a class="btn secondary small" href="${REPO_URL}#readme" target="_blank" rel="noopener">ההסבר המלא ב-GitHub</a></div>
         </div>
       </section>
       ${how}`;
