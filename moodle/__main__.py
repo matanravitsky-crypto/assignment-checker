@@ -3,6 +3,9 @@
     python -m moodle status <assignment id>
         What's done for the assignment, and any file names OneDrive would refuse.
 
+    python -m moodle guide
+        Rewrites the Hebrew "read me" files in the data folder.
+
     python -m moodle ingest <assignment id> [--zip PATH]
         Downloads ZIP -> data folder, extracted and numbered for grading.
 
@@ -13,7 +16,7 @@
 import argparse
 from pathlib import Path
 
-from moodle import ingest, paths, status, upload
+from moodle import guide, ingest, paths, status, upload
 
 
 def main() -> None:
@@ -22,6 +25,8 @@ def main() -> None:
 
     status_cmd = commands.add_parser("status", help="show what's done for an assignment")
     status_cmd.add_argument("assignment_id")
+
+    commands.add_parser("guide", help="rewrite the Hebrew read-me files in the data folder")
 
     ingest_cmd = commands.add_parser("ingest", help="prepare a downloaded submissions ZIP")
     ingest_cmd.add_argument("assignment_id")
@@ -36,6 +41,12 @@ def main() -> None:
                             help="split for Claude in Chrome, which uploads up to 10 MB per file")
 
     args = parser.parse_args()
+
+    if args.command == "guide":
+        for path in guide.write_guides(paths.data_dir()):
+            print(path)
+        return
+
     target = paths.assignment_dir(args.assignment_id)
 
     if args.command == "status":

@@ -63,6 +63,8 @@ The shared data folder is the lecturer's OneDrive (5 TB), not this repo (public,
 `YallaLinearit/מערכת בדיקת תרגילים/` in the lecturer's (Nadav Meir) OneDrive holds the project's data:
 https://bgu365-my.sharepoint.com/personal/mein_bgu_ac_il/_layouts/15/onedrive.aspx?id=%2Fpersonal%2Fmein%5Fbgu%5Fac%5Fil%2FDocuments%2FYallaLinearit%2F%D7%9E%D7%A2%D7%A8%D7%9B%D7%AA%20%D7%91%D7%93%D7%99%D7%A7%D7%AA%20%D7%AA%D7%A8%D7%92%D7%99%D7%9C%D7%99%D7%9D
 Inside it, `assignment-data/` mirrors Ori's `~/assignment-data` (raw/, submissions/<id>/...).
+Folder names stay in English because the scripts use them; a Hebrew `קרא אותי.txt` at the top and in each
+assignment folder says what everything is. `ingest` rewrites them, or run `python -m moodle guide`.
 Next to it, `YallaLinearit/Course Material (tex)/exercises and solutions/` has the questions and solutions as .tex.
 
 For now it is **not synced** to anyone's computer: the team's student accounts have no OneDrive of their own

@@ -12,7 +12,7 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
-from moodle import anonymize, paths
+from moodle import anonymize, guide, paths
 
 SEVEN_ZIP_PATHS = [r"C:\Program Files\7-Zip\7z.exe", r"C:\Program Files (x86)\7-Zip\7z.exe"]
 
@@ -59,4 +59,6 @@ def ingest(assignment_id: str, zip_path: Path | None = None) -> list[dict]:
 
     target = paths.assignment_dir(assignment_id)
     target.mkdir(parents=True, exist_ok=True)
-    return anonymize.prepare(original, target)
+    rows = anonymize.prepare(original, target)
+    guide.write_guides(paths.data_dir())
+    return rows
