@@ -48,6 +48,7 @@ import pymupdf
 
 from moodle import claude_driver, paths
 
+from . import placement
 from .render import PageImage, render_pdf
 
 # ---------- הגדרות ----------
@@ -70,6 +71,9 @@ MAX_BYTES = 2_000_000
 MAX_IMAGE_BYTES = 1_500_000
 
 RED = (0.85, 0, 0)
+# גודל הכתב של ההערות על הדף, ורוחב ההערה בנקודות
+NOTE_FONT = 14
+NOTE_WIDTH = 210
 _FONTS = Path("C:/Windows/Fonts")
 _CSS = "@font-face {font-family: heb; src: url(arial.ttf);} * {font-family: heb, sans-serif;}"
 
@@ -488,22 +492,6 @@ def _esc(s: str) -> str:
     return escape(str(s)).replace("\n", "<br>")
 
 
-def _note_rect(box: pymupdf.Rect, page: pymupdf.Rect, width: float = 180, height: float = 40) -> pymupdf.Rect:
-    """איפה לכתוב את ההערה: מתחת למלבן, ואם אין מקום אז מעליו. מיושר לצד ימין, כמו עברית."""
-    margin = 4
-    w = min(max(box.width, width), page.width - 2 * margin)
-    x1 = min(box.x1, page.width - margin)
-    x0 = max(x1 - w, margin)
-    x1 = x0 + w
-    if box.y1 + 2 + height <= page.height - margin:
-        y0 = box.y1 + 2
-    elif box.y0 - 2 - height >= margin:
-        y0 = box.y0 - 2 - height
-    else:
-        y0 = max(min(box.y0, page.height - margin - height), margin)
-    return pymupdf.Rect(x0, y0, x1, y0 + height)
-
-
 def _write(page: pymupdf.Page, rect: pymupdf.Rect, html: str, archive) -> None:
     """כותב טקסט במקום שמחושב לפי העמוד כפי שהוא מוצג (גם אם העמוד מסובב).
     בלי רקע, כמו עט אדום: לא מסתירים שום דבר ממה שהסטודנט כתב."""
@@ -534,14 +522,34 @@ def mark_pdf(pdf: bytes, g: Graded, ctx: Context, max_bytes: int = MAX_BYTES) ->
     """מצייר את הסימונים באדום על העבודה, מוסיף עמוד סיכום בהתחלה, ושומר עד max_bytes אם אפשר."""
     archive = _archive()
     with pymupdf.open(stream=pdf, filetype="pdf") as doc:
+        by_page: dict[int, list[tuple[pymupdf.Rect, str]]] = {}
         for mark in g.marks:
-            page = doc[mark.page - 1]
-            shown = page.rect  # העמוד כפי שהוא מוצג, אחרי סיבוב
+            shown = doc[mark.page - 1].rect  # העמוד כפי שהוא מוצג, אחרי סיבוב
             box = pymupdf.Rect(mark.x0 / 1000 * shown.width, mark.y0 / 1000 * shown.height,
                                mark.x1 / 1000 * shown.width, mark.y1 / 1000 * shown.height)
-            page.draw_rect(box * page.derotation_matrix, color=RED, width=1.4, overlay=True)
-            if mark.text:
-                _write(page, _note_rect(box, shown), _html(mark.text), archive)
+            by_page.setdefault(mark.page - 1, []).append((box, mark.text))
+        for n, marks in by_page.items():
+            page = doc[n]
+            # המקום הפנוי נמדד לפני שמציירים משהו; המלבנים של כל הסימונים בעמוד תפוסים מראש
+            free = placement.FreeSpace(page) if any(text for _, text in marks) else None
+            if free:
+                # מיושר למשבצות, כדי שהקו יגיע לשפה של המלבן רק דרך משבצת נקייה
+                marks = [(free.snap(box), text) for box, text in marks]
+            for box, _ in marks:
+                page.draw_rect(box * page.derotation_matrix, color=RED, width=1.4, overlay=True)
+                if free:
+                    free.occupy(box)
+            for box, text in marks:
+                if not text:
+                    continue
+                note, line = free.place(box, *placement.note_size(text, NOTE_WIDTH, NOTE_FONT))
+                free.occupy(note)
+                _write(page, note, _html(text, NOTE_FONT), archive)
+                if line:
+                    # הקו עובר רק במשבצות בלי דיו, ומתכופף כמה שצריך
+                    page.draw_polyline([p * page.derotation_matrix for p in line], color=RED, width=1, overlay=True)
+                    page.draw_circle(line[-1] * page.derotation_matrix, 1.8, color=RED, fill=RED, overlay=True)
+                    free.occupy_line(line)
         _summary_page(doc, g, ctx, archive)
         doc.subset_fonts()
         out = doc.tobytes(garbage=4, deflate=True)
