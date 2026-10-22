@@ -10,17 +10,82 @@
     python -m moodle upload <assignment id> [--worksheet PATH] [--for-claude]
         Grades and marked files -> "3 - Ready to upload to Moodle", with upload steps.
 
+    python -m moodle send <assignment id> [--dry-run] [--yes] [--simulate]
+        Marked files -> Moodle, through Claude in Chrome. Prepares the batch (new or changed work only), prints
+        its summary (numbers only), asks "להעלות למודל? (y/N)" unless --yes, uploads ZIP by ZIP and logs each one.
+        --dry-run goes as far as Moodle's confirmation list and logs nothing; --simulate never touches Moodle.
+        Exit code 1 if it stopped before the end.
+
+    python -m moodle record <assignment id> "<zip name>"
+        After uploading a ZIP by hand: writes its files to "Upload log.csv".
+
     python -m moodle guide
         Rewrites the README files (in Hebrew).
 """
 
 import argparse
+import sys
 from pathlib import Path
 
-from moodle import guide, ingest, paths, status, upload
+from moodle import guide, ingest, lock, paths, send, status, upload, upload_log
+
+
+def make_driver(simulate: bool) -> send.MoodleDriver:
+    """The real driver starts Claude in Chrome, so it is built (and imported) only when it is going to be used."""
+    if simulate:
+        return send.SimulatedDriver()
+    from moodle import claude_driver
+    return claude_driver.ClaudeChromeDriver()
+
+
+def print_summary(summary: send.BatchSummary) -> None:
+    """The batch in numbers only: no names."""
+    print(f"מטלה {summary.assignment_id}: {summary.title}")
+    print(f"{summary.students} סטודנטים, {summary.files} קבצים, {len(summary.zips)} ZIP")
+    for zip_info in summary.zips:
+        print(f"  {zip_info['name']}: {zip_info['count']} קבצים, {zip_info['mb']} MB")
+    if summary.too_big:
+        print(f"גדולים מדי, לא נכללו ({len(summary.too_big)}): {', '.join(summary.too_big)}")
+    if summary.resubmitted:
+        print(f"הוגשו מחדש אחרי הבדיקה, לא נכללו ({len(summary.resubmitted)}): {', '.join(summary.resubmitted)}")
+    if summary.not_approved:
+        print(f"עדיין לא אושרו, ויעלו בכל זאת: {len(summary.not_approved)}")
+
+
+def run_send(target: Path, args) -> int:
+    """Returns the exit code."""
+    try:
+        summary = send.prepare_batch(target)
+    except ValueError as blocked:  # includes BatchBlocked
+        print(blocked)
+        return 1
+    if not summary.zips:
+        print("אין עבודות חדשות להעלאה")
+        return 0
+    print_summary(summary)
+    if not args.yes:
+        try:
+            answer = input("להעלות למודל? (y/N) ")
+        except EOFError:
+            answer = ""
+        if answer.strip().lower() not in ("y", "yes"):
+            print("לא הועלה כלום")
+            return 0
+    if args.dry_run:
+        print("ריצת ניסיון: עוצרים ברשימת האישור של מודל, בלי להעלות ובלי לרשום ביומן")
+    report = send.run_batch(
+        target, summary.id, make_driver(args.simulate), dry_run=args.dry_run,
+        on_progress=lambda index, total, name: print(f"{index}/{total} {name}"))
+    print(f"הושלמו {len(report.done_zips)} מתוך {report.total_zips} ZIP, נרשמו ביומן {report.recorded} קבצים")
+    if report.stopped is not None:
+        print(f"נעצר ({report.stopped}): {report.message}")
+        return 1
+    return 0
 
 
 def main() -> None:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")  # Hebrew messages, even when the output is piped
     parser = argparse.ArgumentParser(prog="python -m moodle")
     commands = parser.add_subparsers(dest="command", required=True)
 
@@ -41,6 +106,16 @@ def main() -> None:
     upload_cmd.add_argument("--for-claude", action="store_true",
                             help="split for Claude in Chrome, which uploads up to 10 MB per file")
 
+    send_cmd = commands.add_parser("send", help="upload the marked files to Moodle with Claude in Chrome")
+    send_cmd.add_argument("assignment_id")
+    send_cmd.add_argument("--dry-run", action="store_true", help="stop at Moodle's confirmation list, upload and log nothing")
+    send_cmd.add_argument("--yes", action="store_true", help="don't ask before uploading")
+    send_cmd.add_argument("--simulate", action="store_true", help="don't touch Moodle (for trying it out)")
+
+    record_cmd = commands.add_parser("record", help="log a ZIP that was uploaded by hand")
+    record_cmd.add_argument("assignment_id")
+    record_cmd.add_argument("zip_name")
+
     commands.add_parser("guide", help="rewrite the README files")
 
     args = parser.parse_args()
@@ -57,6 +132,18 @@ def main() -> None:
         return
 
     target = paths.assignment_dir(args.assignment_id)
+
+    if args.command == "send":
+        raise SystemExit(run_send(target, args))
+
+    if args.command == "record":
+        try:
+            rows = upload_log.record_zip(target, args.zip_name, lock.me())
+        except ValueError as unknown:
+            print(unknown)
+            raise SystemExit(1)
+        print(f"{rows} קבצים נרשמו ביומן")
+        return
 
     if args.command == "status":
         report = status.status(target)
