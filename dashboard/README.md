@@ -23,8 +23,8 @@ python -m dashboard serve
 | `GET /api/health` | האם התיקייה נמצאה |
 | `GET /api/state` | כל הקורסים, המטלות וההגשות, לפי מספר בלבד, ויומן הפעילות של כל מטלה (משיכות, Grades.csv, העלאות שאומתו) |
 | `GET /api/file?path=` | קובץ PDF של הגשה, רק מתיקיות 1-2-3. טבלת המפתח לא נשלחת לעולם |
-| `POST /api/pull` | משיכה: `moodle ingest` |
-| `POST /api/grade` | מתחיל בדיקה עם Claude ברקע: `{course, assignment, ids?, model?, parallel?, instructions?, sendSolution?}`. בלי מפתח: 400 עם הסבר |
+| `POST /api/pull` | משיכה: אם אין ZIP של המטלה בתיקיית ההורדות, Claude בכרום מוריד אותו ממודל (המערכת מחכה עד שההורדה מסתיימת), ואז `moodle ingest`. 422 עם הסבר אם ההורדה לא התחילה |
+| `POST /api/grade` | מתחיל בדיקה עם Claude ברקע: `{course, assignment, ids?, model?, parallel?, instructions?, sendSolution?}`. דרך מפתח ה-API אם יש, אחרת דרך Claude Code שמחובר במחשב. בלי שניהם: 400 עם הסבר |
 | `GET /api/grade` | מצב הבדיקה שרצה: כמה נבדקו, מה נכשל, וסיכום בסוף |
 | `POST /api/return` | הכנת החזרה: `moodle upload` |
 | `POST /api/upload/prepare` | הכנת העלאה למודל: `{course, assignment}`. בונה אצווה של העבודות המסומנות שחדשות או השתנו ומחזירה סיכום וגם `id`. 422 עם הסבר אם אי אפשר (או אם מישהו מעלה עכשיו) |

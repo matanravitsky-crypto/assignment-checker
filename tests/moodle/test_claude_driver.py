@@ -421,3 +421,32 @@ def test_a_matching_hash_runs(tmp_path):
     fake = FakeRun(cli_output())
     r = driver(fake).upload_zip(INFO, zip_file, 6, False, sha256=claude_driver.upload_log.file_hash(zip_file))
     assert r.status == "imported" and len(fake.calls) == 1
+
+
+# ---------- download: start "Download all submissions" in Chrome ----------
+def test_download_opens_only_the_assignment_pages_without_tools():
+    run = FakeRun(cli_output({"status": "started", "message": "the download started"}))
+    out = driver(run).download(INFO)
+    assert out == {"status": "started", "message": "the download started"}
+    (cmd, kwargs), = run.calls
+    prompt = cmd[-1]
+    assert claude_driver.DOWNLOAD_URL.format(id="3438636") in prompt and GRADING_URL.format(id="3438636") in prompt
+    assert "action=downloadall" in prompt and INFO["title"] in prompt
+    assert cmd[cmd.index("--tools") + 1] == ""  # no built-in tools: nothing to read or write
+    assert "--chrome" in cmd and kwargs["stdin"] == subprocess.DEVNULL
+    assert run.seen == [{}]  # an empty folder of its own
+
+
+@pytest.mark.parametrize("answer, status", [
+    ({"status": "needs_login", "message": ""}, "needs_login"),
+    ({"status": "imported", "message": "?"}, "error"),
+])
+def test_download_reports_what_went_wrong(answer, status):
+    out = driver(FakeRun(cli_output(answer))).download(INFO)
+    assert out["status"] == status and out["message"]
+
+
+def test_download_never_raises():
+    out = driver(FakeRun(raises=subprocess.TimeoutExpired("claude", 300))).download(INFO)
+    assert out["status"] == "error" and "דקות" in out["message"]
+    assert driver(FakeRun()).download({"id": "1; rm"})["status"] == "error"  # an id that is not digits never reaches the prompt

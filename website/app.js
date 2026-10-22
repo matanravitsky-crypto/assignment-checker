@@ -52,8 +52,8 @@
   const STAGES = {
     pull: {
       no: 1, route: "/pull", name: "משיכת הגשות",
-      desc: "מורידים ממודל את קובץ ה-ZIP עם כל ההגשות של המטלה, והמערכת קולטת אותו מתיקיית ההורדות: שומרת אותו בתיקיית המטלה, נותנת לכל סטודנט מספר קבוע ומעתיקה את ההגשות הממוספרות לתיקיית OneDrive, בלי שמות.",
-      steps: ["איתור ה-ZIP בתיקיית ההורדות", "שמירת ה-ZIP בתיקיית המטלה", "חילוץ ומספור ההגשות", "עדכון טבלת המפתח"],
+      desc: "Claude בכרום מוריד ממודל את קובץ ה-ZIP עם כל ההגשות של המטלה, והמערכת קולטת אותו: שומרת אותו בתיקיית המטלה, נותנת לכל סטודנט מספר קבוע ומעתיקה את ההגשות הממוספרות לתיקיית OneDrive, בלי שמות.",
+      steps: ["הורדת ה-ZIP ממודל (Claude בכרום)", "שמירת ה-ZIP בתיקיית המטלה", "חילוץ ומספור ההגשות", "עדכון טבלת המפתח"],
       tabs: [["list", "ההגשות שנמשכו"], ["instr", "מה קורה במשיכה"], ["conn", "חיבור למודל"]],
     },
     grade: {
@@ -74,7 +74,7 @@
   const stepsOf = (stage) => STAGES[stage].steps;
   const moodleGradingUrl = (A) => `https://moodle.bgu.ac.il/moodle/mod/assign/view.php?id=${encodeURIComponent(A.moodleId || "")}&action=grading`;
 
-  const NO_KEY = "אין מפתח של Claude, ולכן אי אפשר לבדוק. מוסיפים לקובץ .env שבתיקיית הריפו שורה ANTHROPIC_API_KEY=... ומפעילים מחדש את start.bat.";
+  const NO_KEY = "אין חיבור ל-Claude, ולכן אי אפשר לבדוק. הדרך הפשוטה: מחברים את Claude Code במחשב (כמו להעלאה למודל, ברשימת המוכנות של שלב 3, או claude auth login). אפשר גם מפתח API: שורה ANTHROPIC_API_KEY=... בקובץ .env שבתיקיית הריפו, ומפעילים מחדש את start.bat.";
   const STATUS = { pulled: "ממתינה לבדיקה", grading: "בבדיקה", graded: "נבדקה", returned: "הוחזרה", error: "דורשת טיפול" };
 
   const ICON = {
@@ -324,7 +324,7 @@
 
   function emptyPulled() {
     const A = cur();
-    return `<div class="empty"><strong>עוד אין הגשות במטלה הזו</strong>במודל, בעמוד ההגשות של המטלה: פעולות ← "הורדת כל ההגשות". ה-ZIP נשמר בתיקיית ההורדות (Downloads), ואז לוחצים "משוך הגשות".
+    return `<div class="empty"><strong>עוד אין הגשות במטלה הזו</strong>לוחצים "משוך הגשות": Claude בכרום מוריד ממודל את ה-ZIP של כל ההגשות, והמערכת קולטת אותו. צריך כרום פתוח עם התוסף Claude in Chrome והתחברות למודל.
       <div class="empty-act">${stageButton("pull")}<a class="btn secondary" href="${moodleGradingUrl(A)}" target="_blank" rel="noopener">פתח את ההגשות במודל</a><button class="btn secondary" data-act="open-inbox">${ICON.folder}פתח את תיקיית ההורדות</button></div></div>`;
   }
 
@@ -807,8 +807,8 @@
         <div class="panel-head"><h2>מה קורה כשמושכים הגשות</h2></div>
         <div class="panel-body">
           <ol class="todo">
-            <li><b>מורידים ממודל.</b> בעמוד ההגשות של המטלה: פעולות ← "הורדת כל ההגשות", כש"ארגון ההגשות בתיקיות לכל סטודנט" מסומן. ה-ZIP נשמר בתיקיית ההורדות. את זה עושים בכרום, בעצמכם או בבקשה מ-Claude בכרום.</li>
-            <li><b>המערכת מוצאת את ה-ZIP.</b> בתיקיית ההורדות, ה-ZIP החדש ביותר ששמו נגמר ב-<code dir="ltr">-${esc(A.moodleId || "<מזהה המטלה>")}.zip</code>.</li>
+            <li><b>Claude בכרום מוריד ממודל.</b> בכרום שלך, עם ההתחברות שלך: עמוד ההגשות של המטלה ← "הורדת כל ההגשות", כש"הורדת הגשות בתיקיות" מסומן. הוא לא מקליד כלום ולא משנה שום הגדרה של המטלה. ה-ZIP נשמר בתיקיית ההורדות, והמערכת מחכה עד שההורדה מסתיימת.</li>
+            <li><b>הורדתם בעצמכם?</b> אם בתיקיית ההורדות כבר מחכה ZIP ששמו נגמר ב-<code dir="ltr">-${esc(A.moodleId || "<מזהה המטלה>")}.zip</code>, המערכת קולטת אותו ולא מורידה שוב.</li>
             <li><b>שומרת אותו בתיקיית המטלה</b> בשם <code dir="ltr">Moodle download &lt;date&gt;.zip</code>. כל הורדה נשמרת, כך שהורדה מאוחרת לא מוחקת את הקודמת.</li>
             <li><b>מחלצת אותו עם 7-Zip במחשב שלך בלבד.</b> התיקיות עם שמות הסטודנטים לא עולות ל-OneDrive.</li>
             <li><b>נותנת לכל סטודנט מספר קבוע</b> (0001, 0002…) ומעתיקה את הקבצים ל-"1 - Submissions to grade". מי שכבר נמשך שומר על המספר שלו, ומי שהגיש מאז מקבל את המספר הפנוי הבא.</li>
@@ -841,7 +841,7 @@
       <div class="panel-head"><h2>חיבור למודל</h2>${allReady(rd.data) ? `<span class="end tag ok">מחובר</span>` : ""}</div>
       <div class="panel-body">
         <p class="lead">למודל של האוניברסיטה אין API, ולכן המערכת לא מתחברת אליו עם מפתח. מודל נפתח בכרום שלך, עם החשבון שלך, ו-Claude in Chrome עובד בו. אף סיסמה לא נכנסת למערכת.</p>
-        <p class="lead">במשיכה מורידים את ה-ZIP בכרום (בעצמכם, או בבקשה מ-Claude בכרום), והכפתור "משוך הגשות" קולט אותו מתיקיית ההורדות. בהחזרה Claude בכרום מעלה את העבודות המסומנות בעצמו.</p>
+        <p class="lead">במשיכה Claude בכרום מוריד את ה-ZIP של כל ההגשות, והמערכת קולטת אותו מתיקיית ההורדות. בהחזרה Claude בכרום מעלה את העבודות המסומנות. בשני המקרים צריך את אותה רשימת מוכנות שלמטה.</p>
         <div class="row-start" style="margin:0 0 16px">
           <a class="btn secondary small" href="${moodleGradingUrl(A)}" target="_blank" rel="noopener">פתח את ההגשות במודל</a>
         </div>
@@ -922,7 +922,7 @@
       <section class="panel">
         <div class="panel-head"><h2>חיבור ל-Claude</h2>${LOCAL.health?.claude ? `<span class="end tag ok">מחובר</span>` : `<span class="end tag warn">עוד לא מחובר</span>`}</div>
         <div class="panel-body">
-          ${LOCAL.health?.claude ? `<div class="notice">${ICON.lock}<div><b>הבדיקה עובדת.</b> ל-Claude נשלחים רק העמודים של ההגשה הממוספרת, בלי שמות. העבודה המסומנת נשמרת ב-"2 - Graded with comments" והציון ב-Grades.csv.</div></div>`
+          ${LOCAL.health?.claude ? `<div class="notice">${ICON.lock}<div><b>הבדיקה עובדת</b> (${LOCAL.health?.claudeVia === "api" ? "דרך מפתח ה-API" : "דרך Claude Code במחשב, במנוי של הצוות"}). ל-Claude נשלחים רק העמודים של ההגשה הממוספרת, בלי שמות. העבודה המסומנת נשמרת ב-"2 - Graded with comments" והציון ב-Grades.csv.</div></div>`
             : `<div class="notice">${ICON.lock}<div><b>הבדיקה עם Claude עוד לא מחוברת.</b> ${esc(NO_KEY)}</div></div>`}
           <div class="form-grid">
             <div class="field"><label for="c-model">מודל</label>
@@ -938,7 +938,7 @@
       <div class="stack">
         <section class="panel">
           <div class="panel-head"><h3>מפתח</h3></div>
-          <div class="panel-body">${secretField("ANTHROPIC_API_KEY", "מפתח ה-API של Claude. נשמר בקובץ .env במחשב שמריץ את המערכת, לא בדפדפן ולא ב-GitHub.", LOCAL.health?.claude)}</div>
+          <div class="panel-body">${secretField("ANTHROPIC_API_KEY", "לא חובה: בלי מפתח הבדיקה רצה דרך Claude Code שמחובר במחשב. אם יש מפתח, הוא נשמר בקובץ .env במחשב שמריץ את המערכת, לא בדפדפן ולא ב-GitHub.", LOCAL.health?.claudeVia === "api")}</div>
         </section>
         <section class="panel">
           <div class="panel-head"><h3>מה Claude מחזיר על כל עבודה</h3></div>
@@ -1253,7 +1253,7 @@
           <section class="panel">
             <div class="panel-head"><h2>מפתחות</h2><span class="meta">נשמרים בקובץ .env במחשב שמריץ את המערכת</span></div>
             <div class="panel-body">
-              ${secretField("ANTHROPIC_API_KEY", "בדיקת העבודות עם Claude", LOCAL.health?.claude)}
+              ${secretField("ANTHROPIC_API_KEY", "בדיקת העבודות עם Claude. לא חובה כש-Claude Code מחובר במחשב", LOCAL.health?.claudeVia === "api")}
               <p class="hint">למודל לא צריך מפתח: הוא עובד דרך Claude in Chrome, בחשבון שלך.</p>
             </div>
           </section>
@@ -1549,7 +1549,7 @@
         .flatMap((a) => (a.log || []).map((l) => ({ ...l, where: `${a.course}, ${a.title}` })))
         .sort((x, y) => (y.at || "").localeCompare(x.at || "")));
       // מודל מחובר = Claude Code מחובר במחשב (דרכו Claude in Chrome עובד במודל)
-      LOCAL.health = { ...LOCAL.health, ...(health || {}), root: data.root, claude: data.claude };
+      LOCAL.health = { ...LOCAL.health, ...(health || {}), root: data.root, claude: data.claude, claudeVia: data.claudeVia };
       if (!LOCAL.polling) LOCAL.sending = data.sending || null;
       if (!D.assignments.some((a) => a.id === state.assignmentId)) {
         const first = D.assignments.find((a) => a.subs.length) || D.assignments[0];
@@ -1569,16 +1569,14 @@
     const A = cur();
     if (!A || state.run[A.id] || !LOCAL.health?.root) return;
     const run = (state.run[A.id] = { stage: "pull", steps: STAGES.pull.steps.map(() => "pending") });
-    let i = 0;
+    // ההורדה ממודל לוקחת כמה דקות (ZIP גדול), והשרת עונה רק בסוף, אז השלב הראשון נשאר "רץ" עד התשובה
     run.steps[0] = "running";
+    run.progress = "מוריד ממודל… (כמה דקות)";
     render();
-    const timer = setInterval(() => {
-      if (i < run.steps.length - 1) { run.steps[i] = "done"; i += 1; run.steps[i] = "running"; render(); }
-    }, 700);
+    toast("Claude בכרום מוריד את ה-ZIP ממודל. זה יכול לקחת כמה דקות: לא סוגרים את כרום.");
     try {
       const rep = await api("api/pull", { method: "POST", body: JSON.stringify({ course: A.courseFolder, assignment: A.folder }) });
       LOCAL.report = { ...rep, assignmentId: A.id };
-      clearInterval(timer);
       delete state.run[A.id];
       await loadLocal();
       // ה-ZIP היה של מטלה אחרת: עוברים אליה, כדי לראות את מה שנקלט
@@ -1595,7 +1593,6 @@
         toast(rep.result.total ? `המשיכה הסתיימה: ${rep.summary}` : "המשיכה הסתיימה: לא נמצאו הגשות חדשות");
       }
     } catch (e) {
-      clearInterval(timer);
       delete state.run[A.id];
       render();
       toast(e.message, ICON.warn);
@@ -1665,7 +1662,7 @@
     set("#conn-claude", !!LOCAL.health?.claude, LOCAL.health?.claude ? "מחובר" : LOCAL.on ? "עוד לא מחובר" : "לא מחובר");
     set("#conn-drive", live, live ? "מחובר" : "לא מחובר");
     $("#proto-note").textContent = live
-      ? (LOCAL.health?.claude ? "כל המספרים במסך נקראים מתיקיית OneDrive של הקורס." : "כל המספרים במסך נקראים מתיקיית OneDrive של הקורס. הבדיקה עם Claude עוד לא מחוברת (חסר ANTHROPIC_API_KEY ב-.env).")
+      ? (LOCAL.health?.claude ? "כל המספרים במסך נקראים מתיקיית OneDrive של הקורס." : "כל המספרים במסך נקראים מתיקיית OneDrive של הקורס. הבדיקה עם Claude עוד לא מחוברת (מחברים את Claude Code במחשב, או ANTHROPIC_API_KEY ב-.env).")
       : "האתר מציג רק נתונים אמיתיים, מהמערכת שרצה במחשב (start.bat). כרגע היא לא מחוברת.";
   }
 

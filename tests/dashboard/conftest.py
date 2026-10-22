@@ -7,7 +7,7 @@ from http.server import ThreadingHTTPServer
 
 import pytest
 
-from moodle import claude_driver, paths
+from moodle import claude_driver, ingest, paths
 from dashboard import actions
 from tests.sample_files import homework_pdf
 
@@ -15,7 +15,7 @@ from tests.dashboard.helpers import COURSE, HW, MID, NAMES, write_key
 
 
 @pytest.fixture(autouse=True)
-def fresh_dashboard_state(monkeypatch):
+def fresh_dashboard_state(monkeypatch, tmp_path):
     """Module-level state of dashboard.actions starts empty in every test, and no test can start `claude`."""
     actions._send = actions.SendJob()
     actions._stop.clear()
@@ -29,6 +29,26 @@ def fresh_dashboard_state(monkeypatch):
     # no test starts a login or an installer, whatever is installed on this computer
     monkeypatch.setattr(actions.subprocess, "Popen", lambda *a, **k: pytest.fail("a test started a real process"))
     monkeypatch.setattr(claude_driver, "auth_status", lambda *a, **k: {"logged_in": False, "message": "fake"})
+    # no test opens Moodle or reads the real Downloads folder: "Moodle" drops the assignment's ZIP into a temp Downloads
+    downloads = tmp_path / "Downloads"
+    downloads.mkdir()
+    monkeypatch.setattr(ingest, "downloads_dir", lambda: downloads)
+    monkeypatch.setattr(actions, "DOWNLOAD_POLL_S", 0.01)
+    monkeypatch.setattr(actions, "_make_downloader", lambda: FakeDownloader(downloads))
+
+
+class FakeDownloader:
+    """Moodle in the tests: "downloads" a ZIP of the assignment, as Chrome would."""
+
+    def __init__(self, downloads, result=None):
+        self.downloads, self.result, self.calls = downloads, result, []
+
+    def download(self, info):
+        self.calls.append(info["id"])
+        if self.result:
+            return self.result
+        (self.downloads / f"214193210120271-x-{info['id']}.zip").write_bytes(b"zip from moodle")
+        return {"status": "started", "message": "ok"}
 
 
 @pytest.fixture

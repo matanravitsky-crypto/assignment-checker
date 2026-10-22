@@ -45,6 +45,7 @@ from moodle.send import UploadResult
 UPLOAD_URL = ("https://moodle.bgu.ac.il/moodle/mod/assign/view.php?id={id}&plugin=file"
               "&pluginsubtype=assignfeedback&action=viewpluginpage&pluginaction=uploadzip")
 GRADING_URL = "https://moodle.bgu.ac.il/moodle/mod/assign/view.php?id={id}&action=grading"
+DOWNLOAD_URL = "https://moodle.bgu.ac.il/moodle/mod/assign/view.php?id={id}&action=downloadall"
 
 # Starting values: the test assignment (plan task 11) sets them from real runs
 DEFAULT_MODEL = "claude-sonnet-5-5"
@@ -53,6 +54,8 @@ TIMEOUT_S = 600
 CHECK_BUDGET_USD = 0.5  # "is everything ready" opens one page, so it gets less
 CHECK_TIMEOUT_S = 180
 AUTH_TIMEOUT_S = 30
+DOWNLOAD_BUDGET_USD = 1.0  # opens two pages and maybe ticks one box
+DOWNLOAD_TIMEOUT_S = 300
 MESSAGE_MAX = 300
 
 NOT_LOGGED_IN = "Claude Code לא מחובר במחשב הזה. מריצים פעם אחת: claude auth login"
@@ -72,6 +75,16 @@ RESULT_SCHEMA = {
         "message": {"type": "string", "maxLength": MESSAGE_MAX},
     },
     "required": ["status", "rows", "imported", "skipped", "message"],
+    "additionalProperties": False,
+}
+DOWNLOAD_STATUSES = ("started", "needs_login", "error")
+DOWNLOAD_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "status": {"type": "string", "enum": list(DOWNLOAD_STATUSES)},
+        "message": {"type": "string", "maxLength": MESSAGE_MAX},
+    },
+    "required": ["status", "message"],
     "additionalProperties": False,
 }
 CHECK_SCHEMA = {
@@ -98,6 +111,25 @@ Steps:
 3. "moodle_logged_in" is true if the page is the grading page of an assignment, shown to a logged-in Moodle user. It is false for a login page or an error page.
 
 Return only the structured result.
+"""
+
+DOWNLOAD_PROMPT = """You start the download of all submissions of one Moodle assignment, for a university course. Use only the Chrome tools.
+
+Rules (never break them):
+- Go only to these two addresses: {grading_url} and {download_url}. Never open assignment settings or any other page.
+- If a login page appears, do not type anything anywhere. Stop and return status "needs_login".
+- Never type anything. Never take a screenshot. Never write any person's name in your answer.
+- Never change grades, submissions or assignment settings. The only thing you may click is the one checkbox in step 2.
+
+Steps:
+1. Open {grading_url}. Check the address has id={assignment_id} and the page is the grading page of the assignment "{title}". If not, return "error".
+2. In the options of that page (usually near the bottom), find the checkbox "הורדת הגשות בתיקיות" (in English "Download submissions in folders").
+   If it is there and not checked, click it once so that it is checked (it is a personal display option, not an assignment setting). If it is not there, go on.
+3. Open {download_url}. Chrome then downloads one ZIP file with all the submissions; the page itself may not change. Do not click anything there.
+   If Moodle shows an error message instead (say, there are no submissions), return "error" with that message.
+4. Return "started".
+
+Return only the structured result. "message" says what happened in one short sentence.
 """
 
 # A failed run whose output is one of these means Claude Code itself is not logged in
@@ -318,6 +350,32 @@ class ClaudeChromeDriver:
             message = "Chrome ו-Moodle מוכנים."
         # "answered": Claude really looked (the other results above are failures to run). Only these are worth remembering
         return {"chrome": chrome, "moodle": moodle, "message": message, "answered": True}
+
+    def download(self, info: dict) -> dict:
+        """Start the download of all submissions in the user's Chrome. {"status": "started"|"needs_login"|"error", "message": str}.
+
+        Chrome saves the ZIP to Downloads; the caller waits for it there (moodle.ingest.wait_for_download).
+        The run gets an empty folder and no built-in tools, like the connection check. Never raises."""
+        claude = self.claude or find_claude()
+        if not claude:
+            return {"status": "error", "message": NOT_INSTALLED}
+        timeout_s = min(self.timeout_s, DOWNLOAD_TIMEOUT_S)
+        try:
+            mid = assignment_id(info)
+            prompt = DOWNLOAD_PROMPT.format(grading_url=GRADING_URL.format(id=mid), download_url=DOWNLOAD_URL.format(id=mid),
+                                            assignment_id=mid, title=info.get("title") or info.get("name") or "")
+            with tempfile.TemporaryDirectory(prefix="moodle-download-", ignore_cleanup_errors=True) as empty:
+                proc = self.execute(claude, prompt, Path(empty), DOWNLOAD_SCHEMA, DOWNLOAD_BUDGET_USD, timeout_s)
+        except Exception as error:  # never raise: the caller shows the message
+            return {"status": "error", "message": failure_message(error, timeout_s)}
+        answer, problem = read_run(proc)
+        if answer is None:
+            return {"status": "error", "message": problem}
+        status = answer.get("status")
+        if status not in DOWNLOAD_STATUSES:
+            return {"status": "error", "message": UNEXPECTED}
+        message = str(answer.get("message") or "")[:MESSAGE_MAX] or DEFAULT_MESSAGES.get(status, "")
+        return {"status": status, "message": message}
 
 
 def auth_status(run=subprocess.run, claude: str | None = None) -> dict:

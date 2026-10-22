@@ -15,7 +15,7 @@ from http.server import ThreadingHTTPServer
 import pymupdf
 import pytest
 
-from moodle import paths
+from moodle import claude_driver, paths
 from dashboard import actions, folder_view
 from grading import grade as grading
 from tests.sample_files import homework_pdf
@@ -33,6 +33,8 @@ def no_real_claude(monkeypatch):
         raise AssertionError("בבדיקות משתמשים רק ב-Claude מדומה")
     monkeypatch.setattr(grading, "claude_ask", refuse)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    # וגם לא Claude Code שמחובר במחשב הזה
+    monkeypatch.setattr(claude_driver, "auth_status", lambda *a, **k: {"logged_in": False, "message": "fake"})
 
 
 @pytest.fixture

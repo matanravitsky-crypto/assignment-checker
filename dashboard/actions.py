@@ -1,9 +1,9 @@
 """מה שהאתר המחובר עושה, במקום אחד. השלבים עצמם הם הקוד של אורי ב-`moodle/`:
 
-  משיכה  → moodle.ingest.ingest(<מזהה מטלה>)
-           לוקח את ה-ZIP החדש ביותר מתיקיית ההורדות (Downloads) שנגמר ב-"-<מזהה>.zip",
-           שומר אותו בתיקיית המטלה, מחלץ עם 7-Zip, ממספר ומעדכן את טבלת המפתח.
-  בדיקה  → grading.grade.grade_assignment (שלב 2): שולח את ההגשות הממוספרות ל-Claude, כותב
+  משיכה  → claude_driver.ClaudeChromeDriver.download + moodle.ingest.ingest(<מזהה מטלה>)
+           אם אין בתיקיית ההורדות (Downloads) ZIP שנגמר ב-"-<מזהה>.zip", Claude בכרום מוריד אותו ממודל
+           והמערכת מחכה שיגיע. אחר כך: שומר אותו בתיקיית המטלה, מחלץ עם 7-Zip, ממספר ומעדכן את טבלת המפתח.
+  בדיקה  → grading.grade.grade_assignment (שלב 2): שולח את ההגשות הממוספרות ל-Claude (API או Claude Code), כותב
            Grades.csv ועבודות מסומנות. רץ ברקע, והאתר שואל מה המצב.
   החזרה  → moodle.upload.prepare_upload(<תיקיית המטלה>)
            בונה ב-"3 - Ready to upload to Moodle" את גיליון הציונים, את קובצי המשוב ואת
@@ -102,7 +102,7 @@ def pull(root: Path, course: str, assignment: str) -> dict:
     before = {r["number"] for r in a.key_rows()}
     lock = _take_lock(a)
     try:
-        rows = moodle_ingest.ingest(mid)
+        rows = moodle_ingest.ingest(mid, _zip_from_moodle(a, mid))
     except (FileNotFoundError, ValueError) as e:
         raise UserError(_hebrew_error(e, mid)) from e
     finally:
@@ -116,6 +116,56 @@ def pull(root: Path, course: str, assignment: str) -> dict:
         "notes": [f"הקבצים נשמרו ב-\"{paths.TO_GRADE}\", וה-ZIP נשמר בתיקיית המטלה."],
         "pulled_at": datetime.now().isoformat(timespec="seconds"),
     }
+
+
+DOWNLOAD_POLL_S = 2.0  # כל כמה שניות מסתכלים בתיקיית ההורדות אם ה-ZIP הגיע
+DOWNLOAD_WAIT_S = 25 * 60  # הכי הרבה שמחכים להורדה: פחות מ-30 הדקות שאחריהן נעילת המשיכה נחשבת תקועה
+
+
+class _SimDownloader:
+    """הדגמה (MOODLE_DRIVER=simulate): אין מודל, אז אין ממה להוריד."""
+
+    def download(self, info: dict) -> dict:
+        return {"status": "error", "message": "בהדגמה אין מודל. שמים ZIP של המטלה בתיקיית ההורדות ומושכים שוב."}
+
+
+def _make_downloader():
+    return _SimDownloader() if os.environ.get("MOODLE_DRIVER") == "simulate" else claude_driver.ClaudeChromeDriver()
+
+
+def _zip_from_moodle(a: folder_view.Assignment, mid: str) -> Path:
+    """ה-ZIP של כל ההגשות: מה שכבר מחכה בתיקיית ההורדות (מישהו הוריד ידנית), ואם אין, Claude בכרום מוריד אותו עכשיו.
+
+    ingest מעביר כל ZIP שנקלט מתיקיית ההורדות לתיקיית המטלה, כך ש-ZIP שנשאר שם עוד לא נקלט."""
+    global _checking
+    try:
+        return moodle_ingest.find_download(mid)
+    except FileNotFoundError:
+        pass
+    with _send_lock:  # ההורדה, הבדיקה וההעלאה היו מפעילות את אותו כרום
+        if _send.running:
+            raise UserError("העלאה למודל רצה עכשיו בכרום. אפשר למשוך כשהיא תסתיים.")
+        if _checking:
+            raise UserError("בדיקת החיבור למודל רצה עכשיו בכרום. כדאי לנסות שוב בעוד דקה.")
+        _checking = True
+    since = time.time()
+    try:
+        result = _make_downloader().download(paths.read_info(a.dir))
+    finally:
+        with _send_lock:
+            _checking = False
+    if result.get("status") != "started":
+        if result.get("message") == claude_driver.NOT_LOGGED_IN:
+            _drop_status_cache()
+        raise UserError(f"ההורדה ממודל לא התחילה: {result.get('message') or 'Claude לא פירט למה.'}")
+    try:
+        return moodle_ingest.wait_for_download(mid, since, poll_s=DOWNLOAD_POLL_S, total_s=DOWNLOAD_WAIT_S)
+    except TimeoutError as e:
+        if "did not start" in str(e):
+            raise UserError("Claude ביקש ממודל את ה-ZIP, אבל ההורדה לא התחילה בכרום. אם כרום שואל איפה לשמור, "
+                            "מכבים בהגדרות שלו את \"שאל איפה לשמור כל קובץ\" ומושכים שוב.") from e
+        raise UserError("ההורדה ממודל לא הסתיימה בזמן. כשהיא תסתיים בכרום, לוחצים שוב \"משוך הגשות\": "
+                        "ה-ZIP שבתיקיית ההורדות ייקלט בלי להוריד שוב.") from e
 
 
 # ---------- החזרה ----------
@@ -476,6 +526,13 @@ def moodle_status() -> dict:
     return status
 
 
+def grading_via() -> str | None:
+    """איך הבדיקה מדברת עם Claude: "api" (יש ANTHROPIC_API_KEY), "code" (Claude Code מחובר במחשב, grading/claude_cli.py), או None."""
+    if cfg.claude_key():
+        return "api"
+    return "code" if moodle_status()["logged_in"] else None
+
+
 def _drop_status_cache() -> None:
     global _moodle_cache
     _moodle_cache = None
@@ -703,7 +760,7 @@ def state(root: Path) -> dict:
                 "subs": subs, "log": _activity(a, results, log),
             })
     return {"root": str(root), "courses": courses, "assignments": out,
-            "moodle": False, "claude": bool(cfg.claude_key()), "grading": grade_status(), "sending": send_status()}
+            "moodle": False, "claude": grading_via() is not None, "claudeVia": grading_via(), "grading": grade_status(), "sending": send_status()}
 
 
 def _score(raw: str | None) -> float | int | None:
