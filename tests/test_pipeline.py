@@ -322,3 +322,11 @@ def test_server_refuses_foreign_requests(root, server):
     # קבצים מחוץ לתיקיית הקורס
     st, _ = call(server, "GET", "/api/file?path=../../secret.txt")
     assert st == 404
+
+
+def test_find_root_uses_team_subfolder(tmp_path, monkeypatch):
+    # תיקייה שהצוות פתח בתוך תיקיית הקורס: המערכת עובדת רק בתוכה
+    course = tmp_path / config.FOLDER_NAME
+    (course / config.SYSTEM_SUBFOLDER).mkdir(parents=True)
+    monkeypatch.setenv("ASSIGNMENT_CHECKER_ROOT", str(course))
+    assert config.find_root() == course / config.SYSTEM_SUBFOLDER

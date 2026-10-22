@@ -14,6 +14,8 @@ import os
 from pathlib import Path
 
 FOLDER_NAME = "YallaLinearit"
+# אם בתוך תיקיית הקורס יש תיקייה בשם הזה, המערכת עובדת בתוכה ולא נוגעת בשאר התיקייה של המרצה
+SYSTEM_SUBFOLDER = "מערכת בדיקת תרגילים"
 
 # שמות התיקיות בתוך כל מטלה. המספר בתחילת השם שומר על הסדר של השלבים.
 INBOX = "0-קליטה"          # כאן שמים את קובץ ה-ZIP שהורד ממודל
@@ -49,6 +51,11 @@ def _is_course_folder(name: str) -> bool:
     return name == FOLDER_NAME or name.endswith(f" - {FOLDER_NAME}") or name.startswith(f"{FOLDER_NAME} - ")
 
 
+def _system_dir(course_folder: Path) -> Path:
+    sub = course_folder / SYSTEM_SUBFOLDER
+    return sub if sub.is_dir() else course_folder
+
+
 def find_root() -> Path:
     """מחזיר את תיקיית הקורס ב-OneDrive, או זורק FolderNotFound עם הסבר מה לעשות."""
     explicit = os.environ.get("ASSIGNMENT_CHECKER_ROOT")
@@ -56,7 +63,7 @@ def find_root() -> Path:
         path = Path(explicit)
         if not path.is_dir():
             raise FolderNotFound(f"ASSIGNMENT_CHECKER_ROOT מצביע על תיקייה שלא קיימת: {path}")
-        return path
+        return _system_dir(path)
 
     # "Add shortcut to My files" שם את התיקייה בתוך OneDrive של האוניברסיטה.
     # הכפתור "Sync" שם אותה בתיקייה בשם הארגון, למשל
@@ -73,11 +80,11 @@ def find_root() -> Path:
             continue
         for folder in children:
             if folder.is_dir() and _is_course_folder(folder.name):
-                return folder
+                return _system_dir(folder)
             try:
                 for sub in folder.iterdir():
                     if sub.is_dir() and _is_course_folder(sub.name):
-                        return sub
+                        return _system_dir(sub)
             except OSError:
                 continue
 
