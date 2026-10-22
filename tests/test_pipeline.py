@@ -1,45 +1,33 @@
-"""בדיקות למערכת, על עותק מוקטן של המבנה של הצוות. מריצים: python -m pytest"""
+"""בדיקות לאתר המחובר: איתור התיקייה, המצב לאתר, והחיבור לשלבים של moodle/.
+
+את moodle/ עצמו בודקות הבדיקות של אורי (test_*.py בשורש הריפו).
+מריצים: python -m pytest
+"""
 from __future__ import annotations
 
 import csv
 import http.client
-import io
 import json
 import threading
 import zipfile
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
-from urllib.parse import parse_qs, quote
+from http.server import ThreadingHTTPServer
+from urllib.parse import quote
 
 import pytest
 
+from moodle import paths
 from pipeline import config, service, team
 from pipeline.demo import homework_pdf
-from pipeline.moodle_zip import read_zip
-from pipeline.pull import single_pdf
-from pipeline.types import Submission, SubmittedFile
 
-COURSE, HW = "Linear Algebra", "Assignment 0 - Sets and Complex Numbers"
-NAMES = {"1001": "נועה כהן", "1002": "איתי לוי", "1003": "מאיה מזרחי", "2000": "יונתן פרץ", "2001": "שירה ביטון"}
+COURSE, HW, MID = "Linear Algebra", "Assignment 0 - Sets and Complex Numbers", "3438636"
+NAMES = {"1001": "נועה כהן", "1002": "איתי לוי", "1003": "מאיה מזרחי", "2000": "יונתן פרץ"}
 
 
-def make_zip(entries: dict[str, bytes], utf8: bool = True) -> bytes:
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w") as zf:
-        for name, data in entries.items():
-            cls = zipfile.ZipInfo if utf8 else _NoUtf8Flag
-            zf.writestr(cls(name, date_time=(2026, 10, 20, 12, 0, 0)), data)
-    return buf.getvalue()
-
-
-class _NoUtf8Flag(zipfile.ZipInfo):
-    """ZIP ישן: השם נשמר בבתים של UTF-8, אבל בלי הסימון שאומר שזה UTF-8."""
-    def _encodeFilenameFlags(self):
-        return self.filename.encode("utf-8"), self.flag_bits & ~0x800
-
-
-def entry(pid: str, fname: str = "hw.pdf") -> str:
-    return f"{NAMES[pid]}_{pid}_assignsubmission_file/{fname}"
+def write_key(a_dir, rows):
+    with (a_dir / paths.KEY).open("w", encoding="utf-8-sig", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=["number", "anon_file", "participant_id", "original_folder", "original_file"])
+        w.writeheader()
+        w.writerows(rows)
 
 
 @pytest.fixture
@@ -49,33 +37,28 @@ def root(tmp_path, monkeypatch):
     (course_folder / "Recordings").mkdir(parents=True)
     r = course_folder / "Exercise Checking System"
     (r / "Discrete Mathematics").mkdir(parents=True)
-    (r / "README.txt").write_text("כללים של הצוות", encoding="utf-8-sig")
-    a = team.Assignment(r / COURSE / HW)
-    for sub in (team.SUBMISSIONS, team.GRADED, team.READY):
-        (a.dir / sub).mkdir(parents=True)
-    a.save_details({"id": "3438636", "course": COURSE, "course_id": "67024", "name": HW,
-                    "due": "2026-10-26T23:59:00+02:00",
-                    "questions": [{"sheet": "דף קבוצות", "numbers": [11, 12]}, {"sheet": "דף מספרים מרוכבים", "numbers": [6, 7, 8]}],
-                    "title": "הגשה 0 - קבוצות ומרוכבים", "course_title": "אלגברה לינארית להנדסה"})
+    a = r / COURSE / HW
+    for sub in (paths.TO_GRADE, paths.MARKED, paths.UPLOAD):
+        (a / sub).mkdir(parents=True)
+    (a / paths.INFO).write_text(json.dumps({
+        "id": MID, "course": COURSE, "course_id": "67024", "name": HW, "due": "2026-10-26T23:59:00+02:00",
+        "questions": [{"sheet": "דף קבוצות", "numbers": [11, 12]}, {"sheet": "דף מספרים מרוכבים", "numbers": [6, 7, 8]}],
+        "title": "הגשה 0 - קבוצות ומרוכבים", "course_title": "אלגברה לינארית להנדסה", "notes": "הורד ב-21/10",
+    }, ensure_ascii=False), encoding="utf-8")
     rows = []
     for i, pid in enumerate(("1001", "1002", "1003"), start=1):
         n = f"{i:04d}"
-        (a.submissions / f"{n}.pdf").write_bytes(homework_pdf(NAMES[pid], HW))
+        (a / paths.TO_GRADE / f"{n}.pdf").write_bytes(homework_pdf(NAMES[pid], HW))
         rows.append({"number": n, "anon_file": f"{n}.pdf", "participant_id": pid,
                      "original_folder": f"{NAMES[pid]}_{pid}_assignsubmission_file", "original_file": "hw.pdf"})
-    a.save_key(rows)
+    # לסטודנט 0002 יש שני קבצים
+    (a / paths.TO_GRADE / "0002-2.pdf").write_bytes(homework_pdf(NAMES["1002"], HW))
+    rows.append({"number": "0002", "anon_file": "0002-2.pdf", "participant_id": "1002",
+                 "original_folder": f"{NAMES['1002']}_1002_assignsubmission_file", "original_file": "part2.pdf"})
+    write_key(a, rows)
+    (a / "Moodle download 2026-10-21 16-28.zip").write_bytes(b"original download")
     monkeypatch.setenv("ASSIGNMENT_CHECKER_ROOT", str(course_folder))
-    monkeypatch.delenv("MOODLE_TOKEN", raising=False)
     return r
-
-
-def asg(root) -> team.Assignment:
-    return team.Assignment(root / COURSE / HW)
-
-
-def key(root) -> list[dict]:
-    with (asg(root).dir / team.KEY).open(encoding="utf-8-sig", newline="") as fh:
-        return list(csv.DictReader(fh))
 
 
 # ---------- איתור התיקייה ----------
@@ -100,188 +83,83 @@ def test_course_folder_without_team_folder_is_not_used(tmp_path, monkeypatch):
     with pytest.raises(config.FolderNotFound) as e:
         config.find_root()
     assert "Exercise Checking System" in str(e.value)
-    monkeypatch.setattr(config.Path, "home", staticmethod(lambda: tmp_path / "empty"))
-    (tmp_path / "empty").mkdir()
-    with pytest.raises(config.FolderNotFound) as e:
-        config.find_root()
-    assert "Sync" in str(e.value)
 
 
-# ---------- ZIP של מודל ----------
-def test_read_zip_folders_flat_and_wrapper(tmp_path):
-    pdf = homework_pdf("x", HW)
-    z = tmp_path / "x.zip"
-    z.write_bytes(make_zip({
-        "נועה כהן_111_assignsubmission_file/hw.pdf": pdf,
-        "איתי לוי_222_assignsubmission_file_hw.pdf": pdf,
-        "COURSE-HW1-9/מאיה מזרחי_333_assignsubmission_file/part 1.pdf": pdf,
-        "מאיה מזרחי_333_assignsubmission_onlinetext/onlinetext.html": b"<p>hi</p>",
-    }))
-    with zipfile.ZipFile(z) as zf:
-        subs = {s.moodle_id: s for s in read_zip(zf)}
-        assert subs["111"].files[0].content()[:4] == b"%PDF"
-    assert set(subs) == {"111", "222", "333"}
-    assert subs["111"].folder == "נועה כהן_111_assignsubmission_file"
-    assert subs["222"].folder == "איתי לוי_222_assignsubmission_file"
-    assert sorted(f.name for f in subs["333"].files) == ["onlinetext.html", "part 1.pdf"]
+# ---------- המצב לאתר ----------
+def test_state_groups_files_by_number_and_hides_names(root):
+    a_dir = root / COURSE / HW
+    (a_dir / paths.MARKED / "0001.pdf").write_bytes(b"%PDF")
+    with (a_dir / paths.GRADES).open("w", encoding="utf-8", newline="") as fh:
+        fh.write("number,grade,feedback\n0003,87,עבודה טובה\n")
+    st = service.state(root)
+    assert [c["name"] for c in st["courses"]] == ["אלגברה לינארית להנדסה"]  # קורס בלי מטלות לא מוצג
+    (a,) = st["assignments"]
+    assert a["title"] == "הגשה 0 - קבוצות ומרוכבים" and a["questions"] == 5 and a["moodleId"] == MID
+    assert a["pulledAt"].startswith("2026-10-21T16:28")  # מתוך שם ה-ZIP ששמור בתיקייה
+    subs = {s["id"]: s for s in a["subs"]}
+    assert list(subs) == ["0001", "0002", "0003"]
+    assert [f["name"] for f in subs["0002"]["files"]] == ["0002.pdf", "0002-2.pdf"]
+    assert subs["0001"]["status"] == "graded"  # יש עבודה מסומנת
+    assert subs["0003"]["status"] == "graded" and subs["0003"]["score"] == 87 and subs["0003"]["feedback"] == "עבודה טובה"
+    assert subs["0002"]["status"] == "pulled"
+    raw = json.dumps(st, ensure_ascii=False)
+    assert not any(name in raw for name in NAMES.values())
 
 
-def test_read_zip_hebrew_names_without_utf8_flag(tmp_path):
-    z = tmp_path / "old.zip"
-    z.write_bytes(make_zip({"שירה ביטון_444_assignsubmission_file_hw.pdf": b"%PDF"}, utf8=False))
-    with zipfile.ZipFile(z) as zf:
-        (s,) = read_zip(zf)
-    assert s.name == "שירה ביטון"
+# ---------- משיכה: moodle ingest ----------
+def test_pull_runs_ingest_with_the_assignment_id(root, monkeypatch):
+    seen = {}
 
+    def fake_ingest(assignment_id, zip_path=None, course=None, name=None):
+        seen["id"], seen["data"] = assignment_id, paths.data_dir()
+        a_dir = paths.find_assignment(assignment_id)
+        rows = team.Assignment(a_dir).key_rows()
+        (a_dir / paths.TO_GRADE / "0004.pdf").write_bytes(homework_pdf(NAMES["2000"], HW))
+        rows.append({"number": "0004", "anon_file": "0004.pdf", "participant_id": "2000",
+                     "original_folder": f"{NAMES['2000']}_2000_assignsubmission_file", "original_file": "hw.pdf"})
+        write_key(a_dir, rows)
+        return rows
 
-# ---------- איחוד ל-PDF אחד ----------
-def test_single_pdf_merges_pdfs_and_scanned_pages():
-    import pymupdf
-    pix = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 40, 60), False)
-    pix.clear_with(200)
-    sub = Submission("1", "x", [SubmittedFile("b.png", pix.tobytes("png")), SubmittedFile("a.pdf", homework_pdf("x", HW, pages=2))])
-    data, issues = single_pdf(sub)
-    with pymupdf.open(stream=data, filetype="pdf") as d:
-        assert d.page_count == 3
-    assert not issues
-    empty, issues = single_pdf(Submission("2", "y", [SubmittedFile("hw.pdf", b"")]))
-    assert empty is None and "ריק" in issues[0]
-
-
-# ---------- משיכה ----------
-def test_pull_keeps_numbers_numbers_new_students_and_hides_names(root):
-    a = asg(root)
-    old_0002 = (a.submissions / "0002.pdf").read_bytes()
-    (a.dir / team.GRADED / "0003.pdf").write_bytes(b"%PDF graded")
-    a.inbox.mkdir()
-    (a.inbox / "LA-Assignment 0-3438636.zip").write_bytes(make_zip({
-        entry("1002"): old_0002,                                   # לא השתנה
-        entry("1003"): homework_pdf(NAMES["1003"], HW, pages=3),   # הוגש מחדש אחרי בדיקה
-        entry("2000"): homework_pdf(NAMES["2000"], HW),            # סטודנט חדש
-        entry("2001"): b"",                                         # קובץ ריק
-    }))
+    monkeypatch.setattr("moodle.ingest.ingest", fake_ingest)
     rep = service.pull(root, COURSE, HW)
-
-    r = rep.result
-    assert (r.total, r.new, r.updated, r.same, len(r.problems)) == (4, 1, 1, 1, 1)
-    rows = {row["participant_id"]: row for row in key(root)}
-    assert rows["1002"]["number"] == "0002" and rows["1003"]["number"] == "0003"
-    assert rows["2000"]["number"] == "0004" and rows["2000"]["anon_file"] == "0004.pdf"
-    assert rows["2000"]["original_folder"] == f"{NAMES['2000']}_2000_assignsubmission_file"
-    assert "2001" not in rows  # קובץ ריק לא מקבל מספר
-    assert list(key(root)[0].keys())[:5] == team.KEY_COLUMNS
-    assert (a.dir / team.KEY).read_bytes().startswith(b"\xef\xbb\xbf")  # BOM, כמו בקובץ של אורי
-    assert any("0003 הוגשה מחדש" in n for n in rep.notes)
-    assert "משתתף 2001" in r.problems[0]
-
-    # שמות מופיעים רק בטבלת המפתח
-    assert sorted(p.name for p in a.submissions.iterdir()) == ["0001.pdf", "0002.pdf", "0003.pdf", "0004.pdf"]
-    log = (a.dir / team.LOG).read_text(encoding="utf-8")
-    assert not any(name in log for name in NAMES.values())
-    assert not list(a.inbox.glob("*.zip")) and len(list((a.inbox / team.INBOX_DONE).glob("*.zip"))) == 1
-    readme = (root / COURSE / "README.txt").read_text(encoding="utf-8-sig")
-    assert f"{HW}  (הגשה 0 - קבוצות ומרוכבים): 4 הגשות" in readme
-    assert (root / "README.txt").read_text(encoding="utf-8-sig") == "כללים של הצוות"  # לא נוגעים
+    assert seen == {"id": MID, "data": root}
+    assert rep["result"] == {"total": 4, "new": 1, "files": 5}
+    assert "1 חדשות" in rep["summary"]
 
 
-def test_second_pull_of_same_zip_changes_nothing(root):
-    a = asg(root)
-    data = make_zip({entry("2000"): homework_pdf(NAMES["2000"], HW)})
-    a.inbox.mkdir()
-    (a.inbox / "a.zip").write_bytes(data)
-    service.pull(root, COURSE, HW)
-    (a.inbox / "b.zip").write_bytes(data)
-    rep = service.pull(root, COURSE, HW)
-    assert rep.result.same == 1 and rep.result.new == 0
-    assert len(key(root)) == 4
+@pytest.mark.parametrize("error, expect", [
+    (FileNotFoundError("7-Zip is not installed (winget install 7zip.7zip)"), "7-Zip לא מותקן"),
+    (FileNotFoundError(f"No ZIP ending in -{MID}.zip in Downloads"), "תיקיית ההורדות"),
+])
+def test_pull_errors_are_explained_in_hebrew(root, monkeypatch, error, expect):
+    def broken(*args, **kwargs):
+        raise error
+    monkeypatch.setattr("moodle.ingest.ingest", broken)
+    with pytest.raises(service.UserError) as e:
+        service.pull(root, COURSE, HW)
+    assert expect in str(e.value)
 
 
-def test_late_submission_is_noted(root):
-    a = asg(root)
-    d = a.details()
-    d["due"] = "2026-10-20T10:00:00+03:00"
-    a.save_details(d)
-    a.inbox.mkdir()
-    (a.inbox / "a.zip").write_bytes(make_zip({entry("2000"): homework_pdf(NAMES["2000"], HW)}))
-    rep = service.pull(root, COURSE, HW)
-    assert any("0004 הוגשה באיחור" in n for n in rep.notes)
-
-
-def test_zips_outside_the_download_folder_are_not_touched(root):
-    # ההורדה המקורית של אורי יושבת בתיקיית המטלה: לא קוראים אותה ולא מזיזים אותה
-    a = asg(root)
-    original = a.dir / "Moodle download 2026-10-21 16-28.zip"
-    original.write_bytes(make_zip({entry("2000"): homework_pdf(NAMES["2000"], HW)}))
-    (root / COURSE / "stray.zip").write_bytes(b"not even a zip")
-    rep = service.pull(root, COURSE, HW)
-    assert rep.result.total == 0 and len(key(root)) == 3
-    assert original.exists() and (root / COURSE / "stray.zip").exists()
-
-
-def test_no_sources_explains_what_to_do(root):
-    rep = service.pull(root, COURSE, HW)
-    assert rep.result.total == 0 and any(team.INBOX in n for n in rep.notes)
+# ---------- החזרה: moodle upload ----------
+def test_return_runs_upload_and_builds_feedback(root, monkeypatch):
+    monkeypatch.setattr("moodle.upload.find_worksheet", lambda *a, **k: None)
+    a_dir = root / COURSE / HW
+    (a_dir / paths.MARKED / "0001.pdf").write_bytes(homework_pdf("x", HW))
+    with (a_dir / paths.GRADES).open("w", encoding="utf-8", newline="") as fh:
+        fh.write("number,grade,feedback\n0001,90,יפה\n")
+    rep = service.prepare_return(root, COURSE, HW)
+    assert rep["report"]["results"] == 1 and rep["report"]["submissions"] == 3
+    assert any("עוד אין ציון ל-2" in n for n in rep["notes"])
+    assert any("גיליון ציונים" in n for n in rep["notes"])
+    zips = list((a_dir / paths.UPLOAD).glob("*.zip"))
+    assert len(zips) == 1
+    with zipfile.ZipFile(zips[0]) as zf:
+        assert any(n.startswith(f"{NAMES['1001']}_1001_") for n in zf.namelist())  # השם רק בתוך ה-ZIP למודל
 
 
 def test_unknown_assignment_is_refused(root):
     with pytest.raises(FileNotFoundError):
         service.pull(root, COURSE, "../../Recordings")
-
-
-# ---------- מודל עם טוקן ----------
-class FakeMoodle(BaseHTTPRequestHandler):
-    pdf = b""
-
-    def log_message(self, *a):
-        pass
-
-    def do_POST(self):
-        form = {k: v[0] for k, v in parse_qs(self.rfile.read(int(self.headers["Content-Length"])).decode()).items()}
-        assert form["wstoken"] == "tok"
-        fn = form["wsfunction"]
-        base = f"http://127.0.0.1:{self.server.server_port}/webservice/pluginfile.php"
-        if fn == "mod_assign_get_assignments":
-            assert form["courseids[0]"] == "67024"
-            out = {"courses": [{"id": 67024, "assignments": [
-                {"id": 901, "cmid": 3438636, "name": "הגשה 0 - קבוצות ומרוכבים", "duedate": 1792540740},
-                {"id": 902, "cmid": 3438700, "name": "הגשה 1 - מטריצות", "duedate": 0}]}]}
-        elif fn == "mod_assign_get_submissions":
-            assert form["assignmentids[0]"] == "901"
-            out = {"assignments": [{"assignmentid": 901, "submissions": [
-                {"userid": 2000, "status": "submitted", "timemodified": 1792500000, "plugins": [
-                    {"type": "file", "fileareas": [{"area": "submission_files", "files": [{"filename": "hw.pdf", "fileurl": f"{base}/1/hw.pdf"}]}]}]},
-                {"userid": 2001, "status": "new", "timemodified": 0, "plugins": []},
-            ]}]}
-        elif fn == "core_user_get_users_by_field":
-            out = [{"id": 2000, "fullname": NAMES["2000"], "email": "x@post.bgu.ac.il", "idnumber": "123456789"}]
-        else:
-            out = {"exception": "x", "message": "unknown"}
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.end_headers()
-        self.wfile.write(json.dumps(out).encode())
-
-    def do_GET(self):
-        assert "token=tok" in self.path
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(FakeMoodle.pdf)
-
-
-def test_pull_from_moodle_with_token(root, monkeypatch):
-    FakeMoodle.pdf = homework_pdf(NAMES["2000"], HW)
-    srv = ThreadingHTTPServer(("127.0.0.1", 0), FakeMoodle)
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
-    try:
-        monkeypatch.setenv("MOODLE_URL", f"http://127.0.0.1:{srv.server_port}")
-        monkeypatch.setenv("MOODLE_TOKEN", "tok")
-        rep = service.pull(root, COURSE, HW)
-        assert "מודל" in rep.source and rep.result.new == 1
-        assert {r["participant_id"]: r["number"] for r in key(root)}["2000"] == "0004"
-        new = team.Assignment(root / COURSE / "הגשה 1 - מטריצות")
-        assert new.details()["id"] == "3438700"  # מטלה חדשה במודל קיבלה תיקייה לבד
-    finally:
-        srv.shutdown()
 
 
 # ---------- השרת המקומי ----------
@@ -306,26 +184,14 @@ def call(port, method, path, body=None, headers=None):
     return r.status, (json.loads(raw) if r.getheader("Content-Type", "").startswith("application/json") else raw)
 
 
-def test_server_state_shows_numbers_not_names(root, server):
-    (asg(root).dir / team.GRADED / "0001.pdf").write_bytes(b"%PDF")
-    st, state = call(server, "GET", "/api/state")
-    assert st == 200
-    assert [c["name"] for c in state["courses"]] == ["אלגברה לינארית להנדסה"]  # קורס בלי מטלות לא מוצג
-    (a,) = state["assignments"]
-    assert a["title"] == "הגשה 0 - קבוצות ומרוכבים" and a["questions"] == 5 and a["pulledAt"]
-    assert [s["name"] for s in a["subs"]] == ["הגשה 0001", "הגשה 0002", "הגשה 0003"]
-    assert {s["id"]: s["status"] for s in a["subs"]}["0001"] == "graded"
-    raw = json.dumps(state, ensure_ascii=False)
-    assert not any(name in raw for name in NAMES.values())
-
-
-def test_server_pull_and_file(root, server):
-    asg(root).inbox.mkdir()
-    (asg(root).inbox / "a.zip").write_bytes(make_zip({entry("2000"): homework_pdf(NAMES["2000"], HW)}))
+def test_server_pull_error_and_files(root, server, monkeypatch):
+    def no_zip(*a, **k):
+        raise FileNotFoundError(f"No ZIP ending in -{MID}.zip in Downloads")
+    monkeypatch.setattr("moodle.ingest.ingest", no_zip)
     st, rep = call(server, "POST", "/api/pull", {"course": COURSE, "assignment": HW}, {"X-Assignment-Checker": "1"})
-    assert st == 200 and rep["result"]["new"] == 1
+    assert st == 422 and "תיקיית ההורדות" in rep["error"]
     _, state = call(server, "GET", "/api/state")
-    f = state["assignments"][0]["subs"][-1]["files"][0]
+    f = state["assignments"][0]["subs"][0]["files"][0]
     st, data = call(server, "GET", f"/api/file?path={quote(f['path'])}")
     assert st == 200 and data[:4] == b"%PDF"
     st, index = call(server, "GET", "/")
@@ -335,7 +201,46 @@ def test_server_pull_and_file(root, server):
 def test_server_refuses_foreign_requests(root, server):
     body = {"course": COURSE, "assignment": HW}
     assert call(server, "POST", "/api/pull", body)[0] == 403
-    assert call(server, "POST", "/api/pull", body, {"X-Assignment-Checker": "1", "Origin": "https://evil.example"})[0] == 403
+    assert call(server, "POST", "/api/return", body, {"X-Assignment-Checker": "1", "Origin": "https://evil.example"})[0] == 403
     assert call(server, "GET", "/api/state", headers={"Host": "evil.example"})[0] == 403
     assert call(server, "GET", "/api/file?path=../../Recordings")[0] == 404
-    assert call(server, "GET", f"/api/file?path={quote(COURSE + '/' + HW + '/' + team.KEY)}")[0] == 404  # טבלת המפתח לא נשלחת לאתר
+    assert call(server, "GET", f"/api/file?path={quote(COURSE + '/' + HW + '/' + paths.KEY)}")[0] == 404  # טבלת המפתח לא נשלחת לאתר
+
+
+# ---------- כל אחד יכול למשוך: נעילה והתנגשויות ----------
+def _ok_ingest(assignment_id, *a, **k):
+    return team.Assignment(paths.find_assignment(assignment_id)).key_rows()
+
+
+def test_pull_waits_for_someone_elses_pull(root, monkeypatch):
+    import os, time
+    monkeypatch.setattr("moodle.ingest.ingest", _ok_ingest)
+    lock = root / COURSE / HW / service.LOCK_FILE
+    lock.write_text("uri (URI-LAPTOP)", encoding="utf-8")
+    with pytest.raises(service.UserError) as e:
+        service.pull(root, COURSE, HW)
+    assert "uri (URI-LAPTOP) מושך" in str(e.value)
+    assert service.state(root)["assignments"][0]["warnings"] == ["משיכה בתהליך: uri (URI-LAPTOP)"]
+    old = time.time() - 31 * 60  # נעילה ישנה (משיכה שנתקעה) לא חוסמת
+    os.utime(lock, (old, old))
+    service.pull(root, COURSE, HW)
+    assert not lock.exists()  # הנעילה משתחררת בסוף
+
+
+def test_lock_is_released_when_pull_fails(root, monkeypatch):
+    def no_zip(*a, **k):
+        raise FileNotFoundError(f"No ZIP ending in -{MID}.zip in Downloads")
+    monkeypatch.setattr("moodle.ingest.ingest", no_zip)
+    with pytest.raises(service.UserError):
+        service.pull(root, COURSE, HW)
+    assert not (root / COURSE / HW / service.LOCK_FILE).exists()
+
+
+def test_onedrive_conflict_copy_blocks_pull(root, monkeypatch):
+    monkeypatch.setattr("moodle.ingest.ingest", _ok_ingest)
+    a_dir = root / COURSE / HW
+    (a_dir / "Key - number to student-DESKTOP-ABC.csv").write_text("number\n", encoding="utf-8")
+    with pytest.raises(service.UserError) as e:
+        service.pull(root, COURSE, HW)
+    assert "עותק כפול" in str(e.value)
+    assert service.state(root)["assignments"][0]["warnings"] == ["עותק כפול של טבלת המפתח: Key - number to student-DESKTOP-ABC.csv"]

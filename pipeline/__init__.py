@@ -1,16 +1,12 @@
-"""בודק העבודות: משיכת הגשות ממודל לתיקיית המערכת של הצוות ב-OneDrive, בדיקה והחזרה.
+"""האתר המחובר של בודק העבודות: מחבר את הדשבורד (docs/) לתיקייה המשותפת ולשלבים של moodle/.
 
-מבנה:
-  config.py      איפה נמצאת התיקייה "Exercise Checking System"
-  team.py        המבנה של הצוות: מטלות, טבלת מפתח, תיקיות 1-2-3
-  settings.py    .env במחשב: טוקן מודל ומפתח Claude
-  moodle_zip.py  קריאת ZIP של "הורדת כל ההגשות" ממודל
-  moodle_api.py  משיכה אוטומטית ממודל עם טוקן
-  pull.py        שלב 1: מספור ההגשות, איחוד ל-PDF אחד ועדכון טבלת המפתח
-  render.py      הפיכת עמודי ההגשה לתמונות, לשליחה ל-Claude
-  grade.py       שלב 2: בדיקה עם Claude, סימון ההערות על ה-PDF ו-Grades.csv
-  service.py     הפעולות של המערכת, לשורת הפקודה ולאתר
-  server.py      שרת מקומי שמחבר את האתר לתיקייה
-  types.py       מבני הנתונים של הגשה
-  demo.py        הגשות לדוגמה בפורמט של מודל (לבדיקות)
+  config.py    איפה נמצאת התיקייה "Exercise Checking System"
+  team.py      קריאה של המבנה, לתצוגה (השמות מוגדרים ב-moodle/paths.py)
+  service.py   משיכה (moodle ingest), בדיקה (grade.py), החזרה (moodle upload), והמצב לאתר
+  render.py    הפיכת עמודי ההגשה לתמונות, לשליחה ל-Claude
+  grade.py     שלב 2: בדיקה עם Claude, סימון ההערות על ה-PDF ו-Grades.csv
+  server.py    שרת מקומי: האתר + הכפתורים
+  settings.py  .env במחשב (מפתח Claude)
+  types.py     מבנה של הגשה (בשימוש בשלב הבדיקה)
+  demo.py      קובצי PDF לדוגמה, לבדיקות
 """

@@ -1,7 +1,8 @@
 """שלב 2: בדיקה וסימון של ההגשות עם Claude.
 
-קלט, בתיקיית המטלה:
-  1 - Submissions to grade/0001.pdf ...   ההגשות הממוספרות. רק הן נשלחות ל-Claude
+קלט, בתיקיית המטלה (השמות מ-moodle/paths.py):
+  1 - Submissions to grade/0001.pdf ...   ההגשות הממוספרות. רק הן נשלחות ל-Claude. אם סטודנט הגיש
+                                          כמה קבצים (0001.pdf, 0001-2.jpg...), הם מאוחדים לעבודה אחת
   Assignment details.json                 השאלות (questions), כללי ההגשה (submission_rules), המחוון (rubric),
                                           הנחיות לבדיקה (grading_instructions) והציון המרבי (max_grade)
   Official solution.pdf                   הפתרון הרשמי, אם יש (לא חובה)
@@ -17,7 +18,7 @@
 
 שורה ב-Grades.csv שאושרה (יש משהו בעמודה approved) לא נבדקת שוב ולא נדרסת.
 
-פרטיות: ל-Claude נשלחים רק העמודים של ה-PDF הממוספר. טבלת המפתח לא נשלחת לעולם. היא נקראת
+פרטיות: ל-Claude נשלחים רק העמודים של ההגשה הממוספרת. טבלת המפתח לא נשלחת לעולם. היא נקראת
 במחשב בלבד, כדי למחוק שם של סטודנט אם Claude העתיק אותו מהדף למשוב.
 """
 from __future__ import annotations
@@ -36,11 +37,13 @@ from typing import Callable
 
 import pymupdf
 
+from moodle import paths
+
 from . import settings as cfg, team
 from .render import PageImage, render_pdf
 
 # ---------- הגדרות ----------
-GRADES = "Grades.csv"
+GRADES = paths.GRADES
 SOLUTION = "Official solution.pdf"
 # number, grade, feedback הן העמודות ששלב ההחזרה קורא. השאר של המערכת:
 #   points    ניקוד לכל שאלה, לפי הסדר, מופרד ב-";"
@@ -128,7 +131,7 @@ def load_context(asg: team.Assignment, instructions: str = "", send_solution: bo
             q.points = round(left / len(unset), 2)
     solution = asg.dir / SOLUTION
     return Context(
-        title=asg.title, course=team.course_title(asg.course_dir), questions=qs, max_grade=max_grade,
+        title=asg.title, course=team.course_title(asg.dir.parent), questions=qs, max_grade=max_grade,
         rules=[str(r) for r in d.get("submission_rules") or []], rubric_text=rubric_text,
         instructions="\n".join(t.strip() for t in (str(d.get("grading_instructions") or ""), instructions) if t and t.strip()),
         solution=solution.read_bytes() if send_solution and solution.is_file() else None,
@@ -469,7 +472,10 @@ def write_grades(dir: Path, rows: dict[str, dict]) -> None:
     w.writeheader()
     for n in sorted(rows):
         w.writerow({**rows[n], "number": n})
-    team._write_text(dir / GRADES, buf.getvalue(), bom=True)
+    # BOM כדי ש-Excel יציג עברית. כותבים לקובץ זמני ומחליפים, כדי שקובץ חצי כתוב לא יישאר
+    tmp = dir / (GRADES + ".tmp")
+    tmp.write_text(buf.getvalue(), encoding="utf-8-sig", newline="")
+    tmp.replace(dir / GRADES)
 
 
 def is_approved(row: dict | None) -> bool:
@@ -486,10 +492,34 @@ def parse_points(raw: str | None) -> list[float] | None:
 
 
 # ---------- בדיקה של מטלה ----------
+IMAGE_TYPES = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tif", ".tiff", ".webp"}
+
+
 def submission_numbers(asg: team.Assignment) -> list[str]:
-    if not asg.submissions.is_dir():
-        return []
-    return sorted(p.stem for p in asg.submissions.glob("*.pdf") if p.stem.isdigit())
+    return list(asg.submission_files())
+
+
+def submission_pdf(files: list[Path]) -> tuple[bytes, list[str]]:
+    """כל הקבצים של הגשה אחת, לפי הסדר, כ-PDF אחד. מחזיר גם את שמות הקבצים שאי אפשר לבדוק."""
+    out = pymupdf.open()
+    skipped = []
+    for f in files:
+        kind = f.suffix.lower()
+        try:
+            if kind == ".pdf":
+                with pymupdf.open(f) as doc:
+                    out.insert_pdf(doc)
+            elif kind in IMAGE_TYPES:
+                with pymupdf.open(f) as img:
+                    with pymupdf.open("pdf", img.convert_to_pdf()) as page:
+                        out.insert_pdf(page)
+            else:
+                skipped.append(f.name)
+        except (RuntimeError, ValueError):  # קובץ פגום
+            skipped.append(f.name)
+    data = out.tobytes(garbage=3, deflate=True) if out.page_count else b""
+    out.close()
+    return data, skipped
 
 
 def pending(asg: team.Assignment) -> list[str]:
@@ -555,8 +585,15 @@ def grade_assignment(asg: team.Assignment, numbers: list[str] | None = None, *, 
     marked.mkdir(exist_ok=True)
     lock = threading.Lock()
 
+    files = asg.submission_files()
+
     def work(n: str) -> tuple[str, Graded, bytes]:
-        g, out = grade_one((asg.submissions / f"{n}.pdf").read_bytes(), ctx, ask, model, names.get(n))
+        pdf, skipped = submission_pdf(files[n])
+        if not pdf:
+            raise GradingError(f"אין בהגשה קובץ שאפשר לבדוק ({', '.join(skipped)}).")
+        g, out = grade_one(pdf, ctx, ask, model, names.get(n))
+        if skipped:
+            g.review = " ".join(filter(None, [g.review, f"קבצים שלא נבדקו: {', '.join(skipped)}."]))
         return n, g, out
 
     def save(n: str, g: Graded, out: bytes) -> bool:
@@ -597,7 +634,4 @@ def grade_assignment(asg: team.Assignment, numbers: list[str] | None = None, *, 
 
     rep.graded.sort()
     rep.review.sort()
-    asg.log(f"בדיקה עם Claude: {rep.summary()}")
-    for n, why in sorted(rep.failed.items()):
-        asg.log(f"בדיקה של {n} נכשלה: {why}")
     return rep

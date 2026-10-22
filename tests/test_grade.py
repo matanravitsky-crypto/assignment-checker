@@ -15,6 +15,7 @@ from http.server import ThreadingHTTPServer
 import pymupdf
 import pytest
 
+from moodle import paths
 from pipeline import grade as grading, service, team
 from pipeline.demo import homework_pdf
 
@@ -35,30 +36,36 @@ def no_real_claude(monkeypatch):
 
 @pytest.fixture
 def root(tmp_path, monkeypatch):
-    """עותק מוקטן של Exercise Checking System עם שלוש הגשות ממוספרות."""
+    """עותק מוקטן של Exercise Checking System עם שלוש הגשות ממוספרות, כמו ש-moodle ingest משאיר."""
     course_folder = tmp_path / "נדב מאיר - YallaLinearit"
     r = course_folder / "Exercise Checking System"
     a = team.Assignment(r / COURSE / HW)
-    for sub in (team.SUBMISSIONS, team.GRADED, team.READY):
+    for sub in (paths.TO_GRADE, paths.MARKED, paths.UPLOAD):
         (a.dir / sub).mkdir(parents=True)
-    a.save_details({"id": "3438636", "course": COURSE, "course_id": "67024", "name": HW,
-                    "questions": [{"sheet": "דף קבוצות", "numbers": [11, 12]}, {"sheet": "דף מספרים מרוכבים", "numbers": [6, 7, 8]}],
-                    "submission_rules": ["כתב יד, קובץ PDF אחד"], "max_grade": None, "rubric": None,
-                    "title": "הגשה 0 - קבוצות ומרוכבים", "course_title": "אלגברה לינארית להנדסה"})
+    save_details(a, {"id": "3438636", "course": COURSE, "course_id": "67024", "name": HW,
+                     "questions": [{"sheet": "דף קבוצות", "numbers": [11, 12]}, {"sheet": "דף מספרים מרוכבים", "numbers": [6, 7, 8]}],
+                     "submission_rules": ["כתב יד, קובץ PDF אחד"], "max_grade": None, "rubric": None,
+                     "title": "הגשה 0 - קבוצות ומרוכבים", "course_title": "אלגברה לינארית להנדסה"})
     rows = []
     for i, pid in enumerate(NAMES, start=1):
         n = f"{i:04d}"
         (a.submissions / f"{n}.pdf").write_bytes(homework_pdf(NAMES[pid], HW))
         rows.append({"number": n, "anon_file": f"{n}.pdf", "participant_id": pid,
                      "original_folder": f"{NAMES[pid]}_{pid}_assignsubmission_file", "original_file": "hw.pdf"})
-    a.save_key(rows)
+    with (a.dir / paths.KEY).open("w", encoding="utf-8-sig", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=["number", "anon_file", "participant_id", "original_folder", "original_file"])
+        w.writeheader()
+        w.writerows(rows)
     monkeypatch.setenv("ASSIGNMENT_CHECKER_ROOT", str(course_folder))
-    monkeypatch.delenv("MOODLE_TOKEN", raising=False)
     return r
 
 
 def asg(root) -> team.Assignment:
     return team.Assignment(root / COURSE / HW)
+
+
+def save_details(a: team.Assignment, d: dict) -> None:
+    (a.dir / paths.INFO).write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
 
 
 def answer(points=(20, 15, 20, 20, 10), feedback="עבודה טובה. בשאלה 12 חסר נימוק.", marks=None, review=""):
@@ -103,7 +110,7 @@ def test_request_has_only_the_pages_no_names_and_no_key(root):
     raw = json.dumps({**req, "messages": text_only}, ensure_ascii=False)
     # בלי שמות, בלי מספרי משתתפים ובלי שום דבר מטבלת המפתח
     assert not any(name in raw for name in NAMES.values())
-    assert not any(pid in raw for pid in NAMES) and team.KEY not in raw and "assignsubmission" not in raw
+    assert not any(pid in raw for pid in NAMES) and paths.KEY not in raw and "assignsubmission" not in raw
     content = req["messages"][0]["content"]
     with pymupdf.open(asg(root).submissions / "0001.pdf") as doc:
         assert sum(b["type"] == "image" for b in content) == doc.page_count
@@ -122,7 +129,7 @@ def test_rubric_and_solution_are_sent(root):
     d["rubric"] = {"questions": [{"label": "קבוצות", "points": 40, "criteria": "הכלה דו-כיוונית"},
                                  {"label": "מרוכבים", "points": 60}], "notes": "לא מורידים על חישוב"}
     d["grading_instructions"] = "להקפיד על נימוקים"
-    a.save_details(d)
+    save_details(a, d)
     (a.dir / grading.SOLUTION).write_bytes(homework_pdf("פתרון", HW, pages=1))
     ctx = grading.load_context(a, instructions="הנחיה מהאתר")
     req = grading.build_request(ctx, [], "claude-haiku-5-5")
@@ -193,8 +200,26 @@ def test_grading_writes_grades_csv_and_marked_pdfs(root):
         r = red[0]["rect"]
         w, h = doc[1].rect.width, doc[1].rect.height
         assert abs(r.x0 - 0.1 * w) < 2 and abs(r.y0 - 0.1 * h) < 2 and abs(r.x1 - 0.9 * w) < 2 and abs(r.y1 - 0.16 * h) < 2
-    log = (a.dir / team.LOG).read_text(encoding="utf-8")
-    assert "בדיקה עם Claude: נבדקו 3 מתוך 3" in log and not any(name in log for name in NAMES.values())
+    assert rep.summary() == "נבדקו 3 מתוך 3"
+
+
+def test_several_files_of_one_student_are_graded_together(root):
+    """moodle ingest שומר קובץ שני של סטודנט בשם 0002-2 (גם תמונה), ואת זה אי אפשר לבדוק: 0002-3.docx."""
+    a = asg(root)
+    pix = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 300, 400), False)
+    pix.clear_with(230)
+    (a.submissions / "0002-2.jpg").write_bytes(pix.tobytes("jpeg"))
+    (a.submissions / "0002-3.docx").write_bytes(b"PK not graded")
+    fake = FakeClaude()
+    rep = grading.grade_assignment(a, ["0002"], ask=fake)
+    assert rep.graded == ["0002"] and rep.review == ["0002"]
+    with pymupdf.open(a.submissions / "0002.pdf") as first:
+        pages = first.page_count + 1
+    assert sum(b["type"] == "image" for b in fake.requests[0]["messages"][0]["content"]) == pages
+    with pymupdf.open(a.dir / team.GRADED / "0002.pdf") as marked:
+        assert marked.page_count == pages + 1
+    assert "0002-3.docx" in grading.read_grades(a.dir)["0002"]["review"]
+    assert not (a.dir / team.GRADED / "0002-2.pdf").exists()  # עבודה מסומנת אחת לכל מספר
 
 
 def test_approved_rows_are_kept_and_not_regraded(root):
@@ -291,7 +316,7 @@ def test_state_reads_grades_and_marked_files(root):
     subs = {s["id"]: s for s in A["subs"]}
     assert subs["0001"]["status"] == "graded" and subs["0001"]["score"] == 85 and subs["0001"]["approved"] is True
     assert subs["0001"]["q"] == [20, 15, 20, 20, 10] and subs["0001"]["feedback"] == "יפה"
-    assert [f["name"] for f in subs["0001"]["files"] if f.get("marked")] == ["0001-2.pdf", "0001.pdf"]
+    assert [f["name"] for f in subs["0001"]["files"] if f.get("marked")] == ["0001.pdf", "0001-2.pdf"]
     assert subs["0002"]["status"] == "graded" and subs["0002"]["score"] == 72.5 and subs["0002"]["review"] == "כתב יד לא קריא"
     assert subs["0003"]["status"] == "graded" and subs["0003"]["score"] is None  # סומן ידנית, בלי שורה ב-Grades.csv
     assert [q["points"] for q in A["rubric"]] == [20] * 5 and A["maxGrade"] == 100

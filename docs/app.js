@@ -149,6 +149,7 @@
     if (LOCAL.on) {
       if (stage === "pull") runLocalPull();
       if (stage === "grade") runLocalGrade(info().toGrade.map((s) => s.id));
+      if (stage === "ret") runLocalReturn();
       return;
     }
     const A = cur();
@@ -210,12 +211,7 @@
       disabled = true;
       primary = false;
     }
-    if (LOCAL.on && stage === "ret") {
-      // ההחזרה למודל עוד לא מחוברת בגרסה המחוברת
-      label = "יופעל בהמשך";
-      disabled = true;
-      primary = false;
-    }
+    if (LOCAL.on && stage === "ret") label = n ? `הכן ${n} להחזרה למודל` : "אין עבודות בדוקות";
     const icon = mine ? ICON.spin : ICON[stage === "ret" ? "ret" : stage];
     const why = LOCAL.on && stage === "grade" && !LOCAL.health?.claude ? ` title="${esc(NO_KEY)}"` : "";
     return `<button class="btn ${primary ? "primary" : "secondary"} ${big ? "lg" : ""}" data-run="${stage}" ${disabled ? "disabled" : ""}${why}>${icon}${mine ? (run.progress || "רץ עכשיו…") : label}</button>`;
@@ -352,22 +348,34 @@
 
   function emptyPulled() {
     if (LOCAL.on) {
-      return `<div class="empty"><strong>עוד אין הגשות במטלה הזו</strong>${LOCAL.health?.moodle
-        ? "לחיצה על \"משוך הגשות\" תביא ממודל את כל מה שהוגש עד עכשיו, ישר לתיקיית OneDrive."
-        : "במודל: \"הצגת כל ההגשות\" ← \"הורדת כל ההגשות\". שמים את קובץ ה-ZIP בתיקייה \"0 - Moodle download\" של המטלה ולוחצים \"משוך הגשות\"."}
-        <div class="empty-act">${stageButton("pull")}<button class="btn secondary" data-act="open-inbox">${ICON.folder}פתח את תיקיית ההורדה ממודל</button></div></div>`;
+      return `<div class="empty"><strong>עוד אין הגשות במטלה הזו</strong>במודל: "הצגת כל ההגשות" ← "הורדת כל ההגשות". ה-ZIP נשמר בתיקיית ההורדות (Downloads), ולוחצים "משוך הגשות".
+        <div class="empty-act">${stageButton("pull")}<button class="btn secondary" data-act="open-inbox">${ICON.folder}פתח את תיקיית ההורדות</button></div></div>`;
     }
     return `<div class="empty"><strong>עוד לא נמשכו הגשות למטלה הזו</strong>לחיצה על "משוך הגשות" תביא ממודל את כל מה שהוגש עד עכשיו.<div class="empty-act">${stageButton("pull")}</div></div>`;
   }
 
   // מה קרה במשיכה האחרונה (בגרסה המחוברת)
   function pullReportHTML() {
+    // אזהרות מהתיקייה: משיכה שרצה עכשיו אצל מישהו אחר, או עותק כפול של טבלת המפתח
+    const warnings = (LOCAL.on && cur()?.warnings) || [];
+    const rule = warnings.length ? `<div class="banner warn">${ICON.warn}<div>${warnings.map((w) => `<div>${esc(w)}</div>`).join("")}</div></div>` : "";
     const r = LOCAL.report;
-    if (!LOCAL.on || !r || r.assignmentId !== state.assignmentId) return "";
+    if (!LOCAL.on || !r || r.assignmentId !== state.assignmentId) return rule;
     const lines = [...(r.notes || []), ...(r.result?.problems || []).map((p) => `דורשת טיפול: ${p}`)];
     return `<section class="panel report">
       <div class="panel-head"><h3>המשיכה האחרונה</h3><span class="meta">${when(r.pulled_at)}</span><span class="end tag ${r.result?.total ? "ok" : ""}">${esc(r.summary)}</span></div>
       ${lines.length ? `<ul class="report-lines">${lines.map((l) => `<li>${esc(l)}</li>`).join("")}</ul>` : ""}
+    </section>${rule}`;
+  }
+
+  // מה הוכן בהחזרה האחרונה (בגרסה המחוברת)
+  function returnReportHTML() {
+    const r = LOCAL.ret;
+    if (!LOCAL.on || !r || r.assignmentId !== state.assignmentId) return "";
+    return `<section class="panel report">
+      <div class="panel-head"><h3>ההחזרה שהוכנה</h3><span class="end tag ok">${esc(r.summary)}</span></div>
+      <ul class="report-lines">${r.notes.map((l) => `<li>${esc(l)}</li>`).join("")}</ul>
+      <div class="panel-body" style="padding-top:0"><button class="btn secondary small" data-act="open-upload">${ICON.folder}פתח את התיקייה "3 - Ready to upload to Moodle"</button></div>
     </section>`;
   }
 
@@ -440,6 +448,11 @@
   function returnList() {
     const A = cur(), I = info(A);
     if (!I.subs.length) return `<section class="panel">${emptyPulled()}</section>`;
+    if (LOCAL.on) {
+      return `${returnReportHTML()}<section class="panel"><div class="empty"><strong>${I.graded.length ? `${I.graded.length} עבודות בדוקות מוכנות להחזרה` : "עוד אין עבודות בדוקות"}</strong>
+        "הכן החזרה" בונה בתיקייה "3 - Ready to upload to Moodle" את גיליון הציונים ואת קובצי המשוב, עם הוראות העלאה. ההעלאה עצמה נעשית במודל, ומישהו מהצוות מאשר אותה.
+        <div class="empty-act">${stageButton("ret")}</div></div></section>`;
+    }
     const list = [...I.toReturn, ...I.returned].filter((s) => matches(s, state.query.ret));
     if (!I.graded.length) return `<section class="panel"><div class="empty"><strong>עוד אין עבודות בדוקות</strong>אחרי שלב הבדיקה, העבודות יופיעו כאן מוכנות להחזרה.<div class="empty-act"><a class="btn secondary" href="#/grade">${ICON.grade}לשלב הבדיקה</a></div></div></section>`;
     const inc = state.retFormat.include;
@@ -736,7 +749,7 @@
   }
 
   function distHTML(I) {
-    const g = I.graded.map((s) => s.score).filter((x) => x != null);
+    const g = I.graded.map((s) => s.score).filter((x) => typeof x === "number");
     if (!g.length) return `<p class="muted empty-line">יופיע אחרי שיהיו עבודות בדוקות.</p>`;
     const buckets = [[0, 49], [50, 59], [60, 69], [70, 79], [80, 89], [90, 100]];
     const counts = buckets.map(([a, b]) => g.filter((x) => x >= a && x <= b).length);
@@ -758,9 +771,9 @@
 
   function perQuestionHTML(I) {
     const qs = rubric().questions;
-    if (!I.graded.length) return `<p class="muted empty-line">יופיע אחרי שיהיו עבודות בדוקות.</p>`;
-    const withQ = I.graded.filter((s) => s.q && s.q.length === qs.length);
-    if (!withQ.length) return `<p class="muted empty-line">יופיע אחרי שיהיו עבודות בדוקות.</p>`;
+    // רק עבודות עם ניקוד לכל שאלה (ב-Grades.csv יש רק ציון סופי)
+    const withQ = I.graded.filter((s) => Array.isArray(s.q) && s.q.length === qs.length);
+    if (!withQ.length) return `<p class="muted empty-line">יופיע אחרי שיהיה ניקוד לכל שאלה.</p>`;
     const rates = qs.map((q, i) => avg(withQ.map((s) => Math.round((s.q[i] / q.pts) * 100))));
     const worst = rates.indexOf(Math.min(...rates));
     return `<ul class="qbars">${qs.map((q, i) => `
@@ -829,7 +842,7 @@
             <div class="path-line" dir="ltr">${esc(h.root)}</div>
             <div class="row-start">
               <button class="btn secondary small" data-act="open-folder">${ICON.folder}פתח את תיקיית המטלה</button>
-              <button class="btn secondary small" data-act="open-inbox">${ICON.upload}פתח את תיקיית ההורדה ממודל</button>
+              <button class="btn secondary small" data-act="open-inbox">${ICON.upload}פתח את תיקיית ההורדות</button>
             </div>` : `<pre class="prompt">${esc(h.error || "")}</pre>`}
         </div>
       </section>`;
@@ -1181,6 +1194,7 @@
       }
       if (a === "open-folder") openFolder("folder");
       if (a === "open-inbox") openFolder("inbox");
+      if (a === "open-upload") openFolder("upload");
       if (a === "recheck") location.reload();
       return;
     }
@@ -1447,11 +1461,31 @@
     }
   }
 
+  // "החזר": הקוד של אורי (moodle upload) בונה את מה שעולה למודל
+  async function runLocalReturn() {
+    const A = cur();
+    if (!A || state.run[A.id]) return;
+    const run = (state.run[A.id] = { stage: "ret", steps: STAGES.ret.steps.map(() => "pending") });
+    run.steps[0] = "running";
+    render();
+    try {
+      const rep = await api("api/return", { method: "POST", body: JSON.stringify({ course: A.courseFolder, assignment: A.folder }) });
+      LOCAL.ret = { ...rep, assignmentId: A.id };
+      delete state.run[A.id];
+      await loadLocal();
+      toast(`ההחזרה הוכנה: ${rep.summary}`);
+    } catch (e) {
+      delete state.run[A.id];
+      render();
+      toast(e.message, ICON.warn);
+    }
+  }
+
   function openFolder(which) {
     const A = cur();
     if (!LOCAL.on || !A) return;
     api("api/open", { method: "POST", body: JSON.stringify({ course: A.courseFolder, assignment: A.folder, which }) })
-      .then(() => toast(which === "inbox" ? "תיקיית ההורדה ממודל נפתחה בסייר הקבצים" : "תיקיית המטלה נפתחה בסייר הקבצים", ICON.folder))
+      .then(() => toast(which === "inbox" ? "תיקיית ההורדות נפתחה בסייר הקבצים" : which === "upload" ? "תיקיית ההעלאה נפתחה בסייר הקבצים" : "תיקיית המטלה נפתחה בסייר הקבצים", ICON.folder))
       .catch((e) => toast(e.message, ICON.warn));
   }
 

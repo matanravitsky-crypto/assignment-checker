@@ -15,7 +15,6 @@ import mimetypes
 import os
 import threading
 import webbrowser
-from dataclasses import asdict
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -80,7 +79,7 @@ class Handler(SimpleHTTPRequestHandler):
         if url.path == "/api/health":
             root, err = service.root_info()
             return self._json({"ok": True, "root": str(root) if root else None, "error": err,
-                               "moodle": bool(cfg.moodle_token()), "claude": bool(cfg.claude_key())})
+                               "moodle": False, "claude": bool(cfg.claude_key())})
         if url.path == "/api/state":
             root = self._root()
             return root and self._json(service.state(root))
@@ -117,23 +116,25 @@ class Handler(SimpleHTTPRequestHandler):
         if not root:
             return
         body = self._body()
-        if url.path == "/api/pull":
+        if url.path in ("/api/pull", "/api/return"):
+            # משיכה: moodle ingest. החזרה: moodle upload. אחת בכל פעם
             course, assignment = body.get("course"), body.get("assignment")
             if not course or not assignment:
                 return self._json({"error": "חסרים קורס ומטלה"}, HTTPStatus.BAD_REQUEST)
             if not _lock.acquire(blocking=False):
-                return self._json({"error": "משיכה אחרת כבר רצה. כדאי לנסות שוב בעוד רגע."}, HTTPStatus.CONFLICT)
+                return self._json({"error": "פעולה אחרת כבר רצה. כדאי לנסות שוב בעוד רגע."}, HTTPStatus.CONFLICT)
             try:
-                rep = service.pull(root, course, assignment)
+                run = service.pull if url.path == "/api/pull" else service.prepare_return
+                return self._json(run(root, course, assignment))
+            except service.UserError as e:
+                return self._json({"error": str(e)}, HTTPStatus.UNPROCESSABLE_ENTITY)
             except FileNotFoundError as e:
                 return self._json({"error": str(e)}, HTTPStatus.NOT_FOUND)
             except Exception as e:  # השגיאה מוצגת באתר במקום שהשרת ייפול
-                return self._json({"error": f"המשיכה נכשלה: {e}"}, HTTPStatus.INTERNAL_SERVER_ERROR)
+                what = "המשיכה" if url.path == "/api/pull" else "הכנת ההחזרה"
+                return self._json({"error": f"{what} נכשלה: {e}"}, HTTPStatus.INTERNAL_SERVER_ERROR)
             finally:
                 _lock.release()
-            out = asdict(rep)
-            out["summary"] = rep.result.summary()
-            return self._json(out)
         if url.path == "/api/grade":
             course, assignment = body.get("course"), body.get("assignment")
             if not course or not assignment:
@@ -160,18 +161,17 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json({"error": str(e)}, HTTPStatus.CONFLICT)
             return self._json(job, HTTPStatus.ACCEPTED)
         if url.path == "/api/open":
-            # פותח בסייר הקבצים את תיקיית המטלה, או את תיקיית ההורדה ממודל שלה
+            # פותח בסייר הקבצים: תיקיית ההורדות (לשם מודל מוריד את ה-ZIP), תיקיית המטלה, או תיקיית ההעלאה
             try:
                 asg = service.find_assignment(root, body.get("course", ""), body.get("assignment", ""))
             except FileNotFoundError as e:
                 return self._json({"error": str(e)}, HTTPStatus.NOT_FOUND)
-            if body.get("which") == "inbox":
-                asg.inbox.mkdir(exist_ok=True)
-                target = asg.inbox
-            else:
-                target = asg.dir
+            which = body.get("which")
+            target = (Path.home() / "Downloads" if which == "inbox"
+                      else asg.dir / team.READY if which == "upload" else asg.dir)
+            target.mkdir(exist_ok=True)
             if hasattr(os, "startfile"):
-                os.startfile(target)  # noqa: S606 - נתיב בתוך תיקיית הקורס בלבד
+                os.startfile(target)  # noqa: S606 - תיקייה קבועה, לא מהמשתמש
             return self._json({"opened": str(target)})
         return self.send_error(HTTPStatus.NOT_FOUND)
 
