@@ -107,6 +107,13 @@ and Microsoft Graph upload needs admin consent ("נדרש אישור"). The fix 
 - After an ingest, tell Ori which course folder to drag (from `~/Exercise Checking System`) into
   `YallaLinearit/Exercise Checking System` in the browser, choosing "Replace", and to keep that tab open until
   "Uploaded ... items". Then compare the counts in OneDrive with `python -m moodle status <id>`, from a new tab.
+- **Same names every time**, so the upload is always "drag the course folder, Replace": every download goes through
+  `python -m moodle ingest <id> --parts` into the assignment's existing folder (found by its Moodle id), every student
+  keeps their number from the key, and nobody renames folders or files by hand or extracts a ZIP into the folder.
+  Check with `python -m moodle status <id>` (counts, and that every name is safe for OneDrive).
+- "Replace" overwrites every file of the same name in OneDrive, grades too. Before Ori drags, make sure the local
+  course folder has no `Grades.csv`, `Grades - part N.csv` or `2 - Graded with comments` files that must not go up
+  (say, test runs); move them out of `Exercise Checking System` first.
 - Drag only a course folder. Never delete or replace `Exercise Checking System` itself in OneDrive: the team's
   `Grades.csv` and `2 - Graded with comments` live there and nowhere else.
 - Never upload `Moodle originals` (students' names, and the Moodle ZIPs under `Backup - Moodle downloads`).
