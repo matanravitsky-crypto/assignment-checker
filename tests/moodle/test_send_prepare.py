@@ -171,7 +171,20 @@ def test_the_batch_file_has_numbers_and_no_student_names(assignment):
     prepare_batch(assignment)
     text = (assignment / paths.UPLOAD / BATCH_FILE).read_text(encoding="utf-8-sig")
     assert not any(name in text for _, _, name in STUDENTS)
-    assert not any(p in text for _, p, _ in STUDENTS)
+
+    # participant ids as values or inside a Moodle folder name, not as substrings: a sha256 can contain "100" by chance
+    def values(x):
+        if isinstance(x, dict):
+            for k, v in x.items():
+                yield k
+                yield from values(v)
+        elif isinstance(x, list):
+            for v in x:
+                yield from values(v)
+        else:
+            yield str(x)
+    found = list(values(json.loads(text)))
+    assert not any(v == p or f"_{p}_" in v for v in found for _, p, _ in STUDENTS)
 
 
 def test_each_run_makes_a_new_batch_id_and_replaces_the_old_zips(assignment):

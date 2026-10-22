@@ -5,6 +5,8 @@
   // באתר הציבורי (Vercel) פונים למערכת שבמחשב. כשהאתר נפתח מהמערכת עצמה, לאותה כתובת
   const ON_LOCAL_HOST = ["localhost", "127.0.0.1"].includes(location.hostname);
   const BASE = ON_LOCAL_HOST ? "" : "http://127.0.0.1:8765/";
+  // אותו אתר, ישירות מהמערכת: עובד בלי הרשאת "גישה למכשיר" של כרום
+  const LOCAL_SITE = "http://localhost:8765/";
   const DEFAULT_GRADE_INSTR = [
     "לבדוק כל שאלה בנפרד, לפי המחוון ולפי הפתרון הרשמי.",
     "פתרון נכון בדרך אחרת מקבל ניקוד מלא.",
@@ -1093,10 +1095,13 @@
         <div class="panel-body">
           <ol class="todo">
             <li>לוחצים פעמיים על <code dir="ltr">start.bat</code> בתיקיית הריפו (assignment-checker). חלון שחור נפתח, והוא צריך להישאר פתוח כל זמן שעובדים.</li>
-            <li>אם כרום שואל אם לאפשר לאתר לגשת לאפליקציות ולשירותים במכשיר הזה, לוחצים "אפשר" (Allow). ההרשאה הזו מחברת את האתר למערכת שבמחשב.</li>
-            <li>האתר מתחבר לבד תוך כמה שניות. אפשר גם לעבוד ישירות בכתובת <code dir="ltr">http://localhost:8765</code>.</li>
+            <li>לוחצים "פתח את המערכת". אותו אתר נפתח בכתובת <code dir="ltr">http://localhost:8765</code>, עם הנתונים האמיתיים ובלי שום הרשאה.</li>
           </ol>
-          <div class="row-start"><button class="btn secondary small" data-act="recheck">${ICON.redo}בדוק עכשיו</button></div>
+          <div class="row-start">
+            <a class="btn primary lg" href="${LOCAL_SITE}${esc(location.hash)}">${ICON.chev}פתח את המערכת</a>
+            <button class="btn secondary small" data-act="recheck">${ICON.redo}נסה להתחבר מכאן</button>
+          </div>
+          <p class="hint">אפשר גם לעבוד מהכתובת הזו: אם כרום שואל אם לאפשר לאתר לגשת לאפליקציות ולשירותים במכשיר, לוחצים "אפשר", והאתר מתחבר לבד תוך כמה שניות.</p>
         </div>
       </section>
       ${how}`;
