@@ -234,6 +234,7 @@ annotations, סימונים על גבי העבודה:
 - כל סימון מקיף מקום מדויק בעבודה: טעות, צעד חסר או נימוק לא מספיק. דברים נכונים לא מסמנים.
 - page: מספר העמוד, מ-1, לפי סדר התמונות.
 - x0, y0, x1, y1: המלבן שמקיף את המקום, באלפיות של רוחב העמוד ושל גובהו. (0, 0) היא הפינה השמאלית העליונה ו-(1000, 1000) הימנית התחתונה. המלבן צמוד לשורות הרלוונטיות, לא לחצי עמוד.
+- בשולי כל תמונה יש סרגלים באותן אלפיות: המסגרת הדקה היא גבולות העמוד (0 עד 1000), עם שנתות כל 50 ומספרים כל 100. קרא את המיקום של הטעות מהסרגלים, למעלה ולמטה בשביל x ובצדדים בשביל y, ובדוק שהמלבן מקיף בדיוק את הכתב של הטעות ולא שורה מעליו או מתחתיו.
 - text: הערה קצרה בעברית, עד 12 מילים, שאומרת מה לא נכון. מתמטיקה בטקסט פשוט (A^-1, det(A)), בלי LaTeX.
 - points_off: כמה נקודות ירדו על הטעות הזו, לפי המחוון (0 אם היא לא עלתה בנקודות). בכל שאלה, סכום ההורדות בסימונים שלה שווה לניקוד המרבי של השאלה פחות הניקוד שניתן לה. הורדה שאין לה מקום בעבודה (למשל שאלה שחסרה) לא מסמנים.
 
@@ -485,7 +486,23 @@ def _esc(s: str) -> str:
 def _note_html(mark: Mark, size: float) -> str:
     """ההערה ליד המלבן: כמה נקודות ירדו (מודגש), ואז מה לא נכון."""
     off = f"<b>ירדו {_pts(mark.points_off)} נק'</b><br>" if mark.points_off else ""
-    return f'<div dir="rtl" style="color: #d90000; font-size: {size:.1f}px; line-height: 1.2">{off}{_esc(mark.text)}</div>'
+    return f'<div dir="rtl" style="color: #d90000; font-size: {size:.1f}px; line-height: 1.2">{off}{_esc(_ltr_math(mark.text))}</div>'
+
+
+# רצף בלי אותיות עבריות שיש בו סימן מתמטי או ספרה (ואולי כמה מילים כאלה ברצף): נוסחה,
+# שנכתבת משמאל לימין גם בתוך הערה בעברית
+_MATH = re.compile(r"[^֐-׿\s]*[0-9=+\-*/^()\[\]{}|<>≠≤≥∈∉∩∪⊆⊂∅∞√][^֐-׿\s]*"
+                   r"(?:\s+[^֐-׿\s]+)*")
+_LRE, _PDF = "‪", "‬"  # תחילת קטע משמאל לימין, וסופו
+
+
+def _ltr_math(text: str) -> str:
+    """עוטף כל נוסחה בסימני כיוון משמאל לימין, כדי שהסוגריים והסדר לא יתהפכו בטקסט עברי.
+    פסיק או נקודה בסוף הנוסחה שייכים למשפט העברי, ולכן נשארים מחוץ לה."""
+    def wrap(m: re.Match) -> str:
+        math = m.group(0).rstrip(".,:;!?")
+        return _LRE + math + _PDF + m.group(0)[len(math):]
+    return _MATH.sub(wrap, text)
 
 
 def _note_size(mark: Mark, html: str, size: float, page_width: float, archive) -> tuple[float, float]:
@@ -521,8 +538,10 @@ def _mark_page(page: pymupdf.Page, marks: list[Mark], archive) -> None:
     pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), colorspace=pymupdf.csGRAY, alpha=False)
     gray = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.stride)[:, :pix.width]
     taken = notes.ink_mask(gray)
-    boxes = [pymupdf.Rect(m.x0 / 1000 * shown.width, m.y0 / 1000 * shown.height,
-                          m.x1 / 1000 * shown.width, m.y1 / 1000 * shown.height) for m in marks]
+    # המלבנים של Claude מקורבים: כל אחד מתקרב לכתב שהוא אמור להקיף (notes.snap_box)
+    boxes = [pymupdf.Rect(notes.snap_box(taken, (m.x0 / 1000 * shown.width * zoom, m.y0 / 1000 * shown.height * zoom,
+                                                 m.x1 / 1000 * shown.width * zoom, m.y1 / 1000 * shown.height * zoom))) / zoom
+             for m in marks]
     for box in boxes:
         page.draw_rect(box * page.derotation_matrix, color=RED, width=1.4, overlay=True)
         notes.block(taken, tuple(box * zoom))

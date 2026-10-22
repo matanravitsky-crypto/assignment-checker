@@ -160,3 +160,63 @@ def find_spot(mask: np.ndarray, box: tuple[float, float, float, float], size: tu
     # גם שם יש הרבה כתב: צמוד למלבן, על רקע לבן, בלי חץ
     note = _attached(mask, box, nw, nh)
     return Spot(note, _arrow(note, box), False, backed=True)
+
+
+# כמה למעלה ולמטה ממלבן מחפשים את הכתב שלו, כחלק מגובה המלבן (חצי שורה בערך)
+SNAP_REACH = 0.5
+# שורה שכמעט כולה "דיו" היא קצה של הצילום או צל, לא כתב
+SNAP_FULL_ROW = 0.5
+# המלבן אחרי ההתאמה: לא נמוך מזה ולא גבוה מזה, ביחס לגובה המקורי
+SNAP_MIN, SNAP_MAX = 0.6, 1.5
+# כמה פיקסלים ריקים להשאיר בין הכתב למלבן שמקיף אותו
+SNAP_PAD = 3
+
+
+def _bands(rows: np.ndarray, gap: int) -> list[tuple[int, int]]:
+    """רצפים של שורות עם כתב (עם רווחים של עד gap שורות בתוכם): (ראשונה, אחרי האחרונה)."""
+    bands: list[tuple[int, int]] = []
+    for r in rows:
+        if bands and r - bands[-1][1] <= gap:
+            bands[-1] = (bands[-1][0], int(r) + 1)
+        else:
+            bands.append((int(r), int(r) + 1))
+    return bands
+
+
+def snap_box(ink: np.ndarray, box: tuple[float, float, float, float]) -> tuple[int, int, int, int]:
+    """מקרב את המלבן של Claude אל שורת הכתב שהוא אמור להקיף, למעלה או למטה בלבד.
+
+    Claude נותן מיקום מקורב, ולפעמים המלבן יושב חצי שורה מתחת לכתב או מעליו. בודקים את הכתב
+    ברוחב של המלבן, עד SNAP_REACH מגובהו מעליו ומתחתיו, מחלקים אותו לשורות כתב, ובוחרים את השורות
+    שהכי חופפות למלבן. בזהירות: הרוחב לא משתנה, הגובה נשאר בין SNAP_MIN ל-SNAP_MAX מהמקורי, ואם אין
+    שם כתב המלבן נשאר כמו שהוא.
+    """
+    h, w = ink.shape
+    x0, y0, x1, y1 = (int(max(0, box[0])), int(max(0, box[1])), int(min(w, box[2])), int(min(h, box[3])))
+    height = y1 - y0
+    reach = int(height * SNAP_REACH)
+    top, bottom = max(0, y0 - reach), min(h, y1 + reach)
+    if x1 <= x0 or height < 4 or bottom <= top:
+        return x0, y0, x1, y1
+    share = ink[top:bottom, x0:x1].mean(axis=1)
+    rows = top + np.flatnonzero((share > 0) & (share < SNAP_FULL_ROW))
+    bands = [b for b in _bands(rows, max(2, height // 8)) if b[1] - b[0] >= 3]
+    if not bands:
+        return x0, y0, x1, y1
+    # השורה שהכי חופפת למלבן, ואם אף אחת לא חופפת, הקרובה ביותר
+    def score(b):
+        overlap = min(b[1], y1) - max(b[0], y0)
+        return (overlap, -abs((b[0] + b[1]) / 2 - (y0 + y1) / 2))
+    b0, b1 = max(bands, key=score)
+    # שורות צמודות לשורה שנבחרה (למשל שבר, או אינדקס מתחת לשורה) נכנסות איתה, כל עוד המלבן לא גבוה מדי
+    for c0, c1 in bands:
+        if (c1 <= b0 and b0 - c1 <= height // 6) or (c0 >= b1 and c0 - b1 <= height // 6):
+            if max(b1, c1) - min(b0, c0) + 2 * SNAP_PAD <= SNAP_MAX * height:
+                b0, b1 = min(b0, c0), max(b1, c1)
+    ny0, ny1 = b0 - SNAP_PAD, b1 + SNAP_PAD
+    if ny1 - ny0 < SNAP_MIN * height:  # שורה דקה: המלבן נשאר בגובה סביר, ממורכז עליה
+        mid, half = (ny0 + ny1) / 2, SNAP_MIN * height / 2
+        ny0, ny1 = int(mid - half), int(mid + half)
+    if ny1 - ny0 > SNAP_MAX * height:
+        return x0, y0, x1, y1
+    return x0, max(0, ny0), x1, min(h, ny1)

@@ -19,7 +19,7 @@ import pytest
 
 from moodle import claude_driver, paths
 from dashboard import actions, folder_view
-from grading import grade as grading
+from grading import grade as grading, notes
 from tests.sample_files import homework_pdf
 
 COURSE, HW = "Linear Algebra", "Assignment 0 - Sets and Complex Numbers"
@@ -240,7 +240,10 @@ def test_grading_writes_grades_csv_and_marked_pdfs(root):
         assert red, "לא צויר מלבן אדום"
         r = red[0]["rect"]
         w, h = doc[1].rect.width, doc[1].rect.height
-        assert abs(r.x0 - 0.1 * w) < 2 and abs(r.y0 - 0.1 * h) < 2 and abs(r.x1 - 0.9 * w) < 2 and abs(r.y1 - 0.16 * h) < 2
+        # הרוחב בדיוק כמו ש-Claude נתן. לגובה המלבן מתקרב לשורת הכתב שלו (notes.snap_box), עד חצי מגובהו
+        assert abs(r.x0 - 0.1 * w) < 2 and abs(r.x1 - 0.9 * w) < 2
+        reach = 0.06 * h * notes.SNAP_REACH
+        assert 0.1 * h - reach - 4 <= r.y0 < r.y1 <= 0.16 * h + reach + 4 and r.y0 < 0.16 * h and r.y1 > 0.1 * h
     assert rep.summary() == "נבדקו 3 מתוך 3"
     # כל חמישית נכתבה לקובץ משלה, ובסוף, כשאף אחת לא נבדקת, הכל אוחד ל-Grades.csv
     assert not list(a.dir.glob("Grades - part *.csv")) and not list(a.dir.glob("Grading part *"))
@@ -390,6 +393,28 @@ def test_rotated_page_is_marked_where_it_is_seen():
         reds = [(i, j) for i in range(pix.width) for j in range(pix.height)
                 if (lambda c: c[0] > 150 and c[1] < 90 and c[2] < 90)(pix.pixel(i, j))]
         assert reds and min(abs(i - x) for i, _ in reds) <= 3
+
+
+def test_math_in_a_hebrew_note_stays_left_to_right():
+    lre, pdf = "‪", "‬"
+    assert grading._ltr_math("כתבו את הקבוצה: A∩B=A={(1+2t,1-t)|t∈R}") == f"כתבו את הקבוצה: {lre}A∩B=A={{(1+2t,1-t)|t∈R}}{pdf}"
+    # פסיק בסוף הנוסחה שייך למשפט העברי
+    assert grading._ltr_math("מתקבל t_A=4t_A, לא 2t_A.") == f"מתקבל {lre}t_A=4t_A{pdf}, לא {lre}2t_A{pdf}."
+    assert grading._ltr_math("חסר נימוק") == "חסר נימוק"
+
+
+def test_images_have_rulers_in_thousandths_around_the_page():
+    from grading import render
+    doc = pymupdf.open()
+    doc.new_page(width=600, height=800)
+    framed, page = render.with_rulers(doc[0])
+    m = render.RULER_MARGIN * 800
+    assert page.rect.width == pytest.approx(600 + 2 * m) and page.rect.height == pytest.approx(800 + 2 * m)
+    labels = {w[4] for w in page.get_text("words")}
+    assert {"0", "100", "500", "1000"} <= labels
+    img = render.render_page(doc[0], 1100)
+    assert max(img.width, img.height) == 1100
+    assert max(render.render_page(doc[0], 1100, rulers=False).height, 0) == 1100
 
 
 def test_note_goes_to_the_nearest_empty_spot_with_an_arrow():

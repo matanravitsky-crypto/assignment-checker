@@ -85,3 +85,26 @@ def test_ink_is_much_darker_than_the_paper_around_it():
     ink = notes.ink_mask(gray)
     assert ink[41, 30] and not ink[8, 30] and not ink[20, 20]
     assert ink.sum() == 3 * 40
+
+
+def test_a_box_half_a_line_low_moves_up_onto_the_writing():
+    ink = page(300, 300)
+    ink[100:120, 50:200:4] = True      # שורת הכתב של הטעות (כתב יד: קווים דלילים)
+    ink[160:180, 50:200:4] = True      # השורה הבאה
+    x0, y0, x1, y1 = notes.snap_box(ink, (40, 110, 210, 135))   # Claude: חצי שורה מתחת
+    assert (x0, x1) == (40, 210)                                # הרוחב לא משתנה
+    assert y0 <= 100 and 120 <= y1 < 160                        # על השורה, בלי השורה הבאה
+
+
+def test_a_box_over_empty_paper_or_a_photo_edge_stays_where_it_is():
+    ink = page(300, 300)
+    assert notes.snap_box(ink, (40, 110, 210, 135)) == (40, 110, 210, 135)
+    ink[120:300, :] = True              # קצה של הצילום: שורות שכולן "דיו"
+    assert notes.snap_box(ink, (40, 110, 210, 135)) == (40, 110, 210, 135)
+
+
+def test_a_box_never_shrinks_onto_one_small_mark():
+    ink = page(300, 300)
+    ink[118:121, 100:103] = True        # נקודה קטנה בלבד
+    x0, y0, x1, y1 = notes.snap_box(ink, (40, 100, 210, 140))
+    assert y1 - y0 >= notes.SNAP_MIN * 40 - 1 and (x0, x1) == (40, 210)
