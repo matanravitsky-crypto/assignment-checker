@@ -71,6 +71,9 @@ MAX_BYTES = 2_000_000
 MAX_IMAGE_BYTES = 1_500_000
 
 RED = (0.85, 0, 0)
+# גודל הכתב של ההערות על הדף, ורוחב ההערה בנקודות
+NOTE_FONT = 14
+NOTE_WIDTH = 210
 _FONTS = Path("C:/Windows/Fonts")
 _CSS = "@font-face {font-family: heb; src: url(arial.ttf);} * {font-family: heb, sans-serif;}"
 
@@ -536,9 +539,9 @@ def mark_pdf(pdf: bytes, g: Graded, ctx: Context, max_bytes: int = MAX_BYTES) ->
             for box, text in marks:
                 if not text:
                     continue
-                note = free.place(box, *placement.note_size(text))
+                note = free.place(box, *placement.note_size(text, NOTE_WIDTH, NOTE_FONT))
                 free.occupy(note)
-                _write(page, note, _html(text), archive)
+                _write(page, note, _html(text, NOTE_FONT), archive)
                 if line := placement.arrow(note, box):
                     a, b = (p * page.derotation_matrix for p in line)
                     page.draw_line(a, b, color=RED, width=1, overlay=True)
