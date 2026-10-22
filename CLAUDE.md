@@ -37,11 +37,13 @@ Exercise Checking System/                  the data folder (ASSIGNMENT_DATA, def
       1 - Submissions to grade/   0001.pdf, 0002.pdf, ... (0001-2.pdf = second file)  ← grading reads only these
       2 - Graded with comments/   0001.pdf ... marked by the grader
       3 - Ready to upload to Moodle/  built by `upload`/`send`: ZIPs, grades sheet, Upload steps.txt,
-                                  Upload log.csv (what went up, per number), Upload batch.json (the current batch)
+                                  Upload log.csv (what went up, per number), Upload batch.json (the current batch),
+                                  Upload batch <id>/ (that batch's ZIPs; `upload` never writes there)
       Assignment details.json     Moodle id, course, name, Hebrew title, due date, questions, rules, max_grade, rubric
       Grades.csv                  number,grade,feedback  ← grading output
       Key - number to student.csv number → Moodle participant id → original folder  ← the one key
-      Upload in progress.txt      exists only while an upload runs (who and since when; 30 minutes without an update = stuck)
+      Upload in progress.txt      exists only while an upload runs ("<user> (<PC>) pid=<pid>", since when; 30 minutes without an update = stuck)
+      Pull in progress.txt        the same while a pull runs
       Moodle download <date>.zip  the ZIP exactly as Moodle gave it (every download is kept)
 
 Moodle originals/                          on the downloader's computer only (ASSIGNMENT_WORK)
@@ -68,6 +70,9 @@ who pulls. What can break it is two pulls of the same assignment at once, before
 So `dashboard/actions.py` guards the dashboard's pull:
 - **Lock:** while a pull runs, the assignment folder has `Pull in progress.txt` (who and since when). Another
   pull of that assignment waits until it's gone (a lock older than 30 minutes counts as stuck and is ignored).
+  The lock text is `<user> (<PC>) pid=<pid>` (`moodle/lock.py`): a fresh lock of the same person on the same PC
+  still blocks when another process that is alive holds it (say the CLI and the dashboard). Messages show who
+  without the pid; old lock text without a pid still works.
 - **Conflicts:** if OneDrive still made a conflict copy of the key (`Key - number to student-<PC>.csv`), the
   dashboard shows it and refuses to pull until someone merges the copy into the main key and deletes it.
 - Let OneDrive finish syncing (the cloud icon) before pulling on another computer.
@@ -127,8 +132,15 @@ the same by hand with the ZIPs from `3 - Ready to upload to Moodle` (see `Upload
 **The flow**
 1. Step 3 of the site (local mode): the button "העלה N למודל" calls `POST /api/upload/prepare`, which builds the batch:
    only marked work that is new or changed since its last upload (`Upload log.csv`), packed into ZIPs of at most
-   9 MB (`CLAUDE_MAX_ZIP_BYTES = 9_000_000`; Claude in Chrome's `file_upload` takes about 10 MB), and writes
-   `Upload batch.json`. A number resubmitted after grading, or with a file over 9 MB, stays out and is reported.
+   9 MB (`CLAUDE_MAX_ZIP_BYTES = 9_000_000`; Claude in Chrome's `file_upload` takes about 10 MB) in a folder of
+   their own, `3 - Ready to upload to Moodle/Upload batch <id>/Graded - part NN.zip`, and writes `Upload batch.json`
+   with each ZIP's sha256. "Prepare return" writes its ZIPs straight into the upload folder, so it can't overwrite
+   a batch; a new batch removes the folders of earlier ones, but only the ZIPs this code wrote (OneDrive conflict
+   copies are never deleted). A number resubmitted after grading, or with a file over 9 MB, stays out and is reported.
+   Prepare is refused (numbers only, never names) while a pull or an upload of the assignment runs, while OneDrive
+   left a conflict copy of the key, `Upload log.csv` or `Upload batch.json`, and when the key doesn't hold together:
+   a number with two participant ids, a participant id with two numbers, or a row whose `original_folder` carries
+   another participant id than its `participant_id`.
 2. A readiness checklist: is Claude Code installed (with an install button), is it logged in (the site starts the
    login itself and the browser sign-in completes it), and are Chrome and Moodle connected (a short Claude check,
    cached for 30 minutes).
@@ -136,10 +148,15 @@ the same by hand with the ZIPs from `3 - Ready to upload to Moodle` (see `Upload
    the button in that panel, or `y` / `--yes` on the CLI.
 4. `moodle/send.py` `run_batch` loops over the ZIPs under a lock (`Upload in progress.txt`), one headless
    `claude -p --chrome` run per ZIP (`moodle/claude_driver.py`, prompt in `moodle/claude_upload.md`). The site shows
-   progress, can stop after the current ZIP, and can resume. After each ZIP Python (not Claude) checks Moodle's
-   "N files imported" against the ZIP's file count and appends the files to `Upload log.csv`
-   (`number,file,sha256,zip,uploaded_at,by`: numbers only, never names).
-5. Uploaded by hand instead? `python -m moodle record <id> "<zip name>"` writes that ZIP's files to the log.
+   progress, can stop after the current ZIP, and can resume. Right before each ZIP and again before logging it,
+   Python hashes the ZIP against the batch list: missing or changed stops the run ("stale") and logs nothing. After
+   each ZIP Python (not Claude) checks Moodle's "N files imported" against the ZIP's file count and appends the files
+   to `Upload log.csv` (`number,file,sha256,zip,uploaded_at,by`: numbers only, never names). Imported with counts
+   that don't add up stops as "mismatch": Moodle already imported, so a person checks Moodle before anything runs
+   again (the site offers "resume" only for `needs_login`, `user` and `error`). "Prepare return" (dashboard) and
+   `send` (CLI) are refused while an upload of the assignment runs.
+5. Uploaded by hand instead? `python -m moodle record <id> "<zip name>"` writes that ZIP's files to the log. It looks
+   for the ZIP in the current batch's folder and refuses one that is missing or changed since it was prepared.
 
 CLI: `python -m moodle send <id> [--dry-run] [--yes] [--simulate]`.
 
@@ -160,9 +177,15 @@ CLI: `python -m moodle send <id> [--dry-run] [--yes] [--simulate]`.
   Chrome, run `claude auth login` (or use the site's readiness button), and sign in in the browser; the browser
   callback completes the login. Pasting the code into the terminal did not work, neither in the Claude desktop app's
   terminal nor in Windows Terminal.
+- **The run's folder.** Each upload run starts in a fresh temp folder outside OneDrive (`tempfile.mkdtemp`) that holds
+  only a copy of the ZIP, checked against the batch's sha256. That folder is the run's working folder and its only
+  `--add-dir`, and it is deleted afterwards. The run never starts in the shared upload folder: anyone on the team
+  can write there, and with `--setting-sources project` a `.claude/settings.json` (hooks) or `CLAUDE.md` there would
+  be loaded.
 - **Known open issue:** on the first fully automatic test, `file_upload` was refused because the run had no file-read
-  permission (`--tools ""`). The upload run needs read access to the upload folder only. The fix is waiting for the
-  user's approval, and `claude_driver.py` is unchanged until then.
+  permission (`--tools ""`). The upload run needs read access to its own temp folder only (it holds just the ZIP's
+  copy), so the fix is one more flag. It is waiting for the user's explicit approval, and `--tools ""` stays as it
+  is until then.
 
 **Before the first real upload:** do it once on a test assignment (ask the lecturer for one). Never try it for the
 first time on an assignment with real students.
