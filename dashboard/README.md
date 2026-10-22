@@ -21,7 +21,7 @@ python -m dashboard serve
 | כתובת | מה עושה |
 |---|---|
 | `GET /api/health` | האם התיקייה נמצאה |
-| `GET /api/state` | כל הקורסים, המטלות וההגשות, לפי מספר בלבד |
+| `GET /api/state` | כל הקורסים, המטלות וההגשות, לפי מספר בלבד, ויומן הפעילות של כל מטלה (משיכות, Grades.csv, העלאות שאומתו) |
 | `GET /api/file?path=` | קובץ PDF של הגשה, רק מתיקיות 1-2-3. טבלת המפתח לא נשלחת לעולם |
 | `POST /api/pull` | משיכה: `moodle ingest` |
 | `POST /api/grade` | מתחיל בדיקה עם Claude ברקע: `{course, assignment, ids?, model?, parallel?, instructions?, sendSolution?}`. בלי מפתח: 400 עם הסבר |
@@ -39,7 +39,7 @@ python -m dashboard serve
 | `POST /api/claude/install` | מתקין את Claude Code במחשב |
 | `POST /api/open` | פותח תיקייה בסייר הקבצים |
 
-**אבטחה:** השרת מאזין רק למחשב עצמו. כל בקשה שמשנה משהו חייבת את הכותרת `X-Assignment-Checker`, ו-Host ו-Origin של המחשב, כדי שאתרים אחרים לא יוכלו להפעיל אותו.
+**אבטחה:** השרת מאזין רק למחשב עצמו. כל בקשה שמשנה משהו חייבת את הכותרת `X-Assignment-Checker`, Host של המחשב, ו-Origin של המחשב או של האתר הציבורי (`https://bodek-hacham.vercel.app` בדיוק, `SITE_ORIGINS` ב-`web_server.py`), כדי שאתרים אחרים לא יוכלו להפעיל אותו. רק האתר הציבורי מקבל הרשאת CORS לקרוא תשובות (כולל ה-preflight של Private Network Access בכרום). כתובות תצוגה מקדימה של Vercel לא מקבלות אותה.
 
 ## הדגמה בלי מודל
 

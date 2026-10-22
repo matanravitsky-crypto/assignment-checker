@@ -3,10 +3,12 @@
 מפעילים אותו במחשב שמסנכרן את התיקייה (start.bat, או python -m dashboard serve),
 ונכנסים ל-http://localhost:8765. שם הכפתור "משוך הגשות" מושך באמת לתוך OneDrive,
 והכפתור "בדוק" שולח את ההגשות הממוספרות ל-Claude (צריך ANTHROPIC_API_KEY ב-.env).
-האתר הציבורי ב-GitHub Pages ממשיך לעבוד במצב הדגמה.
+האתר הציבורי (https://bodek-hacham.vercel.app) מתחבר לשרת הזה כשהוא פועל במחשב,
+ובלעדיו לא מציג נתונים.
 
 השרת מאזין רק למחשב עצמו (127.0.0.1), ואתרים אחרים לא יכולים להפעיל אותו:
-כל בקשה שמשנה משהו חייבת כותרת מיוחדת ומקור (Origin) של השרת עצמו.
+כל בקשה שמשנה משהו חייבת כותרת מיוחדת ומקור (Origin) של השרת עצמו או של האתר הציבורי,
+ורק האתר הציבורי מקבל הרשאת CORS לקרוא את התשובות.
 """
 from __future__ import annotations
 
@@ -26,6 +28,8 @@ from . import actions, folder_view, settings as cfg
 
 WEBSITE = cfg.REPO_DIR / "website"
 HEADER = "X-Assignment-Checker"
+# האתר הציבורי ב-Vercel: רק הכתובת הזו בדיוק (לא כתובות תצוגה מקדימה של Vercel)
+SITE_ORIGINS = ("https://bodek-hacham.vercel.app",)
 _lock = threading.Lock()  # משיכה אחת בכל פעם
 STALE_UPLOAD = "הקבצים השתנו מאז ההכנה. צריך ללחוץ שוב על 'העלה למודל'."
 # כתובת → (הפעולה ב-actions, איך קוראים לה בהודעת שגיאה). אלה רצות תחת _lock
@@ -58,7 +62,28 @@ class Handler(SimpleHTTPRequestHandler):
         if self.headers.get(HEADER) != "1":
             return False
         origin = self.headers.get("Origin")
-        return origin is None or urlparse(origin).hostname in ("127.0.0.1", "localhost")
+        return origin is None or origin in SITE_ORIGINS or urlparse(origin).hostname in ("127.0.0.1", "localhost")
+
+    def end_headers(self):
+        # האתר הציבורי קורא את התשובות (CORS). אתרים אחרים לא
+        headers = getattr(self, "headers", None)
+        origin = headers.get("Origin") if headers else None
+        if origin in SITE_ORIGINS:
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
+        super().end_headers()
+
+    def do_OPTIONS(self):
+        """בקשת ה-preflight של הדפדפן לפני שהאתר הציבורי פונה לשרת (כולל Private Network Access של Chrome)."""
+        if not self._host_ok() or self.headers.get("Origin") not in SITE_ORIGINS:
+            return self.send_error(HTTPStatus.FORBIDDEN)
+        self.send_response(HTTPStatus.NO_CONTENT)
+        self.send_header("Access-Control-Allow-Methods", "GET, POST")
+        self.send_header("Access-Control-Allow-Headers", f"Content-Type, {HEADER}")
+        self.send_header("Access-Control-Allow-Private-Network", "true")
+        self.send_header("Access-Control-Max-Age", "600")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     # ---------- תשובות ----------
     def _json(self, data, status=HTTPStatus.OK):
