@@ -5,7 +5,7 @@ import pymupdf
 
 from pipeline.demo import homework_pdf
 from pipeline.render import MAX_SIDE, render_pdf, render_submission
-from pipeline.workspace import SubmittedFile, Submission
+from pipeline.types import SubmittedFile, Submission
 
 PNG_START = b"\x89PNG"  # כל קובץ PNG מתחיל בבייטים האלה
 

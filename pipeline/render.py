@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pymupdf
 
-from .workspace import Submission
+from .types import Submission
 
 # ---------- הגדרות: כדי לשנות גודל או פורמט, משנים רק כאן ----------
 
@@ -59,5 +59,5 @@ def render_submission(sub: Submission) -> list[PageImage]:
     images: list[PageImage] = []
     for f in sub.files:
         if Path(f.name).suffix.lower() == ".pdf":
-            images += render_pdf(f.data)
+            images += render_pdf(f.content())
     return images
