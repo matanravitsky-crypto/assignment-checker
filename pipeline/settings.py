@@ -1,13 +1,9 @@
 """הגדרות שנמצאות רק במחשב שמריץ את המערכת.
 
-הטוקן של מודל ומפתח Claude נשמרים בקובץ ".env" בתיקיית הריפו. הקובץ לא עולה ל-GitHub
-(הוא ב-.gitignore) ולא ל-OneDrive. כל השאר (קורסים, מטלות, מזהים במודל) נמצא בתיקיית
-OneDrive, בקובץ "Assignment details.json" של כל מטלה.
-
-דוגמה ל-.env:
-    MOODLE_TOKEN=...
+מפתח Claude נשמר בקובץ ".env" בתיקיית הריפו. הקובץ לא עולה ל-GitHub (הוא ב-.gitignore)
+ולא ל-OneDrive:
     ANTHROPIC_API_KEY=...
-    MOODLE_URL=https://moodle.bgu.ac.il
+למודל אין API: ההורדה וההעלאה נעשות בדפדפן (ראו CLAUDE.md).
 """
 from __future__ import annotations
 
@@ -28,14 +24,6 @@ def load_env() -> None:
             continue
         key, value = line.split("=", 1)
         os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
-
-
-def moodle_url() -> str:
-    return os.environ.get("MOODLE_URL") or "https://moodle.bgu.ac.il"
-
-
-def moodle_token() -> str | None:
-    return os.environ.get("MOODLE_TOKEN") or None
 
 
 def claude_key() -> str | None:
