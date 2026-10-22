@@ -111,12 +111,23 @@ def _path_is_clear(mask: np.ndarray, start, end) -> bool:
 
 
 def _attached(mask: np.ndarray, box, nw: int, nh: int) -> tuple[int, int, int, int]:
-    """ההערה צמודה למלבן: מתחתיו אם יש מקום בעמוד, אחרת מעליו. מיושרת לצד ימין שלו, כמו עברית."""
+    """ההערה צמודה למלבן, במקום שהכי פחות תפוס סביבו: מתחתיו, מעליו, משמאלו או מימינו, וגם שורה אחת רחוק יותר
+    מתחת או מעל. ככה שתי הערות של מלבנים קרובים לא נכתבות אחת על השנייה (ההערה הקודמת כבר מסומנת כתפוסה ב-mask).
+    בשוויון הסדר הזה קובע, ומתחת קודם. מיושרת לצד ימין של המלבן, כמו עברית."""
     h, w = mask.shape
-    x1 = int(min(max(box[2], nw), w))
-    y0 = int(box[3]) + 1 if box[3] + 1 + nh <= h else int(box[1]) - 1 - nh
-    y0 = max(0, min(y0, h - nh))
-    return x1 - nw, y0, x1, y0 + nh
+    x0, y0, x1, y1 = (int(v) for v in box)
+    right = min(max(x1, nw), w) - nw
+    middle = (y0 + y1) // 2 - nh // 2
+    spots = [(right, y1 + 1), (right, y0 - 1 - nh), (x0 - 1 - nw, middle), (x1 + 1, middle),
+             (right, y1 + 2 + nh), (right, y0 - 2 - 2 * nh)]
+    best = None
+    for sx, sy in spots:
+        sx, sy = max(0, min(sx, w - nw)), max(0, min(sy, h - nh))
+        taken = int(mask[sy:sy + nh, sx:sx + nw].sum())
+        if best is None or taken < best[0]:
+            best = (taken, sx, sy)
+    _, sx, sy = best
+    return sx, sy, sx + nw, sy + nh
 
 
 def find_spot(mask: np.ndarray, box: tuple[float, float, float, float], size: tuple[int, int]) -> Spot:

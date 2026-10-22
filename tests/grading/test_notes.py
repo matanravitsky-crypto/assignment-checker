@@ -108,3 +108,17 @@ def test_a_box_never_shrinks_onto_one_small_mark():
     ink[118:121, 100:103] = True        # נקודה קטנה בלבד
     x0, y0, x1, y1 = notes.snap_box(ink, (40, 100, 210, 140))
     assert y1 - y0 >= notes.SNAP_MIN * 40 - 1 and (x0, x1) == (40, 210)
+
+
+def test_two_attached_notes_of_close_boxes_do_not_land_on_each_other():
+    """Two boxes close together on a page full of writing: both notes are attached, and the second one goes
+    where the first one isn't (a placed note is blocked in the mask, as _mark_page does)."""
+    mask = np.ones((400, 300), dtype=bool)
+    mask[::3, :] = False                     # dense writing, never a clean spot
+    first, second = (150, 100, 230, 120), (90, 100, 170, 120)   # side by side on one line
+    one = notes.find_spot(mask, first, (100, 14))
+    notes.block(mask, one.note)
+    two = notes.find_spot(mask, second, (100, 14))
+    assert one.backed and two.backed
+    assert not overlaps(one.note, two.note)
+    assert not overlaps(two.note, second) and gap(two.note, second) <= notes.REACH * 400
