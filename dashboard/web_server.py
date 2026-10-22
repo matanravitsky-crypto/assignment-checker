@@ -31,6 +31,7 @@ HEADER = "X-Assignment-Checker"
 # האתר הציבורי ב-Vercel: רק הכתובת הזו בדיוק (לא כתובות תצוגה מקדימה של Vercel)
 SITE_ORIGINS = ("https://bodek-hacham.vercel.app",)
 _lock = threading.Lock()  # משיכה אחת בכל פעם
+FILE_TYPES = (".pdf", ".jpg", ".jpeg", ".png")  # מה אפשר להוריד מ-"1 - Submissions to grade"
 STALE_UPLOAD = "הקבצים השתנו מאז ההכנה. צריך ללחוץ שוב על 'העלה למודל'."
 # כתובת → (הפעולה ב-actions, איך קוראים לה בהודעת שגיאה). אלה רצות תחת _lock
 _LOCKED_STEPS = {
@@ -150,17 +151,23 @@ class Handler(SimpleHTTPRequestHandler):
             root = self._root()
             if not root:
                 return
-            rel = parse_qs(url.query).get("path", [""])[0]
+            query = parse_qs(url.query)
+            rel = query.get("path", [""])[0]
             target = (root / rel).resolve()
-            # רק קובצי PDF של הגשות (תיקיות 1-2-3). טבלת המפתח, עם השמות, לא יוצאת מהתיקייה
+            # רק קבצים של הגשות (תיקיות 1-2-3): PDF, ובהגשות גם תמונות. טבלת המפתח, עם השמות, לא יוצאת מהתיקייה
             allowed = (folder_view.SUBMISSIONS, folder_view.GRADED, folder_view.READY)
+            kinds = FILE_TYPES if target.parent.name == folder_view.SUBMISSIONS else (".pdf",)
             if (not target.is_file() or not target.is_relative_to(root.resolve())
-                    or target.suffix.lower() != ".pdf" or target.parent.name not in allowed):
+                    or target.suffix.lower() not in kinds or target.parent.name not in allowed):
                 return self.send_error(HTTPStatus.NOT_FOUND)
             data = target.read_bytes()
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", mimetypes.guess_type(target.name)[0] or "application/octet-stream")
             self.send_header("Content-Length", str(len(data)))
+            if query.get("download", [""])[0] == "1":
+                # הורדה: "0023 - submission.pdf" או "0023 - graded.pdf", כדי שההגשה והבדוקה לא יידרסו זו את זו
+                which = "graded" if target.parent.name == folder_view.GRADED else "submission"
+                self.send_header("Content-Disposition", f'attachment; filename="{target.stem} - {which}{target.suffix.lower()}"')
             self.end_headers()
             self.wfile.write(data)
             return
@@ -255,6 +262,23 @@ class Handler(SimpleHTTPRequestHandler):
             except RuntimeError as e:
                 return self._json({"error": str(e)}, HTTPStatus.CONFLICT)
             return self._json(job, HTTPStatus.ACCEPTED)
+        if url.path == "/api/review":
+            # בדיקה ידנית: אדם קבע ניקוד, הערות ומשוב לעבודה אחת. נשמר ב-Grades.csv כמאושר
+            course, assignment, number = body.get("course"), body.get("assignment"), body.get("number")
+            points = body.get("points")
+            if not course or not assignment or not isinstance(number, str) or not number.isdigit():
+                return self._json({"error": "חסרים קורס, מטלה ומספר הגשה"}, HTTPStatus.BAD_REQUEST)
+            if not isinstance(points, list) or not all(isinstance(p, (int, float)) and not isinstance(p, bool) for p in points):
+                return self._json({"error": "הניקוד לא תקין"}, HTTPStatus.BAD_REQUEST)
+            try:
+                return self._json(actions.save_review(root, course, assignment, number, points, body.get("comments") or [],
+                                                      str(body.get("feedback") or ""), body.get("mistakes")))
+            except FileNotFoundError as e:
+                return self._json({"error": str(e)}, HTTPStatus.NOT_FOUND)
+            except grading.GradingError as e:
+                return self._json({"error": str(e)}, HTTPStatus.UNPROCESSABLE_ENTITY)
+            except Exception as e:
+                return self._json({"error": f"השמירה נכשלה: {e}"}, HTTPStatus.INTERNAL_SERVER_ERROR)
         if url.path == "/api/open":
             # פותח בסייר הקבצים: תיקיית ההורדות (לשם מודל מוריד את ה-ZIP), תיקיית המטלה, או תיקיית ההעלאה
             try:

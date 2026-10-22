@@ -46,6 +46,11 @@
     instr: { grade: store.get("instr.grade", DEFAULT_GRADE_INSTR) },  // נשלחות ל-Claude עם כל בדיקה
     claude: store.get("claude", { model: "claude-opus-5-5", parallel: 5, sendSolution: true }),
     loading: false,
+    // לוח הבקרה: ריבוע של שלב שנפתח (גדל ומראה את העבודות), העבודה שנבחרה בו, וטעות נפוצה שנפתחה
+    open: { stage: null, tile: null, filter: "all", q: "" },
+    mistakeOpen: null,
+    // הבדיקה הידנית: העבודה שפתוחה, סינון לפי סוג הבעיה, מה מוצג (מסומנת/מקורית) והטיוטה של כל עבודה עד השמירה
+    review: { id: null, kind: "all", view: "marked", edits: {}, saving: false },
   };
 
   // מה כל שלב עושה באמת (moodle/ingest.py, grading/grade.py, moodle/send.py)
@@ -91,6 +96,10 @@
     pen: '<svg viewBox="0 0 24 24"><path d="M4 20l4-1 11-11-3-3L5 16z"/></svg>',
     warn: '<svg viewBox="0 0 24 24"><path d="M12 4l9 16H3z"/><path d="M12 10v4M12 17v.5"/></svg>',
     clock: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7v5l3 2"/></svg>',
+    download: '<svg viewBox="0 0 24 24"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>',
+    eye: '<svg viewBox="0 0 24 24"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.8"/></svg>',
+    hand: '<svg viewBox="0 0 24 24"><path d="M5 19c2-1 3-3 3-5V7a1.5 1.5 0 0 1 3 0v4m0-6a1.5 1.5 0 0 1 3 0v6m0-5a1.5 1.5 0 0 1 3 0v6m0-3a1.5 1.5 0 0 1 3 0v4c0 4-3 7-7 7h-2"/></svg>',
+    expand: '<svg viewBox="0 0 24 24"><path d="M14 4h6v6M10 20H4v-6M20 4l-7 7M4 20l7-7"/></svg>',
     lock: '<svg viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>',
     upload: '<svg viewBox="0 0 24 24"><path d="M12 16V5M7 10l5-5 5 5M5 19h14"/></svg>',
     search: '<svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>',
@@ -117,6 +126,45 @@
   const dueText = (A) => (A.due ? new Date(A.due).toLocaleString("he-IL", { day: "numeric", month: "long", hour: "2-digit", minute: "2-digit" }) : "לא נקבע");
   const avg = (arr) => (arr.length ? Math.round(arr.reduce((a, b) => a + b, 0) / arr.length) : null);
   const plural = (n, one, many) => (n === 1 ? one : `${n} ${many}`);
+  const median = (arr) => { if (!arr.length) return null; const s = [...arr].sort((a, b) => a - b), m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+  const half = (x) => Math.round(x * 2) / 2;
+  const fmt = (x) => (x == null ? "—" : String(Math.round(x * 10) / 10));
+
+  // ---------- קבצים, בדיקה ידנית וטעויות ----------
+  const fileUrl = (f, download = false) => `${BASE}api/file?path=${encodeURIComponent(f.path)}${download ? "&download=1" : ""}`;
+  const origFiles = (s) => s.files.filter((f) => !f.marked);
+  const markedFiles = (s) => s.files.filter((f) => f.marked);
+  // עבודה בתור הבדיקה הידנית: Claude ביקש שאדם יבדוק, או שהבדיקה האוטומטית נכשלה. יוצאת מהתור כשמישהו מאשר
+  const needsReview = (s) => !s.approved && (!!s.review || (!!s.failed && s.score == null));
+  const wasReviewed = (s) => s.approved && (!!s.review || !!s.reviewedBy);
+  const REVIEW_KIND = {
+    unreadable: ["כתב יד לא קריא", "Claude לא הצליח לקרוא חלק מהעבודה"],
+    missing: ["חסרים עמודים או שאלות", "שאלה או עמוד לא נמצאו בהגשה"],
+    uncertain: ["ניקוד לא ודאי", "Claude לא בטוח בניקוד של שאלה"],
+    format: ["לא לפי כללי ההגשה", "ההגשה לא בפורמט שנדרש"],
+    failed: ["הבדיקה האוטומטית נכשלה", "צריך לבדוק ידנית או לנסות שוב"],
+    other: ["אחר", "Claude ביקש שאדם יסתכל"],
+  };
+  const kindOf = (s) => s.reviewKind || (s.failed ? "failed" : "other");
+
+  // טעויות נפוצות במטלה: כל טעות ש-Claude (או מתרגל) רשם לשאלה, כמה עבודות עשו אותה, ובכמה בדרך כלל מורידים עליה
+  function mistakeStats(A = cur()) {
+    const qs = rubric().questions;
+    const withNotes = A.subs.filter((s) => s.score != null && Array.isArray(s.mistakes) && s.mistakes.length);
+    const map = new Map();
+    withNotes.forEach((s) => s.mistakes.forEach((ms, qi) => ms.forEach((text) => {
+      const k = `${qi}|${text}`;
+      const e = map.get(k) || { q: qi, text, ids: [], losses: [] };
+      e.ids.push(s.id);
+      if (ms.length === 1 && s.q && qs[qi]) e.losses.push(qs[qi].pts - s.q[qi]);  // הטעות היחידה בשאלה: כל מה שירד הוא בגללה
+      map.set(k, e);
+    })));
+    return [...map.values()].map((e) => {
+      const known = (qs[e.q]?.deductions || []).find((d) => d.text === e.text);
+      const typical = e.losses.length ? half(median(e.losses)) : null;
+      return { ...e, count: e.ids.length, pct: withNotes.length ? Math.round((100 * e.ids.length) / withNotes.length) : 0, ded: known ? known.points : typical };
+    }).sort((a, b) => b.count - a.count || a.q - b.q);
+  }
 
   function info(A = cur()) {
     const subs = A.subs;
@@ -233,12 +281,15 @@
       grade: [I.graded.length, `מתוך ${I.ok.length} נבדקו`, ""],
       ret: [I.returned.length, `מתוך ${I.ok.length} הוחזרו`, ""],
     };
+    const open = state.open.stage;
+    // הריבוע שנפתח גדל, והשניים האחרים מצטמצמים לצדדים
+    const cols = open ? ["pull", "grade", "ret"].map((st) => (st === open ? "minmax(0, 4fr)" : "minmax(150px, 1fr)")).join(" ") : "";
     return `
-      <section class="pipeline" aria-label="מסלול הבדיקה">
+      <section class="pipeline ${open ? "has-open" : ""}" aria-label="מסלול הבדיקה" ${open ? `style="--cols: ${cols}"` : ""}>
         ${["pull", "grade", "ret"].map((st, idx) => {
-          const S = STAGES[st], ss = stageState(st);
+          const S = STAGES[st], ss = stageState(st), isOpen = open === st;
           return `
-          <article class="stage" data-state="${ss.kind}">
+          <article class="stage ${isOpen ? "open" : ""}" data-state="${ss.kind}" data-card="${st}">
             ${idx ? `<span class="stage-arrow" aria-hidden="true">${ICON.chev}</span>` : ""}
             <header class="stage-top">
               ${stageMark(st)}
@@ -246,10 +297,13 @@
                 <h2>${S.name}</h2>
                 <p class="stage-status ${ss.kind}">${ss.kind === "running" ? ICON.spin : ""}${esc(ss.text)}</p>
               </div>
+              <button class="stage-toggle" data-expand="${st}" aria-expanded="${isOpen}"
+                aria-label="${isOpen ? `סגור את ${S.name}` : `הצג את העבודות ב${S.name}`}" title="${isOpen ? "סגור" : "הצג את העבודות"}">${isOpen ? ICON.close : ICON.expand}</button>
             </header>
             <div class="stage-count num">${nums[st][0]}<small>${nums[st][1]}</small></div>
-            <div class="dots" aria-hidden="true">${dotsFor(st, I)}</div>
+            ${isOpen ? "" : `<div class="dots" aria-hidden="true">${dotsFor(st, I)}</div>`}
             ${nums[st][2] ? `<p class="stage-warn">${ICON.warn}${nums[st][2]}</p>` : ""}
+            ${isOpen ? stageWorksHTML(st, I) : ""}
             <footer class="stage-foot">
               ${stageButton(st)}
               <a class="link" href="#${S.route}">הנחיות והגדרות</a>
@@ -257,6 +311,79 @@
           </article>`;
         }).join("")}
       </section>`;
+  }
+
+  // ---------- ריבוע שנפתח: כל העבודות בשלב, ולכל עבודה הורדה של ההגשה ושל העבודה הבדוקה ----------
+  const STAGE_SETS = {
+    pull: [["all", "כל ההגשות", () => true], ["many", "כמה קבצים", (s) => origFiles(s).length > 1]],
+    grade: [["all", "הכל", () => true], ["graded", "נבדקו", (s) => s.score != null], ["pulled", "ממתינות לבדיקה", (s) => s.status === "pulled"],
+      ["review", "לבדיקה ידנית", needsReview], ["approved", "אושרו", (s) => s.approved]],
+    ret: [["all", "הכל", (s) => s.status === "graded" || s.status === "returned"], ["ready", "מוכנות להעלאה", (s) => s.status === "graded"],
+      ["returned", "הוחזרו", (s) => s.status === "returned"]],
+  };
+
+  function workTile(s, selected) {
+    const flag = needsReview(s);
+    return `<button class="work-tile st-${s.status} ${flag ? "flagged" : ""} ${s.approved ? "approved" : ""}" data-tile="${s.id}" aria-pressed="${selected}"
+      title="עבודה ${s.id}${flag ? ": לבדיקה ידנית" : ""}">
+      <span class="wt-label">עבודה</span><b class="num">${s.id}</b>
+      <span class="wt-meta num">${s.score != null ? s.score : s.status === "pulled" ? "—" : ""}${flag ? ICON.hand : s.approved ? ICON.check : ""}</span>
+    </button>`;
+  }
+
+  // ההורדות של עבודה אחת: הקבצים המקוריים שהסטודנט הגיש והעבודה אחרי הבדיקה, עם ההערות
+  function downloadsHTML(s) {
+    const orig = origFiles(s), marked = markedFiles(s);
+    const link = (f, label) => `<a class="btn secondary small" href="${fileUrl(f, true)}" download>${ICON.download}${esc(label)}</a>`;
+    return `<div class="dl-group">
+        <span class="dl-label">ההגשה</span>
+        ${orig.map((f) => link(f, orig.length > 1 ? `הגשה (${f.name})` : "הורד את ההגשה")).join("") || `<span class="muted">אין קובץ</span>`}
+      </div>
+      <div class="dl-group">
+        <span class="dl-label">אחרי בדיקה</span>
+        ${marked.map((f) => link(f, marked.length > 1 ? `בדוקה (${f.name})` : "הורד את העבודה הבדוקה")).join("")
+          || `<span class="btn secondary small" aria-disabled="true">${ICON.clock}${s.score != null ? "אין עבודה מסומנת" : "עוד לא נבדקה"}</span>`}
+      </div>`;
+  }
+
+  function tileDetailHTML(s) {
+    return `<div class="tile-detail" role="region" aria-label="עבודה ${s.id}">
+      <div class="td-head">
+        <h3>עבודה <span class="num">${s.id}</span></h3>
+        ${statusPill(s)}
+        ${s.score != null ? `<span class="td-score num">${s.score}<small> / ${cur().maxGrade || 100}</small></span>` : ""}
+        ${needsReview(s) ? `<span class="flag">${esc(REVIEW_KIND[kindOf(s)][0])}</span>` : s.approved ? `<span class="tag ok">אושרה</span>` : ""}
+        <button class="btn ghost small end" data-tile="${s.id}" aria-label="סגור">${ICON.close}</button>
+      </div>
+      <div class="td-body">${downloadsHTML(s)}</div>
+      <div class="td-foot">
+        <button class="btn secondary small" data-open="${s.id}">${ICON.eye}פתח לצפייה</button>
+        ${s.score != null || s.failed ? `<a class="btn ${needsReview(s) ? "primary" : "secondary"} small" href="#/review?n=${s.id}">${ICON.pen}${needsReview(s) ? "לבדיקה ידנית" : "ערוך ציון"}</a>` : ""}
+      </div>
+    </div>`;
+  }
+
+  function stageWorksHTML(st, I) {
+    const sets = STAGE_SETS[st];
+    if (!sets.some(([k]) => k === state.open.filter)) state.open.filter = sets[0][0];
+    const base = sets[0][2];
+    const pick = sets.find(([k]) => k === state.open.filter)[2];
+    const q = state.open.q.trim();
+    const list = I.subs.filter((s) => base(s) && pick(s) && (!q || s.id.includes(q)));
+    const sel = list.find((s) => s.id === state.open.tile) || I.subs.find((s) => s.id === state.open.tile);
+    return `<div class="stage-works">
+      <div class="sw-head">
+        <div class="chips" role="group" aria-label="סינון העבודות">
+          ${sets.map(([k, label, fn]) => {
+            const c = I.subs.filter((s) => base(s) && fn(s)).length;
+            return k !== sets[0][0] && !c ? "" : `<button class="chip" data-open-filter="${k}" aria-pressed="${state.open.filter === k}">${label}<span class="c num">${c}</span></button>`;
+          }).join("")}
+        </div>
+        <label class="search small">${ICON.search}<span class="sr">חיפוש עבודה</span><input type="search" id="q-open" data-open-q value="${esc(state.open.q)}" placeholder="מספר עבודה, למשל 0023" inputmode="numeric"></label>
+      </div>
+      ${sel ? tileDetailHTML(sel) : `<p class="sw-hint">לחיצה על עבודה מציגה את ההורדות שלה: ההגשה המקורית והעבודה אחרי הבדיקה.</p>`}
+      <div class="work-grid">${list.map((s) => workTile(s, s.id === sel?.id)).join("") || `<div class="empty slim">אין עבודות שמתאימות.</div>`}</div>
+    </div>`;
   }
 
   function runStepsHTML(stage) {
@@ -736,7 +863,7 @@
               <td>${statusPill(s)}</td>
               <td>${scoreHTML(s)}</td>
               ${qs.map((q, i) => `<td class="col-hide qcol num">${s.q ? `<span class="qv ${s.q[i] < q.pts ? "lost" : ""}">${s.q[i]}</span>` : `<span class="muted">·</span>`}</td>`).join("")}
-              <td class="col-hide-sm">${s.issue ? `<span class="flag">${esc(s.issue)}</span>` : s.review ? `<span class="flag" title="${esc(s.review)}">לבדיקה ידנית</span>` : s.q ? (lost ? `<span class="pen-count">${ICON.pen}${plural(lost, "הערה אחת", "הערות")}</span>` : `<span class="muted">ללא הערות</span>`) : `<span class="muted">—</span>`}</td>
+              <td class="col-hide-sm">${s.issue ? `<span class="flag">${esc(s.issue)}</span>` : needsReview(s) ? `<span class="flag" title="${esc(s.failed || s.review)}">לבדיקה ידנית: ${esc(REVIEW_KIND[kindOf(s)][0])}</span>` : s.q ? (lost ? `<span class="pen-count">${ICON.pen}${plural(lost, "הערה אחת", "הערות")}</span>` : `<span class="muted">ללא הערות</span>`) : `<span class="muted">—</span>`}</td>
             </tr>`;
           }).join("") || `<tr><td colspan="${4 + qs.length}"><div class="empty slim">אין עבודות שמתאימות לסינון.</div></td></tr>`}
           </tbody>
@@ -1026,6 +1153,61 @@
       </div>`;
   }
 
+  // שורת המספרים מתחת למסלול: כמה נבדקו, ממוצע, חציון, פיזור, עוברים, כמה מחכות לאדם וכמה אושרו
+  function statsRowHTML(A, I) {
+    const max = A.maxGrade || 100;
+    const g = I.graded.map((s) => s.score).filter((x) => typeof x === "number");
+    const mean = g.length ? g.reduce((a, b) => a + b, 0) / g.length : null;
+    const sd = g.length > 1 ? Math.sqrt(g.reduce((a, x) => a + (x - mean) ** 2, 0) / (g.length - 1)) : null;
+    const pass = g.length ? Math.round((100 * g.filter((x) => x >= 0.6 * max).length) / g.length) : null;
+    const queue = A.subs.filter(needsReview).length;
+    const approved = I.graded.filter((s) => s.approved).length;
+    const tile = (label, value, sub = "", cls = "", href = "") => `<${href ? `a href="${href}"` : "div"} class="stat ${cls}">
+      <span class="stat-l">${label}</span><b class="stat-v num">${value}</b>${sub ? `<span class="stat-s">${sub}</span>` : ""}</${href ? "a" : "div"}>`;
+    return `<section class="stat-row" aria-label="סטטיסטיקה">
+      ${tile("נבדקו", `${I.graded.length}<small>/${I.ok.length}</small>`, I.ok.length ? `${Math.round((100 * I.graded.length) / I.ok.length)}% מההגשות` : "")}
+      ${tile("ממוצע", fmt(mean), `מתוך ${max}`)}
+      ${tile("חציון", fmt(median(g)), sd != null ? `סטיית תקן ${fmt(sd)}` : "")}
+      ${tile("עוברים", pass != null ? `${pass}%` : "—", `ציון ${0.6 * max} ומעלה`)}
+      ${tile("לבדיקה ידנית", queue, queue ? "לחיצה פותחת את התור" : "אין מה לבדוק", queue ? "warn" : "ok", "#/review")}
+      ${tile("אושרו", `${approved}<small>/${I.graded.length}</small>`, "ציונים שאדם אישר")}
+    </section>`;
+  }
+
+  // מה מחכה לבדיקה ידנית, לפי סוג הבעיה. Claude שולח לשם כל עבודה שהוא לא בטוח בה
+  function reviewCalloutHTML(A) {
+    const queue = A.subs.filter(needsReview);
+    if (!queue.length) return "";
+    const kinds = Object.keys(REVIEW_KIND).map((k) => [k, queue.filter((s) => kindOf(s) === k).length]).filter(([, c]) => c);
+    return `<section class="review-callout">
+      <span class="rc-icon">${ICON.hand}</span>
+      <div class="rc-text">
+        <b>${plural(queue.length, "עבודה אחת מחכה", "עבודות מחכות")} לבדיקה ידנית</b>
+        <div class="rc-kinds">${kinds.map(([k, c]) => `<a class="chip" href="#/review?kind=${k}">${REVIEW_KIND[k][0]}<span class="c num">${c}</span></a>`).join("")}</div>
+      </div>
+      <a class="btn primary" href="#/review">${ICON.pen}התחל לבדוק</a>
+    </section>`;
+  }
+
+  // טעויות נפוצות: מה הכי הרבה סטודנטים טעו בו. לחיצה על טעות מראה את העבודות שעשו אותה
+  function mistakesHTML(A) {
+    const list = mistakeStats(A);
+    if (!list.length) return `<p class="muted empty-line">יופיע אחרי שיהיו עבודות בדוקות. Claude רושם לכל שאלה את סוגי הטעויות, ומכאן הרשימה.</p>`;
+    const qs = rubric().questions, top = list.slice(0, 10), most = top[0].count;
+    return `<ol class="mk-list">${top.map((m) => {
+      const k = `${m.q}|${m.text}`, open = state.mistakeOpen === k;
+      return `<li class="${open ? "open" : ""}">
+        <button class="mk-row" data-mistake="${esc(k)}" aria-expanded="${open}">
+          <span class="mk-text"><b>${esc(m.text)}</b><small>שאלה ${m.q + 1}${qs[m.q]?.req ? ` · ${esc(qs[m.q].req)}` : ""}${m.ded != null ? ` · בדרך כלל −${fmt(m.ded)}` : ""}</small></span>
+          <span class="track"><i style="width:${(m.count / most) * 100}%"></i></span>
+          <span class="mk-n num">${m.count}<small>${m.pct}%</small></span>
+        </button>
+        ${open ? `<div class="mk-works">${m.ids.map((id) => `<button class="work-tile mini" data-open="${id}" title="פתח את עבודה ${id}"><b class="num">${id}</b></button>`).join("")}</div>` : ""}
+      </li>`;
+    }).join("")}</ol>
+    ${list.length > top.length ? `<p class="hint">ועוד ${list.length - top.length} סוגי טעויות פחות נפוצים.</p>` : ""}`;
+  }
+
   function perQuestionHTML(I) {
     const qs = rubric().questions;
     // רק עבודות עם ניקוד לכל שאלה (ב-Grades.csv יש רק ציון סופי)
@@ -1171,7 +1353,8 @@
         </div>
         <aside class="grade-col">
           <div class="grade-card">
-            <h3 class="gc-title">קבצים</h3>
+            <h3 class="gc-title">הורדה</h3>
+            <div class="dl-stack">${downloadsHTML(s)}</div>
             <ul class="file-list">${s.files.map((f) => `<li>${ICON.file}<a href="${url(f)}" target="_blank" rel="noopener" dir="ltr">${esc(f.name)}</a>${f.marked ? `<span class="muted">מסומן</span>` : ""}</li>`).join("") || `<li class="muted">אין קבצים</li>`}</ul>
           </div>
           <div class="grade-card">
@@ -1179,7 +1362,7 @@
             ${busy ? `<p class="muted" style="margin:0">Claude בודק את העבודה עכשיו.</p>`
               : s.score != null ? `<div class="grade-top"><span class="big num">${s.score}</span><span class="lbl"><b>${s.approved ? "מאושר" : "עוד לא אושר"}</b>מתוך ${cur().maxGrade || 100}</span></div>
                 ${s.q && s.q.length === qs.length ? `<ul class="breakdown">${qs.map((q, i) => `<li><label>${esc(q.req || `שאלה ${q.n}`)}</label><span class="num">${s.q[i]} / ${q.pts}</span><span class="track"><i class="${s.q[i] < q.pts ? "short" : ""}" style="width:${(s.q[i] / q.pts) * 100}%"></i></span></li>`).join("")}</ul>` : ""}
-                ${s.review ? `<p class="hint"><span class="flag" style="white-space: normal">לבדיקה ידנית: ${esc(s.review)}</span></p>` : ""}`
+                ${s.review ? `<p class="hint"><span class="flag" style="white-space: normal">${s.approved ? "נבדקה ידנית" : "לבדיקה ידנית"}: ${esc(s.review)}</span></p>` : ""}`
               : `<p class="muted" style="margin:0">עוד לא נבדקה.</p>`}
             <p class="hint">אחרי הבדיקה, העבודה עם ההערות נשמרת ב-"2 - Graded with comments" באותו מספר, והציון ב-Grades.csv.</p>
           </div>
@@ -1187,11 +1370,222 @@
         </aside>
       </div>
       <div class="drawer-foot"><span class="grow">${s.issue ? esc(s.issue) : "הקבצים שמורים בתיקיית OneDrive של המטלה."}</span>
+        ${s.score != null || s.failed ? `<a class="btn ${needsReview(s) ? "primary" : "secondary"}" href="#/review?n=${s.id}">${ICON.pen}${needsReview(s) ? "לבדיקה ידנית" : "ערוך ציון"}</a>` : ""}
         ${canGrade && !busy ? `<button class="btn ${s.status === "pulled" ? "primary" : "secondary"}" data-act="grade-one" data-id="${s.id}">${s.status === "pulled" ? ICON.grade + "בדוק עכשיו" : ICON.redo + "בדיקה חוזרת"}</button>` : ""}
         <button class="btn secondary" data-act="open-folder">${ICON.folder}פתח את התיקייה</button></div>`;
   }
 
+  // ---------- בדיקה ידנית ----------
+  // לכאן Claude שולח כל עבודה שהוא לא בטוח בה (needs_review), וגם עבודות שהבדיקה שלהן נכשלה. לכל עבודה: מה הבעיה ואיפה,
+  // הערות מוכנות מהמחוון ומהטעויות הנפוצות עם הניקוד שלהן, והציון מחושב לבד. "אשר" שומר ועובר לעבודה הבאה.
+  const hashParam = (k) => new URLSearchParams(location.hash.split("?")[1] || "").get(k);
+
+  function reviewList(A = cur()) {
+    const queue = A.subs.filter(needsReview);
+    return { queue, shown: state.review.kind === "all" ? queue : queue.filter((s) => kindOf(s) === state.review.kind), done: A.subs.filter(wasReviewed) };
+  }
+
+  // ההערות המוכנות לשאלה: הטעויות המוכרות מהמחוון, הטעויות הנפוצות במטלה, ומה ש-Claude מצא בעבודה הזו. לכל אחת: בכמה מורידים
+  function readyComments(qi, s) {
+    const q = rubric().questions[qi], out = new Map();
+    (q.deductions || []).forEach((d) => out.set(d.text, { text: d.text, pts: d.points, src: "rubric", n: 0 }));
+    mistakeStats().filter((m) => m.q === qi).slice(0, 8).forEach((m) => {
+      if (out.has(m.text)) out.get(m.text).n = m.count;
+      else out.set(m.text, { text: m.text, pts: m.ded, src: "common", n: m.count });
+    });
+    const mine = s.mistakes?.[qi] || [];
+    mine.forEach((t) => {
+      if (!out.has(t)) out.set(t, { text: t, pts: mine.length === 1 && s.q ? q.pts - s.q[qi] : null, src: "claude", n: 0 });
+    });
+    return [...out.values()];
+  }
+
+  function draft(s) {
+    let d = state.review.edits[s.id];
+    if (d) return d;
+    const qs = rubric().questions, fresh = s.score == null;  // נכשלה: מתחילים מניקוד מלא ומורידים לפי ההערות
+    d = state.review.edits[s.id] = {
+      points: qs.map((q, i) => (fresh ? q.pts : s.q?.[i] ?? 0)),
+      comments: qs.map((q, i) => s.comments?.[i] || ""),
+      picks: qs.map((q, i) => [...(s.mistakes?.[i] || [])]),
+      feedback: s.feedback || "",
+      changed: false,
+    };
+    return d;
+  }
+  const draftTotal = (d) => {
+    const qs = rubric().questions, full = qs.reduce((a, q) => a + q.pts, 0), max = cur().maxGrade || 100;
+    return full ? Math.floor((d.points.reduce((a, b) => a + b, 0) / full) * max + 0.5) : 0;
+  };
+
+  // בחירה של הערה מוכנה: מסמנת אותה, מחשבת מחדש את הניקוד של השאלה וכותבת את ההערה
+  function togglePick(s, qi, text) {
+    const d = draft(s), q = rubric().questions[qi], opts = readyComments(qi, s);
+    const picks = d.picks[qi];
+    const at = picks.indexOf(text);
+    if (at >= 0) picks.splice(at, 1); else picks.push(text);
+    const lost = picks.reduce((a, t) => a + (opts.find((o) => o.text === t)?.pts || 0), 0);
+    d.points[qi] = Math.max(0, half(q.pts - lost));
+    d.comments[qi] = picks.length ? picks.join(". ") + "." : "";
+    d.changed = true;
+  }
+
+  function reviewItemHTML(s, current) {
+    const k = kindOf(s), why = s.failed || s.review;
+    return `<li><a class="rq-item ${current ? "current" : ""} ${s.approved ? "done" : ""}" href="#/review?n=${s.id}" ${current ? 'aria-current="true"' : ""}>
+      <span class="rq-num num">${s.id}</span>
+      <span class="rq-why"><b>${esc(REVIEW_KIND[k][0])}</b><small>${esc(why)}</small></span>
+      ${s.approved ? `<span class="rq-done">${ICON.check}</span>` : s.score != null ? `<span class="rq-score num">${s.score}</span>` : ""}
+    </a></li>`;
+  }
+
+  function problemHTML(s) {
+    const qs = rubric().questions, k = kindOf(s);
+    const unsure = (s.unsure || []).map((u, i) => (u ? i : -1)).filter((i) => i >= 0);
+    return `<section class="problem kind-${k}">
+      <div class="pb-head">${ICON.warn}<div><span class="pb-kind">${esc(REVIEW_KIND[k][0])}</span><p class="pb-why">${esc(s.failed || s.review || "Claude ביקש שאדם יבדוק את העבודה.")}</p></div></div>
+      ${unsure.length ? `<div class="pb-qs"><span>לבדוק במיוחד:</span>${unsure.map((i) => `<button class="chip warn" data-rv-jump="${i}">שאלה ${i + 1}${qs[i]?.req ? ` · ${esc(qs[i].req)}` : ""}</button>`).join("")}</div>` : ""}
+      ${s.marks?.length ? `<details class="pb-marks"><summary>${plural(s.marks.length, "סימון אחד", "סימונים")} של Claude על העבודה</summary><ul>${s.marks.map((m) => `<li><span class="num">עמ׳ ${esc(m.page)}</span>${esc(m.text)}</li>`).join("")}</ul></details>` : ""}
+      ${s.failed && LOCAL.health?.claude ? `<div class="pb-act"><button class="btn secondary small" data-act="grade-one" data-id="${s.id}" ${state.run[cur().id] ? "disabled" : ""}>${ICON.redo}נסה לבדוק שוב עם Claude</button><span class="muted">או לתת ציון כאן, ידנית</span></div>` : ""}
+    </section>`;
+  }
+
+  function questionCardHTML(s, d, qi) {
+    const q = rubric().questions[qi], unsure = !!s.unsure?.[qi];
+    const claudePts = s.q?.[qi];
+    const opts = readyComments(qi, s);
+    const changed = claudePts != null && d.points[qi] !== claudePts;
+    return `<section class="rv-q ${unsure ? "unsure" : ""} ${d.points[qi] < q.pts ? "lost" : ""}" id="rv-q${qi}">
+      <header class="rv-q-head">
+        <div class="rv-q-title"><b>שאלה ${qi + 1}</b>${q.req ? `<small>${esc(q.req)}</small>` : ""}</div>
+        ${unsure ? `<span class="flag">Claude לא בטוח כאן</span>` : ""}
+        <div class="rv-pts" dir="ltr">
+          <button class="btn ghost small" data-rv-step="${qi}|-0.5" aria-label="פחות חצי נקודה">−</button>
+          <input type="number" id="rv-pts-${qi}" data-rv-pts="${qi}" value="${d.points[qi]}" min="0" max="${q.pts}" step="0.5" aria-label="ניקוד לשאלה ${qi + 1}">
+          <button class="btn ghost small" data-rv-step="${qi}|0.5" aria-label="עוד חצי נקודה">+</button>
+          <span class="rv-of">/ ${q.pts}</span>
+        </div>
+      </header>
+      <div class="rv-quick">
+        <button class="chip" data-rv-set="${qi}|full" aria-pressed="${d.points[qi] === q.pts && !d.picks[qi].length}">${ICON.check}נכון, ניקוד מלא</button>
+        <button class="chip" data-rv-set="${qi}|zero" aria-pressed="${d.points[qi] === 0}">לא נמצאה / 0</button>
+        ${claudePts != null ? `<span class="rv-claude ${changed ? "changed" : ""}">Claude נתן ${claudePts}</span>` : ""}
+      </div>
+      ${opts.length ? `<div class="rv-chips" role="group" aria-label="הערות מוכנות לשאלה ${qi + 1}">${opts.map((o) => {
+        const on = d.picks[qi].includes(o.text);
+        return `<button class="rc-chip src-${o.src}" data-rv-pick="${qi}" data-text="${esc(o.text)}" aria-pressed="${on}"
+          title="${o.src === "rubric" ? "מהמחוון" : o.src === "common" ? `טעות נפוצה: ${o.n} עבודות` : "Claude מצא את זה בעבודה"}">
+          ${on ? ICON.check : ""}<span>${esc(o.text)}</span>${o.pts ? `<em class="num">−${fmt(o.pts)}</em>` : ""}${o.n ? `<i class="num">${o.n}</i>` : ""}</button>`;
+      }).join("")}</div>` : ""}
+      <label class="sr" for="rv-c-${qi}">הערה לשאלה ${qi + 1}</label>
+      <input class="rv-comment" id="rv-c-${qi}" data-rv-comment="${qi}" value="${esc(d.comments[qi])}" placeholder="הערה לסטודנט על השאלה (לא חובה)">
+    </section>`;
+  }
+
+  function reviewView() {
+    const A = cur();
+    if (!A) return offlineHTML();
+    const I = info(A), { queue, shown, done } = reviewList(A);
+    const want = hashParam("n");
+    if (want && A.subs.some((s) => s.id === want)) state.review.id = want;
+    const kindParam = hashParam("kind");
+    if (kindParam && (kindParam === "all" || REVIEW_KIND[kindParam])) state.review.kind = kindParam;
+    let s = A.subs.find((x) => x.id === state.review.id);
+    if (!s || (!want && !needsReview(s) && shown.length)) s = shown[0] || queue[0] || null;
+    state.review.id = s?.id || null;
+    const total = queue.length + done.length;
+    const kinds = Object.keys(REVIEW_KIND).map((k) => [k, queue.filter((x) => kindOf(x) === k).length]).filter(([, c]) => c);
+    const head = `
+      <div class="page-head rv-head">
+        <div>
+          <h1>בדיקה ידנית</h1>
+          <p>לכאן Claude שולח כל עבודה שהוא לא בטוח בה, וגם עבודות שהבדיקה שלהן נכשלה. לכל עבודה כתוב מה הבעיה ואיפה, ההערות מהמחוון ומהטעויות הנפוצות מוכנות עם הניקוד שלהן, והציון מתעדכן לבד. "אשר" שומר ב-Grades.csv ועובר לעבודה הבאה.</p>
+        </div>
+        <div class="rv-progress">
+          <b class="num">${queue.length}</b><span>${queue.length === 1 ? "עבודה מחכה" : "עבודות מחכות"}</span>
+          ${total ? `<span class="send-bar" role="progressbar" aria-label="התקדמות הבדיקה הידנית" aria-valuemin="0" aria-valuemax="${total}" aria-valuenow="${done.length}"><i style="width:${(100 * done.length) / total}%"></i></span><small>${done.length} מתוך ${total} כבר נבדקו ידנית</small>` : ""}
+        </div>
+      </div>`;
+    if (!I.subs.length) return `${head}<section class="panel">${emptyPulled()}</section>`;
+    if (!s) {
+      return `${head}<section class="panel"><div class="empty"><strong>אין עבודות שמחכות לבדיקה ידנית</strong>${I.graded.length ? "כל מה ש-Claude בדק נראה לו ודאי, או שכבר אושר." : "אחרי שלב הבדיקה, עבודות ש-Claude לא בטוח בהן יופיעו כאן."}
+        <div class="empty-act"><a class="btn secondary" href="#/grade">לכל העבודות</a></div></div></section>`;
+    }
+    const d = draft(s), qs = rubric().questions, max = A.maxGrade || 100;
+    const marked = markedFiles(s)[0], orig = origFiles(s).find((f) => /\.pdf$/i.test(f.name)) || origFiles(s)[0];
+    const view = state.review.view === "orig" || !marked ? orig : marked;
+    const at = shown.findIndex((x) => x.id === s.id);
+    const next = shown[at + 1] || shown.find((x) => x.id !== s.id);
+    const totalNow = draftTotal(d);
+    return `${head}
+      <div class="chips rv-kinds" role="group" aria-label="סינון לפי סוג הבעיה">
+        <a class="chip" href="#/review?kind=all" aria-pressed="${state.review.kind === "all"}">הכל<span class="c num">${queue.length}</span></a>
+        ${kinds.map(([k, c]) => `<a class="chip" href="#/review?kind=${k}" aria-pressed="${state.review.kind === k}" title="${esc(REVIEW_KIND[k][1])}">${REVIEW_KIND[k][0]}<span class="c num">${c}</span></a>`).join("")}
+      </div>
+      <div class="rv-layout">
+        <aside class="rv-queue panel" aria-label="תור הבדיקה הידנית">
+          <div class="panel-head"><h3>בתור</h3><span class="meta num">${shown.length}</span></div>
+          <ul>${shown.map((x) => reviewItemHTML(x, x.id === s.id)).join("") || `<li class="muted empty-line">אין עבודות בסינון הזה.</li>`}</ul>
+          ${!needsReview(s) && !shown.includes(s) ? `<div class="panel-head"><h3>פתוחה עכשיו</h3></div><ul>${reviewItemHTML(s, true)}</ul>` : ""}
+          ${done.length ? `<details class="rv-done"><summary>נבדקו ידנית (${done.length})</summary><ul>${done.map((x) => reviewItemHTML(x, x.id === s.id)).join("")}</ul></details>` : ""}
+        </aside>
+        <div class="rv-doc">
+          ${needsReview(s) || s.review || s.failed ? problemHTML(s) : ""}
+          <div class="rv-doc-bar">
+            <h2>עבודה <span class="num">${s.id}</span></h2>
+            ${marked ? `<div class="seg" role="group" aria-label="מה מוצג">
+              <button class="seg-b" data-rv-view="marked" aria-pressed="${view === marked}">עם ההערות של Claude</button>
+              <button class="seg-b" data-rv-view="orig" aria-pressed="${view !== marked}">ההגשה המקורית</button></div>` : ""}
+            <span class="end rv-dl">${orig ? `<a class="btn ghost small" href="${fileUrl(orig, true)}" download title="הורד את ההגשה">${ICON.download}הגשה</a>` : ""}${marked ? `<a class="btn ghost small" href="${fileUrl(marked, true)}" download title="הורד את העבודה הבדוקה">${ICON.download}בדוקה</a>` : ""}</span>
+          </div>
+          ${view && /\.pdf$/i.test(view.name) ? `<iframe class="pdf-view" src="${fileUrl(view)}" title="עבודה ${s.id}"></iframe>`
+            : view ? `<img class="pdf-view img" src="${fileUrl(view)}" alt="עבודה ${s.id}">` : `<div class="panel"><div class="empty"><strong>אין קובץ לתצוגה</strong></div></div>`}
+        </div>
+        <form class="rv-form" data-rv-form="${s.id}" autocomplete="off">
+          ${qs.map((q, qi) => questionCardHTML(s, d, qi)).join("")}
+          <section class="rv-q">
+            <label class="rv-fb-label" for="rv-fb">משוב לסטודנט</label>
+            <textarea id="rv-fb" data-rv-feedback rows="4" placeholder="משפט או שניים: מה נעשה טוב ומה לתקן">${esc(d.feedback)}</textarea>
+          </section>
+          <div class="rv-submit">
+            <div class="rv-total"><span>ציון</span><b class="num" id="rv-total">${totalNow}</b><small class="num">/ ${max}${s.score != null && s.score !== totalNow ? ` · Claude: ${s.score}` : ""}</small></div>
+            <button type="submit" class="btn primary lg" ${state.review.saving ? "disabled" : ""}>${state.review.saving ? ICON.spin : ICON.check}${needsReview(s) ? (next ? "אשר ועבור לבאה" : "אשר") : "שמור"}</button>
+            ${next && needsReview(s) ? `<a class="btn secondary" href="#/review?n=${next.id}">דלג</a>` : ""}
+            <p class="hint">Ctrl+Enter מאשר. האישור נרשם ב-Grades.csv עם השם שלך, ועמוד הציון בעבודה הבדוקה מתעדכן.</p>
+          </div>
+        </form>
+      </div>`;
+  }
+
+  async function saveReview(id) {
+    const A = cur(), s = A?.subs.find((x) => x.id === id);
+    if (!s || state.review.saving) return;
+    const d = draft(s), wasQueued = needsReview(s);
+    const { shown } = reviewList(A);
+    const at = shown.findIndex((x) => x.id === id);
+    const next = wasQueued ? (shown[at + 1] || shown.find((x) => x.id !== id)) : null;
+    state.review.saving = true;
+    render();
+    try {
+      const r = await api("api/review", { method: "POST", body: JSON.stringify({
+        course: A.courseFolder, assignment: A.folder, number: id,
+        points: d.points, comments: d.comments, feedback: d.feedback, mistakes: d.picks,
+      }) });
+      delete state.review.edits[id];
+      toast(`עבודה ${id} נשמרה: ${r.grade}`);
+      state.review.saving = false;
+      await loadLocal();
+      const target = next ? `#/review?n=${next.id}` : wasQueued ? "#/review" : location.hash;
+      if (location.hash === target) render(); else location.hash = target;
+    } catch (e) {
+      state.review.saving = false;
+      render();
+      toast(e.message, ICON.warn);
+    }
+  }
+
   const views = {
+    "/review": () => reviewView(),
     "/"() {
       const A = cur(), I = info(A);
       return `
@@ -1203,9 +1597,12 @@
           </div>
         </div>
         ${pipelineHTML()}
+        ${statsRowHTML(A, I)}
+        ${reviewCalloutHTML(A)}
         <div class="grid-2">
           <div class="stack">
             <section class="panel"><div class="panel-head"><h2>התפלגות ציונים</h2><span class="meta">${I.graded.length} עבודות בדוקות</span></div><div class="panel-body">${distHTML(I)}</div></section>
+            <section class="panel"><div class="panel-head"><h2>טעויות נפוצות</h2><span class="meta">לחיצה על טעות מראה מי עשה אותה</span></div><div class="panel-body">${mistakesHTML(A)}</div></section>
             <section class="panel"><div class="panel-head"><h3>הצלחה לפי שאלה</h3></div><div class="panel-body">${perQuestionHTML(I)}</div></section>
           </div>
           <div class="stack">
@@ -1330,6 +1727,9 @@
     $$(".nav a").forEach((a) => (a.dataset.route === route() ? a.setAttribute("aria-current", "page") : a.removeAttribute("aria-current")));
     const A = cur();
     if (!A) { $$(".nav-badge").forEach((b) => (b.textContent = "")); return; }
+    const rb = $("#nav-review-badge"), waiting = A.subs.filter(needsReview).length;
+    rb.textContent = waiting || "";
+    rb.title = waiting ? `${waiting} עבודות מחכות לבדיקה ידנית` : "";
     const I = info(A), run = state.run[A.id];
     $$(".nav-stage").forEach((a) => {
       const st = a.dataset.stage, done = I.done[st];
@@ -1390,6 +1790,34 @@
     const runBtn = t.closest("[data-run]");
     if (runBtn) { runStage(runBtn.dataset.run); return; }
 
+    // לוח הבקרה: ריבוע שנפתח, עבודה שנבחרה בו, סינון, וטעות נפוצה שנפתחה
+    const expand = t.closest("[data-expand]");
+    if (expand) { toggleStage(expand.dataset.expand); return; }
+    const tile = t.closest("[data-tile]");
+    if (tile) { state.open.tile = state.open.tile === tile.dataset.tile ? null : tile.dataset.tile; render(); return; }
+    const of = t.closest("[data-open-filter]");
+    if (of) { state.open.filter = of.dataset.openFilter; render(); return; }
+    const mk = t.closest("[data-mistake]");
+    if (mk) { state.mistakeOpen = state.mistakeOpen === mk.dataset.mistake ? null : mk.dataset.mistake; render(); return; }
+
+    // הבדיקה הידנית
+    const rvs = reviewSub();
+    const pick = t.closest("[data-rv-pick]");
+    if (pick && rvs) { togglePick(rvs, Number(pick.dataset.rvPick), pick.dataset.text); render(); return; }
+    const set = t.closest("[data-rv-set], [data-rv-step]");
+    if (set && rvs) {
+      const [qi, how] = (set.dataset.rvSet || set.dataset.rvStep).split("|"), q = rubric().questions[qi], d = draft(rvs);
+      if (how === "full") { d.points[qi] = q.pts; d.picks[qi] = []; d.comments[qi] = ""; }
+      else if (how === "zero") { d.points[qi] = 0; d.picks[qi] = []; d.comments[qi] = d.comments[qi] || "השאלה לא נמצאה בהגשה."; }
+      else d.points[qi] = Math.min(q.pts, Math.max(0, half(d.points[qi] + Number(how))));
+      d.changed = true;
+      render(); return;
+    }
+    const rvView = t.closest("[data-rv-view]");
+    if (rvView) { state.review.view = rvView.dataset.rvView; render(); return; }
+    const jump = t.closest("[data-rv-jump]");
+    if (jump) { $(`#rv-q${jump.dataset.rvJump}`)?.scrollIntoView({ behavior: "smooth", block: "center" }); return; }
+
     const act = t.closest("[data-act]");
     if (act) {
       const a = act.dataset.act, id = act.dataset.id;
@@ -1430,16 +1858,36 @@
     }
 
     const as = t.closest("[data-assign]");
-    if (as) { state.assignmentId = as.dataset.assign; state.filter = "all"; renderPickers(); render(); window.scrollTo({ top: 0, behavior: "smooth" }); return; }
+    if (as) { state.assignmentId = as.dataset.assign; state.filter = "all"; resetOpen(); renderPickers(); render(); window.scrollTo({ top: 0, behavior: "smooth" }); return; }
 
     const row = t.closest("[data-open]");
     if (row) { openDrawer(row.dataset.open); return; }
+
+    // לחיצה בכל מקום בריבוע של שלב (לא על כפתור או קישור) פותחת אותו
+    const card = t.closest("[data-card]");
+    if (card && !t.closest("button, a, input, label, .stage-works")) { toggleStage(card.dataset.card); return; }
 
     if (t.id === "scrim") closeDrawer();
     if (t.closest(".nav a")) $("#sidebar").classList.remove("open");
   });
 
+  function toggleStage(st) {
+    const opening = state.open.stage !== st;
+    state.open = { stage: opening ? st : null, tile: null, filter: "all", q: "" };
+    render();
+    if (opening) $(`[data-card="${st}"]`)?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+  const reviewSub = () => (route() === "/review" && cur()?.subs.find((x) => x.id === state.review.id)) || null;
+
+  document.addEventListener("submit", (e) => {
+    if (!e.target.matches("[data-rv-form]")) return;
+    e.preventDefault();
+    saveReview(e.target.dataset.rvForm);
+  });
+
   document.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && reviewSub()) { e.preventDefault(); saveReview(state.review.id); return; }
+    if (e.key === "Escape" && state.open.stage && !state.openId) { toggleStage(state.open.stage); return; }
     if (e.key === "Escape") { closeDrawer(); $("#sidebar").classList.remove("open"); }
     if (e.key === "Enter" && e.target.matches("[data-open]")) openDrawer(e.target.dataset.open);
     if (e.key === "Enter" && e.target.matches("[data-assign]")) e.target.click();
@@ -1456,6 +1904,21 @@
 
   document.addEventListener("input", (e) => {
     const t = e.target;
+    if (t.matches("[data-open-q]")) { state.open.q = t.value; state.open.tile = null; render(); return; }
+    // בבדיקה הידנית לא מציירים מחדש בכל הקשה: רק הציון הכולל מתעדכן
+    const rvs = reviewSub();
+    if (rvs && (t.dataset.rvPts != null || t.dataset.rvComment != null || t.matches("[data-rv-feedback]"))) {
+      const d = draft(rvs);
+      if (t.dataset.rvPts != null) {
+        const q = rubric().questions[t.dataset.rvPts];
+        if (t.value !== "") d.points[t.dataset.rvPts] = Math.min(q.pts, Math.max(0, half(Number(t.value) || 0)));
+      } else if (t.dataset.rvComment != null) d.comments[t.dataset.rvComment] = t.value;
+      else d.feedback = t.value;
+      d.changed = true;
+      const total = $("#rv-total");
+      if (total) total.textContent = draftTotal(d);
+      return;
+    }
     if (t.dataset.query) { state.query[t.dataset.query] = t.value; render(); return; }
     if (t.dataset.instr) {
       const st = t.dataset.instr;
@@ -1470,6 +1933,7 @@
   document.addEventListener("change", (e) => {
     const t = e.target;
     if (t.dataset.set && (t.type === "checkbox" || t.tagName === "SELECT")) { setPath(t.dataset.set, t.type === "checkbox" ? t.checked : t.value); updatePrompt(); }
+    if (t.dataset.rvPts != null && reviewSub()) render();
   });
 
   function persistSetting(key) { store.set(key, state[key]); }
@@ -1485,9 +1949,16 @@
     const list = D.assignments.filter((a) => a.courseId === state.courseId);
     state.assignmentId = (list.find((a) => a.phase === "current") || list[0])?.id;
     state.filter = "all";
+    resetOpen();
     closeDrawer(); renderPickers(); render();
   });
-  $("#assignment-select").addEventListener("change", (e) => { state.assignmentId = e.target.value; state.filter = "all"; closeDrawer(); render(); });
+  $("#assignment-select").addEventListener("change", (e) => { state.assignmentId = e.target.value; state.filter = "all"; resetOpen(); closeDrawer(); render(); });
+  function resetOpen() {
+    state.open = { stage: null, tile: null, filter: "all", q: "" };
+    state.mistakeOpen = null;
+    state.review.id = null;
+    if (route() === "/review" && location.hash.includes("?")) history.replaceState(null, "", "#/review");
+  }
 
   $("#menu-btn").addEventListener("click", () => $("#sidebar").classList.toggle("open"));
 
@@ -1538,7 +2009,7 @@
       D.courses.splice(0, D.courses.length, ...data.courses);
       D.assignments.splice(0, D.assignments.length, ...data.assignments.map((a) => ({
         ...a, phase: a.subs.length ? "current" : "new", gradedAt: a.gradedAt || null, returnedAt: a.returnedAt || null, lastFresh: null,
-        rubricQ: a.rubric?.length ? { questions: a.rubric.map((q, i) => ({ n: i + 1, pts: q.points, req: q.label, criteria: q.criteria || "" })) } : null,
+        rubricQ: a.rubric?.length ? { questions: a.rubric.map((q, i) => ({ n: i + 1, pts: q.points, req: q.label, criteria: q.criteria || "", deductions: q.deductions || [] })) } : null,
       })));
       Object.keys(D.rubrics).forEach((k) => delete D.rubrics[k]);
       data.courses.forEach((c) => {

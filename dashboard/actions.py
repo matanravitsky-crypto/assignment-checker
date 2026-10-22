@@ -668,6 +668,47 @@ def returned_numbers(assignment_dir: Path, marked: dict[str, list[Path]]) -> set
             if files and all(p.name in uploaded and cached_hash(p) == uploaded[p.name] for p in files)}
 
 
+# ---------- בדיקה ידנית ----------
+def save_review(root: Path, course: str, assignment: str, number: str, points: list, comments: list, feedback: str,
+                mistakes: list | None = None) -> dict:
+    """אדם אישר עבודה בתור הבדיקה הידנית (או תיקן ציון): grading.save_review, עם מי שאישר."""
+    a = find_assignment(root, course, assignment)
+    return grading.save_review(a.dir, number, points, comments, feedback, by=moodle_lock.me(), mistakes=mistakes)
+
+
+# Grading notes של כל העבודות נקראים בכל טעינה של האתר. קובץ שלא השתנה לא נקרא שוב
+_notes: dict[str, tuple[int, int, dict]] = {}
+
+
+def cached_notes(assignment_dir: Path, number: str) -> dict:
+    path = grading.notes_path(assignment_dir, number)
+    try:
+        st = path.stat()
+    except OSError:
+        return {}
+    hit = _notes.get(str(path))
+    if hit and hit[:2] == (st.st_size, st.st_mtime_ns):
+        return hit[2]
+    data = grading.read_notes(assignment_dir, number)
+    _notes[str(path)] = (st.st_size, st.st_mtime_ns, data)
+    return data
+
+
+def _note_fields(note: dict, res: dict) -> dict:
+    """מה שהאתר צריך מ-Grading notes: הערות וטעויות לכל שאלה, מה Claude לא בטוח בו, הסימונים, ולמה צריך אדם."""
+    failed = "" if res.get("grade") else str(note.get("error") or "")
+    review = res.get("review") or ""
+    kind = str(note.get("review_kind") or "") if review else ""
+    return {
+        "comments": [str(c) for c in note.get("comments") or []],
+        "mistakes": [[str(m) for m in ms] for ms in note.get("mistakes") or [] if isinstance(ms, list)],
+        "unsure": [bool(u) for u in note.get("unsure") or []],
+        "marks": [{"page": m.get("page"), "text": m.get("text") or ""} for m in note.get("marks") or [] if isinstance(m, dict)],
+        "failed": failed, "reviewKind": "failed" if failed else (kind or ("other" if review else "")),
+        "reviewedBy": (note.get("reviewed") or {}).get("by") or "",
+    }
+
+
 # ---------- מצב לאתר ----------
 _DOWNLOAD = re.compile(re.escape(paths.DOWNLOAD_PREFIX) + r" (\d{4}-\d{2}-\d{2} \d{2}-\d{2})\.zip$")
 
@@ -735,6 +776,7 @@ def state(root: Path) -> dict:
                     "late": False, "scanned": False, "status": status, "q": grading.parse_points(res.get("points")),
                     "score": _score(grade), "feedback": res.get("feedback") or None, "issue": None,
                     "approved": grading.is_approved(res), "review": res.get("review") or "",
+                    **_note_fields(cached_notes(a.dir, n), res),
                     "files": [{"name": f.name, "pages": 0, "size": f.stat().st_size, "path": f.relative_to(root).as_posix()} for f in files]
                              + [{"name": m.name, "pages": 0, "size": m.stat().st_size, "path": m.relative_to(root).as_posix(),
                                  "marked": True} for m in marked.get(n, [])],
@@ -750,7 +792,8 @@ def state(root: Path) -> dict:
                 "n": ai + 1, "due": d.get("due"), "questions": a.question_count(), "questionLabels": a.question_labels(),
                 "pulledAt": pulled, "returnedAt": max((r["uploaded_at"] for r in log), default=None), "moodleId": d.get("id"),
                 "gradedAt": datetime.fromtimestamp(grades_file.stat().st_mtime).isoformat(timespec="minutes") if grades_file.exists() else None,
-                "rubric": [{"label": q.label, "points": q.points, "criteria": q.criteria} for q in ctx.questions],
+                "rubric": [{"label": q.label, "points": q.points, "criteria": q.criteria, "deductions": q.deductions}
+                           for q in ctx.questions],
                 "maxGrade": ctx.max_grade, "solution": (a.dir / grading.SOLUTION).is_file(),
                 "notes": d.get("notes") or "", "rules": d.get("submission_rules") or [],
                 "warnings": [f"עותק כפול של טבלת המפתח: {c}" for c in key_conflicts(a)]
