@@ -17,6 +17,7 @@ Each folder has a README.md that explains it.
 | `dashboard/actions.py` | Pull (Claude in Chrome downloads the ZIP when none waits in Downloads, then `moodle ingest`, with a lock and a key-conflict check), prepare return (`moodle upload`), upload to Moodle in the background (`moodle send`) with a readiness check, and the state the site shows (numbers only, no names) |
 | `website/` | The dashboard site "בודק חכם" (static HTML/JS, Hebrew RTL). Published to Vercel (project `bodek-hacham`, root dir `website`, https://bodek-hacham.vercel.app) from `main` through Vercel's Git integration. No demo data: it shows only what `dashboard/` reads from the shared folder, and the Vercel page connects to the dashboard on the same PC at `http://127.0.0.1:8765` (CORS for that exact origin only, `SITE_ORIGINS` in `dashboard/web_server.py`) |
 | `tests/` | All tests (`tests/moodle/`, `tests/dashboard/`). Run `python -m pytest` from the repo root; CI runs them on every PR |
+| `install-autostart.bat`, `autostart.vbs` | Once per computer: a shortcut in the Windows Startup folder runs `autostart.vbs` at every sign-in, a watchdog that checks `/api/health` every minute and runs `start.bat background` hidden when the system is down (no browser, no pause; output to `%TEMP%odek-hacham.log`). Chrome blocks the public site from reaching 127.0.0.1 (permission `loopback-network`, denied on Matan's Chrome 155), so the Vercel page forwards to `http://localhost:8765` by itself once the user has clicked "פתח את המערכת" there (localStorage `ac:openLocal`; `?stay` turns it off). Installed on Matan's PC on 2026-10-22 |
 | `start.bat` | Double-click: updates from GitHub (`git pull --ff-only`, skipped with a message if it can't), runs `claude update` (an old Claude Code refuses the new models), sets up `.venv` once, installs `requirements.txt`, starts the dashboard. Teammate setup (folder shortcut, Python, 7-Zip, Git, `git clone`) is in `README.md` and on the site's not-connected page |
 
 ## Student data: never in the repo
@@ -56,6 +57,14 @@ from the ZIP. Commands take the assignment's Moodle id; `paths.find_assignment` 
 `Assignment details.json`. A new assignment needs its folder names once, in English:
 `python -m moodle ingest <id> --course "Linear Algebra" --name "Assignment 1 - Vectors"`
 (its Hebrew title comes from the ZIP's file name).
+
+**Ten assignments per course, two courses.** The site shows every course folder (Linear Algebra and Discrete
+Mathematics, even before it has an assignment) with ten slots, "הגשה 0" to "הגשה 9" (`folder_view.SLOTS`). A folder
+named `Assignment N` or `Assignment N - <words>` fills slot N; a slot with no folder is an empty one (`"empty": true`
+in `/api/state`, no Moodle id). Its first pull takes the Moodle link or id from a field on the pull page
+(`POST /api/pull` with `moodleId`): `actions.new_assignment` creates `<course>/Assignment N/` with its details
+(id, course, name), refuses an id that another assignment already has, and the Hebrew title is filled from the ZIP's
+name. The id is saved even if the download then fails, so the next pull doesn't ask again.
 
 The **key** that links a number back to a student is the Moodle *participant id* in the folder name
 (not the ת"ז). It lives only in the key table. A student keeps their number on every later download:

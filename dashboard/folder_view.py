@@ -19,6 +19,22 @@ GRADED = paths.MARKED
 READY = paths.UPLOAD
 
 COURSE_TITLES = {"Linear Algebra": "אלגברה לינארית", "Discrete Mathematics": "מתמטיקה בדידה"}
+SLOTS = 10  # בכל קורס עשר הגשות: הגשה 0 עד הגשה 9. מטלה שעוד לא נמשכה מוצגת כמקום ריק
+
+
+def slot(dir_name: str) -> int | None:
+    """"Assignment 3 - Vectors" → 3. תיקייה בלי מספר כזה לא תופסת מקום מהעשרה."""
+    m = re.match(r"Assignment (\d+)(?: - |$)", dir_name)
+    return int(m.group(1)) if m else None
+
+
+def slot_folder(n: int) -> str:
+    """שם התיקייה של הגשה n שעוד לא נמשכה (באנגלית, כמו כל התיקיות)."""
+    return f"Assignment {n}"
+
+
+def slot_title(n: int) -> str:
+    return f"הגשה {n}"
 
 
 @dataclass
@@ -40,7 +56,8 @@ class Assignment:
 
     @property
     def title(self) -> str:
-        return self.details().get("title") or self.dir.name
+        n = slot(self.dir.name)
+        return self.details().get("title") or (slot_title(n) if n is not None else self.dir.name)
 
     def question_labels(self) -> list[str]:
         out = []
