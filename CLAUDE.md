@@ -4,6 +4,9 @@ University project (BGU) that grades student assignments with Claude:
 pull submissions from Moodle → grade by rubric → TA approves → return grades and marked files to Moodle.
 Courses are large (up to ~1,000 students per assignment). The team works in Hebrew.
 
+`PROTOCOL.md` (Hebrew) is the team's agreed procedure for downloading from Moodle and returning to it: who does it,
+when, and what to check. When it and this file disagree about who downloads or when, follow `PROTOCOL.md`.
+
 ## Repo layout
 
 Each folder has a README.md that explains it.
@@ -59,8 +62,9 @@ Never delete or rebuild the key table of an assignment that is being graded.
 
 ## Anyone can pull, one key
 
-Anyone on the team can download from Moodle and pull: the dashboard's "Pull submissions" button or
-`python -m moodle ingest <id>` on their own computer. There is still **one** key table per assignment, in the
+By the team's protocol (`PROTOCOL.md`), Ori downloads and uploads; someone else pulls only with his written OK, and
+then through the dashboard's guarded pull. Technically anyone on the team can download from Moodle and pull: the
+dashboard's "Pull submissions" button or `python -m moodle ingest <id>` on their own computer. There is still **one** key table per assignment, in the
 shared folder, and `anonymize.prepare` reads it before numbering, so every student keeps their number no matter
 who pulls. What can break it is two pulls of the same assignment at once, before OneDrive synced the key between them.
 So `dashboard/actions.py` guards the dashboard's pull:
@@ -102,8 +106,9 @@ When working with this data:
 
 There is **no Moodle API**. Claude in Chrome works in the user's own logged-in Chrome.
 - The user logs in themselves. Claude never types Moodle passwords.
-- Download only when someone on the team asks. No scheduled downloads: Moodle sessions expire, and
-  downloading per schedule wastes runs. Every **upload** to Moodle (grades or feedback) needs a person's yes.
+- Download when Ori asks, or in the one scheduled run right after an assignment closes (00:05), which `PROTOCOL.md`
+  sets up with a 22:00 reminder and a 23:30 check that Ori is logged in. No recurring downloads: Moodle sessions
+  expire, and downloading per schedule wastes runs. Every **upload** to Moodle (grades or feedback) needs a person's yes.
 - Submissions page: `https://moodle.bgu.ac.il/moodle/mod/assign/view.php?id=<assignment id>&action=grading`.
   The assignment id is the `id=` in that URL (the number at the end of the ZIP name too).
 - Download: Actions (פעולות) → "הורדת כל ההגשות (השתמש ב 7ZIP לפתיחה)". Keep "organize submissions in folders per student" checked.
