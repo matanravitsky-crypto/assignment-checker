@@ -6,6 +6,9 @@
   Assignment details.json                 השאלות (questions), כללי ההגשה (submission_rules), המחוון (rubric),
                                           הנחיות לבדיקה (grading_instructions) והציון המרבי (max_grade)
   Official solution.pdf                   הפתרון הרשמי, אם יש (לא חובה)
+  פדגוגי/ (או Pedagogy/)                  חומר הבדיקה של המטלה: מחוון, פתרונות, דרכים מקובלות. כל קובץ .md או .txt
+                                          בה נשלח ל-Claude. ניקוד לשאלה נלקח מטבלה שבה העמודה הראשונה היא שם
+                                          השאלה והשנייה הניקוד ("| קבוצות 11 | 20 |"), אם אין ניקוד ב-rubric
 
 פלט, בדיוק מה ששלב ההחזרה (moodle/upload.py של אורי) מצפה לו:
   Grades.csv                              number, grade, feedback, ועוד עמודות של המערכת (ראו GRADE_COLUMNS)
@@ -36,11 +39,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
+import numpy as np
 import pymupdf
 
-from moodle import claude_driver, paths
+from moodle import claude_driver, grades, lock as moodle_lock, paths
 
-from .render import PageImage, render_pdf
+from . import notes
+from .render import MAX_SIDE, PageImage, render_pdf
 
 # ---------- הגדרות ----------
 GRADES = paths.GRADES
@@ -58,6 +63,12 @@ MAX_TOKENS = 32000
 DEFAULT_PARALLEL = 4
 # גודל מרבי לקובץ מסומן. מעליו התמונות בקובץ נדחסות
 MAX_BYTES = 2_000_000
+# באיזה גודל (הצד הארוך, בפיקסלים) העמודים נשלחים ל-Claude, ואם לקרוא אותם אחד אחרי השני.
+# כל שלב נוסף רק אם Claude ענה בשלב הקודם שהתמונות קטנות מדי לקריאה (unreadable).
+# 1100 פיקסלים הם בערך חצי מהטוקנים של 1568, הגודל המלא שבו Claude קורא תמונה.
+READ_STEPS = ((1100, False), (MAX_SIDE, False), (MAX_SIDE, True))
+# באיזה גודל (הצד הארוך, בפיקסלים) סורקים עמוד מסומן כדי למצוא בו מקום ריק להערות
+NOTES_SCAN_SIDE = 800
 # תמונת עמוד גדולה מזה נשלחת כ-JPEG, כדי שהבקשה לא תעבור את המגבלה של Claude (32 MB)
 MAX_IMAGE_BYTES = 1_500_000
 
@@ -145,8 +156,35 @@ def marked_files(assignment_dir: Path) -> dict[str, list[Path]]:
     return files_by_number(assignment_dir / paths.MARKED, "*.pdf")
 
 
+def pedagogy_files(assignment_dir: Path) -> list[Path]:
+    """קובצי הטקסט בתיקיית חומר הבדיקה של המטלה (פדגוגי), המחוון קודם."""
+    folder = next((assignment_dir / name for name in paths.PEDAGOGY if (assignment_dir / name).is_dir()), None)
+    if folder is None:
+        return []
+    files = [p for p in folder.iterdir() if p.is_file() and p.suffix.lower() in (".md", ".txt") and p.name != paths.README]
+    return sorted(files, key=lambda p: (not re.search(r"rubric|מחוון", p.stem, re.I), p.name))
+
+
+def pedagogy_text(files: list[Path]) -> str:
+    return "\n\n".join(f"--- {p.name} ---\n{p.read_text(encoding='utf-8-sig').strip()}" for p in files)
+
+
+def pedagogy_points(text: str, labels: list[str]) -> dict[str, float]:
+    """ניקוד לשאלה מטבלת markdown: שורה שהתא הראשון שלה הוא סוף שם השאלה ("קבוצות 11" ל-"דף קבוצות 11"), והשני מספר."""
+    points: dict[str, float] = {}
+    for line in text.splitlines():
+        cells = [c.strip().strip("*").strip() for c in line.strip().strip("|").split("|")]
+        if len(cells) < 2 or not cells[0] or not re.fullmatch(r"\d+(\.\d+)?", cells[1]):
+            continue
+        for label in labels:
+            if label not in points and re.search(r"(^|\s)" + re.escape(cells[0]) + "$", label):
+                points[label] = float(cells[1])
+    return points
+
+
 def load_context(assignment_dir: Path, instructions: str = "", send_solution: bool = True) -> Context:
     d = read_details(assignment_dir)
+    pedagogy = pedagogy_text(pedagogy_files(assignment_dir))
     max_grade = _num(d.get("max_grade"), 100) or 100
     rubric = d.get("rubric")
     rubric_text = ""
@@ -156,9 +194,12 @@ def load_context(assignment_dir: Path, instructions: str = "", send_solution: bo
         rubric_text = str(rubric.get("notes") or "")
     else:
         labels = question_labels(d) or ["כל המטלה"]
-        qs = [Question(label, 0) for label in labels]
+        found = pedagogy_points(pedagogy, labels)
+        qs = [Question(label, found.get(label, 0)) for label in labels]
         if isinstance(rubric, str):
             rubric_text = rubric
+    if pedagogy:
+        rubric_text = "\n\n".join(t for t in (rubric_text, "חומר הבדיקה של המטלה (מחוון, פתרונות ודרכי פתרון):\n\n" + pedagogy) if t)
     # שאלות בלי ניקוד מתחלקות שווה במה שנשאר מהציון המרבי
     unset = [q for q in qs if not q.points]
     if unset:
@@ -185,6 +226,7 @@ SYSTEM = """אתה מתרגל שבודק תרגילי בית במתמטיקה (�
 - ניקוד לכל שאלה בין 0 לניקוד המרבי שלה, בקפיצות של חצי נקודה לכל היותר.
 - שאלה שלא נמצאה בהגשה מקבלת 0, וכותבים בהערה שלה שהיא לא נמצאה.
 - אם כתב היד לא קריא, חסרים עמודים, או שהניקוד לא ודאי, מסמנים needs_review=true ומסבירים במשפט ב-review_reason. אחרת review_reason ריק.
+- unreadable=true רק אם התמונות קטנות או מטושטשות מכדי לקרוא חלק מהעבודה בגודל שקיבלת, כך שבגודל גדול יותר אפשר היה לקרוא. אז ההגשה נשלחת אליך שוב בגודל גדול יותר. כתב יד גרוע שגם הגדלה לא תעזור לו: unreadable=false ו-needs_review=true.
 
 questions: אחד לכל שאלה במטלה, באותו סדר ועם אותה תווית כמו ברשימת השאלות. comment: משפט קצר על התשובה.
 
@@ -192,7 +234,9 @@ annotations, סימונים על גבי העבודה:
 - כל סימון מקיף מקום מדויק בעבודה: טעות, צעד חסר או נימוק לא מספיק. דברים נכונים לא מסמנים.
 - page: מספר העמוד, מ-1, לפי סדר התמונות.
 - x0, y0, x1, y1: המלבן שמקיף את המקום, באלפיות של רוחב העמוד ושל גובהו. (0, 0) היא הפינה השמאלית העליונה ו-(1000, 1000) הימנית התחתונה. המלבן צמוד לשורות הרלוונטיות, לא לחצי עמוד.
+- בשולי כל תמונה יש סרגלים באותן אלפיות: המסגרת הדקה היא גבולות העמוד (0 עד 1000), עם שנתות כל 50 ומספרים כל 100. קרא את המיקום של הטעות מהסרגלים, למעלה ולמטה בשביל x ובצדדים בשביל y, ובדוק שהמלבן מקיף בדיוק את הכתב של הטעות ולא שורה מעליו או מתחתיו.
 - text: הערה קצרה בעברית, עד 12 מילים, שאומרת מה לא נכון. מתמטיקה בטקסט פשוט (A^-1, det(A)), בלי LaTeX.
+- points_off: כמה נקודות ירדו על הטעות הזו, לפי המחוון (0 אם היא לא עלתה בנקודות). בכל שאלה, סכום ההורדות בסימונים שלה שווה לניקוד המרבי של השאלה פחות הניקוד שניתן לה. הורדה שאין לה מקום בעבודה (למשל שאלה שחסרה) לא מסמנים.
 
 feedback, המשוב לסטודנט:
 - בעברית, בגוף שני רבים, ענייני ומעודד. קודם מה שנעשה טוב, ואז מה צריך לתקן, לפי שאלות. עד 120 מילים, בלי LaTeX.
@@ -210,13 +254,15 @@ SCHEMA = {
         "annotations": {"type": "array", "items": {
             "type": "object",
             "properties": {"page": {"type": "integer"}, "x0": {"type": "number"}, "y0": {"type": "number"},
-                           "x1": {"type": "number"}, "y1": {"type": "number"}, "text": {"type": "string"}},
-            "required": ["page", "x0", "y0", "x1", "y1", "text"], "additionalProperties": False,
+                           "x1": {"type": "number"}, "y1": {"type": "number"}, "text": {"type": "string"},
+                           "points_off": {"type": "number"}},
+            "required": ["page", "x0", "y0", "x1", "y1", "text", "points_off"], "additionalProperties": False,
         }},
         "needs_review": {"type": "boolean"},
         "review_reason": {"type": "string"},
+        "unreadable": {"type": "boolean"},
     },
-    "required": ["questions", "feedback", "annotations", "needs_review", "review_reason"],
+    "required": ["questions", "feedback", "annotations", "needs_review", "review_reason", "unreadable"],
     "additionalProperties": False,
 }
 
@@ -247,8 +293,11 @@ def _image_block(img: PageImage) -> dict:
     return {"type": "image", "source": {"type": "base64", "media_type": media, "data": base64.b64encode(data).decode("ascii")}}
 
 
-def build_request(ctx: Context, images: list[PageImage], model: str = DEFAULT_MODEL) -> dict:
-    """הבקשה ל-Claude. מה שמשותף לכל ההגשות בא קודם ונשמר במטמון (cache), והעמודים אחריו."""
+def build_request(ctx: Context, images: list[PageImage], model: str = DEFAULT_MODEL, one_by_one: bool = False) -> dict:
+    """הבקשה ל-Claude. מה שמשותף לכל ההגשות בא קודם ונשמר במטמון (cache), והעמודים אחריו.
+
+    one_by_one: דרך Claude Code, לקרוא את העמודים אחד אחרי השני ולא את כולם בבת אחת (claude_cli.py).
+    מפתחות שמתחילים ב-"_" הם הוראות למערכת, ולא נשלחים ל-API."""
     shared: list[dict] = []
     if ctx.solution:
         shared.append({"type": "document", "title": SOLUTION,
@@ -270,6 +319,8 @@ def build_request(ctx: Context, images: list[PageImage], model: str = DEFAULT_MO
     if not model.startswith("claude-haiku"):
         req["betas"] = ["server-side-fallback-2026-07-01"]
         req["fallbacks"] = "default"
+    if one_by_one:
+        req["_one_by_one"] = True
     return req
 
 
@@ -294,7 +345,7 @@ def claude_ask() -> Ask:
 
     def ask(req: dict) -> str:
         try:
-            with client.beta.messages.stream(**req) as stream:
+            with client.beta.messages.stream(**{k: v for k, v in req.items() if not k.startswith("_")}) as stream:
                 msg = stream.get_final_message()
         except anthropic.AuthenticationError as e:
             raise NoApiKey() from e
@@ -325,6 +376,7 @@ class Mark:
     x1: float
     y1: float
     text: str
+    points_off: float = 0  # כמה נקודות ירדו על הטעות הזו, לפי המחוון
 
 
 @dataclass
@@ -335,6 +387,7 @@ class Graded:
     feedback: str
     marks: list[Mark]
     review: str = ""
+    unreadable: bool = False  # Claude לא הצליח לקרוא בגודל שקיבל, ובגודל גדול יותר אולי כן
 
 
 def _round_half_up(x: float) -> float:
@@ -375,8 +428,10 @@ def parse_answer(text: str, ctx: Context, pages: int) -> Graded:
         y0, y1 = sorted(min(_num(a.get(k)), 1000) for k in ("y0", "y1"))
         if x1 - x0 < 1 or y1 - y0 < 1:
             continue
-        marks.append(Mark(page, x0, y0, x1, y1, str(a.get("text") or "").strip()))
-    return Graded(points, comments, compute_grade(points, ctx), str(data.get("feedback") or "").strip(), marks, review.strip())
+        marks.append(Mark(page, x0, y0, x1, y1, str(a.get("text") or "").strip(),
+                          _round_half_up(_num(a.get("points_off")))))
+    return Graded(points, comments, compute_grade(points, ctx), str(data.get("feedback") or "").strip(), marks, review.strip(),
+                  data.get("unreadable") is True)
 
 
 # ---------- בלי שמות ----------
@@ -423,35 +478,90 @@ def _archive():
     return pymupdf.Archive(str(_FONTS)) if (_FONTS / "arial.ttf").exists() else None
 
 
-def _html(text: str, size: float = 10) -> str:
-    return f'<div dir="rtl" style="color: #d90000; font-size: {size}px; line-height: 1.25">{_esc(text)}</div>'
-
-
 def _esc(s: str) -> str:
     from html import escape
     return escape(str(s)).replace("\n", "<br>")
 
 
-def _note_rect(box: pymupdf.Rect, page: pymupdf.Rect, width: float = 180, height: float = 40) -> pymupdf.Rect:
-    """איפה לכתוב את ההערה: מתחת למלבן, ואם אין מקום אז מעליו. מיושר לצד ימין, כמו עברית."""
-    margin = 4
-    w = min(max(box.width, width), page.width - 2 * margin)
-    x1 = min(box.x1, page.width - margin)
-    x0 = max(x1 - w, margin)
-    x1 = x0 + w
-    if box.y1 + 2 + height <= page.height - margin:
-        y0 = box.y1 + 2
-    elif box.y0 - 2 - height >= margin:
-        y0 = box.y0 - 2 - height
-    else:
-        y0 = max(min(box.y0, page.height - margin - height), margin)
-    return pymupdf.Rect(x0, y0, x1, y0 + height)
+def _note_html(mark: Mark, size: float) -> str:
+    """ההערה ליד המלבן: כמה נקודות ירדו (מודגש), ואז מה לא נכון."""
+    off = f"<b>ירדו {_pts(mark.points_off)} נק'</b><br>" if mark.points_off else ""
+    return f'<div dir="rtl" style="color: #d90000; font-size: {size:.1f}px; line-height: 1.2">{off}{_esc(_ltr_math(mark.text))}</div>'
+
+
+# רצף בלי אותיות עבריות שיש בו סימן מתמטי או ספרה (ואולי כמה מילים כאלה ברצף): נוסחה,
+# שנכתבת משמאל לימין גם בתוך הערה בעברית
+_MATH = re.compile(r"[^֐-׿\s]*[0-9=+\-*/^()\[\]{}|<>≠≤≥∈∉∩∪⊆⊂∅∞√][^֐-׿\s]*"
+                   r"(?:\s+[^֐-׿\s]+)*")
+_LRE, _PDF = "‪", "‬"  # תחילת קטע משמאל לימין, וסופו
+
+
+def _ltr_math(text: str) -> str:
+    """עוטף כל נוסחה בסימני כיוון משמאל לימין, כדי שהסוגריים והסדר לא יתהפכו בטקסט עברי.
+    פסיק או נקודה בסוף הנוסחה שייכים למשפט העברי, ולכן נשארים מחוץ לה."""
+    def wrap(m: re.Match) -> str:
+        math = m.group(0).rstrip(".,:;!?")
+        return _LRE + math + _PDF + m.group(0)[len(math):]
+    return _MATH.sub(wrap, text)
+
+
+def _note_size(mark: Mark, html: str, size: float, page_width: float, archive) -> tuple[float, float]:
+    """רוחב וגובה (בנקודות) שההערה צריכה: שורה אחת אם היא קצרה, ועד שליש מרוחב העמוד אם היא ארוכה."""
+    longest = max(len(mark.text), 12 if mark.points_off else 0)
+    width = min(max(longest * size * 0.5 + size, page_width * 0.12), page_width * 0.34)
+    with pymupdf.open() as scratch:
+        page = scratch.new_page(width=width + 10, height=2000)
+        spare, _ = page.insert_htmlbox(pymupdf.Rect(0, 0, width, 2000), html, css=_CSS, archive=archive)
+    return width, 2000 - max(spare, 0) + 2
 
 
 def _write(page: pymupdf.Page, rect: pymupdf.Rect, html: str, archive) -> None:
     """כותב טקסט במקום שמחושב לפי העמוד כפי שהוא מוצג (גם אם העמוד מסובב).
     בלי רקע, כמו עט אדום: לא מסתירים שום דבר ממה שהסטודנט כתב."""
     page.insert_htmlbox(rect * page.derotation_matrix, html, css=_CSS, archive=archive, rotate=page.rotation, scale_low=0)
+
+
+def _arrow(page: pymupdf.Page, start: pymupdf.Point, end: pymupdf.Point, head: float) -> None:
+    """חץ אדום מההערה אל המלבן."""
+    d = page.derotation_matrix
+    page.draw_line(start * d, end * d, color=RED, width=1.2, overlay=True)
+    angle = math.atan2(end.y - start.y, end.x - start.x)
+    for side in (-0.45, 0.45):
+        tip = pymupdf.Point(end.x - head * math.cos(angle + side), end.y - head * math.sin(angle + side))
+        page.draw_line(end * d, tip * d, color=RED, width=1.2, overlay=True)
+
+
+def _mark_page(page: pymupdf.Page, marks: list[Mark], archive) -> None:
+    """המלבנים על העבודה, וכל הערה ליד הטעות שלה, במקום הריק הקרוב ביותר, עם חץ קצר שלא עובר על הכתב (notes.py)."""
+    shown = page.rect  # העמוד כפי שהוא מוצג, אחרי סיבוב
+    zoom = NOTES_SCAN_SIDE / max(shown.width, shown.height)
+    pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), colorspace=pymupdf.csGRAY, alpha=False)
+    gray = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.stride)[:, :pix.width]
+    taken = notes.ink_mask(gray)
+    # המלבנים של Claude מקורבים: כל אחד מתקרב לכתב שהוא אמור להקיף (notes.snap_box)
+    boxes = [pymupdf.Rect(notes.snap_box(taken, (m.x0 / 1000 * shown.width * zoom, m.y0 / 1000 * shown.height * zoom,
+                                                 m.x1 / 1000 * shown.width * zoom, m.y1 / 1000 * shown.height * zoom))) / zoom
+             for m in marks]
+    for box in boxes:
+        page.draw_rect(box * page.derotation_matrix, color=RED, width=1.4, overlay=True)
+        notes.block(taken, tuple(box * zoom))
+    # גדול וברור, אבל לא יותר מדי: בערך 13 נקודות בעמוד A4, וגדל עם העמוד (סריקה יכולה להיות ברוחב של אלפי נקודות)
+    size = max(12.0, shown.width / 40)
+    for mark, box in sorted(zip(marks, boxes), key=lambda mb: (mb[1].y0, mb[1].x0)):
+        if not (mark.text or mark.points_off):
+            continue
+        html = _note_html(mark, size)
+        width, height = _note_size(mark, html, size, shown.width, archive)
+        spot = notes.find_spot(taken, tuple(box * zoom), (math.ceil(width * zoom), math.ceil(height * zoom)))
+        note = pymupdf.Rect(spot.note) / zoom
+        if spot.backed:  # יש כתב מתחת להערה: רקע לבן שקוף למחצה, כדי שאפשר יהיה לקרוא אותה
+            page.draw_rect((note + (-2, -1, 2, 1)) * page.derotation_matrix, color=None, fill=(1, 1, 1), fill_opacity=0.85, overlay=True)
+        _write(page, note, html, archive)
+        start, end = (pymupdf.Point(p) / zoom for p in spot.arrow)
+        if start.distance_to(end) > size * 0.6:
+            _arrow(page, start, end, size * 0.5)
+        notes.block(taken, spot.note)
+        notes.block_line(taken, *spot.arrow)
 
 
 def _summary_page(doc: pymupdf.Document, g: Graded, ctx: Context, archive) -> None:
@@ -477,15 +587,12 @@ def _summary_page(doc: pymupdf.Document, g: Graded, ctx: Context, archive) -> No
 def mark_pdf(pdf: bytes, g: Graded, ctx: Context, max_bytes: int = MAX_BYTES) -> bytes:
     """מצייר את הסימונים באדום על העבודה, מוסיף עמוד סיכום בהתחלה, ושומר עד max_bytes אם אפשר."""
     archive = _archive()
+    by_page: dict[int, list[Mark]] = {}
+    for mark in g.marks:
+        by_page.setdefault(mark.page, []).append(mark)
     with pymupdf.open(stream=pdf, filetype="pdf") as doc:
-        for mark in g.marks:
-            page = doc[mark.page - 1]
-            shown = page.rect  # העמוד כפי שהוא מוצג, אחרי סיבוב
-            box = pymupdf.Rect(mark.x0 / 1000 * shown.width, mark.y0 / 1000 * shown.height,
-                               mark.x1 / 1000 * shown.width, mark.y1 / 1000 * shown.height)
-            page.draw_rect(box * page.derotation_matrix, color=RED, width=1.4, overlay=True)
-            if mark.text:
-                _write(page, _note_rect(box, shown), _html(mark.text), archive)
+        for number, marks in by_page.items():
+            _mark_page(doc[number - 1], marks, archive)
         _summary_page(doc, g, ctx, archive)
         doc.subset_fonts()
         out = doc.tobytes(garbage=4, deflate=True)
@@ -499,20 +606,16 @@ def mark_pdf(pdf: bytes, g: Graded, ctx: Context, max_bytes: int = MAX_BYTES) ->
 
 
 # ---------- Grades.csv ----------
-def number_key(n: str, width: int = 4) -> str:
-    n = str(n).strip()
-    return n.zfill(width) if n.isdigit() else n
+number_key = grades.number_key
+is_approved = grades.is_approved
 
 
 def read_grades(dir: Path) -> dict[str, dict]:
-    path = dir / GRADES
-    if not path.exists():
-        return {}
-    with path.open(encoding="utf-8-sig", newline="") as fh:
-        return {number_key(r["number"]): r for r in csv.DictReader(fh) if (r.get("number") or "").strip()}
+    """כל הציונים של המטלה: Grades.csv, ומעליו הקבצים של החמישיות שנבדקות עכשיו (moodle/grades.py)."""
+    return grades.read(dir)
 
 
-def write_grades(dir: Path, rows: dict[str, dict]) -> None:
+def write_grades(dir: Path, rows: dict[str, dict], name: str = GRADES) -> None:
     cols = list(GRADE_COLUMNS)
     for r in rows.values():
         cols += [c for c in r if c and c not in cols]
@@ -522,13 +625,26 @@ def write_grades(dir: Path, rows: dict[str, dict]) -> None:
     for n in sorted(rows):
         w.writerow({**rows[n], "number": n})
     # BOM כדי ש-Excel יציג עברית. כותבים לקובץ זמני ומחליפים, כדי שקובץ חצי כתוב לא יישאר
-    tmp = dir / (GRADES + ".tmp")
+    tmp = dir / (name + ".tmp")
     tmp.write_text(buf.getvalue(), encoding="utf-8-sig", newline="")
-    tmp.replace(dir / GRADES)
+    tmp.replace(dir / name)
 
 
-def is_approved(row: dict | None) -> bool:
-    return bool(row) and (row.get("approved") or "").strip().lower() not in ("", "0", "no", "false", "לא")
+def merge_parts(dir: Path) -> bool:
+    """כשאף חמישית לא נבדקת עכשיו: מאחד את הקבצים של החמישיות לתוך Grades.csv ומוחק אותם. True אם איחד.
+
+    קובץ של חמישית שהתעדכן בזמן האיחוד, או שמישהו לקח את המנעול שלה בינתיים, נשאר במקומו לפעם הבאה."""
+    parts = grades.part_files(dir)
+    # כל חמישית שנבדקת עכשיו, גם כזו שעוד לא כתבה אף ציון
+    if not parts or any(moodle_lock.holder(dir / grades.part_lock(k)) for k in range(1, grades.PARTS + 1)):
+        return False
+    seen = {p: p.stat().st_mtime for p in parts}
+    write_grades(dir, grades.read(dir))
+    for p, mtime in seen.items():
+        part = int(grades.PART_FILE.fullmatch(p.name).group(1))
+        if p.stat().st_mtime == mtime and not moodle_lock.holder(dir / grades.part_lock(part)):
+            p.unlink()
+    return True
 
 
 def parse_points(raw: str | None) -> list[float] | None:
@@ -585,9 +701,12 @@ class GradeReport:
     skipped: list[str] = field(default_factory=list)    # כבר אושרו, ולכן לא נבדקו שוב
     failed: dict[str, str] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
+    busy: dict[int, str] = field(default_factory=dict)  # חמישיות שמחשב אחר בודק עכשיו: חמישית -> מי
 
     def summary(self) -> str:
         parts = [f"נבדקו {len(self.graded)} מתוך {self.total}"]
+        if self.busy:
+            parts.append(f"{len(self.busy)} חמישיות נבדקות עכשיו במחשב אחר ודולגו")
         if self.review:
             parts.append(f"{len(self.review)} לבדיקה ידנית")
         if self.skipped:
@@ -598,10 +717,17 @@ class GradeReport:
 
 
 def grade_one(pdf: bytes, ctx: Context, ask: Ask, model: str = DEFAULT_MODEL, names: list[str] | None = None) -> tuple[Graded, bytes]:
-    images = render_pdf(pdf)
-    if not images:
-        raise GradingError("אין עמודים בקובץ.")
-    g = parse_answer(ask(build_request(ctx, images, model)), ctx, len(images))
+    """בודקת הגשה אחת. קודם כל העמודים בבת אחת בגודל קטן; אם Claude לא הצליח לקרוא, שוב בגודל המלא,
+    ואם גם אז לא, בגודל המלא ועמוד אחרי עמוד (ראו READ_STEPS)."""
+    for side, one_by_one in READ_STEPS:
+        images = render_pdf(pdf, side)
+        if not images:
+            raise GradingError("אין עמודים בקובץ.")
+        g = parse_answer(ask(build_request(ctx, images, model, one_by_one)), ctx, len(images))
+        if not g.unreadable:
+            break
+    else:
+        g.review = (g.review + " " if g.review else "") + "Claude לא הצליח לקרוא חלק מהעבודה גם בגודל המלא."
     scrub_graded(g, names or [])
     return g, mark_pdf(pdf, g, ctx)
 
@@ -626,6 +752,7 @@ def grade_assignment(assignment_dir: Path, numbers: list[str] | None = None, *, 
     if not todo:
         if not rep.skipped and not rep.failed:
             rep.notes.append("אין הגשות שמחכות לבדיקה.")
+        merge_parts(assignment_dir)  # אולי מחשבים אחרים סיימו את החמישיות שלהם
         return rep
 
     ctx = load_context(assignment_dir, instructions, send_solution)
@@ -645,41 +772,68 @@ def grade_assignment(assignment_dir: Path, numbers: list[str] | None = None, *, 
             g.review = " ".join(filter(None, [g.review, f"קבצים שלא נבדקו: {', '.join(skipped)}."]))
         return n, g, out
 
-    def save(n: str, g: Graded, out: bytes) -> bool:
+    def save(n: str, g: Graded, out: bytes, part: int, held: Path) -> bool:
+        """הציון נכתב רק לקובץ של החמישית שלו, שרק מי שמחזיק את המנעול שלה כותב אליו."""
         with lock:
-            rows = read_grades(assignment_dir)
-            if is_approved(rows.get(n)):  # מישהו אישר בזמן שהבדיקה רצה
+            if is_approved(read_grades(assignment_dir).get(n)):  # מישהו אישר בזמן שהבדיקה רצה
                 return False
             tmp = marked / f"{n}.pdf.tmp"
             tmp.write_bytes(out)
             tmp.replace(marked / f"{n}.pdf")
-            rows[n] = {**rows.get(n, {}), "number": n, "grade": _pts(g.grade), "feedback": g.feedback,
+            name = grades.part_file(assignment_dir, part).name
+            rows = grades.read_file(assignment_dir / name)
+            rows[n] = {"number": n, "grade": _pts(g.grade), "feedback": g.feedback,
                        "points": ";".join(_pts(p) for p in g.points), "approved": "", "review": g.review}
-            write_grades(assignment_dir, rows)
+            write_grades(assignment_dir, rows, name)
+            moodle_lock.refresh(held)  # עבודה ארוכה: המנעול לא נחשב תקוע
             return True
 
-    with ThreadPoolExecutor(max_workers=max(1, min(parallel, 20))) as pool:
-        futures = {pool.submit(work, n): n for n in todo}
-        for fut in as_completed(futures):
-            n = futures[fut]
-            try:
-                _, g, out = fut.result()
-            except NoApiKey:
-                for f in futures:
-                    f.cancel()
-                raise
-            except Exception as e:  # עבודה אחת שנכשלה לא עוצרת את השאר
-                rep.failed[n] = str(e)
-                on_progress and on_progress(n, "failed")
-                continue
-            if save(n, g, out):
-                rep.graded.append(n)
-                if g.review:
-                    rep.review.append(n)
-                on_progress and on_progress(n, "graded")
-            else:
-                rep.skipped.append(n)
-                on_progress and on_progress(n, "skipped")
+    def grade_part(part: int, numbers: list[str], held: Path) -> None:
+        with ThreadPoolExecutor(max_workers=max(1, min(parallel, 20))) as pool:
+            futures = {pool.submit(work, n): n for n in numbers}
+            for fut in as_completed(futures):
+                n = futures[fut]
+                try:
+                    _, g, out = fut.result()
+                except NoApiKey:
+                    for f in futures:
+                        f.cancel()
+                    raise
+                except Exception as e:  # עבודה אחת שנכשלה לא עוצרת את השאר
+                    rep.failed[n] = str(e)
+                    on_progress and on_progress(n, "failed")
+                    continue
+                if save(n, g, out, part, held):
+                    rep.graded.append(n)
+                    if g.review:
+                        rep.review.append(n)
+                    on_progress and on_progress(n, "graded")
+                else:
+                    rep.skipped.append(n)
+                    on_progress and on_progress(n, "skipped")
+
+    # חמישית אחרי חמישית. כל אחת רק עם המנעול שלה: חמישית שמחשב אחר בודק עכשיו מדלגים עליה
+    by_part: dict[int, list[str]] = {}
+    for n in todo:
+        by_part.setdefault(grades.part_of(n), []).append(n)
+    for part in sorted(by_part):
+        try:
+            held = moodle_lock.take(assignment_dir, grades.part_lock(part))
+        except moodle_lock.Locked as e:
+            rep.busy[part] = e.who
+            rep.total -= len(by_part[part])
+            rep.notes.append(f"חמישית {part} ({len(by_part[part])} הגשות) נבדקת עכשיו אצל {e.who}, ולכן דילגתי עליה.")
+            continue
+        try:
+            numbers_now = by_part[part]
+            if numbers is None:  # אולי מחשב אחר בדק אותן בינתיים, לפני שלקחתי את המנעול
+                still = set(pending(assignment_dir))
+                rep.total -= len([n for n in numbers_now if n not in still])
+                numbers_now = [n for n in numbers_now if n in still]
+            grade_part(part, numbers_now, held)
+        finally:
+            held.unlink(missing_ok=True)
+    merge_parts(assignment_dir)
 
     rep.graded.sort()
     rep.review.sort()

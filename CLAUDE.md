@@ -223,13 +223,33 @@ in the assignment.
 
 Without `ANTHROPIC_API_KEY`, `grading.claude_ask()` grades through the Claude Code that is logged in on the computer
 (the team's subscription, like the upload), in `grading/claude_cli.py`: one `claude -p` per submission with
-`--tools Read` only, `--no-chrome`, `--strict-mcp-config`, `--setting-sources project`, `--no-session-persistence`,
-the same SYSTEM prompt (`--system-prompt-file`), `--json-schema SCHEMA`, `--effort high` and the chosen model, in a
-fresh temp folder outside OneDrive that holds only that submission's page images (and the official solution). The
-request goes in on stdin. The answer is the same JSON as through the API, so everything after it is shared.
-The dashboard reports `claudeVia: "api" | "code" | null`. Checked on 2026-10-22 on a synthetic submission: graded,
-flagged for review, marked PDF written, ~20 seconds with Opus. Claude Code 2.1.247 refused `claude-opus-5-5`
+`--tools ""` (no tools at all), `--input-format stream-json` (the page images and the official solution go inside the
+message on stdin, so it is one turn, not a Read per page), `--no-chrome`, `--strict-mcp-config`,
+`--setting-sources project`, `--no-session-persistence`, `--json-schema SCHEMA`, `--effort high` and the chosen model,
+in a fresh empty temp folder outside OneDrive. The system prompt file holds SYSTEM plus the assignment's shared context
+(questions, rubric, the pedagogy folder): Claude Code caches it, so from the second submission on it is read from the
+cache instead of written again. The answer is the same JSON as through the API, so everything after it is shared.
+The dashboard reports `claudeVia: "api" | "code" | null`. Claude Code 2.1.247 refused `claude-opus-5-5`
 ("version 2.1.280 or newer is required"); `start.bat` now runs `claude update`.
+
+**Cost, measured on 2026-10-22** (Opus, effort high, 20 real submissions of assignment 3438636, 218 pages):
+pages read with Read at 1568 px cost $8.79 (list-price equivalent, counted against the subscription), 2.04M tokens in,
+6.5 minutes; pages inside the message at 1100 px with the shared context cached cost $3.89, 0.58M tokens in, 5.0 minutes,
+with grades within 2 points of the first run on 18 of 20. Pages go at 1100 px first; a submission Claude answers
+`unreadable` goes again at 1568, and then at 1568 asking it to go page by page (`READ_STEPS` in `grade.py`).
+
+## Grading on several computers at once
+
+Anyone may press "Grade" (or run `python -m grading <id>`) at the same time as others; nobody needs to coordinate.
+`moodle/grades.py` splits an assignment into fifths by number (fifth 1 = 0001, 0006, 0011 ...; by number, so the split
+never moves when more submissions are pulled). A run takes the fifths one at a time, each under its own lock
+(`Grading part N in progress.txt`, the same lock as pull/upload: who, refreshed after every submission, stuck after
+30 minutes), and skips a fifth someone else holds ("חמישית 2 נבדקת עכשיו אצל ..."). It writes only that fifth's file,
+`Grades - part N.csv`, so two computers never write the same file and OneDrive has nothing to make a conflict copy of.
+Everything that reads grades (`grades.read`: grading, `upload`, `send`, `status`, the dashboard) reads `Grades.csv`
+with the fifths' files on top, and an approved row is never replaced by one that is not. When no fifth is being graded,
+a run merges the fifths into `Grades.csv` and deletes them. Each computer still grades 4 at a time; with the same
+Claude account on all of them they share one subscription's usage.
 
 ## What grading gets
 

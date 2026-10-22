@@ -3,20 +3,22 @@
 Claude Code מחובר במחשב עם החשבון של הצוות (כמו בהעלאה למודל), ולכן אפשר לבדוק בלי מפתח API:
 הבדיקה נספרת במנוי של Claude ולא מחויבת בנפרד. לכל הגשה רצה ריצה אחת נעולה של
 
-    claude -p --tools Read --json-schema <SCHEMA> ...
+    claude -p --tools "" --input-format stream-json --json-schema <SCHEMA> ...
 
 מה הריצה מקבלת:
-- תיקייה זמנית חדשה מחוץ ל-OneDrive, ובה רק תמונות העמודים של ההגשה הזו (והפתרון הרשמי, אם נשלח).
-  זו תיקיית העבודה שלה וה---add-dir היחיד שלה, והיא נמחקת בסוף. טבלת המפתח והשמות לא מגיעים לשם לעולם.
-- כלים: Read בלבד (כדי לקרוא את התמונות). בלי Bash, Edit, Write, בלי כרום ובלי שרתי MCP.
-- ההנחיות (SYSTEM של grade.py) כ---system-prompt-file, והבקשה עצמה ב-stdin (שורת פקודה ארוכה נשברת ב-Windows).
+- תמונות העמודים (והפתרון הרשמי, אם נשלח) בתוך ההודעה עצמה, ב-stdin, כמו בקריאה ל-API. Claude לא קורא שום
+  קובץ, ולכן אין לו שום כלי: בלי Read, Bash, Edit, Write, בלי כרום ובלי שרתי MCP. כך הכל קורה בתור אחד, במקום
+  תור לכל עמוד שבו Claude קורא מחדש את כל מה שכבר נשלח.
+- ההנחיות (SYSTEM של grade.py) ופרטי המטלה שמשותפים לכל ההגשות (השאלות, המחוון, התיקייה הפדגוגית) ב-system prompt,
+  שאותו Claude Code שומר במטמון: מההגשה השנייה והלאה הם נקראים מהמטמון בזול, במקום להיכתב אליו מחדש בכל הגשה.
+- תיקייה זמנית חדשה מחוץ ל-OneDrive, ריקה חוץ מקובץ ה-system prompt. היא תיקיית העבודה, ונמחקת בסוף.
+  טבלת המפתח והשמות לא מגיעים לשם לעולם.
 - --setting-sources project בתיקייה ריקה: בלי ההגדרות, ה-hooks והתוספים של המשתמש.
 
 החוזה זהה ל-claude_ask של grade.py: מקבלים את הבקשה שבנה build_request ומחזירים טקסט JSON בסכמה SCHEMA.
 """
 from __future__ import annotations
 
-import base64
 import json
 import shutil
 import subprocess
@@ -27,10 +29,10 @@ from moodle import claude_driver
 
 BUDGET_USD = 5.0
 TIMEOUT_S = 900
-EXT = {"image/png": ".png", "image/jpeg": ".jpg", "image/gif": ".gif", "image/webp": ".webp", "application/pdf": ".pdf"}
 
-READ_ALL = ("לפני שאתה עונה, קרא עם הכלי Read את כל הקבצים שברשימה, לפי הסדר: הם העמודים של ההגשה "
-            "(והפתרון הרשמי, אם הוא ברשימה). אל תקרא שום קובץ אחר. בסוף החזר רק את התוצאה המובנית.")
+# השלב האחרון ב-READ_STEPS של grade.py: אותן תמונות בגודל המלא, עם בקשה לעבור עליהן עמוד אחרי עמוד
+READ_ONE_BY_ONE = ("עבור על העמודים אחד אחרי השני, לפי הסדר, ובדוק כל עמוד בתשומת לב לפני שאתה עונה: "
+                   "בפעם הקודמת חלק מהעבודה לא היה קריא.")
 
 
 def available() -> bool:
@@ -38,47 +40,50 @@ def available() -> bool:
     return claude_driver.find_claude() is not None and claude_driver.auth_status()["logged_in"] is True
 
 
-def write_request(req: dict, folder: Path) -> str:
-    """כותב לתיקייה את התמונות ואת הפתרון שבבקשה, ומחזיר את הטקסט שנשלח ל-Claude Code במקומם."""
-    lines: list[str] = []
-    files = 0
+def split_request(req: dict) -> tuple[str, list[dict]]:
+    """(ה-system prompt, התוכן של ההודעה). מה שמסומן ב-cache_control משותף לכל ההגשות, ולכן עובר ל-system prompt."""
+    system = [req.get("system") or ""]
+    content = []
     for message in req["messages"]:
         for block in message["content"]:
-            kind = block.get("type")
-            if kind == "text":
-                lines.append(block["text"])
-                continue
-            source = block.get("source") or {}
-            if kind not in ("image", "document") or source.get("type") != "base64":
-                continue
-            files += 1
-            path = folder / f"{files:03d}{EXT.get(source.get('media_type'), '.bin')}"
-            path.write_bytes(base64.b64decode(source["data"]))
-            what = (block.get("title") or "קובץ") if kind == "document" else "תמונת העמוד"
-            lines.append(f"{what}: {path}")
-    lines += ["", READ_ALL]
-    return "\n".join(lines)
+            if block.get("cache_control") and block.get("type") == "text":
+                system.append(block["text"])
+            else:
+                content.append({k: v for k, v in block.items() if k != "cache_control"})
+    if req.get("_one_by_one"):
+        content.append({"type": "text", "text": READ_ONE_BY_ONE})
+    return "\n\n".join(t for t in system if t), content
 
 
-def build_command(claude: str, folder: Path, system_file: Path, schema: dict, model: str,
-                  effort: str | None) -> list[str]:
+def build_command(claude: str, system_file: Path, schema: dict, model: str, effort: str | None) -> list[str]:
     cmd = [
         claude, "-p",
         "--no-chrome",
         "--no-session-persistence",
         "--setting-sources", "project",       # התיקייה הזמנית ריקה: בלי ההגדרות וה-hooks של המשתמש
         "--strict-mcp-config",                # בלי שרתי MCP
-        "--tools", "Read",                    # רק קריאה של התמונות. --allowedTools לבד לא מגביל
+        "--tools", "",                        # בלי שום כלי: הכל כבר בהודעה. --allowedTools לבד לא מגביל
         "--system-prompt-file", str(system_file),
-        "--output-format", "json",
+        "--input-format", "stream-json",      # ההודעה, עם התמונות, ב-stdin
+        "--output-format", "stream-json", "--verbose",
         "--max-budget-usd", str(BUDGET_USD),
         "--json-schema", json.dumps(schema, separators=(",", ":")),
-        "--add-dir", str(folder),
         "--model", model,
     ]
     if effort:
         cmd += ["--effort", effort]
     return cmd
+
+
+def output_as_list(stdout: str | None) -> str:
+    """stream-json הוא שורת JSON לכל הודעה. claude_driver.read_answer מקבל רשימה כזו ומוצא בה את ה-result."""
+    lines = []
+    for line in (stdout or "").splitlines():
+        try:
+            lines.append(json.loads(line))
+        except ValueError:
+            continue
+    return json.dumps(lines, ensure_ascii=False) if lines else (stdout or "")
 
 
 def cli_ask(claude: str, schema: dict, effort: str | None = None, run=subprocess.run,
@@ -88,17 +93,19 @@ def cli_ask(claude: str, schema: dict, effort: str | None = None, run=subprocess
     def ask(req: dict) -> str:
         folder = Path(tempfile.mkdtemp(prefix="grading-")).absolute()
         try:
-            prompt = write_request(req, folder)
+            system, content = split_request(req)
             system_file = folder / "system.txt"
-            system_file.write_text(req.get("system") or "", encoding="utf-8")
-            cmd = build_command(claude, folder, system_file, schema, req["model"], effort)
+            system_file.write_text(system, encoding="utf-8", newline="\n")  # אותו טקסט בכל מחשב, כדי שהמטמון יתאים
+            message = json.dumps({"type": "user", "message": {"role": "user", "content": content}}, ensure_ascii=False)
+            cmd = build_command(claude, system_file, schema, req["model"], effort)
             try:
-                proc = run(cmd, input=prompt, capture_output=True, text=True, encoding="utf-8",
+                proc = run(cmd, input=message + "\n", capture_output=True, text=True, encoding="utf-8",
                            timeout=TIMEOUT_S, cwd=folder)
             except Exception as e:
                 raise error(claude_driver.failure_message(e, TIMEOUT_S)) from e
         finally:
             shutil.rmtree(folder, ignore_errors=True)
+        proc = subprocess.CompletedProcess(proc.args, proc.returncode, output_as_list(proc.stdout), proc.stderr)
         answer, problem = claude_driver.read_run(proc)
         if answer is None:
             if problem == claude_driver.NOT_LOGGED_IN:

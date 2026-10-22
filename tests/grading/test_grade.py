@@ -4,9 +4,11 @@
 """
 from __future__ import annotations
 
+import base64
 import csv
 import http.client
 import json
+import os
 import random
 import threading
 import time
@@ -17,7 +19,7 @@ import pytest
 
 from moodle import claude_driver, paths
 from dashboard import actions, folder_view
-from grading import grade as grading
+from grading import grade as grading, notes
 from tests.sample_files import homework_pdf
 
 COURSE, HW = "Linear Algebra", "Assignment 0 - Sets and Complex Numbers"
@@ -145,6 +147,42 @@ def test_rubric_and_solution_are_sent(root):
     assert "document" not in json.dumps(grading.build_request(grading.load_context(a.dir, send_solution=False), []))
 
 
+def test_pedagogy_folder_is_sent_with_its_points(root):
+    a = asg(root)
+    ped = a.dir / "פדגוגי"
+    ped.mkdir()
+    (ped / "Solutions.md").write_text("# פתרון\nקבוצות 11א: כן", encoding="utf-8")
+    (ped / "Rubric.md").write_text(
+        "| שאלה | נקודות | סעיפים |\n|---|---|---|\n| קבוצות 11 | 20 | א 3 |\n| **קבוצות 12** | **24** | |\n"
+        "| מרוכבים 6 | 12 | |\n| מרוכבים 7 | 20 | |\n| מרוכבים 8 | 24 | |\n| **סה\"כ** | **100** | |\n"
+        "| \"לא\" בלבד | 2 |\n", encoding="utf-8")
+    (ped / paths.README).write_text("לא נשלח", encoding="utf-8")
+    (ped / "notes.pdf").write_bytes(b"not text")
+    ctx = grading.load_context(a.dir)
+    assert [(q.label, q.points) for q in ctx.questions] == list(zip(LABELS, (20, 24, 12, 20, 24)))
+    text = grading.context_text(ctx)
+    # המחוון קודם, אחריו שאר הקבצים; README ו-PDF לא נשלחים
+    assert text.index("--- Rubric.md ---") < text.index("--- Solutions.md ---")
+    assert "קבוצות 11א: כן" in text and "לא נשלח" not in text and "notes.pdf" not in text
+
+
+def test_points_in_details_win_over_the_pedagogy_folder(root):
+    a = asg(root)
+    d = a.details()
+    d["rubric"] = {"questions": [{"label": "הכל", "points": 100}]}
+    save_details(a, d)
+    (a.dir / "Pedagogy").mkdir()
+    (a.dir / "Pedagogy" / "Rubric.txt").write_text("| הכל | 50 |\nמורידים על סימון", encoding="utf-8")
+    ctx = grading.load_context(a.dir)
+    assert [(q.label, q.points) for q in ctx.questions] == [("הכל", 100)]
+    assert "מורידים על סימון" in grading.context_text(ctx)
+
+
+def test_no_pedagogy_folder_splits_points_evenly(root):
+    ctx = grading.load_context(asg(root).dir)
+    assert [q.points for q in ctx.questions] == [20] * 5 and "חומר הבדיקה" not in ctx.rubric_text
+
+
 # ---------- התשובה ----------
 def test_parse_answer_clamps_and_computes_the_grade(root):
     ctx = grading.load_context(asg(root).dir)
@@ -202,8 +240,69 @@ def test_grading_writes_grades_csv_and_marked_pdfs(root):
         assert red, "לא צויר מלבן אדום"
         r = red[0]["rect"]
         w, h = doc[1].rect.width, doc[1].rect.height
-        assert abs(r.x0 - 0.1 * w) < 2 and abs(r.y0 - 0.1 * h) < 2 and abs(r.x1 - 0.9 * w) < 2 and abs(r.y1 - 0.16 * h) < 2
+        # הרוחב בדיוק כמו ש-Claude נתן. לגובה המלבן מתקרב לשורת הכתב שלו (notes.snap_box), עד חצי מגובהו
+        assert abs(r.x0 - 0.1 * w) < 2 and abs(r.x1 - 0.9 * w) < 2
+        reach = 0.06 * h * notes.SNAP_REACH
+        assert 0.1 * h - reach - 4 <= r.y0 < r.y1 <= 0.16 * h + reach + 4 and r.y0 < 0.16 * h and r.y1 > 0.1 * h
     assert rep.summary() == "נבדקו 3 מתוך 3"
+    # כל חמישית נכתבה לקובץ משלה, ובסוף, כשאף אחת לא נבדקת, הכל אוחד ל-Grades.csv
+    assert not list(a.dir.glob("Grades - part *.csv")) and not list(a.dir.glob("Grading part *"))
+
+
+# ---------- כמה מחשבים בו זמנית ----------
+def other_computer_holds(a, part: int) -> None:
+    (a.dir / paths.GRADING_LOCK.format(part)).write_text("noa (OTHER-PC) pid=1", encoding="utf-8")
+
+
+def test_submissions_split_into_fifths_by_number():
+    from moodle import grades
+    assert [grades.part_of(n) for n in ("0001", "0002", "0005", "0006", "0481")] == [1, 2, 5, 1, 1]
+
+
+def test_a_fifth_another_computer_is_grading_is_skipped(root):
+    a = asg(root)
+    other_computer_holds(a, 2)
+    fake = FakeClaude()
+    rep = grading.grade_assignment(a.dir, ask=fake)
+    # 0002 בחמישית 2: לא נבדקה כאן ולא נשלחה ל-Claude
+    assert rep.graded == ["0001", "0003"] and rep.busy == {2: "noa (OTHER-PC)"} and len(fake.requests) == 2
+    assert "חמישית 2" in rep.notes[0] and "noa (OTHER-PC)" in rep.notes[0] and rep.total == 2
+    # כל חמישית בקובץ משלה. אין איחוד ל-Grades.csv כל עוד חמישית 2 נבדקת במחשב האחר
+    assert not (a.dir / grading.GRADES).exists()
+    assert [r["number"] for r in read_csv(a.dir / "Grades - part 1.csv")] == ["0001"]
+    assert [r["number"] for r in read_csv(a.dir / "Grades - part 3.csv")] == ["0003"]
+    assert set(grading.read_grades(a.dir)) == {"0001", "0003"}
+    # המנעולים שלי שוחררו, ושל המחשב האחר נשאר
+    assert [p.name for p in a.dir.glob("Grading part *")] == ["Grading part 2 in progress.txt"]
+
+    # המחשב האחר סיים (כתב את הקובץ שלו ושחרר): הריצה הבאה לא בודקת שוב, ומאחדת הכל
+    (a.dir / "Grades - part 2.csv").write_text("number,grade,feedback\r\n0002,70,x\r\n", encoding="utf-8-sig")
+    (a.dir / paths.GRADING_LOCK.format(2)).unlink()
+    rep = grading.grade_assignment(a.dir, ask=fake)
+    assert rep.graded == [] and len(fake.requests) == 2
+    assert [(r["number"], r["grade"]) for r in read_csv(a.dir / grading.GRADES)] == [("0001", "85"), ("0002", "70"), ("0003", "85")]
+    assert not list(a.dir.glob("Grades - part *.csv"))
+
+
+def test_a_stuck_lock_does_not_block_forever(root):
+    a = asg(root)
+    other_computer_holds(a, 2)
+    old = time.time() - 31 * 60
+    os.utime(a.dir / paths.GRADING_LOCK.format(2), (old, old))
+    rep = grading.grade_assignment(a.dir, ask=FakeClaude())
+    assert rep.graded == ["0001", "0002", "0003"] and not rep.busy
+
+
+def test_approved_rows_are_kept_when_fifths_are_merged(root):
+    a = asg(root)
+    (a.dir / grading.GRADES).write_text("number,grade,feedback,approved\r\n0001,90,טוב,כן\r\n", encoding="utf-8-sig")
+    (a.dir / "Grades - part 1.csv").write_text("number,grade,feedback,approved\r\n0001,40,x,\r\n", encoding="utf-8-sig")
+    (a.dir / "Grades - part 2.csv").write_text("number,grade,feedback,approved\r\n0002,70,y,\r\n", encoding="utf-8-sig")
+    assert {n: r["grade"] for n, r in grading.read_grades(a.dir).items()} == {"0001": "90", "0002": "70"}
+    from moodle import upload
+    assert {n: r["grade"] for n, r in upload.read_results(a.dir).items()} == {"0001": "90", "0002": "70"}
+    assert grading.merge_parts(a.dir)
+    assert [(r["number"], r["grade"]) for r in read_csv(a.dir / grading.GRADES)] == [("0001", "90"), ("0002", "70")]
 
 
 def test_several_files_of_one_student_are_graded_together(root):
@@ -294,6 +393,94 @@ def test_rotated_page_is_marked_where_it_is_seen():
         reds = [(i, j) for i in range(pix.width) for j in range(pix.height)
                 if (lambda c: c[0] > 150 and c[1] < 90 and c[2] < 90)(pix.pixel(i, j))]
         assert reds and min(abs(i - x) for i, _ in reds) <= 3
+
+
+def test_math_in_a_hebrew_note_stays_left_to_right():
+    lre, pdf = "‪", "‬"
+    assert grading._ltr_math("כתבו את הקבוצה: A∩B=A={(1+2t,1-t)|t∈R}") == f"כתבו את הקבוצה: {lre}A∩B=A={{(1+2t,1-t)|t∈R}}{pdf}"
+    # פסיק בסוף הנוסחה שייך למשפט העברי
+    assert grading._ltr_math("מתקבל t_A=4t_A, לא 2t_A.") == f"מתקבל {lre}t_A=4t_A{pdf}, לא {lre}2t_A{pdf}."
+    assert grading._ltr_math("חסר נימוק") == "חסר נימוק"
+
+
+def test_images_have_rulers_in_thousandths_around_the_page():
+    from grading import render
+    doc = pymupdf.open()
+    doc.new_page(width=600, height=800)
+    framed, page = render.with_rulers(doc[0])
+    m = render.RULER_MARGIN * 800
+    assert page.rect.width == pytest.approx(600 + 2 * m) and page.rect.height == pytest.approx(800 + 2 * m)
+    labels = {w[4] for w in page.get_text("words")}
+    assert {"0", "100", "500", "1000"} <= labels
+    img = render.render_page(doc[0], 1100)
+    assert max(img.width, img.height) == 1100
+    assert max(render.render_page(doc[0], 1100, rulers=False).height, 0) == 1100
+
+
+def test_note_goes_to_the_nearest_empty_spot_with_an_arrow():
+    # עמוד עם "כתב" שחור בכל החצי השמאלי, וטעות מסומנת בתוכו: ההערה נכתבת בחצי הימני הריק, עם חץ
+    doc = pymupdf.open()
+    page = doc.new_page(width=600, height=800)
+    ink = pymupdf.Rect(20, 20, 300, 780)
+    page.draw_rect(ink, color=(0, 0, 0), fill=(0, 0, 0))
+    ctx = grading.Context("מטלה", "קורס", [grading.Question("שאלה 1", 100)])
+    g = grading.Graded([98], [""], 98, "", [grading.Mark(1, 300, 450, 480, 500, "לא נכון עבור t=0", 2)])
+    with pymupdf.open(stream=grading.mark_pdf(doc.tobytes(), g, ctx), filetype="pdf") as out:
+        marked = out[1]
+        assert marked.rect == page.rect  # בלי שוליים: אותו עמוד
+        words = marked.get_text("words")
+        note = [w for w in words if w[4] in ("ירדו", "נכון", "2")]
+        assert {w[4] for w in note} == {"ירדו", "נכון", "2"}
+        assert all(pymupdf.Rect(w[:4]).x0 >= ink.x1 for w in note)  # לא על הכתב
+        box = pymupdf.Rect(0.3 * 600, 0.45 * 800, 0.48 * 600, 0.5 * 800)
+        assert all(not pymupdf.Rect(w[:4]).intersects(box) for w in note)  # ולא על המלבן
+        assert min(abs(pymupdf.Rect(w[:4]).y0 - box.y0) for w in note) < 80  # קרוב לטעות
+        lines = [d for d in marked.get_drawings() if d.get("color") and d["color"][0] > 0.8 and d["color"][1] < 0.1
+                 and any(item[0] == "l" for item in d["items"])]
+        assert len(lines) >= 3  # החץ: קו וראש של שני קווים
+
+
+def test_points_off_is_read_from_the_answer(root):
+    ctx = grading.load_context(asg(root).dir)
+    marks = [{"page": 1, "x0": 100, "y0": 100, "x1": 900, "y1": 160, "text": "חסר", "points_off": 2.3}]
+    g = grading.parse_answer(answer(marks=marks), ctx, pages=1)
+    assert [(m.text, m.points_off) for m in g.marks] == [("חסר", 2.5)]
+
+
+def _sides(req) -> list[int]:
+    """הצד הארוך של כל תמונה בבקשה."""
+    out = []
+    for b in req["messages"][0]["content"]:
+        if b["type"] == "image":
+            pix = pymupdf.Pixmap(base64.b64decode(b["source"]["data"]))
+            out.append(max(pix.width, pix.height))
+    return out
+
+
+def test_small_pages_first_then_full_size_then_one_by_one(root):
+    pdf = (asg(root).submissions / "0001.pdf").read_bytes()
+    ctx = grading.load_context(asg(root).dir)
+
+    def reply(unreadable_times):
+        calls = iter(range(10))
+        return lambda req: json.dumps({**json.loads(answer()), "unreadable": next(calls) < unreadable_times})
+
+    # Claude קרא בגודל הקטן: בקשה אחת, כל העמודים בבת אחת
+    fake = FakeClaude(reply(0))
+    g, _ = grading.grade_one(pdf, ctx, fake)
+    assert len(fake.requests) == 1 and set(_sides(fake.requests[0])) == {1100}
+    assert "_one_by_one" not in fake.requests[0] and not g.review
+
+    # לא הצליח פעמיים: גודל מלא, ואז גודל מלא עמוד אחרי עמוד
+    fake = FakeClaude(reply(2))
+    g, _ = grading.grade_one(pdf, ctx, fake)
+    assert [set(_sides(r)) for r in fake.requests] == [{1100}, {1568}, {1568}]
+    assert [r.get("_one_by_one", False) for r in fake.requests] == [False, False, True] and not g.review
+
+    # לא הצליח אף פעם: נשאר התשובה האחרונה, ומסומן לבדיקה ידנית
+    fake = FakeClaude(reply(3))
+    g, _ = grading.grade_one(pdf, ctx, fake)
+    assert len(fake.requests) == 3 and "גם בגודל המלא" in g.review
 
 
 # ---------- בלי מפתח ----------

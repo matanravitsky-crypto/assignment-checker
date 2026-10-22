@@ -36,6 +36,12 @@ README = "README.txt"
 DOWNLOAD_PREFIX = "Moodle download"
 PULL_LOCK = "Pull in progress.txt"      # in the assignment folder while a pull runs (see lock.py)
 UPLOAD_LOCK = "Upload in progress.txt"  # in the assignment folder while an upload to Moodle runs
+# Grading on several computers at once: each fifth of the submissions has its own lock and grades file (see grades.py)
+GRADING_LOCK = "Grading part {} in progress.txt"
+GRADES_PART = "Grades - part {}.csv"
+# The lecturer's or TA's grading material, in the assignment folder: rubric, solutions, accepted methods (.md/.txt).
+# Grading sends all of it to Claude. "פדגוגי" is the name the team gave it; "Pedagogy" works too.
+PEDAGOGY = ("Pedagogy", "פדגוגי")
 
 
 def data_dir() -> Path:
