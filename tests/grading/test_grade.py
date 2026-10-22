@@ -564,3 +564,11 @@ def test_server_grades_in_the_background(root, server, monkeypatch):
     assert st == 400
     st, out = call(server, "POST", "/api/grade", {"course": COURSE, "assignment": "../../x"})
     assert st == 404
+
+
+def test_the_decisions_skill_reaches_claude():
+    """The rules of .claude/skills/decisions are sent with every submission, and they decide what a person sees."""
+    rules = grading.decision_rules()
+    assert rules.startswith("קשיחות והחלטות") and "needs_review=true רק כשאי אפשר לבדוק בכלל" in rules
+    assert grading.SYSTEM.endswith(rules)
+    assert "<!--" not in grading.SYSTEM
