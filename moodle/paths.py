@@ -13,7 +13,7 @@ a folder per assignment, with plain English names that say what each one is
           Assignment details.json                    Moodle id, questions, rules, rubric
           Grades.csv                                 number,grade,feedback (from grading)
           Key - number to student.csv                the key: number -> Moodle participant
-          Moodle download <date>.zip                 the ZIP exactly as Moodle gave it
+          Backup - Moodle downloads/                 every ZIP exactly as Moodle gave it (backup only)
           README.txt
 
 The extracted ZIP stays on the downloader's computer only, in the same
@@ -33,6 +33,8 @@ GRADES = "Grades.csv"
 KEY = "Key - number to student.csv"
 README = "README.txt"
 DOWNLOAD_PREFIX = "Moodle download"
+# The ZIPs as Moodle gave them: a backup only, nobody grades from them
+BACKUP = "Backup - Moodle downloads"
 
 
 def data_dir() -> Path:
@@ -65,6 +67,12 @@ def assignment_dir(assignment_id: str) -> Path:
     if found is None:
         raise FileNotFoundError(f"No assignment with Moodle id {assignment_id} under {data_dir()}")
     return found
+
+
+def download_zips(assignment_dir: Path) -> list[Path]:
+    """The assignment's backed-up Moodle ZIPs (older ones may still sit in the assignment folder itself)."""
+    return sorted([*assignment_dir.glob(f"{BACKUP}/{DOWNLOAD_PREFIX} *.zip"),
+                   *assignment_dir.glob(f"{DOWNLOAD_PREFIX} *.zip")], key=lambda p: p.name)
 
 
 def original_dir(assignment_dir: Path) -> Path:

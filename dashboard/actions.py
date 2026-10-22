@@ -221,11 +221,11 @@ def start_grading(root: Path, course: str, assignment: str, numbers: list[str] |
 
 
 # ---------- מצב לאתר ----------
-_DOWNLOAD = re.compile(re.escape(paths.DOWNLOAD_PREFIX) + r" (\d{4}-\d{2}-\d{2} \d{2}-\d{2})\.zip$")
+_DOWNLOAD = re.compile(re.escape(paths.DOWNLOAD_PREFIX) + r" (\d{4}-\d{2}-\d{2} \d{2}-\d{2})( part \d+)?\.zip$")
 
 
 def _last_download(a: folder_view.Assignment) -> str | None:
-    stamps = [m.group(1) for p in a.dir.glob("*.zip") if (m := _DOWNLOAD.match(p.name))]
+    stamps = [m.group(1) for p in paths.download_zips(a.dir) if (m := _DOWNLOAD.match(p.name))]
     if not stamps:
         return None
     return datetime.strptime(max(stamps), "%Y-%m-%d %H-%M").isoformat(timespec="minutes")

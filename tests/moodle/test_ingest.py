@@ -134,7 +134,8 @@ def test_parts_come_together_into_one_numbered_set():
         finally:
             del os.environ["ASSIGNMENT_DATA"], os.environ["ASSIGNMENT_WORK"]
         assert sorted(r["participant_id"] for r in rows) == ["100", "200"]
-        assert sorted(p.name for p in folder.glob("*.zip"))[-1].endswith("part 2.zip")
+        assert sorted(p.name for p in (folder / paths.BACKUP).glob("*.zip"))[-1].endswith("part 2.zip")
+        assert not list(folder.glob("*.zip"))
 
 
 @pytest.mark.skipif(not has_seven_zip(), reason="needs 7-Zip")

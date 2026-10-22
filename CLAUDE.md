@@ -40,7 +40,7 @@ Exercise Checking System/                  the data folder (ASSIGNMENT_DATA, def
       Assignment details.json     Moodle id, course, name, Hebrew title, due date, questions, rules, max_grade, rubric
       Grades.csv                  number,grade,feedback  ← grading output
       Key - number to student.csv number → Moodle participant id → original folder  ← the one key
-      Moodle download <date>.zip  the ZIP exactly as Moodle gave it (every download is kept)
+      Backup - Moodle downloads/  every ZIP exactly as Moodle gave it (backup only; parts as "part N")
 
 Moodle originals/                          on the downloader's computer only (ASSIGNMENT_WORK)
   <course>/<assignment>/   the extracted ZIP: one folder per student, "<full name>_<participant id>_assignsubmission_file"

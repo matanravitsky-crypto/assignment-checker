@@ -127,10 +127,11 @@ def ingest(assignment_id: str, zip_path: Path | list[Path] | None = None,
 
     # Keep every download: a later one (after the due date) must not erase the first
     stamp = datetime.now().strftime("%Y-%m-%d %H-%M")
+    (target / paths.BACKUP).mkdir(exist_ok=True)
     kept = []
     for index, part in enumerate(zips, start=1):
         suffix = f" part {index}" if len(zips) > 1 else ""
-        kept.append(target / f"{paths.DOWNLOAD_PREFIX} {stamp}{suffix}.zip")
+        kept.append(target / paths.BACKUP / f"{paths.DOWNLOAD_PREFIX} {stamp}{suffix}.zip")
         shutil.move(part, kept[-1])
 
     original = paths.original_dir(target)
