@@ -156,13 +156,21 @@ def marked_files(assignment_dir: Path) -> dict[str, list[Path]]:
     return files_by_number(assignment_dir / paths.MARKED, "*.pdf")
 
 
+# קובץ בתיקייה הפדגוגית שהשם שלו אומר שהוא גרסה ישנה או טיוטה לא נשלח ל-Claude: שני מחוונים סותרים מבלבלים אותו,
+# והניקוד נלקח מהטבלה הראשונה. גם קובץ שמתחיל ב-"_" לא נשלח, וגם מה שבתיקיות שבתוכה (למשל "Old")
+_NOT_SENT = re.compile(r"^_|(?<![a-z])v\d+(?![a-z])|(?<![a-z])(old|draft)(?![a-z])|ישן|טיוטה", re.I)
+
+
 def pedagogy_files(assignment_dir: Path) -> list[Path]:
-    """קובצי הטקסט בתיקיית חומר הבדיקה של המטלה (פדגוגי), המחוון קודם."""
+    """קובצי הטקסט בתיקיית חומר הבדיקה של המטלה (פדגוגי). המחוון קודם: Rubric.md או מחוון.md בדיוק, ואחריו
+    קבצים אחרים שבשם שלהם יש מחוון. גרסאות ישנות וטיוטות לא נשלחות (_NOT_SENT)."""
     folder = next((assignment_dir / name for name in paths.PEDAGOGY if (assignment_dir / name).is_dir()), None)
     if folder is None:
         return []
-    files = [p for p in folder.iterdir() if p.is_file() and p.suffix.lower() in (".md", ".txt") and p.name != paths.README]
-    return sorted(files, key=lambda p: (not re.search(r"rubric|מחוון", p.stem, re.I), p.name))
+    files = [p for p in folder.iterdir() if p.is_file() and p.suffix.lower() in (".md", ".txt")
+             and p.name != paths.README and not _NOT_SENT.search(p.stem)]
+    return sorted(files, key=lambda p: (p.stem.lower() not in ("rubric", "מחוון"),
+                                        not re.search(r"rubric|מחוון", p.stem, re.I), p.name))
 
 
 def pedagogy_text(files: list[Path]) -> str:

@@ -166,6 +166,19 @@ def test_pedagogy_folder_is_sent_with_its_points(root):
     assert "קבוצות 11א: כן" in text and "לא נשלח" not in text and "notes.pdf" not in text
 
 
+def test_old_rubric_versions_are_not_sent_and_the_main_rubric_gives_the_points(root):
+    a = asg(root)
+    ped = a.dir / "פדגוגי"
+    ped.mkdir()
+    (ped / "Rubric v1.md").write_text("| קבוצות 11 | 99 |\nמחוון ישן", encoding="utf-8")
+    (ped / "_notes.md").write_text("הערות עבודה", encoding="utf-8")
+    (ped / "Rubric.md").write_text("| קבוצות 11 | 20 |\nמחוון חדש", encoding="utf-8")
+    (ped / "Rubric details.md").write_text("| קבוצות 11 | 50 |", encoding="utf-8")
+    assert [p.name for p in grading.pedagogy_files(a.dir)] == ["Rubric.md", "Rubric details.md"]
+    ctx = grading.load_context(a.dir)
+    assert ctx.questions[0].points == 20 and "מחוון ישן" not in ctx.rubric_text and "הערות עבודה" not in ctx.rubric_text
+
+
 def test_points_in_details_win_over_the_pedagogy_folder(root):
     a = asg(root)
     d = a.details()
