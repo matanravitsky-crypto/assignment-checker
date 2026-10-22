@@ -1,4 +1,6 @@
 """בדיקות למציאת מקום להערות (grading/notes.py), על עמודים מדומים במערכי numpy."""
+import math
+
 import numpy as np
 
 from grading import notes
@@ -48,15 +50,38 @@ def test_arrow_does_not_cross_a_line_of_writing():
     assert spot.note[1] >= 124 and spot.note[3] <= 175 and spot.note[0] >= 100 and not overlaps(spot.note, box)
 
 
-def test_a_full_page_still_gets_the_note_where_there_is_least_ink():
-    mask = np.ones((100, 100), dtype=bool)
-    mask[60:80, 0:40] = False
-    spot = notes.find_spot(mask, (50, 10, 60, 20), (30, 10))
-    assert not spot.clear
-    x0, y0, x1, y1 = spot.note
-    assert 0 <= x0 and x1 <= 40 and 60 <= y0 and y1 <= 80
+def gap(note, box):
+    return max(box[0] - note[2], note[0] - box[2], box[1] - note[3], note[1] - box[3], 0)
 
 
-def test_ink_is_dark_and_notebook_grid_is_not():
-    gray = np.array([[30, 120, 200, 255]], dtype=np.uint8)
-    assert notes.ink_mask(gray).tolist() == [[True, True, False, False]]
+def test_a_far_empty_spot_is_not_used_and_no_arrow_crosses_the_page():
+    """צילום של מחברת: כמעט הכל כתוב, ויש מקום ריק רק בצד השני של העמוד. ההערה לא הולכת לשם עם חץ ארוך:
+    היא נכתבת צמוד למלבן, על רקע לבן."""
+    mask = np.ones((400, 300), dtype=bool)
+    mask[340:390, 10:120] = False    # ריק, אבל רחוק
+    box = (180, 40, 260, 70)
+    spot = notes.find_spot(mask, box, (60, 14))
+    assert not spot.clear and spot.backed
+    assert gap(spot.note, box) <= 2 and not overlaps(spot.note, box)
+    assert math.dist(*spot.arrow) <= notes.REACH * 400
+
+
+def test_the_note_stays_within_reach_even_when_the_only_clean_spot_is_far():
+    mask = page(400, 300)
+    mask[:, :] = True
+    mask[0:30, :] = False            # שוליים ריקים למעלה
+    mask[200:260, 100:300] = False   # ומקום ריק קרוב למלבן, עם קצת כתב
+    mask[230, 100:300] = True
+    box = (150, 270, 220, 290)
+    spot = notes.find_spot(mask, box, (60, 14))
+    assert spot.note[1] >= 200 and gap(spot.note, box) <= notes.REACH * 400
+
+
+def test_ink_is_much_darker_than_the_paper_around_it():
+    """צילום: נייר אפור בצל (170), קווי משבצות (150) ודיו (60). רק הדיו נחשב."""
+    gray = np.full((80, 80), 170, dtype=np.uint8)
+    gray[::8, :] = 150
+    gray[40:43, 20:60] = 60
+    ink = notes.ink_mask(gray)
+    assert ink[41, 30] and not ink[8, 30] and not ink[20, 20]
+    assert ink.sum() == 3 * 40

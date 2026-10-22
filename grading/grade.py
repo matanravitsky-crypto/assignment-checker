@@ -515,7 +515,7 @@ def _arrow(page: pymupdf.Page, start: pymupdf.Point, end: pymupdf.Point, head: f
 
 
 def _mark_page(page: pymupdf.Page, marks: list[Mark], archive) -> None:
-    """המלבנים על העבודה, וכל הערה במקום הריק הקרוב ביותר לטעות שלה, עם חץ שלא עובר על הכתב (notes.py)."""
+    """המלבנים על העבודה, וכל הערה ליד הטעות שלה, במקום הריק הקרוב ביותר, עם חץ קצר שלא עובר על הכתב (notes.py)."""
     shown = page.rect  # העמוד כפי שהוא מוצג, אחרי סיבוב
     zoom = NOTES_SCAN_SIDE / max(shown.width, shown.height)
     pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), colorspace=pymupdf.csGRAY, alpha=False)
@@ -535,6 +535,8 @@ def _mark_page(page: pymupdf.Page, marks: list[Mark], archive) -> None:
         width, height = _note_size(mark, html, size, shown.width, archive)
         spot = notes.find_spot(taken, tuple(box * zoom), (math.ceil(width * zoom), math.ceil(height * zoom)))
         note = pymupdf.Rect(spot.note) / zoom
+        if spot.backed:  # יש כתב מתחת להערה: רקע לבן שקוף למחצה, כדי שאפשר יהיה לקרוא אותה
+            page.draw_rect((note + (-2, -1, 2, 1)) * page.derotation_matrix, color=None, fill=(1, 1, 1), fill_opacity=0.85, overlay=True)
         _write(page, note, html, archive)
         start, end = (pymupdf.Point(p) / zoom for p in spot.arrow)
         if start.distance_to(end) > size * 0.6:

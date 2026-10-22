@@ -1,8 +1,11 @@
-"""איפה לכתוב כל הערה על העבודה: במקום הריק הקרוב ביותר לטעות, עם חץ שלא עובר על שום דבר.
+"""איפה לכתוב כל הערה על העבודה: ליד הטעות שלה, במקום הריק הקרוב ביותר, עם חץ קצר שלא עובר על שום דבר.
 
-העמוד נסרק לתמונה קטנה, ומה שכהה בה הוא "דיו" (כתב היד, קווים, צללים של הצילום). קווי המשבצות
-של דף המחברת בהירים, ולכן הם לא נחשבים. הערה נכתבת רק במקום שאין בו דיו, מלבן אדום או הערה אחרת,
-והחץ ממנה אל המלבן לא עובר על כל אלה. אם אין מקום כזה, ההערה הולכת למקום הקרוב שיש בו הכי מעט דיו.
+העמוד נסרק לתמונה קטנה, ומה שכהה בה בהרבה מהנייר שסביבו הוא "דיו" (כתב היד). צילום של מחברת כהה יותר
+בפינות ובצללים, וקווי המשבצות כהים רק קצת מהנייר, ולכן משווים כל נקודה לנייר שסביבה ולא לערך קבוע.
+
+ההערה לא מתרחקת מהמלבן שלה יותר מ-REACH: הערה שנכתבה בצד השני של העמוד, עם חץ שחוצה את כל הדף,
+לא עוזרת לאף אחד. אם אין ליד המלבן מקום נקי, ההערה הולכת למקום הקרוב שיש בו הכי מעט דיו, ואם גם בו
+יש הרבה דיו, היא נכתבת צמוד למלבן (מתחתיו או מעליו) על רקע לבן שקוף למחצה, כדי שאפשר יהיה לקרוא אותה.
 
 הכל כאן בפיקסלים של התמונה הקטנה. grade.py ממיר מנקודות של ה-PDF ובחזרה.
 """
@@ -13,8 +16,15 @@ from dataclasses import dataclass
 
 import numpy as np
 
-# פיקסל כהה מזה הוא דיו (0 שחור, 255 לבן). קווי המשבצות של המחברת בהירים יותר
-INK_BELOW = 150
+# דיו: כהה מ-INK_RATIO מהנייר שסביבו (קווי משבצות וצללים כהים ממנו רק קצת), או כהה מ-INK_BELOW בכל מקרה
+INK_RATIO = 0.72
+INK_BELOW = 70
+# הנייר סביב כל נקודה: הממוצע בריבוע בגודל הזה (בפיקסלים של התמונה הקטנה)
+PAPER_WINDOW = 41
+# הכי רחוק שהערה מתרחקת מהמלבן שלה, כחלק מהצלע הארוכה של העמוד
+REACH = 0.07
+# כמה דיו (כחלק מהשטח) מותר מתחת להערה לפני שכותבים אותה צמוד למלבן על רקע לבן
+MAX_INK = 0.04
 # כמה פיקסלים ריקים להשאיר סביב ההערה, כדי שלא תיגע בשום דבר
 PAD = 3
 # הצעד שבו מחפשים מקום. קטן יותר: מדויק יותר ואיטי יותר
@@ -26,10 +36,24 @@ class Spot:
     note: tuple[int, int, int, int]                 # המלבן של ההערה: x0, y0, x1, y1
     arrow: tuple[tuple[int, int], tuple[int, int]]  # מההערה אל המלבן האדום
     clear: bool                                     # True: ההערה והחץ לא נוגעים בשום דבר
+    backed: bool = False                            # True: יש מתחת להערה כתב, ולכן היא נכתבת על רקע לבן
+
+
+def _box_mean(img: np.ndarray, size: int) -> np.ndarray:
+    """הממוצע בריבוע בגודל size סביב כל פיקסל (בקצוות: מה שבתוך התמונה)."""
+    h, w = img.shape
+    r = size // 2
+    s = np.zeros((h + 1, w + 1), dtype=np.float64)
+    s[1:, 1:] = img.astype(np.float64).cumsum(0).cumsum(1)
+    y0, y1 = np.clip(np.arange(h) - r, 0, h), np.clip(np.arange(h) + r + 1, 0, h)
+    x0, x1 = np.clip(np.arange(w) - r, 0, w), np.clip(np.arange(w) + r + 1, 0, w)
+    total = s[y1][:, x1] - s[y0][:, x1] - s[y1][:, x0] + s[y0][:, x0]
+    return total / ((y1 - y0)[:, None] * (x1 - x0)[None, :])
 
 
 def ink_mask(gray: np.ndarray) -> np.ndarray:
-    return gray < INK_BELOW
+    paper = _box_mean(gray, PAPER_WINDOW)
+    return (gray < paper * INK_RATIO) | (gray < INK_BELOW)
 
 
 def block(mask: np.ndarray, rect: tuple[float, float, float, float], width: int = 0) -> None:
@@ -86,8 +110,18 @@ def _path_is_clear(mask: np.ndarray, start, end) -> bool:
     return True
 
 
+def _attached(mask: np.ndarray, box, nw: int, nh: int) -> tuple[int, int, int, int]:
+    """ההערה צמודה למלבן: מתחתיו אם יש מקום בעמוד, אחרת מעליו. מיושרת לצד ימין שלו, כמו עברית."""
+    h, w = mask.shape
+    x1 = int(min(max(box[2], nw), w))
+    y0 = int(box[3]) + 1 if box[3] + 1 + nh <= h else int(box[1]) - 1 - nh
+    y0 = max(0, min(y0, h - nh))
+    return x1 - nw, y0, x1, y0 + nh
+
+
 def find_spot(mask: np.ndarray, box: tuple[float, float, float, float], size: tuple[int, int]) -> Spot:
     """המקום הריק הקרוב ביותר למלבן `box` להערה בגודל `size` (רוחב, גובה), עם חץ שלא עובר על שום דבר.
+    לא רחוק מהמלבן יותר מ-REACH. בלי מקום נקי שם: המקום הקרוב עם הכי מעט דיו, או צמוד למלבן על רקע לבן.
 
     `mask` הוא מה שתפוס בעמוד (דיו, מלבנים, הערות וחצים קודמים), והמלבן עצמו בתוכו.
     """
@@ -108,14 +142,21 @@ def find_spot(mask: np.ndarray, box: tuple[float, float, float, float], size: tu
     dy = np.maximum(np.maximum(box[1] - (ny0 + nh), ny0 - box[3]), 0)
     dist = np.hypot(dx, dy)
 
-    free = np.argwhere(taken == 0)
+    near = dist <= max(REACH * max(h, w), float(dist.min()))
+
+    free = np.argwhere((taken == 0) & near)
     order = free[np.argsort(dist[free[:, 0], free[:, 1]], kind="stable")]
     for i, j in order[:400]:
         note = (int(nx0[i, j]), int(ny0[i, j]), int(nx0[i, j]) + nw, int(ny0[i, j]) + nh)
         start, end = _arrow(note, box)
         if _path_is_clear(mask, start, end):
             return Spot(note, (start, end), True)
-    # אין מקום נקי: הכי מעט דיו, ואחריו הכי קרוב
-    i, j = np.unravel_index(np.lexsort((dist.ravel(), taken.ravel()))[0], taken.shape)
-    note = (int(nx0[i, j]), int(ny0[i, j]), int(nx0[i, j]) + nw, int(ny0[i, j]) + nh)
-    return Spot(note, _arrow(note, box), False)
+    # אין ליד המלבן מקום נקי: הכי מעט דיו, ואחריו הכי קרוב
+    inked = np.where(near, taken, np.iinfo(np.int32).max)
+    i, j = np.unravel_index(np.lexsort((dist.ravel(), inked.ravel()))[0], taken.shape)
+    if taken[i, j] <= MAX_INK * padded[0] * padded[1]:
+        note = (int(nx0[i, j]), int(ny0[i, j]), int(nx0[i, j]) + nw, int(ny0[i, j]) + nh)
+        return Spot(note, _arrow(note, box), False, backed=bool(taken[i, j]))
+    # גם שם יש הרבה כתב: צמוד למלבן, על רקע לבן, בלי חץ
+    note = _attached(mask, box, nw, nh)
+    return Spot(note, _arrow(note, box), False, backed=True)
