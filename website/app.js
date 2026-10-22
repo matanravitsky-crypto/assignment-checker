@@ -33,6 +33,13 @@
     set(k, v) { try { localStorage.setItem("ac:" + k, JSON.stringify(v)); } catch {} },
   };
 
+  // כרום חוסם לאתר הציבורי גישה למחשב (הרשאת "גישה למכשיר", loopback-network), אבל מעבר לכתובת המקומית מותר תמיד.
+  // מי שפתח פעם את המערכת מכאן ("פתח את המערכת") מועבר אליה לבד בכל כניסה. ?stay משאיר באתר הציבורי ומבטל את המעבר
+  if (!ON_LOCAL_HOST) {
+    if (new URLSearchParams(location.search).has("stay")) store.set("openLocal", false);
+    else if (store.get("openLocal", false)) { location.replace(LOCAL_SITE + location.hash); return; }
+  }
+
   // ---------- State ----------
   const state = {
     courseId: null,
@@ -1095,11 +1102,11 @@
         <div class="panel-head"><h2>איך מתחברים</h2><span class="end tag warn">${LOCAL.probing ? "מנסה להתחבר…" : "לא מחובר"}</span></div>
         <div class="panel-body">
           <ol class="todo">
-            <li>לוחצים פעמיים על <code dir="ltr">start.bat</code> בתיקיית הריפו (assignment-checker). חלון שחור נפתח, והוא צריך להישאר פתוח כל זמן שעובדים.</li>
-            <li>לוחצים "פתח את המערכת". אותו אתר נפתח בכתובת <code dir="ltr">http://localhost:8765</code>, עם הנתונים האמיתיים ובלי שום הרשאה.</li>
+            <li>המערכת צריכה לרוץ במחשב. אחרי לחיצה אחת על <code dir="ltr">install-autostart.bat</code> בתיקייה assignment-checker היא עולה לבד, בלי חלון, בכל הדלקה של המחשב. (בלי זה: לחיצה כפולה על <code dir="ltr">start.bat</code>, והחלון השחור נשאר פתוח.)</li>
+            <li>לוחצים "פתח את המערכת". אותו אתר נפתח בכתובת <code dir="ltr">http://localhost:8765</code>, עם הנתונים האמיתיים ובלי שום הרשאה. <b>מהפעם הבאה הקישור הזה מעביר לשם לבד.</b></li>
           </ol>
           <div class="row-start">
-            <a class="btn primary lg" href="${LOCAL_SITE}${esc(location.hash)}">${ICON.chev}פתח את המערכת</a>
+            <a class="btn primary lg" data-open-local href="${LOCAL_SITE}${esc(location.hash)}">${ICON.chev}פתח את המערכת</a>
             <button class="btn secondary small" data-act="recheck">${ICON.redo}נסה להתחבר מכאן</button>
           </div>
           <p class="hint">אפשר גם לעבוד מהכתובת הזו: אם כרום שואל אם לאפשר לאתר לגשת לאפליקציות ולשירותים במכשיר, לוחצים "אפשר", והאתר מתחבר לבד תוך כמה שניות.</p>
@@ -1149,8 +1156,8 @@
         <p class="lead">האתר קורא את תיקיית OneDrive של הקורס דרך המערכת שרצה במחשב שמסנכרן אותה:</p>
         <ol class="todo">
           <li>באפליקציית OneDrive מחברים את חשבון האוניברסיטה. בדפדפן, על התיקייה YallaLinearit, לוחצים Add shortcut to My files.</li>
-          <li>מורידים את הריפו מ-GitHub ולוחצים פעמיים על <code dir="ltr">start.bat</code>.</li>
-          <li>האתר הזה מתחבר אליה לבד (כרום שואל פעם אחת אם לאפשר). אפשר גם לעבוד בכתובת <code dir="ltr">http://localhost:8765</code>.</li>
+          <li>מורידים את הריפו מ-GitHub ולוחצים פעם אחת על <code dir="ltr">install-autostart.bat</code> (או בכל פעם על <code dir="ltr">start.bat</code>).</li>
+          <li>עובדים בכתובת <code dir="ltr">http://localhost:8765</code>. מי שפתח אותה פעם אחת מהאתר הציבורי מועבר אליה לבד.</li>
         </ol>
       </div>
     </section>`;
@@ -1387,6 +1394,7 @@
   // ---------- Events ----------
   document.addEventListener("click", (e) => {
     const t = e.target;
+    if (t.closest("a[data-open-local]")) store.set("openLocal", true);  // מהפעם הבאה הקישור הציבורי מעביר לכאן לבד
     const runBtn = t.closest("[data-run]");
     if (runBtn) { runStage(runBtn.dataset.run); return; }
 

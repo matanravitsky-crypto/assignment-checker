@@ -13,6 +13,6 @@ if not exist "%LINK%" (
 )
 echo The system will now start by itself whenever Windows starts.
 echo Starting it now...
-wscript.exe "%~dp0autostart.vbs"
+start "" wscript.exe "%~dp0autostart.vbs"
 echo Done. Open https://bodek-hacham.vercel.app in a minute (the first start installs what is needed).
 pause
