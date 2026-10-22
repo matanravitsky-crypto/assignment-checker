@@ -8,6 +8,9 @@
   החזרה  → moodle.upload.prepare_upload(<תיקיית המטלה>)
            בונה ב-"3 - Ready to upload to Moodle" את גיליון הציונים, את קובצי המשוב ואת
            הוראות ההעלאה. מישהו מהצוות מעלה אותם למודל ומאשר.
+  העלאה  → moodle.send.prepare_batch / run_batch
+           מכינים אצווה של עבודות מסומנות שהן חדשות או השתנו, ואחרי "כן" של אדם מעלים אותה ברקע
+           דרך Claude in Chrome (מי שהעלה נרשם ב-Upload log.csv). האתר שואל מה המצב עד שהיא נגמרת.
 
 כאן רק מחברים את הקוד הזה לאתר, ומכינים לאתר את המצב של כל מטלה, בלי שמות.
 """
@@ -16,12 +19,14 @@ from __future__ import annotations
 import os
 import re
 import threading
+import time
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from grading import grade as grading
-from moodle import ingest as moodle_ingest, lock as moodle_lock, paths, upload as moodle_upload
+from moodle import (claude_driver, ingest as moodle_ingest, lock as moodle_lock, paths, send as moodle_send,
+                    upload as moodle_upload, upload_log)
 
 from . import folder_view, settings as cfg, shared_folder
 
@@ -209,6 +214,197 @@ def start_grading(root: Path, course: str, assignment: str, numbers: list[str] |
     return grade_status()
 
 
+# ---------- העלאה למודל ----------
+# הכנה (prepare_send) בונה אצווה ורושמת אותה ב-Upload batch.json. ההעלאה עצמה (start_send) רצה ברקע,
+# ואחרי "כן" של אדם: האתר שולח את ה-id של האצווה שהאדם ראה, ואם בינתיים הוכנה אצווה אחרת, לא מעלים.
+# רק העלאה אחת בכל פעם בתהליך הזה, ובין מחשבים הנעילה Upload in progress.txt (moodle/send.py) שומרת.
+SIMULATE_DELAY = 1.0  # שניות לכל ZIP כש-MOODLE_DRIVER=simulate, כדי שיראו התקדמות באתר
+
+
+def _upload_lock_holder(a: folder_view.Assignment) -> str | None:
+    """מי מעלה עכשיו את המטלה (נעילה שלא התיישנה), או None."""
+    lock_file = a.dir / moodle_send.UPLOAD_LOCK
+    try:
+        age = datetime.now() - datetime.fromtimestamp(lock_file.stat().st_mtime)
+        if age >= timedelta(minutes=moodle_lock.LOCK_MINUTES):
+            return None
+        return lock_file.read_text(encoding="utf-8").strip() or moodle_lock.SOMEONE_ELSE
+    except OSError:
+        return None
+
+
+@dataclass
+class SendJob:
+    """העלאה אחת שרצה ברקע. האתר שואל מה המצב עד שהיא נגמרת."""
+    course: str = ""
+    assignment: str = ""
+    batch_id: str = ""
+    dry_run: bool = False
+    running: bool = False
+    total: int = 0
+    done: int = 0
+    current: str = ""  # ה-ZIP שמועלה עכשיו
+    stopped: str | None = None  # None: הכול עלה. אחרת: user / needs_login / mismatch / error / stale / locked
+    message: str = ""
+    started_at: str = ""
+    finished_at: str = ""
+
+
+_send = SendJob()
+_send_lock = threading.Lock()
+_stop = threading.Event()
+
+
+def send_status() -> dict:
+    with _send_lock:
+        return asdict(_send)
+
+
+def stop_send() -> dict:
+    """מבקש לעצור: ה-ZIP שמועלה עכשיו מסתיים, והבא אחריו לא מתחיל."""
+    with _send_lock:
+        if _send.running:
+            _stop.set()
+        return asdict(_send)
+
+
+def prepare_send(root: Path, course: str, assignment: str) -> dict:
+    a = find_assignment(root, course, assignment)
+    who = _upload_lock_holder(a)
+    with _send_lock:
+        if not who and _send.running and (_send.course, _send.assignment) == (course, assignment):
+            who = moodle_lock.me()  # ההעלאה שלנו רצה, גם אם קובץ הנעילה עוד לא נכתב
+    if who:  # הכנה חדשה באמצע העלאה הייתה הופכת את האצווה שרצה לישנה
+        raise UserError(f"{who} מעלה את המטלה הזו עכשיו. אפשר להכין העלאה חדשה כשהיא תסתיים.")
+    try:
+        summary = moodle_send.prepare_batch(a.dir)
+    except FileNotFoundError as e:  # למשל אין טבלת מפתח
+        raise UserError(f"חסר קובץ במטלה: {Path(e.filename).name if e.filename else e}") from e
+    except ValueError as e:  # כולל BatchBlocked: ההודעה כבר בעברית
+        raise UserError(str(e)) from e
+    rep = asdict(summary)
+    rep["summary"] = (f'מטלה "{summary.title}" (מודל {summary.assignment_id}): '
+                      f"{summary.files} קבצים של {summary.students} סטודנטים, ב-{len(summary.zips)} קובצי ZIP.")
+    return rep
+
+
+def _make_driver() -> moodle_send.MoodleDriver:
+    if os.environ.get("MOODLE_DRIVER") == "simulate":  # הדגמה: לא נוגעים במודל
+        return moodle_send.SimulatedDriver(delay=SIMULATE_DELAY)
+    return claude_driver.ClaudeChromeDriver()
+
+
+class _Tracking:
+    """עוטף את הנהג ורושם ב-SendJob איזה ZIP מועלה עכשיו."""
+
+    def __init__(self, inner: moodle_send.MoodleDriver, job: SendJob):
+        self.inner, self.job = inner, job
+
+    def upload_zip(self, info: dict, zip_path: Path, expected: int, dry_run: bool) -> moodle_send.UploadResult:
+        with _send_lock:
+            self.job.current = Path(zip_path).name
+        return self.inner.upload_zip(info, zip_path, expected, dry_run)
+
+
+def start_send(root: Path, course: str, assignment: str, batch_id: str,
+               driver: moodle_send.MoodleDriver | None = None, wait: bool = False,
+               dry_run: bool = False) -> dict:
+    """מתחיל להעלות ברקע את האצווה `batch_id`. זורק RuntimeError אם כבר רצה העלאה,
+    ו-ValueError("stale") אם האצווה כבר לא זו שבקובץ Upload batch.json (הוכנה אחרת מאז)."""
+    global _send
+    a = find_assignment(root, course, assignment)
+    base_driver = driver if driver is not None else _make_driver()
+    with _send_lock:
+        if _send.running:
+            raise RuntimeError("העלאה אחרת כבר רצה.")
+        batch = moodle_send.current_batch(a.dir, batch_id)
+        if batch is None:
+            raise ValueError("stale")
+        uploaded = upload_log.last_hashes(a.dir)
+        already = sum(all(uploaded.get(f["file"]) == f["sha256"] for f in z["files"]) for z in batch["zips"])
+        _send = job = SendJob(course, assignment, batch_id, dry_run, running=True, total=len(batch["zips"]),
+                              done=already, started_at=datetime.now().isoformat(timespec="seconds"))
+        _stop.clear()
+    tracked = _Tracking(base_driver, job)
+
+    def progress(index: int, total: int, name: str) -> None:
+        with _send_lock:
+            job.done = index  # ZIPs שדולגו בהמשך אחרי עצירה נספרים באינדקס
+
+    def run() -> None:
+        try:
+            rep = moodle_send.run_batch(a.dir, batch_id, tracked, dry_run=dry_run,
+                                        should_stop=_stop.is_set, on_progress=progress)
+            with _send_lock:
+                job.done = len(rep.done_zips)
+                job.total = rep.total_zips or job.total
+                job.stopped, job.message = rep.stopped, rep.message
+        except Exception as e:  # השגיאה מוצגת באתר במקום שההעלאה תיראה כרצה לנצח
+            with _send_lock:
+                job.stopped, job.message = "error", f"ההעלאה נכשלה: {e}"
+        finally:
+            with _send_lock:
+                job.running, job.current = False, ""
+                job.finished_at = datetime.now().isoformat(timespec="seconds")
+
+    t = threading.Thread(target=run, daemon=True)
+    try:
+        t.start()
+    except Exception:  # אם התהליכון לא עלה, ההעלאה לא נשארת "רצה"
+        with _send_lock:
+            job.running = False
+        raise
+    if wait:
+        t.join()
+    return send_status()
+
+
+# ---------- התחברות למודל ----------
+MOODLE_STATUS_SECONDS = 60
+_moodle_cache: tuple[float, dict] | None = None
+
+
+def moodle_status() -> dict:
+    """האם Claude Code מחובר במחשב הזה. נשמר דקה: הבדיקה מפעילה תהליך, והאתר שואל לעיתים קרובות."""
+    global _moodle_cache
+    cached = _moodle_cache
+    if cached and time.monotonic() - cached[0] < MOODLE_STATUS_SECONDS:
+        return cached[1]
+    status = claude_driver.auth_status()
+    _moodle_cache = (time.monotonic(), status)
+    return status
+
+
+def check_moodle(root: Path, course: str, assignment: str) -> dict:
+    """האם Chrome ומודל מוכנים להעלאה של המטלה הזו (ריצה קצרה של Claude, בלי להעלות כלום)."""
+    a = find_assignment(root, course, assignment)
+    _moodle_id(a)
+    return claude_driver.ClaudeChromeDriver().check(paths.read_info(a.dir))
+
+
+# ---------- הוחזרו: לפי יומן ההעלאה ----------
+# ה-hash של קובץ נשמר לפי (גודל, זמן שינוי): האתר שואל על המצב כל כמה שניות, ואלפי PDF של 1-2MB
+# לא נקראים מחדש אם לא השתנו. קובץ ששונה מקבל גודל או זמן אחרים, ולכן נחשב מחדש.
+_hashes: dict[str, tuple[int, int, str]] = {}
+
+
+def cached_hash(path: Path) -> str:
+    st = path.stat()
+    hit = _hashes.get(str(path))
+    if hit and hit[:2] == (st.st_size, st.st_mtime_ns):
+        return hit[2]
+    digest = upload_log.file_hash(path)
+    _hashes[str(path)] = (st.st_size, st.st_mtime_ns, digest)
+    return digest
+
+
+def returned_numbers(assignment_dir: Path, marked: dict[str, list[Path]]) -> set[str]:
+    """כמו upload_log.returned_numbers, עם מטמון ל-hash."""
+    uploaded = upload_log.last_hashes(assignment_dir)
+    return {number for number, files in marked.items()
+            if files and all(p.name in uploaded and cached_hash(p) == uploaded[p.name] for p in files)}
+
+
 # ---------- מצב לאתר ----------
 _DOWNLOAD = re.compile(re.escape(paths.DOWNLOAD_PREFIX) + r" (\d{4}-\d{2}-\d{2} \d{2}-\d{2})\.zip$")
 
@@ -232,8 +428,9 @@ def state(root: Path) -> dict:
         for ai, a in enumerate(items):
             d = a.details()
             marked, results = grading.marked_files(a.dir), grading.read_grades(a.dir)
-            # הוחזרה = הועלתה למודל בפועל. מי שמעלה רושם כל ZIP ב-Uploaded.txt (ראו CLAUDE.md)
-            uploaded = (a.dir / paths.UPLOAD / "Uploaded.txt").exists()
+            # הוחזרה = הועלתה למודל בפועל: כל הקבצים המסומנים של המספר זהים למה שביומן ההעלאה
+            log = upload_log.read_log(a.dir)
+            returned = returned_numbers(a.dir, marked)
             by_number: dict[str, list[Path]] = {}
             for r in a.key_rows():  # סטודנט יכול להגיש כמה קבצים: 0001.pdf, 0001-2.pdf
                 f = a.submissions / r.get("anon_file", "")
@@ -244,7 +441,7 @@ def state(root: Path) -> dict:
                 res = results.get(grading.number_key(n)) or {}
                 grade = res.get("grade")
                 graded = n in marked or bool(grade)
-                status = "returned" if graded and uploaded else "graded" if graded else "pulled"
+                status = "returned" if graded and n in returned else "graded" if graded else "pulled"
                 newest = max(f.stat().st_mtime for f in files)
                 subs.append({
                     "id": n, "name": f"הגשה {n}", "studentId": n, "email": "",
@@ -265,17 +462,19 @@ def state(root: Path) -> dict:
                 "id": f"{cid}a{ai}", "courseId": cid, "course": folder_view.course_title(course_dir),
                 "courseFolder": course_dir.name, "folder": a.dir.name, "title": a.title,
                 "n": ai + 1, "due": d.get("due"), "questions": a.question_count(), "questionLabels": a.question_labels(),
-                "pulledAt": pulled, "returnedAt": None, "moodleId": d.get("id"),
+                "pulledAt": pulled, "returnedAt": max((r["uploaded_at"] for r in log), default=None), "moodleId": d.get("id"),
                 "gradedAt": datetime.fromtimestamp(grades_file.stat().st_mtime).isoformat(timespec="minutes") if grades_file.exists() else None,
                 "rubric": [{"label": q.label, "points": q.points, "criteria": q.criteria} for q in ctx.questions],
                 "maxGrade": ctx.max_grade, "solution": (a.dir / grading.SOLUTION).is_file(),
                 "notes": d.get("notes") or "", "rules": d.get("submission_rules") or [],
                 "warnings": [f"עותק כפול של טבלת המפתח: {c}" for c in key_conflicts(a)]
-                            + ([f"משיכה בתהליך: {(a.dir / LOCK_FILE).read_text(encoding='utf-8').strip()}"] if (a.dir / LOCK_FILE).exists() else []),
+                            + [f"עותק כפול של יומן ההעלאה: {c}" for c in upload_log.log_conflicts(a.dir)]
+                            + ([f"משיכה בתהליך: {(a.dir / LOCK_FILE).read_text(encoding='utf-8').strip()}"] if (a.dir / LOCK_FILE).exists() else [])
+                            + ([f"העלאה בתהליך: {who}"] if (who := _upload_lock_holder(a)) else []),
                 "subs": subs, "log": [],
             })
     return {"root": str(root), "courses": courses, "assignments": out,
-            "moodle": False, "claude": bool(cfg.claude_key()), "grading": grade_status()}
+            "moodle": False, "claude": bool(cfg.claude_key()), "grading": grade_status(), "sending": send_status()}
 
 
 def _score(raw: str | None) -> float | int | None:

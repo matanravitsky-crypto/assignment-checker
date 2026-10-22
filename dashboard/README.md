@@ -12,7 +12,7 @@ python -m dashboard serve
 |---|---|
 | `shared_folder.py` | מוצא במחשב את `YallaLinearit/Exercise Checking System` |
 | `folder_view.py` | קורא את המבנה לתצוגה: קורסים, מטלות ומספרי הגשות. בלי שמות |
-| `actions.py` | הפעולות: משיכה (`moodle ingest`) עם נעילה ובדיקת עותקים כפולים, בדיקה ברקע (`grading/`), הכנת החזרה (`moodle upload`), והמצב לאתר |
+| `actions.py` | הפעולות: משיכה (`moodle ingest`) עם נעילה ובדיקת עותקים כפולים, בדיקה ברקע (`grading/`), הכנת החזרה (`moodle upload`), העלאה למודל ברקע (`moodle send`), והמצב לאתר |
 | `web_server.py` | השרת: מגיש את האתר ואת `/api/...` |
 | `settings.py` | קורא את `.env` (מפתח Claude) |
 
@@ -27,6 +27,12 @@ python -m dashboard serve
 | `POST /api/grade` | מתחיל בדיקה עם Claude ברקע: `{course, assignment, ids?, model?, parallel?, instructions?, sendSolution?}`. בלי מפתח: 400 עם הסבר |
 | `GET /api/grade` | מצב הבדיקה שרצה: כמה נבדקו, מה נכשל, וסיכום בסוף |
 | `POST /api/return` | הכנת החזרה: `moodle upload` |
+| `POST /api/upload/prepare` | הכנת העלאה למודל: `{course, assignment}`. בונה אצווה של העבודות המסומנות שחדשות או השתנו ומחזירה סיכום וגם `id`. 422 עם הסבר אם אי אפשר (או אם מישהו מעלה עכשיו) |
+| `POST /api/upload/start` | מתחיל להעלות ברקע את האצווה: `{course, assignment, batchId}`. 202 עם המצב. 409 אם כבר רצה העלאה או אם האצווה כבר לא העדכנית |
+| `GET /api/upload` | מצב ההעלאה שרצה: `running`, `done` מתוך `total`, `current`, `stopped`, `message` |
+| `POST /api/upload/stop` | מבקש לעצור אחרי ה-ZIP שמועלה עכשיו |
+| `GET /api/moodle` | האם Claude Code מחובר במחשב (נשמר דקה) |
+| `POST /api/moodle/check` | האם Chrome ומודל מוכנים: `{course, assignment}` |
 | `POST /api/open` | פותח תיקייה בסייר הקבצים |
 
 **אבטחה:** השרת מאזין רק למחשב עצמו. כל בקשה שמשנה משהו חייבת את הכותרת `X-Assignment-Checker`, ו-Host ו-Origin של המחשב, כדי שאתרים אחרים לא יוכלו להפעיל אותו.
