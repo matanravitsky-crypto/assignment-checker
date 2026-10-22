@@ -8,8 +8,9 @@ Two files in "3 - Ready to upload to Moodle/":
 A number counts as returned when every one of its marked files still has the hash it had in its
 latest upload. If the grader changes a file after that, the number is no longer returned.
 
-OneDrive may make a conflict copy of the log (`Upload log-DESKTOP.csv`) when two people write it
-at once; `log_conflicts` finds them so someone merges them by hand, as with the key table.
+OneDrive may make a conflict copy of the log (`Upload log-DESKTOP.csv`) or of the batch list
+(`Upload batch-DESKTOP.json`) when two people write it at once; `log_conflicts` and `batch_conflicts` find
+them so someone merges them by hand, as with the key table. Nothing here deletes them.
 Nothing here talks to Moodle.
 """
 
@@ -78,6 +79,13 @@ def log_conflicts(assignment_dir: Path) -> list[str]:
     """Conflict copies of the log that OneDrive makes (e.g. "Upload log-DESKTOP.csv")."""
     folder = assignment_dir / paths.UPLOAD
     return sorted(p.name for p in folder.glob(f"{Path(LOG_FILE).stem}*.csv") if p.name != LOG_FILE)
+
+
+def batch_conflicts(assignment_dir: Path) -> list[str]:
+    """Conflict copies of the batch list that OneDrive makes (e.g. "Upload batch-DESKTOP.json"). Never deleted here."""
+    folder = assignment_dir / paths.UPLOAD
+    stem, suffix = Path(BATCH_FILE).stem, Path(BATCH_FILE).suffix
+    return sorted(p.name for p in folder.glob(f"{stem}*{suffix}") if p.name != BATCH_FILE and p.is_file())
 
 
 def record_zip(assignment_dir: Path, zip_name: str, by: str, now: datetime | None = None) -> int:

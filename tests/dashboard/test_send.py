@@ -412,3 +412,12 @@ def test_lock_text_with_a_pid_is_shown_without_it(root):
         actions.prepare_send(root, COURSE, HW)
     assert str(e.value) == "uri (URI-LAPTOP) מעלה את המטלה הזו עכשיו. אפשר להכין העלאה חדשה כשהיא תסתיים."
     assert "העלאה בתהליך: uri (URI-LAPTOP)" in actions.state(root)["assignments"][0]["warnings"]
+
+
+def test_prepare_refuses_while_the_key_has_a_conflict_copy(root):
+    mark(root, "0001")
+    (a_dir(root) / "Key - number to student-DESKTOP-ABC.csv").write_text("number\n", encoding="utf-8")
+    with pytest.raises(actions.UserError) as e:
+        actions.prepare_send(root, COURSE, HW)
+    assert "עותק כפול של טבלת המפתח" in str(e.value)
+    assert upload_log.read_batch(a_dir(root)) is None

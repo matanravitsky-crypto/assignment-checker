@@ -34,6 +34,8 @@ GRADES = "Grades.csv"
 KEY = "Key - number to student.csv"
 README = "README.txt"
 DOWNLOAD_PREFIX = "Moodle download"
+PULL_LOCK = "Pull in progress.txt"      # in the assignment folder while a pull runs (see lock.py)
+UPLOAD_LOCK = "Upload in progress.txt"  # in the assignment folder while an upload to Moodle runs
 
 
 def data_dir() -> Path:

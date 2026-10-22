@@ -26,8 +26,8 @@ from datetime import datetime
 from pathlib import Path
 
 from grading import grade as grading
-from moodle import (claude_driver, ingest as moodle_ingest, lock as moodle_lock, paths, send as moodle_send,
-                    upload as moodle_upload, upload_log)
+from moodle import (anonymize as moodle_anonymize, claude_driver, ingest as moodle_ingest, lock as moodle_lock, paths,
+                    send as moodle_send, upload as moodle_upload, upload_log)
 
 from . import folder_view, settings as cfg, shared_folder
 
@@ -74,13 +74,12 @@ def _hebrew_error(e: Exception, mid: str) -> str:
 # ש-OneDrive סנכרן את טבלת המפתח ביניהם. לכן:
 #   * נעילה: בזמן משיכה יש בתיקיית המטלה קובץ שאומר מי מושך. אחרים מחכים.
 #   * התנגשות: אם OneDrive בכל זאת יצר עותק כפול של טבלת המפתח, לא מושכים עד שמתקנים.
-LOCK_FILE = "Pull in progress.txt"
+LOCK_FILE = paths.PULL_LOCK
 
 
 def key_conflicts(a: folder_view.Assignment) -> list[str]:
-    """עותקים כפולים של טבלת המפתח ש-OneDrive יוצר בהתנגשות (למשל "...-DESKTOP-ABC.csv")."""
-    stem = Path(paths.KEY).stem
-    return sorted(p.name for p in a.dir.glob(f"{stem}*.csv") if p.name != paths.KEY)
+    """עותקים כפולים של טבלת המפתח ש-OneDrive יוצר בהתנגשות (למשל "...-DESKTOP-ABC.csv"). הבדיקה עצמה ב-moodle/anonymize.py."""
+    return moodle_anonymize.key_conflicts(a.dir)
 
 
 def _take_lock(a: folder_view.Assignment) -> Path:

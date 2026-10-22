@@ -185,3 +185,82 @@ def test_prepare_does_not_write_the_log(assignment):
     prepare_batch(assignment)
     assert read_log(assignment) == [] and last_hashes(assignment) == {}
     assert not (assignment / paths.UPLOAD / "Upload log.csv").exists()
+
+
+# ---------- what must stop a batch before anything is packed ----------
+def rewrite_key(a, rows):
+    write_csv(a / paths.KEY, ["number", "anon_file", "participant_id", "original_folder", "original_file"], rows)
+
+
+def key_rows(**changes):
+    """The fixture's key, with {number: (participant, folder participant)} changed."""
+    rows = []
+    for n, p, name in STUDENTS:
+        pid, folder_pid = changes.get(n, (p, p))
+        rows.append((n, f"{n}.pdf", pid, FOLDER.format(name=name, participant=folder_pid), "work.pdf"))
+    return rows
+
+
+def assert_blocked_without_names(a, *must_say):
+    with pytest.raises(BatchBlocked) as blocked:
+        prepare_batch(a)
+    message = str(blocked.value)
+    assert all(text in message for text in must_say), message
+    assert not any(name in message for _, _, name in STUDENTS)  # numbers only
+    assert read_batch(a) is None and not list((a / paths.UPLOAD).glob("*.zip"))  # nothing was packed
+    return message
+
+
+def test_a_conflict_copy_of_the_key_blocks_prepare(assignment):
+    (assignment / "Key - number to student-DESKTOP-ABC.csv").write_text("number\n", encoding="utf-8")
+    assert_blocked_without_names(assignment, "Key - number to student-DESKTOP-ABC.csv", "עותק כפול של טבלת המפתח")
+    assert (assignment / "Key - number to student-DESKTOP-ABC.csv").exists()  # never deleted
+
+
+def test_a_conflict_copy_of_the_batch_list_blocks_prepare_and_stays(assignment):
+    copy = assignment / paths.UPLOAD / "Upload batch-DESKTOP-ABC.json"
+    copy.write_text("{}", encoding="utf-8")
+    assert_blocked_without_names(assignment, "Upload batch-DESKTOP-ABC.json")
+    assert copy.exists()
+
+
+def test_a_number_with_two_participants_blocks_prepare(assignment):
+    rows = key_rows()
+    rows.append(("0002", "0002-2.pdf", "999", FOLDER.format(name="אחר", participant="999"), "x.pdf"))
+    rewrite_key(assignment, rows)
+    message = assert_blocked_without_names(assignment, "0002", "טבלת המפתח לא תקינה")
+    assert "999" not in message and "אחר" not in message
+
+
+def test_a_participant_with_two_numbers_blocks_prepare(assignment):
+    rewrite_key(assignment, key_rows(**{"0003": ("100", "100")}))  # 0003 now points at 0001's student
+    message = assert_blocked_without_names(assignment, "0001", "0003")
+    assert "100" not in message
+
+
+def test_a_folder_whose_participant_id_differs_blocks_prepare(assignment):
+    rewrite_key(assignment, key_rows(**{"0002": ("200", "300")}))  # folder of participant 300 for 200
+    message = assert_blocked_without_names(assignment, "0002")
+    assert "0001" not in message and "300" not in message
+
+
+def test_a_folder_that_is_not_a_moodle_folder_blocks_prepare(assignment):
+    rows = key_rows()
+    rows[0] = ("0001", "0001.pdf", "100", "נועה כהן", "work.pdf")
+    rewrite_key(assignment, rows)
+    assert_blocked_without_names(assignment, "0001")
+
+
+def test_a_pull_in_progress_blocks_prepare(assignment):
+    lock_file = assignment / paths.PULL_LOCK
+    lock_file.write_text("uri (URI-LAPTOP) pid=4242", encoding="utf-8")
+    message = assert_blocked_without_names(assignment, "uri (URI-LAPTOP) מושך")
+    assert "pid" not in message
+    old = time.time() - 31 * 60  # a stuck pull does not block
+    os.utime(lock_file, (old, old))
+    assert prepare_batch(assignment).students == 2
+
+
+def test_an_upload_in_progress_blocks_prepare(assignment):
+    (assignment / paths.UPLOAD_LOCK).write_text("uri (URI-LAPTOP)", encoding="utf-8")
+    assert_blocked_without_names(assignment, "uri (URI-LAPTOP) מעלה")

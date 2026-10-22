@@ -31,7 +31,7 @@ from typing import Protocol
 
 from moodle import anonymize, lock, paths, upload, upload_log
 
-UPLOAD_LOCK = "Upload in progress.txt"
+UPLOAD_LOCK = paths.UPLOAD_LOCK
 STALE_MESSAGE = "הקבצים השתנו מאז ההכנה. צריך להכין שוב."
 
 
@@ -75,12 +75,46 @@ def newest(files: list[Path]) -> float:
     return max((p.stat().st_mtime for p in files), default=0.0)
 
 
-def prepare_batch(assignment_dir: Path, max_bytes: int = upload.CLAUDE_MAX_ZIP_BYTES) -> BatchSummary:
+KEY_PROBLEMS = {
+    "number_has_two_participants": "מספר שמופיע בטבלה עם יותר ממזהה משתתף אחד",
+    "participant_has_two_numbers": "מספרים שחולקים אותו מזהה משתתף",
+    "folder_does_not_match": "מספר שמזהה המשתתף בשם התיקייה המקורית שלו שונה ממזהה המשתתף בטבלה",
+}
+
+
+def check_can_prepare(assignment_dir: Path) -> None:
+    """Raise BatchBlocked (Hebrew, numbers only) while a batch can't be prepared safely: a pull or an upload runs,
+    OneDrive made a conflict copy of the key, the log or the batch list, or the key itself does not hold together."""
+    pulling = lock.holder(assignment_dir / paths.PULL_LOCK)
+    if pulling:
+        raise BatchBlocked(f"{pulling[0]} מושך את המטלה הזו עכשיו (מ-{pulling[1]:%H:%M}), וטבלת המפתח עשויה להשתנות. "
+                           "אפשר להכין העלאה כשהמשיכה תסתיים.")
+    uploading = lock.holder(assignment_dir / UPLOAD_LOCK)
+    if uploading:
+        raise BatchBlocked(f"{uploading[0]} מעלה את המטלה הזו עכשיו. אפשר להכין העלאה חדשה כשהיא תסתיים.")
+    conflicts = anonymize.key_conflicts(assignment_dir)
+    if conflicts:
+        raise BatchBlocked(
+            f"ב-OneDrive נוצר עותק כפול של טבלת המפתח ({', '.join(conflicts)}). "
+            f"צריך לאחד אותו עם `{paths.KEY}` ולמחוק את העותק לפני העלאה, כדי ששום סטודנט לא יקבל עבודה של סטודנט אחר.")
     conflicts = upload_log.log_conflicts(assignment_dir)
     if conflicts:
         raise BatchBlocked(
             f"ב-OneDrive נוצר עותק כפול של יומן ההעלאה ({', '.join(conflicts)}). "
             f"צריך לאחד אותו עם `{upload_log.LOG_FILE}` ולמחוק את העותק לפני העלאה נוספת.")
+    conflicts = upload_log.batch_conflicts(assignment_dir)
+    if conflicts:
+        raise BatchBlocked(
+            f"ב-OneDrive נוצר עותק כפול של רשימת האצווה ({', '.join(conflicts)}). "
+            f"צריך לבדוק אם מישהו העלה ממנה, לרשום את מה שהועלה, ולמחוק את העותק לפני העלאה נוספת.")
+    problems = anonymize.key_problems(assignment_dir)
+    if problems:
+        lines = "; ".join(f"{KEY_PROBLEMS[kind]}: {', '.join(numbers)}" for kind, numbers in problems.items())
+        raise BatchBlocked(f"טבלת המפתח לא תקינה, ולכן לא מעלים כלום: {lines}. צריך לתקן את הטבלה לפני העלאה.")
+
+
+def prepare_batch(assignment_dir: Path, max_bytes: int = upload.CLAUDE_MAX_ZIP_BYTES) -> BatchSummary:
+    check_can_prepare(assignment_dir)
 
     mapping = anonymize.read_mapping(assignment_dir)
     marked_dir = assignment_dir / paths.MARKED
