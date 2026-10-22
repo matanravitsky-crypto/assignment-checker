@@ -2,7 +2,7 @@
 
 האתר עצמו: HTML, CSS ו-JavaScript, בלי בנייה ובלי ספריות חוץ מ-KaTeX (לנוסחאות). הוא עובד בשתי צורות:
 
-- **הדגמה (ציבורית):** https://matanravitsky-crypto.github.io/assignment-checker/. מתפרסם לבד מ-`main` בכל שינוי בתיקייה הזו, דרך `.github/workflows/website.yml`.
+- **הדגמה (ציבורית):** https://bodek-hacham.vercel.app. מתפרסם לבד ב-Vercel מ-`main` בכל שינוי בתיקייה הזו (פרויקט Vercel `bodek-hacham`, תיקיית שורש `website`).
 - **מחוברת:** אותם קבצים, דרך השרת המקומי ([`dashboard/`](../dashboard/)). האתר מזהה שהוא רץ ב-`localhost` ואז עובד עם התיקייה האמיתית.
 
 | קובץ | מה הוא |

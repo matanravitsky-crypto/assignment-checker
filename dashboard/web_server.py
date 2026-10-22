@@ -256,7 +256,7 @@ def serve(port: int = 8765, open_browser: bool = True) -> None:
         print("\nהאתר יעלה בכל זאת, ויציג את ההסבר הזה עד שהתיקייה תסתנכרן.")
     httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     url = f"http://localhost:{port}/"
-    print(f"\nבודק העבודות פועל: {url}\nכדי לעצור: Ctrl+C או לסגור את החלון.")
+    print(f"\nבודק חכם פועל: {url}\nכדי לעצור: Ctrl+C או לסגור את החלון.")
     if open_browser:
         webbrowser.open(url)
     try:

@@ -1336,7 +1336,7 @@
               <span class="arch-v" aria-hidden="true">⇅</span>
               <div class="arch-row center">${node("תיקיית OneDrive", "YallaLinearit: הגשות, ציונים ויומן", ...(LOCAL.health?.root ? ["מחוברת", "ok"] : ["לא מחוברת", "warn"]))}</div>
               <span class="arch-v" aria-hidden="true">⇅</span>
-              <div class="arch-row center">${node("האתר הזה", LOCAL.on ? "דרך המערכת במחשב" : "GitHub Pages, מצב הדגמה", "פעיל", "ok")}</div>
+              <div class="arch-row center">${node("האתר הזה", LOCAL.on ? "דרך המערכת במחשב" : "Vercel, מצב הדגמה", "פעיל", "ok")}</div>
             </div>
           </div>
         </section>
@@ -1726,7 +1726,7 @@
       });
   }
 
-  // השרת המקומי עונה ב-api/health. באתר הציבורי (GitHub Pages) אין לו תשובה, ולכן נשארים בהדגמה
+  // השרת המקומי עונה ב-api/health. באתר הציבורי (Vercel) אין לו תשובה, ולכן נשארים בהדגמה
   async function detectLocal() {
     if (!["localhost", "127.0.0.1"].includes(location.hostname)) return false;
     try {
