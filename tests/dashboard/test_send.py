@@ -14,7 +14,7 @@ import pytest
 from dashboard import actions
 from moodle import claude_driver, lock, paths, upload_log
 from moodle.send import UPLOAD_LOCK, SimulatedDriver, UploadResult, prepare_batch
-from tests.dashboard.helpers import BODY, COURSE, HDR, HW, MID, NAMES, call, mark
+from tests.dashboard.helpers import BODY, COURSE, HDR, HW, MID, NAMES, call, hw, mark
 
 
 def a_dir(root):
@@ -29,7 +29,7 @@ def wait_idle(timeout=5.0):
 
 
 def statuses(root):
-    return [s["status"] for s in actions.state(root)["assignments"][0]["subs"]]
+    return [s["status"] for s in hw(actions.state(root))["subs"]]
 
 
 class GateDriver:
@@ -65,7 +65,7 @@ def test_prepare_then_start_marks_students_returned(root):
     assert rep["students"] == 2 and "2 סטודנטים" in rep["summary"]
     assert rep["summary"] == 'מטלה "הגשה 0 - קבוצות ומרוכבים" (מודל 3438636): 2 קבצים של 2 סטודנטים, ב-1 קובצי ZIP.'
     actions.start_send(root, COURSE, HW, rep["id"], driver=SimulatedDriver(), wait=True)
-    subs = actions.state(root)["assignments"][0]["subs"]
+    subs = hw(actions.state(root))["subs"]
     assert [s["status"] for s in subs] == ["returned", "returned", "pulled"]
 
 
@@ -258,10 +258,10 @@ def test_simulate_env_uses_the_simulated_driver_with_a_delay(root, monkeypatch):
 def test_state_shows_when_it_was_returned_and_what_changed_after(root):
     mark(root, "0001", "0002")
     rep = actions.prepare_send(root, COURSE, HW)
-    assert actions.state(root)["assignments"][0]["returnedAt"] is None
+    assert hw(actions.state(root))["returnedAt"] is None
     actions.start_send(root, COURSE, HW, rep["id"], driver=SimulatedDriver(), wait=True)
     last = max(r["uploaded_at"] for r in upload_log.read_log(a_dir(root)))
-    assert actions.state(root)["assignments"][0]["returnedAt"] == last
+    assert hw(actions.state(root))["returnedAt"] == last
     (a_dir(root) / paths.MARKED / "0001.pdf").write_bytes(b"%PDF-1.4 changed after the upload")  # the grader edited it
     assert statuses(root) == ["graded", "returned", "pulled"]
 
@@ -294,7 +294,7 @@ def test_state_warns_about_a_log_conflict_and_an_upload_in_progress(root):
     folder = a_dir(root)
     (folder / paths.UPLOAD / "Upload log-DESKTOP-X.csv").write_text("number\n", encoding="utf-8")
     (folder / UPLOAD_LOCK).write_text("uri (URI-LAPTOP)", encoding="utf-8")
-    warnings = actions.state(root)["assignments"][0]["warnings"]
+    warnings = hw(actions.state(root))["warnings"]
     assert "עותק כפול של יומן ההעלאה: Upload log-DESKTOP-X.csv" in warnings
     assert "העלאה בתהליך: uri (URI-LAPTOP)" in warnings
 
@@ -346,7 +346,7 @@ def test_server_upload_flow(root, server, monkeypatch):
     st, job = call(server, "GET", "/api/upload")
     assert st == 200 and job["running"] is False and job["done"] == 1 and job["stopped"] is None
     st, state = call(server, "GET", "/api/state")
-    assert [s["status"] for s in state["assignments"][0]["subs"]] == ["returned", "returned", "pulled"]
+    assert [s["status"] for s in hw(state)["subs"]] == ["returned", "returned", "pulled"]
     assert state["sending"]["done"] == 1
     st, stopped = call(server, "POST", "/api/upload/stop", {}, HDR)
     assert st == 200 and stopped["running"] is False
@@ -411,7 +411,7 @@ def test_lock_text_with_a_pid_is_shown_without_it(root):
     with pytest.raises(actions.UserError) as e:
         actions.prepare_send(root, COURSE, HW)
     assert str(e.value) == "uri (URI-LAPTOP) מעלה את המטלה הזו עכשיו. אפשר להכין העלאה חדשה כשהיא תסתיים."
-    assert "העלאה בתהליך: uri (URI-LAPTOP)" in actions.state(root)["assignments"][0]["warnings"]
+    assert "העלאה בתהליך: uri (URI-LAPTOP)" in hw(actions.state(root))["warnings"]
 
 
 def test_prepare_refuses_while_the_key_has_a_conflict_copy(root):

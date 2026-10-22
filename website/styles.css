@@ -272,6 +272,7 @@ main {
 .empty strong { display: block; font: 700 18px var(--font-display); color: var(--ink); margin-bottom: 4px; }
 .empty-act { margin-top: 18px; display: flex; justify-content: center; }
 .empty.slim { padding: 20px; }
+.empty .moodle-id { max-width: 520px; margin: 18px auto 0; text-align: start; }
 .empty-line { margin: 0; font-size: 14px; }
 
 .stats { display: flex; gap: 18px; flex-wrap: wrap; font-size: 13.5px; color: var(--ink-2); }
