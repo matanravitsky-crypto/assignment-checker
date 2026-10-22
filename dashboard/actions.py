@@ -21,18 +21,18 @@ from pathlib import Path
 
 from moodle import ingest as moodle_ingest, paths, upload as moodle_upload
 
-from . import config, settings as cfg, team
+from . import folder_view, settings as cfg, shared_folder
 
 
 def root_info() -> tuple[Path | None, str | None]:
     try:
-        return config.find_root(), None
-    except config.FolderNotFound as e:
+        return shared_folder.find_root(), None
+    except shared_folder.FolderNotFound as e:
         return None, str(e)
 
 
-def find_assignment(root: Path, course: str, assignment: str) -> team.Assignment:
-    a = team.Assignment(root / course / assignment)
+def find_assignment(root: Path, course: str, assignment: str) -> folder_view.Assignment:
+    a = folder_view.Assignment(root / course / assignment)
     if not a.dir.is_dir() or a.dir.resolve().parent.parent != root.resolve():
         raise FileNotFoundError(f"המטלה {course} / {assignment} לא נמצאה בתיקייה")
     return a
@@ -43,7 +43,7 @@ def _use_root(root: Path) -> None:
     os.environ["ASSIGNMENT_DATA"] = str(root)
 
 
-def _moodle_id(a: team.Assignment) -> str:
+def _moodle_id(a: folder_view.Assignment) -> str:
     mid = a.details().get("id")
     if not mid:
         raise ValueError(f"אין מזהה מודל (id) בקובץ {paths.INFO} של המטלה")
@@ -70,7 +70,7 @@ LOCK_FILE = "Pull in progress.txt"
 LOCK_MINUTES = 30
 
 
-def key_conflicts(a: team.Assignment) -> list[str]:
+def key_conflicts(a: folder_view.Assignment) -> list[str]:
     """עותקים כפולים של טבלת המפתח ש-OneDrive יוצר בהתנגשות (למשל "...-DESKTOP-ABC.csv")."""
     stem = Path(paths.KEY).stem
     return sorted(p.name for p in a.dir.glob(f"{stem}*.csv") if p.name != paths.KEY)
@@ -80,7 +80,7 @@ def _me() -> str:
     return f"{getpass.getuser()} ({socket.gethostname()})"
 
 
-def _take_lock(a: team.Assignment) -> Path:
+def _take_lock(a: folder_view.Assignment) -> Path:
     lock = a.dir / LOCK_FILE
     if lock.exists():
         started = datetime.fromtimestamp(lock.stat().st_mtime)
@@ -152,7 +152,7 @@ class UserError(Exception):
 _DOWNLOAD = re.compile(re.escape(paths.DOWNLOAD_PREFIX) + r" (\d{4}-\d{2}-\d{2} \d{2}-\d{2})\.zip$")
 
 
-def _results(a: team.Assignment) -> dict[str, dict]:
+def _results(a: folder_view.Assignment) -> dict[str, dict]:
     path = a.dir / paths.GRADES
     if not path.exists():
         return {}
@@ -160,7 +160,7 @@ def _results(a: team.Assignment) -> dict[str, dict]:
         return {r["number"]: r for r in csv.DictReader(fh) if r.get("number")}
 
 
-def _last_download(a: team.Assignment) -> str | None:
+def _last_download(a: folder_view.Assignment) -> str | None:
     stamps = [m.group(1) for p in a.dir.glob("*.zip") if (m := _DOWNLOAD.match(p.name))]
     if not stamps:
         return None
@@ -170,12 +170,12 @@ def _last_download(a: team.Assignment) -> str | None:
 def state(root: Path) -> dict:
     """הקורסים, המטלות וההגשות כפי שהם בתיקייה. בלי שמות של סטודנטים: רק מספרים."""
     courses, out = [], []
-    for ci, course_dir in enumerate(team.courses(root)):
-        items = team.assignments(course_dir)
+    for ci, course_dir in enumerate(folder_view.courses(root)):
+        items = folder_view.assignments(course_dir)
         if not items:
             continue
         cid = f"c{ci}"
-        courses.append({"id": cid, "name": team.course_title(course_dir), "folder": course_dir.name})
+        courses.append({"id": cid, "name": folder_view.course_title(course_dir), "folder": course_dir.name})
         for ai, a in enumerate(items):
             d = a.details()
             marked, results = a.graded_numbers(), _results(a)
@@ -205,7 +205,7 @@ def state(root: Path) -> dict:
                 datetime.fromtimestamp((a.dir / paths.KEY).stat().st_mtime).isoformat(timespec="minutes")
                 if subs and (a.dir / paths.KEY).exists() else None)
             out.append({
-                "id": f"{cid}a{ai}", "courseId": cid, "course": team.course_title(course_dir),
+                "id": f"{cid}a{ai}", "courseId": cid, "course": folder_view.course_title(course_dir),
                 "courseFolder": course_dir.name, "folder": a.dir.name, "title": a.title,
                 "n": ai + 1, "due": d.get("due"), "questions": a.question_count(), "questionLabels": a.question_labels(),
                 "pulledAt": pulled, "returnedAt": None, "moodleId": d.get("id"),

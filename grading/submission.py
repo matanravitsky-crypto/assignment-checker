@@ -1,4 +1,4 @@
-"""מבני הנתונים של הגשה, כפי שהיא מגיעה ממודל (לפני המספור)."""
+"""מבנה של הגשה כפי שהיא מגיעה ממודל (לפני המספור). בשימוש בשלב הבדיקה."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field

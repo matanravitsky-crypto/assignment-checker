@@ -16,5 +16,5 @@ if not exist ".venv\Scripts\python.exe" (
   ".venv\Scripts\python" -m pip install --disable-pip-version-check -q -r requirements.txt
 )
 
-".venv\Scripts\python" -m pipeline serve
+".venv\Scripts\python" -m dashboard serve
 pause
