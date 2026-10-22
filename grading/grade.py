@@ -532,6 +532,9 @@ def mark_pdf(pdf: bytes, g: Graded, ctx: Context, max_bytes: int = MAX_BYTES) ->
             page = doc[n]
             # המקום הפנוי נמדד לפני שמציירים משהו; המלבנים של כל הסימונים בעמוד תפוסים מראש
             free = placement.FreeSpace(page) if any(text for _, text in marks) else None
+            if free:
+                # מיושר למשבצות, כדי שהקו יגיע לשפה של המלבן רק דרך משבצת נקייה
+                marks = [(free.snap(box), text) for box, text in marks]
             for box, _ in marks:
                 page.draw_rect(box * page.derotation_matrix, color=RED, width=1.4, overlay=True)
                 if free:
@@ -539,13 +542,14 @@ def mark_pdf(pdf: bytes, g: Graded, ctx: Context, max_bytes: int = MAX_BYTES) ->
             for box, text in marks:
                 if not text:
                     continue
-                note = free.place(box, *placement.note_size(text, NOTE_WIDTH, NOTE_FONT))
+                note, line = free.place(box, *placement.note_size(text, NOTE_WIDTH, NOTE_FONT))
                 free.occupy(note)
                 _write(page, note, _html(text, NOTE_FONT), archive)
-                if line := placement.arrow(note, box):
-                    a, b = (p * page.derotation_matrix for p in line)
-                    page.draw_line(a, b, color=RED, width=1, overlay=True)
-                    page.draw_circle(b, 1.8, color=RED, fill=RED, overlay=True)
+                if line:
+                    # הקו עובר רק במשבצות בלי דיו, ומתכופף כמה שצריך
+                    page.draw_polyline([p * page.derotation_matrix for p in line], color=RED, width=1, overlay=True)
+                    page.draw_circle(line[-1] * page.derotation_matrix, 1.8, color=RED, fill=RED, overlay=True)
+                    free.occupy_line(line)
         _summary_page(doc, g, ctx, archive)
         doc.subset_fonts()
         out = doc.tobytes(garbage=4, deflate=True)
