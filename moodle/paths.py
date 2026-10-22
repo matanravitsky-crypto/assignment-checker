@@ -13,7 +13,6 @@ a folder per assignment, with plain English names that say what each one is
           Assignment details.json                    Moodle id, questions, rules, rubric
           Grades.csv                                 number,grade,feedback (from grading)
           Key - number to student.csv                the key: number -> Moodle participant
-          פדגוגי/                                    Rubric.md, Solutions.md, Solution methods.md, findings.md
           Moodle download <date>.zip                 the ZIP exactly as Moodle gave it
           README.txt
 
@@ -37,11 +36,6 @@ README = "README.txt"
 DOWNLOAD_PREFIX = "Moodle download"
 PULL_LOCK = "Pull in progress.txt"      # in the assignment folder while a pull runs (see lock.py)
 UPLOAD_LOCK = "Upload in progress.txt"  # in the assignment folder while an upload to Moodle runs
-PEDAGOGY = "פדגוגי"                     # rubric, solutions, solution methods, findings (the rubric skill)
-RUBRIC = "Rubric.md"
-SOLUTIONS = "Solutions.md"
-METHODS = "Solution methods.md"
-FINDINGS = "findings.md"
 
 
 def data_dir() -> Path:

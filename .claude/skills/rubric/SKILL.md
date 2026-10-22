@@ -5,8 +5,11 @@ description: Build the rubric for an assignment - common mistakes, every correct
 
 # מחוון: rubric, common mistakes and solution methods for one assignment
 
-The result is four files in the assignment's `פדגוגי` folder (`moodle/paths.py`: `PEDAGOGY`):
-`Solutions.md`, `Solution methods.md`, `Rubric.md`, `findings.md`. They are built from a random sample of
+The result is three files at the top of the assignment's `פדגוגי` folder, `Solutions.md`, `Solution methods.md`
+and `Rubric.md`, plus `findings.md` in its `Working notes` subfolder. **Grading sends every top-level .md/.txt
+of `פדגוגי` to Claude with each submission** and takes the points per question from the rubric's points table
+(`| <question> | <points> | ...`), so only material for the grader goes on top; drafts, old versions and
+sample statistics go in `Working notes` (never sent). They are built from a random sample of
 real submissions, then a 5-member council (lecturer, TA, weak student, strong student, appeals) debates,
 two TAs field-test the draft on fresh submissions, critics review, and a final check runs.
 `Rubric.md` always follows `rubric-template.md` (same sections, same codes; no length limit: TAs ask their Claude about it rather than read it).
@@ -66,17 +69,21 @@ notification. While waiting, answer the user but don't poll.
 
 1. Read the workflow's result (the `check` report), not the files. If it reports something still wrong
    that you can fix from `questions.md` (an answer, a printed template), fix it in `Rubric.md`.
-2. Copy `Solutions.md`, `Solution methods.md`, `Rubric.md`, `findings.md` from `<work>` to
-   `<assignment>\פדגוגי\`. If a `Rubric.md` is already there, rename it first to `Rubric v<N>.md`.
+2. If a `Rubric.md` is already in `<assignment>\פדגוגי\`, move it first to
+   `<assignment>\פדגוגי\Working notes\Rubric v<N>.md`. Then copy `Solutions.md`, `Solution methods.md`,
+   `Rubric.md` from `<work>` to `<assignment>\פדגוגי\`, and `findings.md` to `<assignment>\פדגוגי\Working notes\`.
+   Nothing else goes on top of `פדגוגי`: grading would send it to Claude with every submission.
 3. Delete `<work>` (it holds student pages).
-4. Don't write anything into `Assignment details.json`: the rubric reaches the grading bot only after the
-   lecturer approves it.
+4. Don't write anything into `Assignment details.json`. Tell the user that from now on grading uses this rubric
+   (it reads `פדגוגי`), and that the ⚠ decisions in §7 still wait for the lecturer.
 
 ## 6. Upload to the shared folder (ask once)
 
-Ask the user once: upload the four files to `<course>/<assignment>/פדגוגי` in the shared folder? On yes, in
-Chrome: open that folder (create `פדגוגי` with Create or upload → Folder if it's missing), then patch the
-page so the file input doesn't open the Windows dialog:
+If the shared folder is synced on this computer (`dashboard/shared_folder.py` finds it), step 5 already put the
+files there; skip this step. Otherwise ask the user once: upload the files to `<course>/<assignment>/פדגוגי` in
+the shared folder (the three on top, `findings.md` into `Working notes`)? On yes, in Chrome: open that folder
+(create `פדגוגי` / `Working notes` with Create or upload → Folder if missing), then patch the page so the file
+input doesn't open the Windows dialog:
 ```js
 window.__origClick = window.__origClick || HTMLInputElement.prototype.click;
 HTMLInputElement.prototype.click = function () { if (this.type === 'file') { if (!this.isConnected) document.body.appendChild(this); return; } return window.__origClick.call(this); };

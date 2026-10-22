@@ -12,10 +12,12 @@ A case that applies to many parts (notation, copy error, crossed-out work, out-o
 ## Header (≤ 8 lines)
 Title `# <Hebrew title> – מחוון (0–100)`, course and semester, Moodle id, the questions (sheet + numbers),
 the status line (`טיוטה, ממתינה לאישור המרצה. החלטות פתוחות מסומנות ⚠ (§7).`), and the companion files
-(`Solutions.md`, `Solution methods.md`, `findings.md`). Privacy line: submissions only by 4-digit number.
+(`Solutions.md`, `Solution methods.md`, and `Working notes/findings.md`). Privacy line: submissions only by 4-digit number.
 
 ## §0 עמוד אחד לבודק
-1. **Points per part** table: | שאלה | נק' | סעיפים | and one line on why the weights (what each part tests,
+1. **Points per part** table, the **first table in the file**: | שאלה | נק' | סעיפים |, one row per question,
+   the question as "<sheet> <number>" (e.g. `| קבוצות 11 | 20 | א 3 · ב 3 ... |`). Grading reads the points per
+   question from this table, so keep the format exactly. Then one line on why the weights (what each part tests,
    where students failed in the sample). Sums to exactly 100.
 2. **Answer key** table: every part → final answer, in the exact form expected.
 3. **Common deductions at a glance**: ≤ 12 rows | מצב | כמה יורד | איפה מפורט |.
