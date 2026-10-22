@@ -13,7 +13,7 @@
     python -m moodle send <assignment id> [--dry-run] [--yes] [--simulate]
         Marked files -> Moodle, through Claude in Chrome. Prepares the batch (new or changed work only), prints
         its summary (numbers only), asks "להעלות למודל? (y/N)" unless --yes, uploads ZIP by ZIP and logs each one.
-        --dry-run goes as far as Moodle's confirmation list and logs nothing; --simulate never touches Moodle.
+        --dry-run only checks the page and attaches the file, then cancels (Moodle imports at once): nothing is imported or logged; --simulate never touches Moodle.
         Exit code 1 if it stopped before the end.
 
     python -m moodle record <assignment id> "<zip name>"
@@ -72,7 +72,7 @@ def run_send(target: Path, args) -> int:
             print("לא הועלה כלום")
             return 0
     if args.dry_run:
-        print("ריצת ניסיון: עוצרים ברשימת האישור של מודל, בלי להעלות ובלי לרשום ביומן")
+        print("ריצת ניסיון: בודקים את הדף ומצרפים את הקובץ, ואז מבטלים. שום דבר לא יובא ולא נרשם ביומן")
     report = send.run_batch(
         target, summary.id, make_driver(args.simulate), dry_run=args.dry_run,
         on_progress=lambda index, total, name: print(f"{index}/{total} {name}"))
@@ -108,7 +108,7 @@ def main() -> None:
 
     send_cmd = commands.add_parser("send", help="upload the marked files to Moodle with Claude in Chrome")
     send_cmd.add_argument("assignment_id")
-    send_cmd.add_argument("--dry-run", action="store_true", help="stop at Moodle's confirmation list, upload and log nothing")
+    send_cmd.add_argument("--dry-run", action="store_true", help="check the page and attach the file, then cancel: import and log nothing")
     send_cmd.add_argument("--yes", action="store_true", help="don't ask before uploading")
     send_cmd.add_argument("--simulate", action="store_true", help="don't touch Moodle (for trying it out)")
 

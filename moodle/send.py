@@ -146,7 +146,8 @@ class UploadResult:
     """What the driver saw in Moodle for one ZIP.
 
     status: "imported" | "dry_run_ok" | "needs_login" | "mismatch" | "error"
-    rows: lines in Moodle's confirmation list; imported / skipped: how many files Moodle imported / left as they were.
+    rows: how many files Moodle processed (imported + skipped), or the expected count in a dry run (nothing is imported);
+    imported / skipped: how many files Moodle imported / left as they were.
     """
     status: str
     rows: int | None = None
@@ -157,7 +158,7 @@ class UploadResult:
 
 class MoodleDriver(Protocol):
     def upload_zip(self, info: dict, zip_path: Path, expected: int, dry_run: bool) -> UploadResult:
-        """Upload one ZIP of `expected` files (or, with dry_run, go as far as Moodle's confirmation list and stop)."""
+        """Upload one ZIP of `expected` files (or, with dry_run, check the page and attach the file, then cancel: nothing is imported)."""
         ...
 
 
@@ -218,7 +219,7 @@ def run_batch(
 
     `should_stop` is asked before every ZIP that is still to upload; `on_progress(index, total, zip_name)` is
     called after each ZIP this run finished (index counts from 1 in the batch). With `dry_run` only the first ZIP
-    that is still to upload goes as far as Moodle's confirmation list, and nothing is logged.
+    that is still to upload is checked as far as attaching the file (Moodle imports at once, so it never imports), and nothing is logged.
     """
     batch = current_batch(assignment_dir, batch_id)
     if batch is None:
@@ -271,7 +272,7 @@ def upload_zips(
         expected = len(files)
         result = driver.upload_zip(info, assignment_dir / paths.UPLOAD / name, expected, dry_run)
         if dry_run and result.status == "dry_run_ok" and result.rows == expected:
-            report.message = f"בדיקה יבשה עברה: {result.rows} שורות ברשימת האישור"
+            report.message = f"בדיקה יבשה עברה: הדף והקובץ נבדקו ({result.rows} קבצים ב-ZIP), שום דבר לא יובא"
             finished(index, name)
             return report
         if not dry_run and result.status == "imported" and counts_match(result, expected):
@@ -288,7 +289,7 @@ def upload_zips(
         # Anything else stops the run; a result that says imported (or checked) but fails the numbers is an error
         detail = result.message
         if not detail and result.status in ("imported", "dry_run_ok"):
-            detail = (f"קבצים צפויים: {expected}, שורות ברשימת האישור: {result.rows}, "
+            detail = (f"קבצים צפויים: {expected}, קבצים ש-Moodle עיבד: {result.rows}, "
                       f"יובאו: {result.imported or 0}, דולגו: {result.skipped or 0}")
         why = result.status if result.status in ("needs_login", "mismatch", "error") else "error"
         return stop(why, f"{name}: {detail}")

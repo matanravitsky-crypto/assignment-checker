@@ -115,7 +115,7 @@ def test_imported_with_numbers_that_do_not_add_up_is_an_error(batch, result):
 def test_a_driver_without_a_message_still_gets_the_numbers_in_the_report(batch):
     a, s = batch
     r = run_batch(a, s.id, SimulatedDriver([UploadResult("imported", rows=1, imported=0)]))
-    assert r.message == f"{PART_1}: קבצים צפויים: 1, שורות ברשימת האישור: 1, יובאו: 0, דולגו: 0"
+    assert r.message == f"{PART_1}: קבצים צפויים: 1, קבצים ש-Moodle עיבד: 1, יובאו: 0, דולגו: 0"
 
 
 def test_identical_files_skipped_by_moodle_count_as_done(batch):
@@ -197,7 +197,7 @@ def test_dry_run_checks_first_zip_only_and_records_nothing(batch):
     r = run_batch(a, s.id, d, dry_run=True)
     assert r.stopped is None and len(d.calls) == 1 and read_log(a) == []
     assert (r.done_zips, r.recorded) == ([], 0)
-    assert r.message == "בדיקה יבשה עברה: 1 שורות ברשימת האישור"
+    assert r.message == "בדיקה יבשה עברה: הדף והקובץ נבדקו (1 קבצים ב-ZIP), שום דבר לא יובא"
     assert not (a / UPLOAD_LOCK).exists()
 
 

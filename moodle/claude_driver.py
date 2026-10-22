@@ -5,8 +5,8 @@ Moodle has no API, so `ClaudeChromeDriver.upload_zip` (the `MoodleDriver` of sen
     claude -p --chrome ... "<the prompt of claude_upload.md>"
 
 in the user's own logged-in Chrome and turns the CLI's JSON output into an `UploadResult`. The run can use the
-Chrome tools only, and see only the folder the ZIP is in. It never gets Bash, other MCP servers, hooks or the
-user's settings (the flags are in `build_command`). Claude never types a Moodle password: a login page ends the
+Chrome tools only (`--tools ""` switches the built-in tools off), and see only the folder the ZIP is in. It never gets
+Bash, file tools, other MCP servers, hooks or the user's settings (the flags are in `build_command`). Claude never types a Moodle password: a login page ends the
 run with "needs_login".
 
 The driver never raises. `run_batch` lets a driver's exception propagate, so every failure (no `claude`, a
@@ -88,7 +88,7 @@ AUTH_PROBLEM = re.compile(r"authenticat|oauth|not logged in|/login|invalid api k
 # What to say when Claude gives a failing status without a message
 DEFAULT_MESSAGES = {
     "needs_login": "Moodle מבקש התחברות. מתחברים ל-Moodle בכרום ומריצים שוב.",
-    "mismatch": "מספר השורות ברשימת האישור של Moodle שונה מהצפוי.",
+    "mismatch": "מספר הקבצים ש-Moodle עיבד שונה מהצפוי.",
     "error": "Claude לא פירט מה השתבש.",
 }
 
@@ -116,7 +116,7 @@ def render_prompt(info: dict, zip_path: Path, expected: int, dry_run: bool) -> s
 def build_command(prompt: str, add_dir: Path, *, model: str, budget_usd: float, schema: dict, claude: str) -> list[str]:
     """The command line of one run. Every flag of the locked-down run is here, so the findings of plan task 1 change one place.
 
-    --allowedTools and --add-dir take a list: each is followed by another flag, so the prompt (last) is not read as one more value.
+    --tools, --allowedTools and --add-dir take a list: each is followed by another flag, so the prompt (last) is not read as one more value.
     """
     return [
         claude, "-p",
@@ -124,7 +124,8 @@ def build_command(prompt: str, add_dir: Path, *, model: str, budget_usd: float, 
         "--no-session-persistence",                         # nothing of the run is kept
         "--setting-sources", "project",                     # not the user's settings, hooks or plugins
         "--strict-mcp-config",                              # no MCP servers beyond the ones named for the run
-        "--allowedTools", "mcp__claude-in-chrome",          # the Chrome tools only: no Bash, no file tools
+        "--tools", "",                                      # switches every built-in tool off (Bash, Edit, Write, Read...). --allowedTools alone does not
+        "--allowedTools", "mcp__claude-in-chrome",          # what is left: the Chrome tools only. Needs no permission prompt
         "--output-format", "json",
         "--max-budget-usd", str(budget_usd),
         "--json-schema", json.dumps(schema, separators=(",", ":")),

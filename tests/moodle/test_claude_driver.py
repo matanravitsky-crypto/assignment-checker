@@ -53,6 +53,7 @@ def test_command_is_limited_to_chrome_and_the_upload_folder(tmp_path):
     assert {"-p", "--chrome", "--no-session-persistence"} <= set(cmd)
     assert cmd[cmd.index("--add-dir") + 1] == str(tmp_path)
     assert cmd[cmd.index("--allowedTools") + 1] == "mcp__claude-in-chrome"
+    assert cmd[cmd.index("--tools") + 1] == ""  # built-in tools off: only the Chrome tools remain
     assert "Bash" not in " ".join(cmd)
 
 
@@ -68,7 +69,7 @@ def test_command_has_the_baseline_flags_and_the_prompt_last(tmp_path):
     assert json.loads(cmd[cmd.index("--json-schema") + 1]) == RESULT_SCHEMA
 
 
-@pytest.mark.parametrize("flag", ["--add-dir", "--allowedTools"])
+@pytest.mark.parametrize("flag", ["--add-dir", "--allowedTools", "--tools"])
 def test_a_flag_that_takes_a_list_never_swallows_the_prompt(tmp_path, flag):
     cmd = build_command("the prompt", tmp_path, model="m", budget_usd=2.0, schema=RESULT_SCHEMA, claude="claude")
     assert cmd[cmd.index(flag) + 2].startswith("--")
@@ -107,6 +108,11 @@ def test_template_knows_there_is_no_confirmation_screen():
     text = claude_driver.TEMPLATE.read_text(encoding="utf-8").lower()
     for gone in ("confirmation list", "count the rows", "javascript_tool", "get_page_text", "click cancel"):
         assert gone not in text
+
+
+def test_defaults_keep_sonnet_and_enough_budget():
+    assert claude_driver.DEFAULT_MODEL == "claude-sonnet-5-5"
+    assert claude_driver.DEFAULT_BUDGET_USD >= 1.0  # real Sonnet runs cost 0.10-0.34 USD
 
 
 def test_urls_follow_the_global_constraints():
