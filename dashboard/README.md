@@ -26,6 +26,8 @@ python -m dashboard serve
 | `POST /api/pull` | משיכה: אם אין ZIP של המטלה בתיקיית ההורדות, Claude בכרום מוריד אותו ממודל (המערכת מחכה עד שההורדה מסתיימת), ואז `moodle ingest`. 422 עם הסבר אם ההורדה לא התחילה |
 | `POST /api/grade` | מתחיל בדיקה עם Claude ברקע: `{course, assignment, ids?, model?, parallel?, instructions?, sendSolution?}`. דרך מפתח ה-API אם יש, אחרת דרך Claude Code שמחובר במחשב. בלי שניהם: 400 עם הסבר |
 | `GET /api/grade` | מצב הבדיקה שרצה: כמה נבדקו, מה נכשל, וסיכום בסוף |
+| `GET /api/pages?course=&assignment=&number=` | כמה עמודים יש בהגשה (כל הקבצים שלה יחד, כמו ש-Claude ראה אותם) |
+| `GET /api/page?course=&assignment=&number=&page=` | עמוד אחד של הגשה כתמונה (JPEG), לבדיקה הידנית |
 | `POST /api/review` | בדיקה ידנית: `{course, assignment, number, points[], comments[], feedback, mistakes[][]}`. שומר ב-Grades.csv כמאושר (מי ומתי) ומעדכן את עמוד הציון בעבודה המסומנת. 422 אם הניקוד לא לכל השאלות |
 | `POST /api/return` | הכנת החזרה: `moodle upload` |
 | `POST /api/upload/prepare` | הכנת העלאה למודל: `{course, assignment}`. בונה אצווה של העבודות המסומנות שחדשות או השתנו ומחזירה סיכום וגם `id`. 422 עם הסבר אם אי אפשר (או אם מישהו מעלה עכשיו) |

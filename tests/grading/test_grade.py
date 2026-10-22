@@ -509,5 +509,18 @@ def test_server_review_and_downloads(root, server):
     st, disp, _ = get(rel + f"{paths.TO_GRADE}/0003-2.jpg", download=True)
     assert st == 200 and disp == 'attachment; filename="0003-2 - submission.jpg"'
     (a.dir / paths.MARKED / "0003-2.jpg").write_bytes(pix.tobytes("jpeg"))
+    # the review page shows the submission as images: every file of the number, in order, as Claude saw it
+    q = f"course={quote(COURSE)}&assignment={quote(HW)}&number=0003"
+    with pymupdf.open(a.submissions / "0003.pdf") as src:
+        pages = src.page_count
+    assert call(server, "GET", f"/api/pages?{q}") == (200, {"pages": pages + 1})
+    conn = http.client.HTTPConnection("127.0.0.1", server, timeout=30)
+    conn.request("GET", f"/api/page?{q}&page={pages + 1}", headers={"Host": f"localhost:{server}"})
+    r = conn.getresponse()
+    assert r.status == 200 and r.getheader("Content-Type") == "image/jpeg" and r.read()[:2] == b"\xff\xd8"
+    for bad in (f"/api/page?{q}&page=99", f"/api/page?{q}&page=x", f"/api/page?course={quote(COURSE)}&assignment={quote(HW)}&number=../1&page=1"):
+        conn = http.client.HTTPConnection("127.0.0.1", server, timeout=30)
+        conn.request("GET", bad, headers={"Host": f"localhost:{server}"})
+        assert conn.getresponse().status in (400, 404)
     for path in (paths.KEY, f"{paths.MARKED}/0003-2.jpg", f"{paths.NOTES}/0003.json"):
         assert get(rel + path)[0] == 404  # רק הגשות ועבודות מסומנות יוצאות. לא המפתח ולא שום דבר אחר

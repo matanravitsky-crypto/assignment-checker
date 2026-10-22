@@ -147,6 +147,28 @@ class Handler(SimpleHTTPRequestHandler):
             return root and self._json(actions.state(root))
         if url.path == "/api/grade":
             return self._json(actions.grade_status())
+        if url.path in ("/api/pages", "/api/page"):
+            # עמודי הגשה כתמונות, לבדיקה הידנית: /api/pages אומר כמה עמודים, /api/page מחזיר עמוד אחד
+            root = self._root()
+            if not root:
+                return
+            q = {k: v[0] for k, v in parse_qs(url.query).items()}
+            course, assignment, number = q.get("course", ""), q.get("assignment", ""), q.get("number", "")
+            if not course or not assignment or not number.isdigit():
+                return self._json({"error": "חסרים קורס, מטלה ומספר הגשה"}, HTTPStatus.BAD_REQUEST)
+            try:
+                if url.path == "/api/pages":
+                    return self._json({"pages": actions.page_count(root, course, assignment, number)})
+                data = actions.page_image(root, course, assignment, number, int(q.get("page") or 0))
+            except (FileNotFoundError, ValueError):
+                return self.send_error(HTTPStatus.NOT_FOUND)
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "image/jpeg")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(data)
+            return
         if url.path == "/api/file":
             root = self._root()
             if not root:

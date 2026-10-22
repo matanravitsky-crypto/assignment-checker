@@ -50,7 +50,7 @@
     open: { stage: null, tile: null, filter: "all", q: "" },
     mistakeOpen: null,
     // הבדיקה הידנית: העבודה שפתוחה, סינון לפי סוג הבעיה, מה מוצג (מסומנת/מקורית) והטיוטה של כל עבודה עד השמירה
-    review: { id: null, kind: "all", view: "marked", edits: {}, saving: false },
+    review: { id: null, edits: {}, saving: false, pages: {}, marks: true, open: {}, fbOpen: false },
   };
 
   // מה כל שלב עושה באמת (moodle/ingest.py, grading/grade.py, moodle/send.py)
@@ -1183,7 +1183,7 @@
       <span class="rc-icon">${ICON.hand}</span>
       <div class="rc-text">
         <b>${plural(queue.length, "עבודה אחת מחכה", "עבודות מחכות")} לבדיקה ידנית</b>
-        <div class="rc-kinds">${kinds.map(([k, c]) => `<a class="chip" href="#/review?kind=${k}">${REVIEW_KIND[k][0]}<span class="c num">${c}</span></a>`).join("")}</div>
+        <div class="rc-kinds">${kinds.map(([k, c]) => `<span class="chip">${REVIEW_KIND[k][0]}<span class="c num">${c}</span></span>`).join("")}</div>
       </div>
       <a class="btn primary" href="#/review">${ICON.pen}התחל לבדוק</a>
     </section>`;
@@ -1382,7 +1382,7 @@
 
   function reviewList(A = cur()) {
     const queue = A.subs.filter(needsReview);
-    return { queue, shown: state.review.kind === "all" ? queue : queue.filter((s) => kindOf(s) === state.review.kind), done: A.subs.filter(wasReviewed) };
+    return { queue, done: A.subs.filter(wasReviewed) };
   }
 
   // ההערות המוכנות לשאלה: הטעויות המוכרות מהמחוון, הטעויות הנפוצות במטלה, ומה ש-Claude מצא בעבודה הזו. לכל אחת: בכמה מורידים
@@ -1397,7 +1397,7 @@
     mine.forEach((t) => {
       if (!out.has(t)) out.set(t, { text: t, pts: mine.length === 1 && s.q ? q.pts - s.q[qi] : null, src: "claude", n: 0 });
     });
-    return [...out.values()];
+    return [...out.values()].slice(0, 6);
   }
 
   function draft(s) {
@@ -1430,128 +1430,136 @@
     d.changed = true;
   }
 
-  function reviewItemHTML(s, current) {
-    const k = kindOf(s), why = s.failed || s.review;
-    return `<li><a class="rq-item ${current ? "current" : ""} ${s.approved ? "done" : ""}" href="#/review?n=${s.id}" ${current ? 'aria-current="true"' : ""}>
-      <span class="rq-num num">${s.id}</span>
-      <span class="rq-why"><b>${esc(REVIEW_KIND[k][0])}</b><small>${esc(why)}</small></span>
-      ${s.approved ? `<span class="rq-done">${ICON.check}</span>` : s.score != null ? `<span class="rq-score num">${s.score}</span>` : ""}
-    </a></li>`;
+  // העמודים של ההגשה כתמונות (api/page), והסימונים של Claude מצוירים מעליהם במקום שלהם
+  const pageUrl = (A, id, p) => `${BASE}api/page?course=${encodeURIComponent(A.courseFolder)}&assignment=${encodeURIComponent(A.folder)}&number=${id}&page=${p}`;
+  function pagesOf(A, s) {
+    const key = `${A.id}:${s.id}`, known = state.review.pages[key];
+    if (known !== undefined) return known;
+    state.review.pages[key] = null;
+    api(`api/pages?course=${encodeURIComponent(A.courseFolder)}&assignment=${encodeURIComponent(A.folder)}&number=${s.id}`)
+      .then((r) => { state.review.pages[key] = r.pages; }, () => { state.review.pages[key] = 0; })
+      .then(() => { if (route() === "/review") render(); });
+    return null;
   }
 
-  function problemHTML(s) {
-    const qs = rubric().questions, k = kindOf(s);
-    const unsure = (s.unsure || []).map((u, i) => (u ? i : -1)).filter((i) => i >= 0);
-    return `<section class="problem kind-${k}">
-      <div class="pb-head">${ICON.warn}<div><span class="pb-kind">${esc(REVIEW_KIND[k][0])}</span><p class="pb-why">${esc(s.failed || s.review || "Claude ביקש שאדם יבדוק את העבודה.")}</p></div></div>
-      ${unsure.length ? `<div class="pb-qs"><span>לבדוק במיוחד:</span>${unsure.map((i) => `<button class="chip warn" data-rv-jump="${i}">שאלה ${i + 1}${qs[i]?.req ? ` · ${esc(qs[i].req)}` : ""}</button>`).join("")}</div>` : ""}
-      ${s.marks?.length ? `<details class="pb-marks"><summary>${plural(s.marks.length, "סימון אחד", "סימונים")} של Claude על העבודה</summary><ul>${s.marks.map((m) => `<li><span class="num">עמ׳ ${esc(m.page)}</span>${esc(m.text)}</li>`).join("")}</ul></details>` : ""}
-      ${s.failed && LOCAL.health?.claude ? `<div class="pb-act"><button class="btn secondary small" data-act="grade-one" data-id="${s.id}" ${state.run[cur().id] ? "disabled" : ""}>${ICON.redo}נסה לבדוק שוב עם Claude</button><span class="muted">או לתת ציון כאן, ידנית</span></div>` : ""}
-    </section>`;
-  }
-
-  function questionCardHTML(s, d, qi) {
-    const q = rubric().questions[qi], unsure = !!s.unsure?.[qi];
-    const claudePts = s.q?.[qi];
-    const opts = readyComments(qi, s);
-    const changed = claudePts != null && d.points[qi] !== claudePts;
-    return `<section class="rv-q ${unsure ? "unsure" : ""} ${d.points[qi] < q.pts ? "lost" : ""}" id="rv-q${qi}">
-      <header class="rv-q-head">
-        <div class="rv-q-title"><b>שאלה ${qi + 1}</b>${q.req ? `<small>${esc(q.req)}</small>` : ""}</div>
-        ${unsure ? `<span class="flag">Claude לא בטוח כאן</span>` : ""}
-        <div class="rv-pts" dir="ltr">
-          <button class="btn ghost small" data-rv-step="${qi}|-0.5" aria-label="פחות חצי נקודה">−</button>
-          <input type="number" id="rv-pts-${qi}" data-rv-pts="${qi}" value="${d.points[qi]}" min="0" max="${q.pts}" step="0.5" aria-label="ניקוד לשאלה ${qi + 1}">
-          <button class="btn ghost small" data-rv-step="${qi}|0.5" aria-label="עוד חצי נקודה">+</button>
-          <span class="rv-of">/ ${q.pts}</span>
+  function docHTML(A, s) {
+    const n = pagesOf(A, s), orig = origFiles(s)[0], marked = markedFiles(s)[0];
+    const show = state.review.marks && s.marks?.length;
+    const tools = `<div class="rv-doc-tools">
+      ${s.marks?.length ? `<button class="rv-toggle" data-rv-marks aria-pressed="${!!state.review.marks}">${ICON.pen}הסימונים של Claude (${s.marks.length})</button>` : `<span class="muted">אין סימונים של Claude</span>`}
+      <span class="rv-dl">
+        ${orig ? `<a href="${fileUrl(orig, true)}" download>${ICON.download}ההגשה</a>` : ""}
+        ${marked ? `<a href="${fileUrl(marked, true)}" download>${ICON.download}הבדוקה</a>` : ""}
+      </span>
+    </div>`;
+    if (n === null) return `${tools}<div class="rv-pages"><div class="rv-page loading">${ICON.spin}טוען את העבודה…</div></div>`;
+    if (!n) return `${tools}<div class="rv-pages"><div class="rv-page empty">אין בהגשה עמודים שאפשר להציג.${orig ? ` אפשר להוריד את הקובץ.` : ""}</div></div>`;
+    return `${tools}<div class="rv-pages">${Array.from({ length: n }, (_, i) => i + 1).map((p) => `
+      <figure class="rv-page">
+        <div class="rv-sheet">
+          <img src="${pageUrl(A, s.id, p)}" alt="עבודה ${s.id}, עמוד ${p}" loading="lazy">
+          ${show ? s.marks.filter((m) => Number(m.page) === p && m.x1 > m.x0).map((m) => `
+            <div class="rv-mark" style="left:${m.x0 / 10}%;top:${m.y0 / 10}%;width:${(m.x1 - m.x0) / 10}%;height:${(m.y1 - m.y0) / 10}%">
+              <span>${esc(m.text)}</span></div>`).join("") : ""}
         </div>
-      </header>
-      <div class="rv-quick">
-        <button class="chip" data-rv-set="${qi}|full" aria-pressed="${d.points[qi] === q.pts && !d.picks[qi].length}">${ICON.check}נכון, ניקוד מלא</button>
-        <button class="chip" data-rv-set="${qi}|zero" aria-pressed="${d.points[qi] === 0}">לא נמצאה / 0</button>
-        ${claudePts != null ? `<span class="rv-claude ${changed ? "changed" : ""}">Claude נתן ${claudePts}</span>` : ""}
+        ${n > 1 ? `<figcaption>עמוד ${p} מתוך ${n}</figcaption>` : ""}
+      </figure>`).join("")}</div>`;
+  }
+
+  // שאלה בטופס: שורה אחת סגורה (תווית וניקוד), ונפתחת לניקוד, הערות מוכנות והערה. פתוחות מראש רק השאלות שצריך לבדוק
+  function openQuestions(s, d) {
+    if (!state.review.open[s.id]) {
+      const qs = rubric().questions;
+      const want = qs.map((q, i) => i).filter((i) => s.unsure?.[i] || (s.q && s.q[i] < qs[i].pts));
+      state.review.open[s.id] = new Set(want);
+    }
+    return state.review.open[s.id];
+  }
+
+  function questionHTML(s, d, qi, open) {
+    const q = rubric().questions[qi], unsure = !!s.unsure?.[qi], pts = d.points[qi];
+    const head = `<button type="button" class="rq-head" data-rq-toggle="${qi}" aria-expanded="${open}">
+      <span class="rq-n num">${qi + 1}</span>
+      <span class="rq-label">${esc(q.req || `שאלה ${qi + 1}`)}${unsure ? `<em class="rq-flag">לבדוק</em>` : ""}</span>
+      <span class="rq-pts num ${pts < q.pts ? "lost" : ""}">${fmt(pts)}<small>/${q.pts}</small></span>
+      <span class="rq-chev" aria-hidden="true">${ICON.chev}</span>
+    </button>`;
+    if (!open) {
+      const note = d.comments[qi];
+      return `<li class="rq ${unsure ? "unsure" : ""}">${head}${note && pts < q.pts ? `<p class="rq-note">${esc(note)}</p>` : ""}</li>`;
+    }
+    const opts = readyComments(qi, s);
+    return `<li class="rq open ${unsure ? "unsure" : ""}" id="rv-q${qi}">${head}
+      <div class="rq-body">
+        <div class="rq-score">
+          <div class="stepper" dir="ltr">
+            <button type="button" data-rv-step="${qi}|-0.5" aria-label="פחות חצי נקודה">−</button>
+            <input type="number" id="rv-pts-${qi}" data-rv-pts="${qi}" value="${pts}" min="0" max="${q.pts}" step="0.5" aria-label="ניקוד לשאלה ${qi + 1}">
+            <button type="button" data-rv-step="${qi}|0.5" aria-label="עוד חצי נקודה">+</button>
+          </div>
+          <button type="button" class="link-btn" data-rv-set="${qi}|full">ניקוד מלא</button>
+          <button type="button" class="link-btn" data-rv-set="${qi}|zero">אפס</button>
+          ${s.q && s.q[qi] !== pts ? `<span class="rq-was">Claude נתן ${fmt(s.q[qi])}</span>` : ""}
+        </div>
+        ${opts.length ? `<div class="rq-chips" role="group" aria-label="הערות מוכנות">${opts.map((o) => {
+          const on = d.picks[qi].includes(o.text);
+          return `<button type="button" class="rc" data-rv-pick="${qi}" data-text="${esc(o.text)}" aria-pressed="${on}"
+            title="${o.src === "rubric" ? "מהמחוון" : o.src === "common" ? `טעות נפוצה במטלה (${o.n} עבודות)` : "Claude מצא את זה בעבודה"}">
+            <span>${esc(o.text)}</span>${o.pts ? `<b class="num">−${fmt(o.pts)}</b>` : ""}</button>`;
+        }).join("")}</div>` : ""}
+        <input class="rq-comment" id="rv-c-${qi}" data-rv-comment="${qi}" value="${esc(d.comments[qi])}" placeholder="הערה לסטודנט (לא חובה)" aria-label="הערה לשאלה ${qi + 1}">
       </div>
-      ${opts.length ? `<div class="rv-chips" role="group" aria-label="הערות מוכנות לשאלה ${qi + 1}">${opts.map((o) => {
-        const on = d.picks[qi].includes(o.text);
-        return `<button class="rc-chip src-${o.src}" data-rv-pick="${qi}" data-text="${esc(o.text)}" aria-pressed="${on}"
-          title="${o.src === "rubric" ? "מהמחוון" : o.src === "common" ? `טעות נפוצה: ${o.n} עבודות` : "Claude מצא את זה בעבודה"}">
-          ${on ? ICON.check : ""}<span>${esc(o.text)}</span>${o.pts ? `<em class="num">−${fmt(o.pts)}</em>` : ""}${o.n ? `<i class="num">${o.n}</i>` : ""}</button>`;
-      }).join("")}</div>` : ""}
-      <label class="sr" for="rv-c-${qi}">הערה לשאלה ${qi + 1}</label>
-      <input class="rv-comment" id="rv-c-${qi}" data-rv-comment="${qi}" value="${esc(d.comments[qi])}" placeholder="הערה לסטודנט על השאלה (לא חובה)">
-    </section>`;
+    </li>`;
   }
 
   function reviewView() {
     const A = cur();
     if (!A) return offlineHTML();
-    const I = info(A), { queue, shown, done } = reviewList(A);
+    const I = info(A), { queue, done } = reviewList(A);
     const want = hashParam("n");
     if (want && A.subs.some((s) => s.id === want)) state.review.id = want;
-    const kindParam = hashParam("kind");
-    if (kindParam && (kindParam === "all" || REVIEW_KIND[kindParam])) state.review.kind = kindParam;
     let s = A.subs.find((x) => x.id === state.review.id);
-    if (!s || (!want && !needsReview(s) && shown.length)) s = shown[0] || queue[0] || null;
+    if (!s || (!want && !needsReview(s))) s = queue[0] || null;
     state.review.id = s?.id || null;
     const total = queue.length + done.length;
-    const kinds = Object.keys(REVIEW_KIND).map((k) => [k, queue.filter((x) => kindOf(x) === k).length]).filter(([, c]) => c);
-    const head = `
-      <div class="page-head rv-head">
-        <div>
-          <h1>בדיקה ידנית</h1>
-          <p>לכאן Claude שולח כל עבודה שהוא לא בטוח בה, וגם עבודות שהבדיקה שלהן נכשלה. לכל עבודה כתוב מה הבעיה ואיפה, ההערות מהמחוון ומהטעויות הנפוצות מוכנות עם הניקוד שלהן, והציון מתעדכן לבד. "אשר" שומר ב-Grades.csv ועובר לעבודה הבאה.</p>
-        </div>
-        <div class="rv-progress">
-          <b class="num">${queue.length}</b><span>${queue.length === 1 ? "עבודה מחכה" : "עבודות מחכות"}</span>
-          ${total ? `<span class="send-bar" role="progressbar" aria-label="התקדמות הבדיקה הידנית" aria-valuemin="0" aria-valuemax="${total}" aria-valuenow="${done.length}"><i style="width:${(100 * done.length) / total}%"></i></span><small>${done.length} מתוך ${total} כבר נבדקו ידנית</small>` : ""}
-        </div>
-      </div>`;
-    if (!I.subs.length) return `${head}<section class="panel">${emptyPulled()}</section>`;
+    const top = `<header class="rv-top">
+      <div><h1>בדיקה ידנית</h1>
+        <p>${queue.length ? `${plural(queue.length, "עבודה אחת מחכה", "עבודות מחכות")} לך` : "אין עבודות שמחכות"}${done.length ? ` · ${done.length} כבר נבדקו` : ""}</p></div>
+      ${total ? `<div class="rv-meter" role="progressbar" aria-label="כמה נבדקו" aria-valuemin="0" aria-valuemax="${total}" aria-valuenow="${done.length}"><i style="width:${(100 * done.length) / total}%"></i></div>` : ""}
+    </header>`;
+    if (!I.subs.length) return `${top}<section class="panel">${emptyPulled()}</section>`;
     if (!s) {
-      return `${head}<section class="panel"><div class="empty"><strong>אין עבודות שמחכות לבדיקה ידנית</strong>${I.graded.length ? "כל מה ש-Claude בדק נראה לו ודאי, או שכבר אושר." : "אחרי שלב הבדיקה, עבודות ש-Claude לא בטוח בהן יופיעו כאן."}
-        <div class="empty-act"><a class="btn secondary" href="#/grade">לכל העבודות</a></div></div></section>`;
+      return `${top}<section class="rv-empty">${ICON.check}<b>הכל נבדק</b><p>${I.graded.length ? "אין עבודות ש-Claude ביקש שאדם יסתכל עליהן." : "אחרי שלב הבדיקה, עבודות ש-Claude לא בטוח בהן יגיעו לכאן."}</p><a class="btn secondary" href="#/">ללוח הבקרה</a></section>`;
     }
-    const d = draft(s), qs = rubric().questions, max = A.maxGrade || 100;
-    const marked = markedFiles(s)[0], orig = origFiles(s).find((f) => /\.pdf$/i.test(f.name)) || origFiles(s)[0];
-    const view = state.review.view === "orig" || !marked ? orig : marked;
-    const at = shown.findIndex((x) => x.id === s.id);
-    const next = shown[at + 1] || shown.find((x) => x.id !== s.id);
-    const totalNow = draftTotal(d);
-    return `${head}
-      <div class="chips rv-kinds" role="group" aria-label="סינון לפי סוג הבעיה">
-        <a class="chip" href="#/review?kind=all" aria-pressed="${state.review.kind === "all"}">הכל<span class="c num">${queue.length}</span></a>
-        ${kinds.map(([k, c]) => `<a class="chip" href="#/review?kind=${k}" aria-pressed="${state.review.kind === k}" title="${esc(REVIEW_KIND[k][1])}">${REVIEW_KIND[k][0]}<span class="c num">${c}</span></a>`).join("")}
-      </div>
-      <div class="rv-layout">
-        <aside class="rv-queue panel" aria-label="תור הבדיקה הידנית">
-          <div class="panel-head"><h3>בתור</h3><span class="meta num">${shown.length}</span></div>
-          <ul>${shown.map((x) => reviewItemHTML(x, x.id === s.id)).join("") || `<li class="muted empty-line">אין עבודות בסינון הזה.</li>`}</ul>
-          ${!needsReview(s) && !shown.includes(s) ? `<div class="panel-head"><h3>פתוחה עכשיו</h3></div><ul>${reviewItemHTML(s, true)}</ul>` : ""}
-          ${done.length ? `<details class="rv-done"><summary>נבדקו ידנית (${done.length})</summary><ul>${done.map((x) => reviewItemHTML(x, x.id === s.id)).join("")}</ul></details>` : ""}
-        </aside>
-        <div class="rv-doc">
-          ${needsReview(s) || s.review || s.failed ? problemHTML(s) : ""}
-          <div class="rv-doc-bar">
-            <h2>עבודה <span class="num">${s.id}</span></h2>
-            ${marked ? `<div class="seg" role="group" aria-label="מה מוצג">
-              <button class="seg-b" data-rv-view="marked" aria-pressed="${view === marked}">עם ההערות של Claude</button>
-              <button class="seg-b" data-rv-view="orig" aria-pressed="${view !== marked}">ההגשה המקורית</button></div>` : ""}
-            <span class="end rv-dl">${orig ? `<a class="btn ghost small" href="${fileUrl(orig, true)}" download title="הורד את ההגשה">${ICON.download}הגשה</a>` : ""}${marked ? `<a class="btn ghost small" href="${fileUrl(marked, true)}" download title="הורד את העבודה הבדוקה">${ICON.download}בדוקה</a>` : ""}</span>
+    const d = draft(s), qs = rubric().questions, max = A.maxGrade || 100, open = openQuestions(s, d);
+    const list = queue.includes(s) ? queue : [s, ...queue];
+    const at = list.indexOf(s), prev = list[at - 1], next = list[at + 1];
+    const k = kindOf(s), flagged = needsReview(s) || s.review || s.failed;
+    const unsure = (s.unsure || []).map((u, i) => (u ? i : -1)).filter((i) => i >= 0);
+    return `${top}
+      <nav class="rv-steps" aria-label="העבודות בתור">
+        ${prev ? `<a class="rv-arrow" href="#/review?n=${prev.id}" aria-label="העבודה הקודמת">${ICON.chev}</a>` : `<span class="rv-arrow" aria-hidden="true"></span>`}
+        <div class="rv-pills">${list.map((x) => `<a class="rv-pill ${x.id === s.id ? "on" : ""}" href="#/review?n=${x.id}" title="${esc(REVIEW_KIND[kindOf(x)][0])}" ${x.id === s.id ? 'aria-current="true"' : ""}><i class="k-${kindOf(x)}"></i>${x.id}</a>`).join("")}</div>
+        ${next ? `<a class="rv-arrow next" href="#/review?n=${next.id}" aria-label="העבודה הבאה">${ICON.chev}</a>` : `<span class="rv-arrow" aria-hidden="true"></span>`}
+      </nav>
+      <div class="rv-main">
+        <section class="rv-doc">
+          <div class="rv-issue ${flagged ? `k-${k}` : "ok"}">
+            <div class="rv-issue-top"><span class="rv-work">עבודה <b class="num">${s.id}</b></span>
+              ${flagged ? `<span class="rv-kind">${esc(REVIEW_KIND[k][0])}</span>` : s.approved ? `<span class="rv-kind ok">אושרה${s.reviewedBy ? ` · ${esc(s.reviewedBy)}` : ""}</span>` : ""}</div>
+            ${flagged ? `<p>${esc(s.failed || s.review || "Claude ביקש שאדם יבדוק את העבודה.")}</p>` : ""}
+            ${s.failed && LOCAL.health?.claude ? `<button class="btn secondary small" data-act="grade-one" data-id="${s.id}" ${state.run[A.id] ? "disabled" : ""}>${ICON.redo}לבדוק שוב עם Claude</button>` : ""}
           </div>
-          ${view && /\.pdf$/i.test(view.name) ? `<iframe class="pdf-view" src="${fileUrl(view)}" title="עבודה ${s.id}"></iframe>`
-            : view ? `<img class="pdf-view img" src="${fileUrl(view)}" alt="עבודה ${s.id}">` : `<div class="panel"><div class="empty"><strong>אין קובץ לתצוגה</strong></div></div>`}
-        </div>
-        <form class="rv-form" data-rv-form="${s.id}" autocomplete="off">
-          ${qs.map((q, qi) => questionCardHTML(s, d, qi)).join("")}
-          <section class="rv-q">
-            <label class="rv-fb-label" for="rv-fb">משוב לסטודנט</label>
-            <textarea id="rv-fb" data-rv-feedback rows="4" placeholder="משפט או שניים: מה נעשה טוב ומה לתקן">${esc(d.feedback)}</textarea>
-          </section>
-          <div class="rv-submit">
-            <div class="rv-total"><span>ציון</span><b class="num" id="rv-total">${totalNow}</b><small class="num">/ ${max}${s.score != null && s.score !== totalNow ? ` · Claude: ${s.score}` : ""}</small></div>
-            <button type="submit" class="btn primary lg" ${state.review.saving ? "disabled" : ""}>${state.review.saving ? ICON.spin : ICON.check}${needsReview(s) ? (next ? "אשר ועבור לבאה" : "אשר") : "שמור"}</button>
-            ${next && needsReview(s) ? `<a class="btn secondary" href="#/review?n=${next.id}">דלג</a>` : ""}
-            <p class="hint">Ctrl+Enter מאשר. האישור נרשם ב-Grades.csv עם השם שלך, ועמוד הציון בעבודה הבדוקה מתעדכן.</p>
+          ${docHTML(A, s)}
+        </section>
+        <form class="rv-panel" data-rv-form="${s.id}" autocomplete="off">
+          <div class="rv-panel-head"><h2>ציון</h2>${unsure.length ? `<span>Claude לא בטוח ב${unsure.map((i) => `<button type="button" class="link-btn" data-rv-jump="${i}">שאלה ${i + 1}</button>`).join(", ")}</span>` : ""}</div>
+          <ol class="rq-list">${qs.map((q, qi) => questionHTML(s, d, qi, open.has(qi))).join("")}</ol>
+          <details class="rv-fb" ${state.review.fbOpen ? "open" : ""}><summary>משוב לסטודנט</summary>
+            <textarea id="rv-fb" data-rv-feedback rows="4" aria-label="משוב לסטודנט">${esc(d.feedback)}</textarea></details>
+          <div class="rv-bar">
+            <div class="rv-total"><b class="num" id="rv-total">${draftTotal(d)}</b><span>/ ${max}</span></div>
+            <button type="submit" class="btn primary" ${state.review.saving ? "disabled" : ""} title="Ctrl+Enter">${state.review.saving ? ICON.spin : ICON.check}${needsReview(s) ? (next ? "אשר ועבור לבאה" : "אשר") : "שמור"}</button>
           </div>
         </form>
       </div>`;
@@ -1561,9 +1569,9 @@
     const A = cur(), s = A?.subs.find((x) => x.id === id);
     if (!s || state.review.saving) return;
     const d = draft(s), wasQueued = needsReview(s);
-    const { shown } = reviewList(A);
-    const at = shown.findIndex((x) => x.id === id);
-    const next = wasQueued ? (shown[at + 1] || shown.find((x) => x.id !== id)) : null;
+    const { queue } = reviewList(A);
+    const at = queue.findIndex((x) => x.id === id);
+    const next = wasQueued ? (queue[at + 1] || queue.find((x) => x.id !== id)) : null;
     state.review.saving = true;
     render();
     try {
@@ -1813,10 +1821,20 @@
       d.changed = true;
       render(); return;
     }
-    const rvView = t.closest("[data-rv-view]");
-    if (rvView) { state.review.view = rvView.dataset.rvView; render(); return; }
+    const rqt = t.closest("[data-rq-toggle]");
+    if (rqt && rvs) {
+      const open = openQuestions(rvs, draft(rvs)), qi = Number(rqt.dataset.rqToggle);
+      if (open.has(qi)) open.delete(qi); else open.add(qi);
+      render(); return;
+    }
+    if (t.closest("[data-rv-marks]")) { state.review.marks = !state.review.marks; render(); return; }
     const jump = t.closest("[data-rv-jump]");
-    if (jump) { $(`#rv-q${jump.dataset.rvJump}`)?.scrollIntoView({ behavior: "smooth", block: "center" }); return; }
+    if (jump && rvs) {
+      openQuestions(rvs, draft(rvs)).add(Number(jump.dataset.rvJump));
+      render();
+      $(`#rv-q${jump.dataset.rvJump}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+      return;
+    }
 
     const act = t.closest("[data-act]");
     if (act) {
@@ -1878,6 +1896,9 @@
     if (opening) $(`[data-card="${st}"]`)?.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }
   const reviewSub = () => (route() === "/review" && cur()?.subs.find((x) => x.id === state.review.id)) || null;
+
+  // המשוב לסטודנט נשאר פתוח גם כשהמסך מצויר מחדש
+  document.addEventListener("toggle", (e) => { if (e.target.matches?.(".rv-fb")) state.review.fbOpen = e.target.open; }, true);
 
   document.addEventListener("submit", (e) => {
     if (!e.target.matches("[data-rv-form]")) return;

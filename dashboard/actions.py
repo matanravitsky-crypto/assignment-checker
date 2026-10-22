@@ -21,9 +21,12 @@ import re
 import subprocess
 import threading
 import time
+from collections import OrderedDict
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
+
+import pymupdf
 
 from grading import grade as grading
 from moodle import (anonymize as moodle_anonymize, claude_driver, ingest as moodle_ingest, lock as moodle_lock, paths,
@@ -694,6 +697,43 @@ def cached_notes(assignment_dir: Path, number: str) -> dict:
     return data
 
 
+# עמודי ההגשה כתמונות, לבדיקה הידנית באתר: בלי מציג ה-PDF של הדפדפן, והסימונים של Claude מצוירים מעליהם.
+# כל הקבצים של הגשה (0001.pdf, 0001-2.jpg) הם PDF אחד, כמו ש-Claude ראה אותם, כדי שמספרי העמודים בסימונים יתאימו
+_docs: OrderedDict[tuple, bytes] = OrderedDict()
+PAGE_DPI = 110
+
+
+def _submission_doc(root: Path, course: str, assignment: str, number: str) -> bytes:
+    a = find_assignment(root, course, assignment)
+    files = grading.submission_files(a.dir).get(grading.number_key(number))
+    if not files:
+        raise FileNotFoundError(f"אין הגשה {number}")
+    key = (str(a.dir), number, tuple((f.name, f.stat().st_mtime_ns) for f in files))
+    if key not in _docs:
+        _docs[key] = grading.submission_pdf(files)[0]
+        while len(_docs) > 8:
+            _docs.popitem(last=False)
+    _docs.move_to_end(key)
+    return _docs[key]
+
+
+def page_count(root: Path, course: str, assignment: str, number: str) -> int:
+    data = _submission_doc(root, course, assignment, number)
+    if not data:
+        return 0
+    with pymupdf.open(stream=data, filetype="pdf") as doc:
+        return doc.page_count
+
+
+def page_image(root: Path, course: str, assignment: str, number: str, page: int) -> bytes:
+    """עמוד אחד (מ-1) כ-JPEG. FileNotFoundError אם אין הגשה כזו או עמוד כזה."""
+    data = _submission_doc(root, course, assignment, number)
+    with pymupdf.open(stream=data or None, filetype="pdf") as doc:
+        if not 1 <= page <= doc.page_count:
+            raise FileNotFoundError(f"אין עמוד {page}")
+        return doc[page - 1].get_pixmap(dpi=PAGE_DPI).tobytes("jpeg", jpg_quality=80)
+
+
 def _note_fields(note: dict, res: dict) -> dict:
     """מה שהאתר צריך מ-Grading notes: הערות וטעויות לכל שאלה, מה Claude לא בטוח בו, הסימונים, ולמה צריך אדם."""
     failed = "" if res.get("grade") else str(note.get("error") or "")
@@ -703,7 +743,7 @@ def _note_fields(note: dict, res: dict) -> dict:
         "comments": [str(c) for c in note.get("comments") or []],
         "mistakes": [[str(m) for m in ms] for ms in note.get("mistakes") or [] if isinstance(ms, list)],
         "unsure": [bool(u) for u in note.get("unsure") or []],
-        "marks": [{"page": m.get("page"), "text": m.get("text") or ""} for m in note.get("marks") or [] if isinstance(m, dict)],
+        "marks": [{k: m.get(k) for k in ("page", "x0", "y0", "x1", "y1", "text")} for m in note.get("marks") or [] if isinstance(m, dict)],
         "failed": failed, "reviewKind": "failed" if failed else (kind or ("other" if review else "")),
         "reviewedBy": (note.get("reviewed") or {}).get("by") or "",
     }
