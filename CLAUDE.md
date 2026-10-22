@@ -12,7 +12,7 @@ Each folder has a README.md that explains it.
 |---|---|
 | `moodle/` | Steps 1 and 3: Moodle ZIP → numbered submissions (`ingest`), and grades + marked files → upload to Moodle (`upload`). `python -m moodle ingest|status|upload <id>`, `guide` |
 | `moodle/paths.py` | Every folder and file name in the shared folder (constants). Everything else imports names from here |
-| `grading/` | Step 2: grading with Claude (being built). Its README has the input/output contract |
+| `grading/` | Step 2: grading with Claude. `python -m grading <id>` or the dashboard's "Grade" button. Its README has the input/output contract, the rubric format and the `Grades.csv` columns |
 | `dashboard/` | Local server that connects the website to the shared folder: `python -m dashboard serve` (or `start.bat`) |
 | `dashboard/actions.py` | Pull (`moodle ingest`, with a lock and a key-conflict check), prepare return (`moodle upload`), and the state the site shows (numbers only, no names) |
 | `website/` | The dashboard site (static HTML/JS, Hebrew RTL). Published to GitHub Pages from `main` by `.github/workflows/website.yml`; demo data unless it runs through `dashboard/` |

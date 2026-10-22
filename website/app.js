@@ -56,6 +56,7 @@
   };
   const ROUTE_STAGE = { "/pull": "pull", "/grade": "grade", "/return": "ret" };
 
+  const NO_KEY = "אין מפתח של Claude, ולכן אי אפשר לבדוק. מוסיפים לקובץ .env שבתיקיית הריפו שורה ANTHROPIC_API_KEY=... ומפעילים מחדש את start.bat.";
   const STATUS = { pulled: "ממתינה לבדיקה", grading: "בבדיקה", graded: "נבדקה", returned: "הוחזרה", error: "דורשת טיפול" };
 
   const ICON = {
@@ -83,7 +84,7 @@
   // ---------- Helpers ----------
   const course = () => D.courses.find((c) => c.id === state.courseId);
   const cur = () => D.assignments.find((a) => a.id === state.assignmentId);
-  const rubric = () => D.rubrics[state.courseId];
+  const rubric = () => (LOCAL.on && cur()?.rubricQ) || D.rubrics[state.courseId];
   const pad = (n) => String(n).padStart(2, "0");
   const hhmm = (d) => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
   function when(iso) {
@@ -145,7 +146,12 @@
   }
 
   async function runStage(stage) {
-    if (LOCAL.on) { if (stage === "pull") runLocalPull(); if (stage === "ret") runLocalReturn(); return; }
+    if (LOCAL.on) {
+      if (stage === "pull") runLocalPull();
+      if (stage === "grade") runLocalGrade(info().toGrade.map((s) => s.id));
+      if (stage === "ret") runLocalReturn();
+      return;
+    }
     const A = cur();
     if (state.run[A.id]) return;
     const I = info(A);
@@ -199,15 +205,16 @@
     if (stage === "grade") { n = I.toGrade.length; label = n ? `בדוק ${n} עבודות` : "הכל נבדק"; primary = n > 0; }
     if (stage === "ret") { n = I.toReturn.length; label = n ? `החזר ${n} עבודות` : I.done.ret ? "הכל הוחזר" : "אין מה להחזיר"; primary = n > 0 && !I.toGrade.length; }
     let disabled = busy || (stage !== "pull" && !n);
-    if (LOCAL.on && stage === "grade") {
-      // שלב הבדיקה עוד לא מחובר בגרסה המחוברת
-      label = "יופעל עם מפתח Claude";
+    if (LOCAL.on && stage === "grade" && !LOCAL.health?.claude) {
+      // בלי מפתח אי אפשר לבדוק. ההסבר מופיע בלשונית "חיבור ל-Claude"
+      label = "צריך מפתח Claude";
       disabled = true;
       primary = false;
     }
     if (LOCAL.on && stage === "ret") label = n ? `הכן ${n} להחזרה למודל` : "אין עבודות בדוקות";
     const icon = mine ? ICON.spin : ICON[stage === "ret" ? "ret" : stage];
-    return `<button class="btn ${primary ? "primary" : "secondary"} ${big ? "lg" : ""}" data-run="${stage}" ${disabled ? "disabled" : ""}>${icon}${mine ? "רץ עכשיו…" : label}</button>`;
+    const why = LOCAL.on && stage === "grade" && !LOCAL.health?.claude ? ` title="${esc(NO_KEY)}"` : "";
+    return `<button class="btn ${primary ? "primary" : "secondary"} ${big ? "lg" : ""}" data-run="${stage}" ${disabled ? "disabled" : ""}${why}>${icon}${mine ? (run.progress || "רץ עכשיו…") : label}</button>`;
   }
 
   function stageState(stage) {
@@ -281,7 +288,7 @@
     const live = run?.stage === stage ? run.steps : null;
     const done = I.done[stage] || (stage === "pull" && A.pulledAt);
     const gradedNow = I.graded.length;
-    const marks = I.graded.reduce((a, s) => a + (s.q ? s.q.filter((v, i) => v < rubric().questions[i].pts).length : 0), 0);
+    const marks = I.graded.reduce((a, s) => a + (s.q || []).filter((v, i) => v < rubric().questions[i]?.pts).length, 0);
     const results = {
       pull: ["החיבור הצליח", `${I.subs.length} הגשות${A.lastFresh != null ? `, ${A.lastFresh} חדשות` : ""}`, `${I.files} קבצים`, I.issues ? `${I.ok.length} תקינות, ${I.issues} דורשות טיפול` : "כל הקבצים תקינים"],
       grade: [`${rubric().questions.length} שאלות, 100 נקודות`, `${gradedNow} עבודות`, `${marks} הערות`, `ממוצע ${avg(I.graded.map((s) => s.score)) ?? "—"}`],
@@ -425,7 +432,7 @@
               <td>${statusPill(s)}</td>
               <td>${scoreHTML(s)}</td>
               ${qs.map((q, i) => `<td class="col-hide qcol num">${s.q ? `<span class="qv ${s.q[i] < q.pts ? "lost" : ""}">${s.q[i]}</span>` : `<span class="muted">·</span>`}</td>`).join("")}
-              <td class="col-hide-sm">${s.issue ? `<span class="flag">${esc(s.issue)}</span>` : s.q ? (lost ? `<span class="pen-count">${ICON.pen}${plural(lost, "הערה אחת", "הערות")}</span>` : `<span class="muted">ללא הערות</span>`) : `<span class="muted">—</span>`}</td>
+              <td class="col-hide-sm">${s.issue ? `<span class="flag">${esc(s.issue)}</span>` : s.review ? `<span class="flag" title="${esc(s.review)}">לבדיקה ידנית</span>` : s.q ? (lost ? `<span class="pen-count">${ICON.pen}${plural(lost, "הערה אחת", "הערות")}</span>` : `<span class="muted">ללא הערות</span>`) : `<span class="muted">—</span>`}</td>
             </tr>`;
           }).join("") || `<tr><td colspan="${4 + qs.length}"><div class="empty slim">אין עבודות שמתאימות לסינון.</div></td></tr>`}
           </tbody>
@@ -578,16 +585,15 @@
 
   const SCHEMA = `{
   "questions": [
-    { "n": 1, "points": 22, "max": 25,
-      "marks": [
-        { "page": 2, "box": [120, 340, 480, 372],
-          "note": "חסר נימוק לכך ש-det A ≠ 0" }
-      ] }
+    { "label": "דף קבוצות 11", "points": 16, "comment": "חסר נימוק" }
   ],
-  "total": 86,
   "feedback": "משוב כללי לסטודנט",
-  "confidence": "high",
-  "needs_review": false
+  "annotations": [
+    { "page": 2, "x0": 120, "y0": 340, "x1": 480, "y1": 372,
+      "text": "חסר נימוק לכך ש-det A ≠ 0" }
+  ],
+  "needs_review": false,
+  "review_reason": ""
 }`;
 
   function gradeInstr() {
@@ -635,9 +641,11 @@
     const c = state.claude;
     return `<div class="split">
       <section class="panel">
-        <div class="panel-head"><h2>חיבור ל-Claude</h2><span class="end tag warn">לא מחובר</span></div>
+        <div class="panel-head"><h2>חיבור ל-Claude</h2>${LOCAL.health?.claude ? `<span class="end tag ok">מחובר</span>` : `<span class="end tag warn">לא מחובר</span>`}</div>
         <div class="panel-body">
-          <div class="notice">${ICON.lock}<div><b>הבדיקות במסך כרגע מדומות.</b> כשיוגדר מפתח API בצד השרת, אותו כפתור ישלח את העבודות ל-Claude באמת, בלי שינוי במסך.</div></div>
+          ${!LOCAL.on ? `<div class="notice">${ICON.lock}<div><b>הבדיקות במסך כרגע מדומות.</b> כשיוגדר מפתח API בצד השרת, אותו כפתור ישלח את העבודות ל-Claude באמת, בלי שינוי במסך.</div></div>`
+            : LOCAL.health?.claude ? `<div class="notice">${ICON.lock}<div><b>הבדיקה עובדת.</b> ל-Claude נשלחים רק העמודים של ההגשה הממוספרת, בלי שמות. העבודה המסומנת נשמרת ב-"2 - Graded with comments" והציון ב-Grades.csv.</div></div>`
+            : `<div class="notice">${ICON.lock}<div><b>אין מפתח Claude.</b> ${esc(NO_KEY)}</div></div>`}
           <div class="form-grid">
             <div class="field"><label for="c-model">מודל</label>
               <select id="c-model" dir="ltr" data-set="claude.model">
@@ -646,7 +654,7 @@
               <p class="hint">Opus לבדיקה מעמיקה של הוכחות. Haiku לבדיקות מהירות וזולות.</p></div>
             <div class="field"><label for="c-par">עבודות במקביל</label><input id="c-par" type="number" min="1" max="20" value="${c.parallel}" data-set="claude.parallel"></div>
           </div>
-          ${sw("c-auto", "בדיקה אוטומטית אחרי כל משיכה", "כשמשיכה מסתיימת, Claude מתחיל לבדוק את ההגשות החדשות בלי לחיצה נוספת", c.auto, "claude.auto")}
+          ${LOCAL.on ? "" : sw("c-auto", "בדיקה אוטומטית אחרי כל משיכה", "כשמשיכה מסתיימת, Claude מתחיל לבדוק את ההגשות החדשות בלי לחיצה נוספת", c.auto, "claude.auto")}
           ${sw("c-sol", "לצרף את הפתרון הרשמי", "Claude משווה כל עבודה לפתרון הרשמי של המטלה", c.sendSolution, "claude.sendSolution")}
           ${sw("c-low", "עבודה לא ודאית עוברת לבדיקה ידנית", "כתב יד לא קריא או ביטחון נמוך בציון מסמנים את העבודה למתרגל", c.lowConfidence, "claude.lowConfidence")}
         </div>
@@ -659,7 +667,7 @@
         <section class="panel">
           <div class="panel-head"><h3>מה Claude מחזיר על כל עבודה</h3></div>
           <div class="panel-body"><pre class="code-block" dir="ltr">${esc(SCHEMA)}</pre>
-          <p class="hint">המיקום של כל הערה (עמוד ומלבן) מאפשר לצייר את הסימון האדום על גבי ה-PDF המקורי.</p></div>
+          <p class="hint">המיקום של כל הערה (עמוד ומלבן, באלפיות של העמוד) מאפשר לצייר את הסימון האדום על גבי ה-PDF המקורי. הציון מחושב מהניקוד של השאלות.</p></div>
         </section>
       </div>
     </div>`;
@@ -852,10 +860,13 @@
     </section>`;
   }
 
-  // עבודה אמיתית: מציגים את הקובץ עצמו, בלי סימונים מדומים
+  // עבודה אמיתית: מציגים את הקובץ עצמו. אחרי הבדיקה, את העבודה המסומנת
   function localDrawerHTML(s, head) {
     const url = (f) => `api/file?path=${encodeURIComponent(f.path)}`;
-    const pdf = s.files.find((f) => f.name.toLowerCase().endsWith(".pdf") && f.pages);
+    const pdf = s.files.find((f) => f.marked) || s.files.find((f) => f.name.toLowerCase().endsWith(".pdf") && f.size);
+    const qs = rubric().questions;
+    const busy = s.status === "grading";
+    const canGrade = LOCAL.health?.claude && !s.approved && s.status !== "returned" && !state.run[cur().id];
     return `${head}
       <div class="drawer-body">
         <div class="doc-col">
@@ -865,16 +876,23 @@
         <aside class="grade-col">
           <div class="grade-card">
             <h3 class="gc-title">קבצים</h3>
-            <ul class="file-list">${s.files.map((f) => `<li>${ICON.file}<a href="${url(f)}" target="_blank" rel="noopener" dir="ltr">${esc(f.name)}</a>${f.pages ? `<span class="muted">${f.pages} עמ׳</span>` : ""}</li>`).join("") || `<li class="muted">אין קבצים</li>`}</ul>
+            <ul class="file-list">${s.files.map((f) => `<li>${ICON.file}<a href="${url(f)}" target="_blank" rel="noopener" dir="ltr">${esc(f.name)}</a>${f.marked ? `<span class="muted">מסומן</span>` : ""}</li>`).join("") || `<li class="muted">אין קבצים</li>`}</ul>
           </div>
           <div class="grade-card">
             <h3 class="gc-title">ציון</h3>
-            ${s.score != null ? `<div class="grade-top"><span class="big num">${s.score}</span><span class="lbl"><b>${s.approved ? "מאושר" : "עוד לא אושר"}</b>מתוך 100</span></div>` : `<p class="muted" style="margin:0">עוד לא נבדקה.</p>`}
-            <p class="hint">אחרי הבדיקה, העבודה עם ההערות נשמרת ב-"2 - Graded with comments" באותו מספר.</p>
+            ${busy ? `<p class="muted" style="margin:0">Claude בודק את העבודה עכשיו.</p>`
+              : s.score != null ? `<div class="grade-top"><span class="big num">${s.score}</span><span class="lbl"><b>${s.approved ? "מאושר" : "עוד לא אושר"}</b>מתוך ${cur().maxGrade || 100}</span></div>
+                ${s.q && s.q.length === qs.length ? `<ul class="breakdown">${qs.map((q, i) => `<li><label>${esc(q.req || `שאלה ${q.n}`)}</label><span class="num">${s.q[i]} / ${q.pts}</span><span class="track"><i class="${s.q[i] < q.pts ? "short" : ""}" style="width:${(s.q[i] / q.pts) * 100}%"></i></span></li>`).join("")}</ul>` : ""}
+                ${s.review ? `<p class="hint"><span class="flag" style="white-space: normal">לבדיקה ידנית: ${esc(s.review)}</span></p>` : ""}`
+              : `<p class="muted" style="margin:0">עוד לא נבדקה.</p>`}
+            <p class="hint">אחרי הבדיקה, העבודה עם ההערות נשמרת ב-"2 - Graded with comments" באותו מספר, והציון ב-Grades.csv.</p>
           </div>
+          ${s.feedback ? `<div class="grade-card"><h3 class="gc-title">משוב לסטודנט</h3><p style="margin:0; white-space: pre-line">${esc(s.feedback)}</p></div>` : ""}
         </aside>
       </div>
-      <div class="drawer-foot"><span class="grow">${s.issue ? esc(s.issue) : "הקבצים שמורים בתיקיית OneDrive של המטלה."}</span><button class="btn secondary" data-act="open-folder">${ICON.folder}פתח את התיקייה</button></div>`;
+      <div class="drawer-foot"><span class="grow">${s.issue ? esc(s.issue) : "הקבצים שמורים בתיקיית OneDrive של המטלה."}</span>
+        ${canGrade && !busy ? `<button class="btn ${s.status === "pulled" ? "primary" : "secondary"}" data-act="grade-one" data-id="${s.id}">${s.status === "pulled" ? ICON.grade + "בדוק עכשיו" : ICON.redo + "בדיקה חוזרת"}</button>` : ""}
+        <button class="btn secondary" data-act="open-folder">${ICON.folder}פתח את התיקייה</button></div>`;
   }
 
   const views = {
@@ -993,7 +1011,7 @@
   }
 
   function drawerHTML(s) {
-    const files = s.files.map((f) => `<span dir="ltr">${esc(f.name)}</span>`).join(", ");
+    const files = s.files.filter((f) => !f.marked).map((f) => `<span dir="ltr">${esc(f.name)}</span>`).join(", ");
     const head = `
       <div class="drawer-head">
         <div>
@@ -1088,6 +1106,7 @@
   }
 
   async function gradeOne(id) {
+    if (LOCAL.on) { runLocalGrade([id]); return; }
     const A = cur(), s = A.subs.find((x) => x.id === id);
     s.status = "grading"; render(); refreshDrawer();
     await new Promise((r) => setTimeout(r, 1400));
@@ -1338,7 +1357,8 @@
       const data = await api("api/state");
       D.courses.splice(0, D.courses.length, ...data.courses);
       D.assignments.splice(0, D.assignments.length, ...data.assignments.map((a) => ({
-        ...a, phase: a.subs.length ? "current" : "new", gradedAt: null, returnedAt: null, lastFresh: null,
+        ...a, phase: a.subs.length ? "current" : "new", gradedAt: a.gradedAt || null, returnedAt: null, lastFresh: null,
+        rubricQ: a.rubric?.length ? { questions: a.rubric.map((q, i) => ({ n: i + 1, pts: q.points, req: q.label })), emphases: [], mistakes: [] } : null,
       })));
       Object.keys(D.rubrics).forEach((k) => delete D.rubrics[k]);
       data.courses.forEach((c) => {
@@ -1402,6 +1422,45 @@
     }
   }
 
+  // "בדוק" אמיתי: השרת שולח את ההגשות הממוספרות ל-Claude ברקע, והאתר שואל מה המצב עד שזה נגמר
+  async function runLocalGrade(ids) {
+    const A = cur();
+    if (!A || state.run[A.id] || !ids.length) return;
+    if (!LOCAL.health?.claude) { toast(NO_KEY, ICON.warn); return; }
+    const run = (state.run[A.id] = { stage: "grade", steps: STAGES.grade.steps.map(() => "pending") });
+    run.steps[0] = "running";
+    A.subs.filter((s) => ids.includes(s.id)).forEach((s) => { s.status = "grading"; });
+    render(); refreshDrawer();
+    try {
+      const c = state.claude;
+      await api("api/grade", { method: "POST", body: JSON.stringify({
+        course: A.courseFolder, assignment: A.folder, ids,
+        model: c.model, parallel: c.parallel, sendSolution: c.sendSolution, instructions: state.instr.grade,
+      }) });
+      run.steps[0] = "done"; run.steps[1] = "running";
+      let job;
+      for (;;) {
+        await new Promise((r) => setTimeout(r, 1500));
+        job = await api("api/grade");
+        const done = Object.keys(job.done || {}).length;
+        run.progress = `נבדקו ${done} מתוך ${job.total}…`;
+        if (done) { run.steps[1] = "done"; run.steps[2] = "running"; }
+        render();
+        if (!job.running) break;
+      }
+      delete state.run[A.id];
+      await loadLocal();
+      refreshDrawer();
+      const failed = Object.keys(job.report?.failed || {}).length;
+      toast(job.error || `הבדיקה הסתיימה: ${job.summary}`, job.error || failed ? ICON.warn : ICON.check);
+    } catch (e) {
+      delete state.run[A.id];
+      await loadLocal();
+      refreshDrawer();
+      toast(e.message, ICON.warn);
+    }
+  }
+
   // "החזר": הקוד של אורי (moodle upload) בונה את מה שעולה למודל
   async function runLocalReturn() {
     const A = cur();
@@ -1446,7 +1505,7 @@
     set("#conn-claude", !!LOCAL.health?.claude, LOCAL.health?.claude ? "מחובר" : "לא מחובר");
     set("#conn-drive", live, live ? "מחובר" : "לא מחובר");
     $("#proto-note").textContent = live
-      ? "ההגשות נשמרות בתיקיית OneDrive של הקורס. הבדיקה עם Claude עוד לא מחוברת."
+      ? (LOCAL.health?.claude ? "ההגשות, הציונים והעבודות המסומנות נשמרים בתיקיית OneDrive של הקורס." : "ההגשות נשמרות בתיקיית OneDrive של הקורס. כדי לבדוק עם Claude צריך מפתח (ANTHROPIC_API_KEY ב-.env).")
       : "מצב הדגמה: הנתונים והפעולות במסך מדומים. כדי לעבוד עם OneDrive מפעילים את start.bat.";
   }
 

@@ -1,7 +1,8 @@
 """שרת מקומי: מגיש את האתר ומחבר את הכפתורים שלו לתיקיית OneDrive.
 
 מפעילים אותו במחשב שמסנכרן את התיקייה (start.bat, או python -m dashboard serve),
-ונכנסים ל-http://localhost:8765. שם הכפתור "משוך הגשות" מושך באמת לתוך OneDrive.
+ונכנסים ל-http://localhost:8765. שם הכפתור "משוך הגשות" מושך באמת לתוך OneDrive,
+והכפתור "בדוק" שולח את ההגשות הממוספרות ל-Claude (צריך ANTHROPIC_API_KEY ב-.env).
 האתר הציבורי ב-GitHub Pages ממשיך לעבוד במצב הדגמה.
 
 השרת מאזין רק למחשב עצמו (127.0.0.1), ואתרים אחרים לא יכולים להפעיל אותו:
@@ -18,6 +19,8 @@ from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
+
+from grading import grade as grading
 
 from . import actions, folder_view, settings as cfg
 
@@ -82,6 +85,8 @@ class Handler(SimpleHTTPRequestHandler):
         if url.path == "/api/state":
             root = self._root()
             return root and self._json(actions.state(root))
+        if url.path == "/api/grade":
+            return self._json(actions.grade_status())
         if url.path == "/api/file":
             root = self._root()
             if not root:
@@ -132,6 +137,31 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json({"error": f"{what} נכשלה: {e}"}, HTTPStatus.INTERNAL_SERVER_ERROR)
             finally:
                 _lock.release()
+        if url.path == "/api/grade":
+            course, assignment = body.get("course"), body.get("assignment")
+            if not course or not assignment:
+                return self._json({"error": "חסרים קורס ומטלה"}, HTTPStatus.BAD_REQUEST)
+            ids = body.get("ids")
+            if ids is not None and (not isinstance(ids, list) or not all(isinstance(i, str) and i.isdigit() for i in ids)):
+                return self._json({"error": "רשימת ההגשות לא תקינה"}, HTTPStatus.BAD_REQUEST)
+            model = body.get("model") or grading.DEFAULT_MODEL
+            if not (isinstance(model, str) and model.startswith("claude-")):
+                return self._json({"error": "מודל לא מוכר"}, HTTPStatus.BAD_REQUEST)
+            try:
+                parallel = max(1, min(int(body.get("parallel") or grading.DEFAULT_PARALLEL), 20))
+            except (TypeError, ValueError):
+                parallel = grading.DEFAULT_PARALLEL
+            try:
+                job = actions.start_grading(root, course, assignment, ids, model=model, parallel=parallel,
+                                            instructions=str(body.get("instructions") or "")[:5000],
+                                            send_solution=body.get("sendSolution", True) is not False)
+            except grading.NoApiKey as e:
+                return self._json({"error": str(e), "noKey": True}, HTTPStatus.BAD_REQUEST)
+            except FileNotFoundError as e:
+                return self._json({"error": str(e)}, HTTPStatus.NOT_FOUND)
+            except RuntimeError as e:
+                return self._json({"error": str(e)}, HTTPStatus.CONFLICT)
+            return self._json(job, HTTPStatus.ACCEPTED)
         if url.path == "/api/open":
             # פותח בסייר הקבצים: תיקיית ההורדות (לשם מודל מוריד את ה-ZIP), תיקיית המטלה, או תיקיית ההעלאה
             try:

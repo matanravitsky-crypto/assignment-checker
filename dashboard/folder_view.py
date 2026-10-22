@@ -63,8 +63,25 @@ class Assignment:
 
     def graded_numbers(self) -> set[str]:
         """מספרי ההגשות שיש להן עבודה מסומנת (0001.pdf, וגם 0001-2.pdf שייך ל-0001)."""
-        d = self.dir / GRADED
-        return {p.stem.split("-")[0] for p in d.glob("*.pdf")} if d.is_dir() else set()
+        return set(self.marked_files())
+
+    def marked_files(self) -> dict[str, list[Path]]:
+        """מספר → הקבצים המסומנים שלו ב-"2 - Graded with comments", לפי הסדר."""
+        return files_by_number(self.dir / GRADED, "*.pdf")
+
+    def submission_files(self) -> dict[str, list[Path]]:
+        """מספר → הקבצים שהסטודנט הגיש ב-"1 - Submissions to grade": 0001.pdf, 0001-2.jpg..."""
+        return files_by_number(self.submissions, "*")
+
+
+def files_by_number(folder: Path, pattern: str) -> dict[str, list[Path]]:
+    """קבצים בשם 0001 או 0001-2 (קובץ נוסף של אותה הגשה), מקובצים לפי המספר ולפי הסדר."""
+    out: dict[str, list[tuple[int, Path]]] = {}
+    for p in folder.glob(pattern) if folder.is_dir() else []:
+        m = re.fullmatch(r"(\d+)(?:-(\d+))?", p.stem)
+        if p.is_file() and m:
+            out.setdefault(m.group(1), []).append((int(m.group(2) or 1), p))
+    return {n: [p for _, p in sorted(files)] for n, files in sorted(out.items())}
 
 
 def courses(root: Path) -> list[Path]:
