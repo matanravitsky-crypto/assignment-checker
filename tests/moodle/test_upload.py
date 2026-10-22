@@ -4,8 +4,8 @@ import zipfile
 from pathlib import Path
 
 from moodle import paths
-from moodle.upload import (GRADES_FOR_MOODLE, INSTRUCTIONS_FILE, build_feedback_zips,
-                           participant_from_identifier, prepare_upload)
+from moodle.upload import (GRADES_FOR_MOODLE, INSTRUCTIONS_FILE, build_feedback_zips, participant_from_identifier,
+                           plan_parts, prepare_upload, write_zips)
 
 MAPPING = [
     ["number", "anon_file", "participant_id", "original_folder", "original_file"],
@@ -54,6 +54,9 @@ def test_prepare_upload_matches_by_number_not_order():
         instructions = (upload / INSTRUCTIONS_FILE).read_text(encoding="utf-8-sig")
         assert "Graded - part 01.zip" in instructions
         assert f"\"{GRADES_FOR_MOODLE}\" מוכן (2 ציונים)" in instructions
+        # BGU Moodle imports at once: the steps must not promise a list to check before importing
+        assert "רשימה: איזה קובץ" not in instructions and "מסך אישור" in instructions
+        assert "קבצים יובאו" in instructions
         with zipfile.ZipFile(report["feedback_zips"][0]) as archive:
             assert archive.namelist() == ["בת_200_assignsubmission_file/feedback.pdf"]
 
@@ -70,10 +73,61 @@ def test_feedback_zips_split_under_the_size_limit():
 
         zips, too_big = build_feedback_zips(marked, assignment, mapping, max_bytes=1000)
 
-        assert [z.name for z in zips] == ["Graded - part 01.zip", "Graded - part 02.zip"]
+        # A number goes whole or not at all: 0002-2 is too big, so 0002 stays out too
+        assert [z.name for z in zips] == ["Graded - part 01.zip"]
         assert too_big == ["0002-2.pdf"]
-        with zipfile.ZipFile(zips[1]) as archive:
-            assert archive.namelist() == ["בת_200_assignsubmission_file/feedback.pdf"]
+        with zipfile.ZipFile(zips[0]) as archive:
+            assert archive.namelist() == ["אב_100_assignsubmission_file/feedback.pdf"]
+
+
+def test_plan_parts_limits_to_the_given_numbers_and_names_extra_files():
+    with tempfile.TemporaryDirectory() as tmp:
+        marked = Path(tmp)
+        (marked / "0001.pdf").write_bytes(b"x" * 10)
+        (marked / "0002.pdf").write_bytes(b"y" * 10)
+        (marked / "0002-2.pdf").write_bytes(b"z" * 10)
+        (marked / "README.txt").write_bytes(b"not a marked file")
+        mapping = {row[0]: dict(zip(MAPPING[0], row)) for row in MAPPING[1:]}
+
+        parts, too_big = plan_parts(marked, mapping, 1000, numbers={"0002"})
+
+        assert too_big == []
+        assert [[(src.name, arc) for src, arc in part] for part in parts] == [[
+            ("0002.pdf", "בת_200_assignsubmission_file/feedback.pdf"),
+            ("0002-2.pdf", "בת_200_assignsubmission_file/feedback-2.pdf")]]
+        assert plan_parts(marked, mapping, 1000, numbers=set()) == ([], [])
+
+
+def test_plan_parts_starts_a_new_part_when_the_next_file_does_not_fit():
+    with tempfile.TemporaryDirectory() as tmp:
+        marked = Path(tmp)
+        (marked / "0001.pdf").write_bytes(b"x" * 600)
+        (marked / "0002.pdf").write_bytes(b"y" * 600)
+        mapping = {row[0]: dict(zip(MAPPING[0], row)) for row in MAPPING[1:]}
+
+        parts, too_big = plan_parts(marked, mapping, 1000)
+
+        assert [[src.name for src, _ in part] for part in parts] == [["0001.pdf"], ["0002.pdf"]]
+        assert too_big == []
+
+
+def test_write_zips_replaces_the_earlier_zips_and_leaves_other_files():
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp)
+        (folder / "Graded - part 01.zip").write_bytes(b"old")
+        (folder / "Graded - part 02.zip").write_bytes(b"old")
+        (folder / "Upload log.csv").write_bytes(b"keep")
+        (folder / "a.pdf").write_bytes(b"marked")
+
+        zips = write_zips(folder, [[(folder / "a.pdf", "f/feedback.pdf")]])
+
+        assert [z.name for z in zips] == ["Graded - part 01.zip"]
+        assert sorted(p.name for p in folder.glob("Graded - part *.zip")) == ["Graded - part 01.zip"]
+        assert (folder / "Upload log.csv").read_bytes() == b"keep"
+        with zipfile.ZipFile(zips[0]) as archive:
+            assert archive.namelist() == ["f/feedback.pdf"]
+        assert write_zips(folder, []) == []
+        assert list(folder.glob("Graded - part *.zip")) == []
 
 
 def test_prepare_upload_reports_missing_results():
@@ -94,4 +148,15 @@ if __name__ == "__main__":
     test_prepare_upload_matches_by_number_not_order()
     test_prepare_upload_reports_missing_results()
     test_feedback_zips_split_under_the_size_limit()
+    test_plan_parts_limits_to_the_given_numbers_and_names_extra_files()
+    test_plan_parts_starts_a_new_part_when_the_next_file_does_not_fit()
+    test_write_zips_replaces_the_earlier_zips_and_leaves_other_files()
     print("All tests passed.")
+
+
+def test_write_zips_never_deletes_an_onedrive_conflict_copy(tmp_path):
+    (tmp_path / "Graded - part 01.zip").write_bytes(b"old")
+    (tmp_path / "Graded - part 01-DESKTOP-ABC.zip").write_bytes(b"conflict copy")
+    (tmp_path / "a.pdf").write_bytes(b"marked")
+    write_zips(tmp_path, [])
+    assert sorted(p.name for p in tmp_path.glob("*.zip")) == ["Graded - part 01-DESKTOP-ABC.zip"]

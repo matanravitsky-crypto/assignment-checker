@@ -31,6 +31,9 @@ def test_guides_at_every_level_name_the_course_and_assignment():
         empty_course = (data / "Discrete Mathematics" / paths.README).read_text(encoding="utf-8-sig")
         assert "עוד אין" in empty_course
         assert (assignment / paths.MARKED / paths.README).exists()
+        upload_note = (assignment / paths.UPLOAD / paths.README).read_text(encoding="utf-8-sig")
+        assert "Upload steps.txt" in upload_note and "Upload log.csv" in upload_note
+        assert "הוראות העלאה.txt" not in upload_note
         top = (data / paths.README).read_text(encoding="utf-8-sig")
         assert "Linear Algebra:\n  - Assignment 0 - Sets and Complex Numbers  (הגשה 0 - קבוצות ומרוכבים)" in top
         course = (assignment.parent / paths.README).read_text(encoding="utf-8-sig")

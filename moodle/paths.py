@@ -23,6 +23,7 @@ On the downloader's computer only, under the work folder (ASSIGNMENT_WORK):
 
 import json
 import os
+import re
 from pathlib import Path
 
 TO_GRADE = "1 - Submissions to grade"
@@ -36,6 +37,8 @@ DOWNLOAD_PREFIX = "Moodle download"
 # The ZIPs as Moodle gave them: a backup kept on the downloader's computer only. They repeat
 # "1 - Submissions to grade" several times over (2.8 GB for one assignment), so they stay out of OneDrive.
 BACKUP = "Backup - Moodle downloads"
+PULL_LOCK = "Pull in progress.txt"      # in the assignment folder while a pull runs (see lock.py)
+UPLOAD_LOCK = "Upload in progress.txt"  # in the assignment folder while an upload to Moodle runs
 
 
 def data_dir() -> Path:
@@ -84,3 +87,16 @@ def download_zips(assignment_dir: Path) -> list[Path]:
 def original_dir(assignment_dir: Path) -> Path:
     """The extracted ZIP for an assignment, on this computer only."""
     return work_dir() / assignment_dir.relative_to(data_dir())
+
+
+def files_by_number(folder: Path, pattern: str = "*") -> dict[str, list[Path]]:
+    """Files named 0001 or 0001-2 (an extra file of the same submission), grouped by number, in order.
+
+    The same as grading.grade.files_by_number: moodle/ can't import grading/, which loads PyMuPDF.
+    """
+    out: dict[str, list[tuple[int, Path]]] = {}
+    for p in folder.glob(pattern) if folder.is_dir() else []:
+        m = re.fullmatch(r"(\d+)(?:-(\d+))?", p.stem)
+        if p.is_file() and m:
+            out.setdefault(m.group(1), []).append((int(m.group(2) or 1), p))
+    return {n: [p for _, p in sorted(files)] for n, files in sorted(out.items())}

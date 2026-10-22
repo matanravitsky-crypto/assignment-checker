@@ -5,12 +5,8 @@
 """
 from __future__ import annotations
 
-import csv
-import http.client
 import json
-import threading
 import zipfile
-from http.server import ThreadingHTTPServer
 from urllib.parse import quote
 
 import pytest
@@ -19,46 +15,8 @@ from moodle import paths
 from dashboard import actions, folder_view, shared_folder
 from tests.sample_files import homework_pdf
 
-COURSE, HW, MID = "Linear Algebra", "Assignment 0 - Sets and Complex Numbers", "3438636"
-NAMES = {"1001": "נועה כהן", "1002": "איתי לוי", "1003": "מאיה מזרחי", "2000": "יונתן פרץ"}
-
-
-def write_key(a_dir, rows):
-    with (a_dir / paths.KEY).open("w", encoding="utf-8-sig", newline="") as fh:
-        w = csv.DictWriter(fh, fieldnames=["number", "anon_file", "participant_id", "original_folder", "original_file"])
-        w.writeheader()
-        w.writerows(rows)
-
-
-@pytest.fixture
-def root(tmp_path, monkeypatch):
-    """עותק מוקטן של YallaLinearit/Exercise Checking System, כמו שאורי בנה."""
-    course_folder = tmp_path / "BGU" / "נדב מאיר - YallaLinearit"
-    (course_folder / "Recordings").mkdir(parents=True)
-    r = course_folder / "Exercise Checking System"
-    (r / "Discrete Mathematics").mkdir(parents=True)
-    a = r / COURSE / HW
-    for sub in (paths.TO_GRADE, paths.MARKED, paths.UPLOAD):
-        (a / sub).mkdir(parents=True)
-    (a / paths.INFO).write_text(json.dumps({
-        "id": MID, "course": COURSE, "course_id": "67024", "name": HW, "due": "2026-10-26T23:59:00+02:00",
-        "questions": [{"sheet": "דף קבוצות", "numbers": [11, 12]}, {"sheet": "דף מספרים מרוכבים", "numbers": [6, 7, 8]}],
-        "title": "הגשה 0 - קבוצות ומרוכבים", "course_title": "אלגברה לינארית להנדסה", "notes": "הורד ב-21/10",
-    }, ensure_ascii=False), encoding="utf-8")
-    rows = []
-    for i, pid in enumerate(("1001", "1002", "1003"), start=1):
-        n = f"{i:04d}"
-        (a / paths.TO_GRADE / f"{n}.pdf").write_bytes(homework_pdf(NAMES[pid], HW))
-        rows.append({"number": n, "anon_file": f"{n}.pdf", "participant_id": pid,
-                     "original_folder": f"{NAMES[pid]}_{pid}_assignsubmission_file", "original_file": "hw.pdf"})
-    # לסטודנט 0002 יש שני קבצים
-    (a / paths.TO_GRADE / "0002-2.pdf").write_bytes(homework_pdf(NAMES["1002"], HW))
-    rows.append({"number": "0002", "anon_file": "0002-2.pdf", "participant_id": "1002",
-                 "original_folder": f"{NAMES['1002']}_1002_assignsubmission_file", "original_file": "part2.pdf"})
-    write_key(a, rows)
-    (a / "Moodle download 2026-10-21 16-28.zip").write_bytes(b"original download")
-    monkeypatch.setenv("ASSIGNMENT_CHECKER_ROOT", str(course_folder))
-    return r
+from tests.dashboard.conftest import FakeDownloader
+from tests.dashboard.helpers import COURSE, HW, MID, NAMES, call, write_key
 
 
 # ---------- איתור התיקייה ----------
@@ -162,27 +120,6 @@ def test_unknown_assignment_is_refused(root):
         actions.pull(root, COURSE, "../../Recordings")
 
 
-# ---------- השרת המקומי ----------
-@pytest.fixture
-def server(root):
-    from dashboard.web_server import Handler
-    srv = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
-    yield srv.server_port
-    srv.shutdown()
-
-
-def call(port, method, path, body=None, headers=None):
-    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
-    h = {"Host": f"localhost:{port}", **(headers or {})}
-    data = json.dumps(body).encode() if body is not None else None
-    if data:
-        h["Content-Type"] = "application/json"
-    conn.request(method, path, body=data, headers=h)
-    r = conn.getresponse()
-    raw = r.read()
-    return r.status, (json.loads(raw) if r.getheader("Content-Type", "").startswith("application/json") else raw)
-
 
 def test_server_pull_error_and_files(root, server, monkeypatch):
     def no_zip(*a, **k):
@@ -206,6 +143,52 @@ def test_server_refuses_foreign_requests(root, server):
     assert call(server, "GET", "/api/file?path=../../Recordings")[0] == 404
     assert call(server, "GET", f"/api/file?path={quote(COURSE + '/' + HW + '/' + paths.KEY)}")[0] == 404  # טבלת המפתח לא נשלחת לאתר
 
+
+
+SITE = "https://bodek-hacham.vercel.app"
+
+
+def _raw(port, method, path, headers):
+    import http.client
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
+    conn.request(method, path, headers={"Host": f"127.0.0.1:{port}", **headers})
+    r = conn.getresponse()
+    r.read()
+    return r.status, {k.lower(): v for k, v in r.getheaders()}
+
+
+def test_public_site_can_connect_and_others_cannot(root, server):
+    """האתר הציבורי (Vercel) מתחבר לשרת שבמחשב: preflight, קריאת תשובות ופעולות. אתר אחר לא."""
+    st, h = _raw(server, "OPTIONS", "/api/state", {"Origin": SITE, "Access-Control-Request-Method": "GET",
+                                                   "Access-Control-Request-Private-Network": "true"})
+    assert st == 204 and h["access-control-allow-origin"] == SITE and h["access-control-allow-private-network"] == "true"
+    assert "X-Assignment-Checker" in h["access-control-allow-headers"]
+    st, h = _raw(server, "GET", "/api/health", {"Origin": SITE})
+    assert st == 200 and h["access-control-allow-origin"] == SITE
+    assert call(server, "POST", "/api/open", {"course": COURSE, "assignment": "nope"},
+                {"X-Assignment-Checker": "1", "Origin": SITE})[0] == 404  # עבר את בדיקת המקור
+    for evil in ("https://evil.example", "https://bodek-hacham-git-x.vercel.app", "https://bodek-hacham.vercel.app.evil.example"):
+        assert _raw(server, "OPTIONS", "/api/state", {"Origin": evil})[0] == 403
+        assert "access-control-allow-origin" not in _raw(server, "GET", "/api/health", {"Origin": evil})[1]
+        assert call(server, "POST", "/api/pull", {"course": COURSE, "assignment": HW},
+                    {"X-Assignment-Checker": "1", "Origin": evil})[0] == 403
+
+
+def test_activity_log_comes_from_the_folder(root):
+    """היומן באתר: רק מה שבאמת קרה. משיכות (ה-ZIP-ים שנשמרו), Grades.csv, והעלאות מיומן ההעלאה."""
+    a_dir = root / COURSE / HW
+    assert [(x["kind"], x["at"]) for x in actions.state(root)["assignments"][0]["log"]] == [("pull", "2026-10-21T16:28")]
+    with (a_dir / paths.GRADES).open("w", encoding="utf-8", newline="") as fh:
+        fh.write("number,grade,feedback\n0001,90,טוב\n0002,,\n")
+    with (a_dir / paths.UPLOAD / "Upload log.csv").open("w", encoding="utf-8", newline="") as fh:
+        fh.write("number,file,sha256,zip,uploaded_at,by\n"
+                 "0001,0001.pdf,a,Graded - part 01.zip,2026-10-22T10:00:05,matan (PC)\n"
+                 "0003,0003.pdf,b,Graded - part 01.zip,2026-10-22T10:00:09,matan (PC)\n")
+    log = {x["kind"]: x for x in actions.state(root)["assignments"][0]["log"]}
+    assert log["grade"]["text"] == "Grades.csv עודכן: 1 ציונים"
+    assert log["return"]["text"] == "הועלו למודל 2 עבודות מסומנות (Graded - part 01.zip)"
+    assert log["return"]["actor"] == "matan (PC)" and log["return"]["at"] == "2026-10-22T10:00"
+    assert "נועה" not in json.dumps(log, ensure_ascii=False)
 
 # ---------- כל אחד יכול למשוך: נעילה והתנגשויות ----------
 def _ok_ingest(assignment_id, *a, **k):
@@ -244,3 +227,63 @@ def test_onedrive_conflict_copy_blocks_pull(root, monkeypatch):
         actions.pull(root, COURSE, HW)
     assert "עותק כפול" in str(e.value)
     assert actions.state(root)["assignments"][0]["warnings"] == ["עותק כפול של טבלת המפתח: Key - number to student-DESKTOP-ABC.csv"]
+
+
+# ---------- משיכה: ההורדה ממודל דרך Claude בכרום ----------
+def _record_ingest(seen):
+    def ingest(assignment_id, zip_path=None, *a, **k):
+        seen.append(zip_path)
+        return _ok_ingest(assignment_id)
+    return ingest
+
+
+def test_pull_downloads_from_moodle_when_no_zip_is_waiting(root, monkeypatch):
+    from moodle import ingest
+    seen, fake = [], FakeDownloader(ingest.downloads_dir())
+    monkeypatch.setattr(actions, "_make_downloader", lambda: fake)
+    monkeypatch.setattr("moodle.ingest.ingest", _record_ingest(seen))
+    actions.pull(root, COURSE, HW)
+    assert fake.calls == [MID]
+    assert [p.name for p in seen] == [f"214193210120271-x-{MID}.zip"]
+
+
+def test_pull_takes_a_zip_that_was_downloaded_by_hand(root, monkeypatch):
+    from moodle import ingest
+    by_hand = ingest.downloads_dir() / f"קורס-הגשה 0-{MID}.zip"
+    by_hand.write_bytes(b"zip")
+    seen, fake = [], FakeDownloader(ingest.downloads_dir())
+    monkeypatch.setattr(actions, "_make_downloader", lambda: fake)
+    monkeypatch.setattr("moodle.ingest.ingest", _record_ingest(seen))
+    actions.pull(root, COURSE, HW)
+    assert seen == [by_hand] and fake.calls == []  # לא מורידים שוב
+
+
+def test_pull_explains_a_download_that_did_not_start(root, monkeypatch):
+    from moodle import ingest
+    fake = FakeDownloader(ingest.downloads_dir(), {"status": "needs_login", "message": "Moodle מבקש התחברות."})
+    monkeypatch.setattr(actions, "_make_downloader", lambda: fake)
+    monkeypatch.setattr("moodle.ingest.ingest", lambda *a, **k: pytest.fail("nothing to ingest"))
+    with pytest.raises(actions.UserError, match="מבקש התחברות"):
+        actions.pull(root, COURSE, HW)
+    assert not (root / COURSE / HW / actions.LOCK_FILE).exists()
+
+
+def test_pull_waits_for_chrome_to_finish_and_explains_a_stuck_download(root, monkeypatch):
+    from moodle import ingest
+
+    class NothingArrives:
+        def download(self, info):
+            return {"status": "started", "message": "ok"}
+
+    monkeypatch.setattr(actions, "_make_downloader", NothingArrives)
+    def no_start(*a, **k):
+        raise TimeoutError("The download did not start in Chrome")
+    monkeypatch.setattr(ingest, "wait_for_download", no_start)
+    with pytest.raises(actions.UserError, match="שאל איפה לשמור"):
+        actions.pull(root, COURSE, HW)
+
+
+def test_pull_does_not_download_while_an_upload_uses_chrome(root, monkeypatch):
+    monkeypatch.setattr(actions._send, "running", True)
+    with pytest.raises(actions.UserError, match="העלאה"):
+        actions.pull(root, COURSE, HW)

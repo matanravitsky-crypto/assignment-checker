@@ -18,7 +18,7 @@ def main(argv: list[str] | None = None) -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
     cfg.load_env()
-    p = argparse.ArgumentParser(prog="python -m dashboard", description="בודק העבודות")
+    p = argparse.ArgumentParser(prog="python -m dashboard", description="בודק חכם")
     sub = p.add_subparsers(dest="cmd", required=True)
     s_serve = sub.add_parser("serve", help="מפעיל את האתר המחובר לתיקייה")
     s_serve.add_argument("--port", type=int, default=8765)
