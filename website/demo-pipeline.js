@@ -1,4 +1,4 @@
-// הדמיה של שלושת השלבים, לאתר הציבורי בלבד (GitHub Pages).
+// הדמיה של שלושת השלבים, לאתר הציבורי בלבד (Vercel).
 // בגרסה המחוברת (start.bat) הכפתורים פונים לשרת המקומי (dashboard/web_server.py): /api/pull ו-/api/return,
 // שמפעילים את הקוד האמיתי ב-moodle/. ראו runLocalPull ו-runLocalReturn ב-app.js.
 window.PipelineAPI = (() => {
