@@ -3,7 +3,9 @@
 Every assignment's rubric has exactly these sections, in this order, so a TA who knows one rubric knows them all.
 Hebrew text, math in `$...$`, section numbers as below. Write the rubric itself in Hebrew; this file is the spec.
 
-**Length budget: 500–900 lines in total.** Depth goes into the per-part tables, not into prose.
+**No length limit.** TAs don't read the rubric end to end; they ask their Claude about it, and the grading
+bot applies it. So completeness beats brevity: every case, caveat and exception goes in (Assignment 0's
+rubric is about 1,200 lines). Depth goes into the per-part tables and the global rules, not into prose.
 A case that applies to many parts (notation, copy error, crossed-out work, out-of-scope method) is written
 **once** as a global rule (§3) and referenced by its code in the tables, never repeated in each table.
 
@@ -18,13 +20,13 @@ the status line (`טיוטה, ממתינה לאישור המרצה. החלטות
 2. **Answer key** table: every part → final answer, in the exact form expected.
 3. **Common deductions at a glance**: ≤ 12 rows | מצב | כמה יורד | איפה מפורט |.
 
-## §1 עקרונות (≤ 10 bullets, numbered ע1, ע2...)
+## §1 עקרונות (numbered ע1, ע2...)
 Must cover: what counts as a final answer and that every equivalent correct form gets full credit;
 error carried forward (one mistake costs once); no double penalty; how notation is penalized
 (closed list, once per assignment, capped); answers without work; out-of-scope methods; that the
 tables are the operational rule and the rubric wins over `Solution methods.md` on any conflict.
 
-## §2 סדר הבדיקה (≤ 12 numbered steps)
+## §2 סדר הבדיקה (numbered steps)
 Mechanical order a TA or the grading bot follows for one submission: triage (wrong file, blank,
 illegible → human), locate each part, read the final answer, pick the table row, apply tags, sum.
 
@@ -39,7 +41,7 @@ One subsection per question, then one per part:
 `#### <part> (<points>): <answer>`
 | קוד | מה כתוב | נק' | הערה לסטודנט |
 - Codes `<part>-1`, `<part>-2`... Rows ordered full credit → partial → zero.
-- ≤ 15 rows per part. First row(s): every equivalent correct form (full). Then each mistake seen in the
+- As many rows as the part needs. First row(s): every equivalent correct form (full). Then each mistake seen in the
   sample and each plausible case the council added, with exact points. Last row: blank / missing = 0.
 - The student comment is one line, kind and specific, says what to do next time. ✓ for full credit.
 - A row may reference a global rule by code instead of restating it.

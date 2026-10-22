@@ -9,7 +9,7 @@ The result is four files in the assignment's `פדגוגי` folder (`moodle/path
 `Solutions.md`, `Solution methods.md`, `Rubric.md`, `findings.md`. They are built from a random sample of
 real submissions, then a 5-member council (lecturer, TA, weak student, strong student, appeals) debates,
 two TAs field-test the draft on fresh submissions, critics review, and a final check runs.
-`Rubric.md` always follows `rubric-template.md` (same sections, same codes, 500–900 lines).
+`Rubric.md` always follows `rubric-template.md` (same sections, same codes; no length limit: TAs ask their Claude about it rather than read it).
 
 **Run it this way and no other.** Every step below was worked out on Assignment 0 (Linear Algebra, 3438636);
 exploring again costs tokens and gains nothing. Don't read page images yourself (except the one check in step 3),

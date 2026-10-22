@@ -134,7 +134,7 @@ const votes = (await parallel(ROLES.map(r => () => agent(
 phase('Write')
 const OUT = `${W}\\Rubric.md`
 await agent(
-  `You chair the rubric council. Write the final rubric to ${OUT} (Write tool), in Hebrew, following the structure and length budget in ${args.template} exactly (read it first).\n${FILES}\n\nAdopt every uncontested proposal from the reports; decide each contested point by the votes (record dissent); turn every field-test gap into an explicit rule or table row.\n\nCouncil reports: ${JSON.stringify(C)}\n\nField test: ${fieldText}\n\nContested points: ${contestedText}\n\nVotes: ${JSON.stringify(votes)}\n\nReturn 5 lines: the main changes from v1.`,
+  `You chair the rubric council. Write the final rubric to ${OUT} (Write tool), in Hebrew, following the structure in ${args.template} exactly (read it first). Be exhaustive: every case, caveat and exception; there is no length limit.\n${FILES}\n\nAdopt every uncontested proposal from the reports; decide each contested point by the votes (record dissent); turn every field-test gap into an explicit rule or table row.\n\nCouncil reports: ${JSON.stringify(C)}\n\nField test: ${fieldText}\n\nContested points: ${contestedText}\n\nVotes: ${JSON.stringify(votes)}\n\nReturn 5 lines: the main changes from v1.`,
   { label: 'chair:write', phase: 'Write' })
 
 // ---------- Critique ----------
@@ -154,7 +154,7 @@ for (let round = 1; round <= 2; round++) {
   log(`Critique ${round}: ${major.length} major, ${minor.length} minor`)
   if (!major.length && !minor.length) break
   await agent(
-    `You chair the rubric council. Revise ${OUT} in place for these critiques. Fix every major one; fix minor ones only where it does not break the length budget in ${args.template}. A critique you reject goes under ⚠ in the open-decisions section with one line why.\nMAJOR:\n${major.join('\n')}\nMINOR:\n${minor.join('\n')}\nReturn what you changed, briefly.`,
+    `You chair the rubric council. Revise ${OUT} in place for these critiques. Fix every major one, and every minor one that makes the rubric more complete or more precise. A critique you reject goes under ⚠ in the open-decisions section with one line why.\nMAJOR:\n${major.join('\n')}\nMINOR:\n${minor.join('\n')}\nReturn what you changed, briefly.`,
     { label: `chair:revise:${round}`, phase: 'Critique' })
   if (!major.length) break
 }
