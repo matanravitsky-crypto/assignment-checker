@@ -99,8 +99,15 @@ Then:
 Each teammate grades on their own computer with their own Claude subscription, so an assignment is split between them:
 - **Claims** (`moodle/claims.py`): in step 2 of the site each grader takes submissions ("קח" on a row, or "take N free ones").
   Each grader writes only their own file, `Who grades what/<name>.json` (number → when taken), so OneDrive never merges
-  two versions of a file. The site polls `GET /api/claims` every 6 seconds and shows who took what. Two claims of one
-  number made before sync: the earlier one wins (then by name), on every computer.
+  two versions of a file. Two claims of one number made before sync: the earlier one wins (then by name), on every computer.
+- **Pull and return owners** (per assignment, `claims.task_owners`): `<course>/Who does what/<name>.json` holds take and
+  release events keyed `"<slot>:pull"` / `"<slot>:return"`; the latest event in anyone's file decides, so a teammate can
+  take over ("העבר אליי"). Pulling or uploading with no owner makes you the owner. Someone else's task turns that
+  stage's button into "אצל <name>". Each stage page opens with a table of that stage across all the course's assignments
+  (from the folder: counts, who took what, what's left).
+- **Live**: the site polls `GET /api/changes` every 5 seconds (a hash of names, mtimes and sizes of the files the state
+  is built from; folders count by name only, since Windows updates a folder's mtime late) and reloads when it changes.
+  Numbers this computer is grading right now come back from `/api/state` as `"grading"`.
 - **Grading** skips numbers someone else holds and claims what it grades. Once anyone took something, the site's "Grade"
   button grades only my claimed, ungraded work; with no claims at all it grades everything pending, as before.
 - **Grades never share a file**: grading writes `Grades by <name>.csv` (with `graded_at`, `graded_by`). Every reader

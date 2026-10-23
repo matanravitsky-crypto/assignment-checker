@@ -63,3 +63,29 @@ def test_my_name_comes_from_the_environment(monkeypatch):
     assert claims.me() == "נועה" and claims.name_set()
     monkeypatch.delenv("GRADER_NAME")
     assert claims.me() and not claims.name_set()  # the Windows user name
+
+
+# ---------- pull and return: an owner per assignment ----------
+def test_task_key_uses_the_slot_number():
+    assert claims.task_key("Assignment 3 - Vectors", "pull") == claims.task_key("Assignment 3", "pull") == "3:pull"
+    assert claims.task_key("Extra", "return") == "Extra:return"
+
+
+def test_latest_take_or_release_decides_the_owner(a):
+    assert claims.set_task(a, "3:pull", True, who="מתן")["who"] == "מתן"
+    path = a / paths.TASKS / "אורי.json"
+    path.parent.mkdir(exist_ok=True)
+    # אורי לקח אחרי מתן (מתן לא זמין): עכשיו זה אצל אורי
+    path.write_text(json.dumps({"name": "אורי", "tasks": {"3:pull": {"at": "2999-01-01T00:00:00", "taken": True}}}),
+                    encoding="utf-8")
+    assert claims.task_owners(a)["3:pull"]["who"] == "אורי"
+    path.write_text(json.dumps({"name": "אורי", "tasks": {"3:pull": {"at": "2999-01-01T00:00:01", "taken": False}}}),
+                    encoding="utf-8")
+    assert "3:pull" not in claims.task_owners(a)  # אורי שחרר אחרון: אין אחראי, גם אם אצל מתן עוד רשום שלקח
+
+
+def test_tasks_move_with_a_new_name(a):
+    claims.set_task(a, "1:return", True, who="matan")
+    claims.rename_tasks(a, "matan", "מתן")
+    assert claims.task_owners(a)["1:return"]["who"] == "מתן"
+    assert not (a / paths.TASKS / "matan.json").exists()
