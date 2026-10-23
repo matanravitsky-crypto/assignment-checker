@@ -67,6 +67,16 @@ def _moodle_id(a: folder_view.Assignment) -> str:
 
 def _hebrew_error(e: Exception, mid: str) -> str:
     text = str(e)
+    if moodle_ingest.NO_FOLDERS in text or "not in a folder per student" in text:  # before "incomplete" and "7-Zip"
+        return ("ההגשות הגיעו ממודל בלי תיקייה לכל סטודנט, ולכן לא נקלטו: שום הגשה ושום מספר לא השתנו. "
+                "בדף ההגשות במודל מסמנים \"הורדת הגשות המאורגנות לתיקיות לפי סטודנט\" (ליד \"פעולות\") ומושכים שוב.")
+    if moodle_anonymize.KEY_EMPTY in text:
+        return ("טבלת המפתח של המטלה הזו ריקה או פגומה, אבל כבר יש בה הגשות ממוספרות. משיכה עכשיו הייתה נותנת לכל "
+                "סטודנט מספר חדש, וציונים היו מגיעים לסטודנט הלא נכון, ולכן שום דבר לא השתנה. צריך לשחזר את "
+                f"\"{paths.KEY}\" (למשל מהגרסאות הקודמות של הקובץ ב-OneDrive) לפני שמושכים.")
+    if moodle_ingest.INCOMPLETE in text:  # before "7-Zip": this message names 7-Zip too
+        return ("ה-ZIP שהגיע ממודל לא שלם: מודל עצר את ההורדה באמצע. שום הגשה ושום מספר לא השתנו. "
+                "לוחצים שוב \"משוך הגשות\" כדי להוריד מחדש.")
     if "7-Zip" in text:
         return "7-Zip לא מותקן במחשב הזה. מתקינים פעם אחת: winget install 7zip.7zip, ומנסים שוב."
     if "No ZIP" in text:
@@ -138,7 +148,86 @@ def _title_from_zip(a: folder_view.Assignment, zip_path: Path, mid: str) -> None
         _write_info(a, info)
 
 
+# ---------- כמה התקדמה המשיכה ----------
+# הבקשה POST /api/pull נשארת פתוחה עד סוף המשיכה (גם 25 דקות של הורדה). בינתיים האתר שואל GET /api/pull
+# ומראה מד התקדמות: phase הוא find (מחפש ZIP בהורדות), claude (Claude מבקש את ה-ZIP ממודל),
+# parts (כמה חלקים כבר הגיעו לתיקיית ההורדות, מתוך כמה), download (בבתים),
+# check ו-extract (באחוזים), number (בתיקיות של סטודנטים). eta_s: בערך כמה שניות נשארו לשלב הזה, לפי הקצב שלו
+# עד עכשיו (None כשעוד לא ידוע). בסוף running=False, עם summary או error
+@dataclass
+class PullProgress:
+    course: str = ""
+    assignment: str = ""
+    running: bool = False
+    phase: str = ""
+    done: int = 0
+    total: int = 0  # 0 בהורדה: לא ידוע כמה גדול ה-ZIP (אין הורדה קודמת להשוות אליה)
+    downloaded: bool = False  # ה-ZIP הורד עכשיו ממודל (ולא חיכה מוכן בתיקיית ההורדות)
+    summary: str = ""
+    error: str = ""
+    started_at: str = ""
+    eta_s: int | None = None
+    phase_at: float = 0.0  # מתי השלב הזה התחיל (time.time()), ו-phase_done: כמה היה גמור אז. מהם הקצב
+    phase_done: int = 0
+
+
+_pull = PullProgress()
+_pull_lock = threading.Lock()
+
+
+def pull_status() -> dict:
+    with _pull_lock:
+        return asdict(_pull)
+
+
+PART_S = 12  # בערך כמה שניות לוקח חלק אחד של הורדה בחלקים, עד שיש קצב אמיתי (15 חלקים ב-~3 דקות, 2026-10-23)
+
+
+def _pull_report(phase: str, done: int = 0, total: int = 0) -> None:
+    with _pull_lock:
+        now = time.time()
+        if phase != _pull.phase or done < _pull.phase_done:
+            _pull.phase_at, _pull.phase_done = now, done
+        _pull.phase, _pull.done, _pull.total = phase, done, total
+        _pull.downloaded = _pull.downloaded or phase in ("download", "parts")
+        _pull.eta_s = _eta(phase, done, total, now - _pull.phase_at, done - _pull.phase_done)
+
+
+def _eta(phase: str, done: int, total: int, elapsed: float, measured: int) -> int | None:
+    """כמה שניות נשארו לשלב, לפי הקצב שלו מאז שהתחיל. None כשאין ממה לדעת."""
+    if total <= 0 or done >= total:
+        return 0 if total > 0 else None
+    if measured > 0 and elapsed >= 1:
+        return round(elapsed / measured * (total - done))
+    return PART_S * (total - done) if phase == "parts" else None
+
+
+def _expected_zip_size(a: folder_view.Assignment) -> int:
+    """בערך כמה גדול ה-ZIP: ההורדה הקודמת הכי גדולה של המטלה (אותן הגשות, ועוד מה שהוגש מאז). 0 אם אין."""
+    sizes = [p.stat().st_size for p in a.dir.glob(f"{paths.DOWNLOAD_PREFIX} *.zip")
+             if p.is_file() and f"({moodle_ingest.INCOMPLETE})" not in p.name]  # a cut download is no measure
+    return max(sizes, default=0)
+
+
 def pull(root: Path, course: str, assignment: str, moodle_id: str | None = None) -> dict:
+    global _pull
+    with _pull_lock:
+        _pull = PullProgress(course, assignment, running=True, phase="find",
+                             started_at=datetime.now().isoformat(timespec="seconds"))
+        job = _pull
+    try:
+        rep = _do_pull(root, course, assignment, moodle_id)
+        job.summary = rep["summary"]
+        return rep
+    except Exception as e:
+        job.error = str(e)
+        raise
+    finally:
+        with _pull_lock:
+            job.running = False
+
+
+def _do_pull(root: Path, course: str, assignment: str, moodle_id: str | None) -> dict:
     a = new_assignment(root, course, assignment, moodle_id) if moodle_id else find_assignment(root, course, assignment)
     _take_task_if_free(a.dir.parent, assignment, "pull")
     mid = _moodle_id(a)
@@ -147,12 +236,17 @@ def pull(root: Path, course: str, assignment: str, moodle_id: str | None = None)
         raise UserError(f"ב-OneDrive נוצר עותק כפול של טבלת המפתח ({', '.join(conflicts)}). "
                         "לפני משיכה נוספת צריך לאחד אותו עם הטבלה הראשית ולמחוק את העותק, כדי ששני סטודנטים לא יקבלו אותו מספר.")
     _use_root(root)
+    try:
+        moodle_anonymize.check_key(a.dir)  # before downloading anything: a broken key would renumber everyone
+    except ValueError as e:
+        raise UserError(_hebrew_error(e, mid)) from e
     before = {r["number"] for r in a.key_rows()}
     lock = _take_lock(a)
     try:
         zip_path = _zip_from_moodle(a, mid)
         _title_from_zip(a, zip_path, mid)
-        rows = moodle_ingest.ingest(mid, zip_path)
+        without_file = _without_file(zip_path)
+        rows = moodle_ingest.ingest(mid, zip_path, on_progress=_pull_report)
     except (FileNotFoundError, ValueError) as e:
         raise UserError(_hebrew_error(e, mid)) from e
     finally:
@@ -163,13 +257,38 @@ def pull(root: Path, course: str, assignment: str, moodle_id: str | None = None)
         "course": course, "assignment": assignment,
         "result": {"total": len(numbers), "new": len(new), "files": len(rows)},
         "summary": f"{len(numbers)} הגשות" + (f", {len(new)} חדשות" if new else ", אין חדשות"),
-        "notes": [f"הקבצים נשמרו ב-\"{paths.TO_GRADE}\", וה-ZIP נשמר בתיקיית המטלה."],
+        "notes": [f"הקבצים נשמרו ב-\"{paths.TO_GRADE}\", וה-ZIP נשמר בתיקיית המטלה."]
+                 + ([f"{without_file} סטודנטים בטבלת ההגשות במודל הגיעו בלי קובץ (לא הגישו קובץ, או שמודל לא שלח אותו)."]
+                    if without_file else []),
         "pulled_at": datetime.now().isoformat(timespec="seconds"),
     }
 
 
+def _without_file(download: Path) -> int:
+    """בהורדה בחלקים: כמה סטודנטים ביקשנו ממודל ולא הגיעו באף חלק (לפי הרשימה של moodle/download_parts.js)."""
+    if download.suffix.lower() != moodle_ingest.LIST:
+        return 0
+    try:
+        listed = json.loads(download.read_text(encoding="utf-8"))
+        asked = sum(int(f.get("asked") or 0) for f in listed.get("files") or [])
+        came = sum(int(f.get("students") or 0) for f in listed.get("files") or [])
+        return max(0, asked - came) + int(listed.get("empty") or 0)
+    except (OSError, ValueError, TypeError, AttributeError):
+        return 0
+
+
 DOWNLOAD_POLL_S = 2.0  # כל כמה שניות מסתכלים בתיקיית ההורדות אם ה-ZIP הגיע
 DOWNLOAD_WAIT_S = 25 * 60  # הכי הרבה שמחכים להורדה: פחות מ-30 הדקות שאחריהן נעילת המשיכה נחשבת תקועה
+# הורדה בחלקים (moodle/download_parts.js): הריצה של Claude נגמרת רק כשכל החלקים הגיעו, ואז נשאר לחכות לרשימה
+PARTS_LIST_WAIT_S = 180
+
+
+def _download_safely(downloader, a: folder_view.Assignment) -> dict:
+    """downloader.download, בלי לזרוק: התשובה חוזרת מה-thread כמו כל תשובה אחרת."""
+    try:
+        return downloader.download(paths.read_info(a.dir))
+    except Exception as e:  # noqa: BLE001 — מוצג באתר
+        return {"status": "error", "message": f"ההורדה נכשלה ({type(e).__name__})."}
 
 
 class _SimDownloader:
@@ -197,20 +316,80 @@ def _zip_from_moodle(a: folder_view.Assignment, mid: str) -> Path:
             raise UserError("העלאה למודל רצה עכשיו בכרום. אפשר למשוך כשהיא תסתיים.")
         if _checking:
             raise UserError("בדיקת החיבור למודל רצה עכשיו בכרום. כדאי לנסות שוב בעוד דקה.")
+    # One download from Moodle at a time on this computer, for any assignment and from any dashboard on it: two at once
+    # in the same Chrome each clicked the folders option on 2026-10-23, and parts came without folders
+    try:
+        chrome_lock = moodle_lock.take(_work_dir(), CHROME_PULL_LOCK)
+    except moodle_lock.Locked as e:
+        raise UserError(f"{e.who} מושך עכשיו הגשות ממודל במחשב הזה (התחיל ב-{e.since:%H:%M}). "
+                        "משיכה אחת בכל פעם: כדאי לחכות שתסתיים ולנסות שוב.") from e
+    try:
+        return _download_with_chrome(a, mid)
+    finally:
+        chrome_lock.unlink(missing_ok=True)
+
+
+CHROME_PULL_LOCK = paths.PULL_LOCK  # בתיקיית העבודה המקומית (ASSIGNMENT_WORK), לא בתיקיית המטלה
+
+
+def _work_dir() -> Path:
+    d = paths.work_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _download_with_chrome(a: folder_view.Assignment, mid: str) -> Path:
+    """Claude בכרום מוריד ממודל בחלקים, ומחכים שהכול יגיע לתיקיית ההורדות."""
+    global _checking
+    with _send_lock:
         _checking = True
     since = time.time()
+    _pull_report("claude")
+    # Claude's run lasts until every part is in (it waits for the page's script), so it runs in a thread and
+    # the parts that reach Downloads meanwhile move the progress bar
+    answer: dict = {}
+    downloader = _make_downloader()
+    worker = threading.Thread(target=lambda: answer.update(_download_safely(downloader, a)), daemon=True)
     try:
-        result = _make_downloader().download(paths.read_info(a.dir))
+        worker.start()
+        while worker.is_alive():
+            worker.join(DOWNLOAD_POLL_S)
+            arrived, planned = moodle_ingest.parts_progress(mid, since)
+            if arrived:
+                _pull_report("parts", arrived, planned)
+        result = answer
     finally:
         with _send_lock:
             _checking = False
     if result.get("status") != "started":
         if result.get("message") == claude_driver.NOT_LOGGED_IN:
             _drop_status_cache()
+        if "folder" in (result.get("message") or "").lower():
+            raise UserError("ההורדה ממודל נעצרה: האפשרות \"הורדת הגשות המאורגנות לתיקיות לפי סטודנט\" כבויה במודל, "
+                            "ובלי תיקייה לכל סטודנט אי אפשר לדעת של מי כל קובץ. מסמנים אותה בדף ההגשות (ליד \"פעולות\") "
+                            "ומושכים שוב. שום הגשה ושום מספר לא השתנו.")
         raise UserError(f"ההורדה ממודל לא התחילה: {result.get('message') or 'Claude לא פירט למה.'}")
+    parts = result.get("parts") or 0
+    expected = _expected_zip_size(a)
+
+    def on_size(n: int) -> None:
+        # each part reaches Downloads as soon as it is in, and the list of parts comes last. Claude's answer may lack
+        # the number of parts (seen on 2026-10-23): then the parts that arrive still show it, out of an unknown total
+        arrived, planned = moodle_ingest.parts_progress(mid, since)
+        if parts or arrived:
+            _pull_report("parts", min(parts, arrived) if parts else arrived, parts or planned)
+        elif n:
+            _pull_report("download", n, expected)
+
+    # In parts Claude returned once every part was in: only the list of parts is still on its way
+    wait_s = PARTS_LIST_WAIT_S if parts else DOWNLOAD_WAIT_S
     try:
-        return moodle_ingest.wait_for_download(mid, since, poll_s=DOWNLOAD_POLL_S, total_s=DOWNLOAD_WAIT_S)
+        return moodle_ingest.wait_for_download(mid, since, poll_s=DOWNLOAD_POLL_S, total_s=wait_s,
+                                               start_s=wait_s if parts else 180, on_size=on_size)
     except TimeoutError as e:
+        if parts:
+            raise UserError(f"ההורדה בחלקים ({parts} חלקים) הסתיימה בכרום, אבל רשימת החלקים לא הגיעה לתיקיית ההורדות. "
+                            "לוחצים שוב \"משוך הגשות\".") from e
         if "did not start" in str(e):
             raise UserError("Claude ביקש ממודל את ה-ZIP, אבל ההורדה לא התחילה בכרום. אם כרום שואל איפה לשמור, "
                             "מכבים בהגדרות שלו את \"שאל איפה לשמור כל קובץ\" ומושכים שוב.") from e
@@ -949,13 +1128,21 @@ def _note_fields(note: dict, res: dict) -> dict:
 
 
 # ---------- מצב לאתר ----------
-_DOWNLOAD = re.compile(re.escape(paths.DOWNLOAD_PREFIX) + r" (\d{4}-\d{2}-\d{2} \d{2}-\d{2})\.zip$")
+# "Moodle download <date>.zip", או תיקייה "Moodle download <date>" של הורדה בחלקים
+# "Moodle download 2026-10-23 11-15" (old), "... 11-15-07", "... 11-15-07 (2)", a ZIP or a folder of parts
+_DOWNLOAD = re.compile(re.escape(paths.DOWNLOAD_PREFIX)
+                       + r" (\d{4}-\d{2}-\d{2} \d{2}-\d{2}(?:-\d{2})?)(?: \(\d+\))?(?:\.zip)?$")
+
+
+def _download_time(stamp: str) -> datetime:
+    return datetime.strptime(stamp, "%Y-%m-%d %H-%M-%S" if len(stamp) > 16 else "%Y-%m-%d %H-%M")
 
 
 def _downloads(a: folder_view.Assignment) -> list[str]:
     """מתי נמשכו ה-ZIP-ים של המטלה (כל הורדה נשמרת בתיקיית המטלה), מהישן לחדש."""
-    stamps = sorted(m.group(1) for p in a.dir.glob("*.zip") if (m := _DOWNLOAD.match(p.name)))
-    return [datetime.strptime(s, "%Y-%m-%d %H-%M").isoformat(timespec="minutes") for s in stamps]
+    times = sorted(_download_time(m.group(1)) for p in a.dir.glob(f"{paths.DOWNLOAD_PREFIX} *")
+                   if (m := _DOWNLOAD.match(p.name)))
+    return [t.isoformat(timespec="minutes") for t in times]
 
 
 def _last_download(a: folder_view.Assignment) -> str | None:

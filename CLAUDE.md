@@ -148,17 +148,29 @@ There is **no Moodle API**. Claude in Chrome works in the user's own logged-in C
   downloading per schedule wastes runs. Every **upload** to Moodle (grades or feedback) needs a person's yes.
 - Submissions page: `https://moodle.bgu.ac.il/moodle/mod/assign/view.php?id=<assignment id>&action=grading`.
   The assignment id is the `id=` in that URL (the number at the end of the ZIP name too).
-- Download: Actions (פעולות) → "הורדת כל ההגשות (השתמש ב 7ZIP לפתיחה)", or straight `view.php?id=<id>&action=downloadall`.
-  Keep "הורדת הגשות בתיקיות" (download submissions in folders) checked: `anonymize` needs a folder per student.
+- Download by hand: Actions (פעולות) → "הורדת כל ההגשות (השתמש ב 7ZIP לפתיחה)", or straight `view.php?id=<id>&action=downloadall`.
+  Keep "הורדת הגשות המאורגנות לתיקיות לפי סטודנט" (download in folders, next to פעולות) checked: `anonymize` needs a folder per student.
   The ZIP lands in Downloads as `<course code>-<assignment>-<id>.zip`. Open with 7-Zip, not Python's zipfile (it garbles some Hebrew names).
-- **The pull button downloads by itself.** `POST /api/pull` first looks for an unconsumed ZIP of the assignment in Downloads
-  (`ingest` moves every ZIP it takes, so one still there was downloaded by hand and not pulled yet). If there is none,
-  `ClaudeChromeDriver.download` runs one locked-down `claude -p --chrome` (`--tools ""`, an empty temp folder, prompt
-  `DOWNLOAD_PROMPT`): it opens the grading page, ticks "הורדת הגשות בתיקיות" if it is off (a personal display option, the
-  only click it may make), and opens the `downloadall` address. Python then waits for the ZIP in Downloads
-  (`ingest.wait_for_download`: nothing within 3 minutes = Chrome never started it, say because it asks where to save; at most
-  25 minutes, under the 30 minutes after which the pull lock counts as stuck), and ingests it. The download shares the
-  "one Chrome job at a time" guard with the connection check and the upload. Not yet run against the real Moodle (2026-10-22).
+  **BGU Moodle cuts a big "download all" ZIP** (2026-10-23: 356, 913, 889 and 475 MB of ~2.4 GB, after 1-2 minutes) and
+  Chrome still saves it as a finished .zip. `ingest.check_whole` tests every ZIP with 7-Zip before anything is touched and
+  renames a broken one to `... (incomplete).zip`, so it is never taken again.
+- **An expired Moodle session shows nginx "404 Not Found"**, not a login page. Opening `https://moodle.bgu.ac.il/moodle/my/`
+  signs Chrome in again by itself (SSO). Every Claude prompt does that once before giving up (`SESSION_RULE`).
+- **The pull button downloads by itself, in parts.** `POST /api/pull` first takes an unconsumed ZIP (or list of parts) of
+  the assignment in Downloads. If there is none, `ClaudeChromeDriver.download` runs one locked-down `claude -p --chrome`
+  (`--tools ""`, an empty temp folder, `download_prompt`): it opens the grading page, ticks the folders checkbox if it is off
+  (the only click it may make), and runs `moodle/download_parts.js` with the javascript tool, inside `String.raw` with its
+  SHA-256 (the page refuses a script that was not copied exactly). The script lists every student of the grading table, asks
+  Moodle for ~40 at a time (POST `action=gradingbatchoperation&operation=downloadselected`, ~10 s per part), counts the
+  students in each ZIP's central directory, asks again in two halves for a part that is not whole (a single student together
+  with one who already came: Moodle sends one file without a ZIP), and saves each part to Downloads at once
+  (`<name>-<id> part 003.zip`); last comes `<name>-<id>.json`, the list of parts with their sizes. A student that fails 3 times
+  stops it all with an error and no list. **Claude waits in its run until the script says "saved"**: Claude in Chrome closes
+  the tab of an ended run within ~2 minutes (the parts stopped at 14 of 15). Meanwhile the dashboard counts the parts in
+  Downloads for the progress bar (`GET /api/pull`, phases claude/parts/check/extract/number). `ingest.gather_parts` takes the
+  list only if every part is there with its exact size, checks each, extracts all into one originals folder and numbers once;
+  the parts are kept in `Moodle download <date>/`. Run for real on 3438636 on 2026-10-23: 566 students in 15 parts, every
+  earlier number kept. The download shares the "one Chrome job at a time" guard with the connection check and the upload.
 - Feedback upload: Actions → "העלאת מספר קובצי משוב כקובץ 7Zip אחד" → the ZIPs in `3 - Ready to upload to Moodle`
   (`Graded - part 01.zip` ...), one at a time. **BGU Moodle imports at once**: clicking "יבוא קבצי משוב" imports
   immediately, with no confirmation list (file → student) before it. Moodle then lands on the grading page with a
@@ -249,6 +261,7 @@ in the assignment.
 | Students name files anything ("Untitled (7).pdf", their own name, ...) | Ignore filenames. Only the folder's participant id matters |
 | Chrome left the ZIP as "Unconfirmed *.crdownload" | Chrome was asking where to save. Turn off "Ask where to save each file" in Chrome settings |
 | Re-running ingest failed deleting folders 7-Zip extracted as read-only | `ingest.remove_tree` clears read-only and retries |
+| A pull that failed halfway could leave an empty key (the next pull renumbered everyone) or lose the files of students not in the next download; two pulls in one minute overwrote the kept download | `anonymize.prepare` updates "1 - Submissions to grade" in place, only what changed, each file and the key via `.tmp` + `os.replace`; `check_key` refuses to pull (before Chrome opens) when the key is empty or broken but submissions exist; kept downloads are named to the second, with " (2)" when taken. `tests/moodle/test_repeated_pulls.py` pulls 8 times in a row with changing submissions |
 | Moodle skips a feedback file identical in name/content to the submission | Feedback files are named `feedback.pdf` inside each student's folder |
 | Folders the web upload never saw (empty ones) | `guide` puts a `README.txt` in "2 - Graded with comments" and "3 - Ready to upload to Moodle" so they exist from day one |
 

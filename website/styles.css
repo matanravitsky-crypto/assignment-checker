@@ -673,6 +673,12 @@ textarea:focus, .field input:focus, .field select:focus, .rreq:focus, .rpts inpu
 .send-line svg { width: 18px; height: 18px; flex: none; color: var(--blue); }
 .send-bar { height: 8px; border-radius: 99px; background: var(--sheet-2); border: 1px solid var(--rule); overflow: hidden; }
 .send-bar i { display: block; height: 100%; background: var(--blue); border-radius: 99px; transition: width .4s ease; }
+/* בלי גודל ידוע (Claude פותח את מודל, הורדה ראשונה): פס שנע הלוך ושוב במקום אחוזים */
+.send-bar.indet i { width: 30%; animation: indet 1.4s ease-in-out infinite alternate; }
+@keyframes indet { from { transform: translateX(0); } to { transform: translateX(-233%); } }
+.pull-progress.compact { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.pull-progress.compact p { margin: 0; display: flex; gap: 6px; align-items: baseline; font-size: 13px; color: var(--ink-2); }
+.pull-progress.compact b { color: var(--blue); font-size: 14px; }
 .send-zips { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--ink-2); text-align: left; }
 .send-zips li { display: flex; gap: 12px; align-items: baseline; }
 .send-notes { padding-block: 0; padding-inline: 20px 0; }
@@ -882,3 +888,7 @@ span.rv-arrow { visibility: hidden; }
 .rv-rule svg { width: 14px; height: 14px; flex: none; }
 .rq-pts.over { color: var(--warn); }
 .breakdown .num.over { color: var(--warn); font-weight: 700; }
+
+/* "מה עושים" בעמוד המשיכה: שלוש שורות ממוספרות */
+.how-to { margin: 10px auto 4px; padding-inline-start: 22px; text-align: start; max-width: 520px; line-height: 1.7; }
+.how-to li::marker { font-weight: 700; color: var(--blue); }

@@ -170,6 +170,8 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json(actions.claims_view(root, course, assignment))
             except FileNotFoundError as e:
                 return self._json({"error": str(e)}, HTTPStatus.NOT_FOUND)
+        if url.path == "/api/pull":  # כמה התקדמה המשיכה, בזמן שה-POST שלה עוד רץ
+            return self._json(actions.pull_status())
         if url.path in ("/api/pages", "/api/page"):
             # עמודי הגשה כתמונות, לבדיקה הידנית: /api/pages אומר כמה עמודים, /api/page מחזיר עמוד אחד
             root = self._root()

@@ -32,6 +32,7 @@ through as it is, capped at 300 characters, and the prompt tells it to name nobo
 and Claude Code is logged in. Nothing here is run by the tests: they give the driver a fake `run`.
 """
 
+import hashlib
 import json
 import re
 import shutil
@@ -46,6 +47,11 @@ UPLOAD_URL = ("https://moodle.bgu.ac.il/moodle/mod/assign/view.php?id={id}&plugi
               "&pluginsubtype=assignfeedback&action=viewpluginpage&pluginaction=uploadzip")
 GRADING_URL = "https://moodle.bgu.ac.il/moodle/mod/assign/view.php?id={id}&action=grading"
 DOWNLOAD_URL = "https://moodle.bgu.ac.il/moodle/mod/assign/view.php?id={id}&action=downloadall"
+# BGU Moodle answers an expired session with nginx's "404 Not Found" instead of a login page; opening the home page
+# signs Chrome in again by itself (SSO), and the page then opens (seen on 2026-10-23)
+HOME_URL = "https://moodle.bgu.ac.il/moodle/my/"
+SESSION_RULE = (f'- If a page shows "404 Not Found" or a login page, Moodle\'s session has expired. Open {HOME_URL} once, wait a few '
+                "seconds (Moodle signs in again by itself), and open the address you wanted again. {give_up}")
 
 # Starting values: the test assignment (plan task 11) sets them from real runs
 DEFAULT_MODEL = "claude-sonnet-5-5"
@@ -54,8 +60,8 @@ TIMEOUT_S = 600
 CHECK_BUDGET_USD = 0.5  # "is everything ready" opens one page, so it gets less
 CHECK_TIMEOUT_S = 180
 AUTH_TIMEOUT_S = 30
-DOWNLOAD_BUDGET_USD = 1.0  # opens two pages and maybe ticks one box
-DOWNLOAD_TIMEOUT_S = 300
+DOWNLOAD_BUDGET_USD = 2.0  # opens a page, maybe ticks one box, runs the parts script and waits for it (a check every 20 s)
+DOWNLOAD_TIMEOUT_S = 20 * 60  # the run waits for every part: 15 parts took ~3 minutes on 2026-10-23
 MESSAGE_MAX = 300
 
 NOT_LOGGED_IN = "Claude Code לא מחובר במחשב הזה. מריצים פעם אחת: claude auth login"
@@ -82,9 +88,11 @@ DOWNLOAD_SCHEMA = {
     "type": "object",
     "properties": {
         "status": {"type": "string", "enum": list(DOWNLOAD_STATUSES)},
+        "users": {"type": ["integer", "null"]},
+        "parts": {"type": ["integer", "null"]},
         "message": {"type": "string", "maxLength": MESSAGE_MAX},
     },
-    "required": ["status", "message"],
+    "required": ["status", "users", "parts", "message"],
     "additionalProperties": False,
 }
 CHECK_SCHEMA = {
@@ -101,7 +109,8 @@ DRY_RUN_MODE = ('This is a dry run: attach the file, then click ביטול. Neve
 CHECK_PROMPT = """You check that the Chrome tools and Moodle are ready. Use only the Chrome tools.
 
 Rules (never break them):
-- Go only to this address: {grading_url}.
+- Go only to this address: {grading_url} (and {home_url}, as the next rule says).
+""" + SESSION_RULE.format(give_up='If it still shows 404 or a login page, "moodle_logged_in" is false.') + """
 - Do not type anything anywhere and do not click anything. Never take a screenshot.
 - Never write any person's name in your answer.
 
@@ -113,24 +122,70 @@ Steps:
 Return only the structured result.
 """
 
+# Moodle cuts a big "download all" ZIP early, so the run downloads in parts with this script (see its comments)
+PARTS_SCRIPT = Path(__file__).with_name("download_parts.js")
+
 DOWNLOAD_PROMPT = """You start the download of all submissions of one Moodle assignment, for a university course. Use only the Chrome tools.
 
 Rules (never break them):
-- Go only to these two addresses: {grading_url} and {download_url}. Never open assignment settings or any other page.
-- If a login page appears, do not type anything anywhere. Stop and return status "needs_login".
+- Go only to this address: {grading_url} (and {home_url}, as the next rule says). Never open assignment settings or any other page.
+""" + SESSION_RULE.format(give_up='If it still shows 404 or a login page, do not type anything anywhere: stop and return status "needs_login".') + """
 - Never type anything. Never take a screenshot. Never write any person's name in your answer.
 - Never change grades, submissions or assignment settings. The only thing you may click is the one checkbox in step 2.
+- The only script you may run is the one in step 3, exactly as written.
 
 Steps:
 1. Open {grading_url}. Check the address has id={assignment_id} and the page is the grading page of the assignment "{title}". If not, return "error".
-2. In the options of that page (usually near the bottom), find the checkbox "הורדת הגשות בתיקיות" (in English "Download submissions in folders").
-   If it is there and not checked, click it once so that it is checked (it is a personal display option, not an assignment setting). If it is not there, go on.
-3. Open {download_url}. Chrome then downloads one ZIP file with all the submissions; the page itself may not change. Do not click anything there.
-   If Moodle shows an error message instead (say, there are no submissions), return "error" with that message.
-4. Return "started".
+2. On that page (near the top, next to "פעולות"), find the checkbox "הורדת הגשות המאורגנות לתיקיות לפי סטודנט" (older Moodle: "הורדת הגשות בתיקיות", in English "Download submissions in folders").
+   It is a toggle (a personal display option, not an assignment setting): read whether it is checked first, with the javascript tool:
+   document.querySelector('input[type="checkbox"][id^="downloadasfolders"]')?.checked
+   true: do not click it. false: click it once, wait 3 seconds, reload {grading_url}, and read it again; if it is still not true,
+   return "error" with the message "folders option is off". null (not there): go on.
+3. On that same page, run the script below with the javascript tool, copied exactly, character for character (the page checks
+   that it is exact before it runs). It downloads the submissions in parts in the background and answers at once with
+   {{"users": ..., "parts": ...}}. Do not run it twice, and never navigate away from the page or close the tab: the download
+   stops if the page goes away. If it answers {{"error": ...}} or throws, return "error" with that text.
+4. Wait on the same page until the download is done: run this with the javascript tool, again and again (each run waits 20 seconds),
+   until "state" is "saved" or "error". It takes about 15 seconds per part, at most {wait_minutes} minutes in all.
+   await new Promise((r) => setTimeout(r, 20000)); JSON.stringify(window.__moodleParts)
+5. "saved": return "started", with "users" and "parts" from the script's answer, and in "message" the numbers in "failed" and
+   "empty" (if any). "error": return "error" with the "error" text. Still not done after {wait_minutes} minutes: return "error".
 
-Return only the structured result. "message" says what happened in one short sentence.
+Return only the structured result. "message" says what happened in one short sentence, with numbers only.
+
+The script:
 """
+
+
+def parts_script(mid: str) -> tuple[str, str]:
+    """The parts script for this assignment, and its SHA-256: (text, hex).
+
+    Comment lines are left out (less for Claude to copy), line ends are LF. It goes into String.raw`...` in the
+    page, so it may hold no backtick and no "${"."""
+    lines = PARTS_SCRIPT.read_text(encoding="utf-8").replace("\r\n", "\n").replace("__ASSIGNMENT_ID__", mid).split("\n")
+    text = "\n".join(line for line in lines if not line.lstrip().startswith("//")).strip()
+    if "`" in text or "${" in text:
+        raise ValueError("download_parts.js may not hold a backtick or ${: it goes into String.raw")
+    return text, hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+# Claude copies the script into the page; the page runs it only if its SHA-256 matches, so a copying mistake fails
+# before anything is downloaded (an idea of the "משיכה" session, 2026-10-23)
+CHECKED_RUN = """const S = String.raw`{script}`;
+const T = S.replace(/\\r\\n/g, "\\n");
+const H = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(T)))].map((b) => b.toString(16).padStart(2, "0")).join("");
+if (H !== "{sha}") throw new Error("the script was not copied exactly");
+await (0, eval)(T);"""
+
+
+def download_prompt(info: dict) -> str:
+    """DOWNLOAD_PROMPT for this assignment, with the checked parts script (its braces stay out of str.format)."""
+    mid = assignment_id(info)
+    script, sha = parts_script(mid)
+    return DOWNLOAD_PROMPT.format(grading_url=GRADING_URL.format(id=mid), home_url=HOME_URL, assignment_id=mid,
+                                  title=info.get("title") or info.get("name") or "",
+                                  wait_minutes=round(DOWNLOAD_TIMEOUT_S / 60) - 2) + \
+        CHECKED_RUN.replace("{sha}", sha).replace("{script}", script)
 
 # A failed run whose output is one of these means Claude Code itself is not logged in
 AUTH_PROBLEM = re.compile(r"authenticat|oauth|not logged in|/login|invalid api key", re.IGNORECASE)
@@ -169,6 +224,8 @@ def render_prompt(info: dict, zip_path: Path, expected: int, dry_run: bool) -> s
     """The text of claude_upload.md for this ZIP (a str.format template: keep literal braces out of it)."""
     return TEMPLATE.read_text(encoding="utf-8").format(
         upload_url=UPLOAD_URL.format(id=assignment_id(info)),
+        home_url=HOME_URL,
+        give_up='If it still shows 404 or a login page, do not type anything anywhere: stop and return status "needs_login".',
         assignment_id=assignment_id(info),
         title=info.get("title") or info.get("name") or "",
         zip_path=zip_path,
@@ -331,7 +388,7 @@ class ClaudeChromeDriver:
             return {"chrome": False, "moodle": False, "message": NOT_INSTALLED}
         timeout_s = min(self.timeout_s, CHECK_TIMEOUT_S)
         try:
-            prompt = CHECK_PROMPT.format(grading_url=GRADING_URL.format(id=assignment_id(info)))
+            prompt = CHECK_PROMPT.format(grading_url=GRADING_URL.format(id=assignment_id(info)), home_url=HOME_URL)
             # No ZIP to carry and nothing to upload, so the run gets an empty folder and no built-in tools (tools="")
             with tempfile.TemporaryDirectory(prefix="moodle-check-", ignore_cleanup_errors=True) as empty:
                 proc = self.execute(claude, prompt, Path(empty), CHECK_SCHEMA, CHECK_BUDGET_USD, timeout_s)
@@ -359,11 +416,9 @@ class ClaudeChromeDriver:
         claude = self.claude or find_claude()
         if not claude:
             return {"status": "error", "message": NOT_INSTALLED}
-        timeout_s = min(self.timeout_s, DOWNLOAD_TIMEOUT_S)
+        timeout_s = DOWNLOAD_TIMEOUT_S  # its own: the run waits for every part (an upload's 10 minutes are too short)
         try:
-            mid = assignment_id(info)
-            prompt = DOWNLOAD_PROMPT.format(grading_url=GRADING_URL.format(id=mid), download_url=DOWNLOAD_URL.format(id=mid),
-                                            assignment_id=mid, title=info.get("title") or info.get("name") or "")
+            prompt = download_prompt(info)
             with tempfile.TemporaryDirectory(prefix="moodle-download-", ignore_cleanup_errors=True) as empty:
                 proc = self.execute(claude, prompt, Path(empty), DOWNLOAD_SCHEMA, DOWNLOAD_BUDGET_USD, timeout_s)
         except Exception as error:  # never raise: the caller shows the message
@@ -375,7 +430,8 @@ class ClaudeChromeDriver:
         if status not in DOWNLOAD_STATUSES:
             return {"status": "error", "message": UNEXPECTED}
         message = str(answer.get("message") or "")[:MESSAGE_MAX] or DEFAULT_MESSAGES.get(status, "")
-        return {"status": status, "message": message}
+        return {"status": status, "message": message,
+                "users": count_or_none(answer.get("users")), "parts": count_or_none(answer.get("parts"))}
 
 
 def auth_status(run=subprocess.run, claude: str | None = None) -> dict:
