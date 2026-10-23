@@ -577,3 +577,42 @@ def test_points_above_the_rubric_are_never_kept(root):
     with pytest.raises(grading.GradingError) as e:
         grading.save_review(a.dir, "0001", [20, 20, 20, 20, 24], [], "", by="x")
     assert f"{LABELS[4]}: 24 מתוך 20" in str(e.value) and not (a.dir / grading.GRADES).exists()
+
+
+def test_the_rubric_points_come_from_the_pedagogy_folder(root):
+    """בלי rubric ב-Assignment details.json הניקוד נלקח מטבלת המחוון שבתיקייה "פדגוגי", כמו שהצוות כותב אותו."""
+    a = asg(root)
+    save_details(a, {**a.details(), "rubric": None})
+    folder = a.dir / "פדגוגי"
+    folder.mkdir()
+    (folder / "Rubric.md").write_text("# מחוון\n\n| שאלה | נק' | סעיפים |\n|---|---|---|\n| קבוצות 11 | 20 | א 3 |\n"
+                                      "| קבוצות 12 | 24 | |\n| **מרוכבים 6** | 12 | |\n| מרוכבים 7 | 20 | |\n| מרוכבים 8 | 24 | |\n",
+                                      encoding="utf-8")
+    (folder / "Rubric v1.md").write_text("| קבוצות 11 | 99 |\n", encoding="utf-8")  # גרסה ישנה: לא נקראת
+    ctx = grading.load_context(a.dir)
+    assert [q.points for q in ctx.questions] == [20, 24, 12, 20, 24] and not ctx.no_rubric
+    assert "Rubric.md" in ctx.rubric_text and "99" not in ctx.rubric_text
+    (folder / "Rubric.md").write_text("| קבוצות 11 | 20 |\n", encoding="utf-8")
+    assert "אין ניקוד" in grading.load_context(a.dir).no_rubric  # שאלה בלי ניקוד: עדיין אין ציונים
+
+
+def test_a_usage_limit_stops_grading_and_fails_no_work(root):
+    a = asg(root)
+    calls = []
+
+    def ask(req):
+        calls.append(1)
+        if len(calls) >= 2:
+            raise grading.GradingError("Claude Code נכשל: You've hit your session limit · resets 2:50am")
+        return detailed()
+    with pytest.raises(grading.ClaudeLimit) as e:
+        grading.grade_assignment(a.dir, ask=ask, parallel=1)
+    assert "מגבלת השימוש" in str(e.value)
+    graded = grading.read_grades(a.dir)
+    assert len(graded) == 1
+    assert not [n for n in ("0001", "0002", "0003") if "error" in grading.read_notes(a.dir, n)]
+    # שגיאת מכסה ישנה ב-Grading notes (מריצה אחרת) לא שולחת את העבודה לבדיקה הידנית
+    left = next(n for n in ("0001", "0002", "0003") if n not in graded)
+    grading.write_notes(a.dir, left, {"error": "Claude Code נכשל: You've hit your session limit", "failed_at": "x"})
+    subs = {s["id"]: s for s in hw(actions.state(root))["subs"]}
+    assert subs[left]["failed"] == "" and subs[left]["reviewKind"] == ""

@@ -132,7 +132,7 @@
   // שאלות שהניקוד בהן עובר את המחוון: נבדקו לפי חלוקה אחרת, ואסור לאשר אותן ככה
   const overRubric = (points) => rubric().questions.map((q, i) => ({ q, i, p: points?.[i] })).filter((x) => x.p > x.q.pts);
   const rubricNoticeHTML = () => `<div class="notice rule-notice">${ICON.warn}<div><b>אין ציונים בלי מחוון.</b> ${esc(noRubric())}
-    <span class="muted" style="display:block">כדי לתת ציונים, המרצה מוסיף מחוון עם ניקוד לכל שאלה (rubric) ל-Assignment details.json שבתיקיית המטלה.</span></div></div>`;
+    <span class="muted" style="display:block">כדי לתת ציונים, שמים בתיקייה "פדגוגי" שבתיקיית המטלה את המחוון (Rubric.md) עם טבלת ניקוד לכל שאלה.</span></div></div>`;
   const pad = (n) => String(n).padStart(2, "0");
   const hhmm = (d) => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
   function when(iso) {
@@ -156,7 +156,9 @@
   const origFiles = (s) => s.files.filter((f) => !f.marked);
   const markedFiles = (s) => s.files.filter((f) => f.marked);
   // עבודה בתור הבדיקה הידנית: Claude ביקש שאדם יבדוק, או שהבדיקה האוטומטית נכשלה. יוצאת מהתור כשמישהו מאשר
-  const needsReview = (s) => !s.approved && (!!s.review || (!!s.failed && s.score == null));
+  // בדיקה שנכשלה (למשל נגמרו הטוקנים) היא לא מקרה לאדם: היא עדיין "ממתינה לבדיקה", ו"בדוק" ינסה אותה שוב
+  const needsReview = (s) => !s.approved && !!s.review;
+  const gradingFailed = (s) => !!s.failed && s.score == null;
   const wasReviewed = (s) => s.approved && (!!s.review || !!s.reviewedBy);
   // מקרים מיוחדים: רק הם מגיעים לאדם (grading.SPECIAL_CASES, הסקיל "קשיחות והחלטות"), ועוד סוגים מבדיקות ישנות
   const REVIEW_KIND = {
@@ -326,7 +328,10 @@
     const A = cur(), I = info(A);
     const nums = {
       pull: [I.subs.length, "הגשות נמשכו", I.issues ? `${I.issues} דורשות טיפול` : ""],
-      grade: [I.graded.length, `מתוך ${I.ok.length} נבדקו`, ""],
+      grade: [I.graded.length, `מתוך ${I.ok.length} נבדקו`, (() => {
+        const n = I.subs.filter(gradingFailed).length;
+        return n ? `${plural(n, "בדיקה אחת נכשלה", "בדיקות נכשלו")}. "בדוק" ינסה שוב` : "";
+      })()],
       ret: [I.returned.length, `מתוך ${I.ok.length} הוחזרו`, ""],
     };
     return `
@@ -2157,6 +2162,21 @@
   // בלי מחוון יש רק את שמות השאלות. ניקוד 0 לכל אחת: לא מחלקים את הציון בעצמנו, ואין ציונים
   const noRubricQ = (labels, why) => ({ questions: labels.map((l, i) => ({ n: i + 1, pts: 0, req: l })), missing: why || `למטלה אין מחוון. ${RUBRIC_RULE}` });
 
+  // המערכת בודקת ברקע אם Claude Code מחובר (זה לוקח כמה שניות). שואלים שוב עד שיש תשובה, ומעדכנים את המסך
+  let healthTimer = null;
+  function followHealth() {
+    if (healthTimer) return;
+    healthTimer = setTimeout(async () => {
+      healthTimer = null;
+      const h = await api("api/health").catch(() => null);
+      if (!h) return;
+      LOCAL.health = { ...LOCAL.health, ...h };
+      renderStatus();
+      render();
+      if (h.checking) followHealth();
+    }, 2500);
+  }
+
   async function loadLocal() {
     try {
       const [data, health] = await Promise.all([api("api/state"), api("api/health").catch(() => null)]);
@@ -2175,6 +2195,7 @@
         .sort((x, y) => (y.at || "").localeCompare(x.at || "")));
       // מודל מחובר = Claude Code מחובר במחשב (דרכו Claude in Chrome עובד במודל)
       LOCAL.health = { ...LOCAL.health, ...(health || {}), root: data.root, claude: data.claude, claudeVia: data.claudeVia };
+      if (health?.checking) followHealth();
       if (!LOCAL.polling) LOCAL.sending = data.sending || null;
       if (!D.assignments.some((a) => a.id === state.assignmentId)) {
         const first = D.assignments.find((a) => a.subs.length) || D.assignments[0];
@@ -2306,7 +2327,7 @@
     if (LOCAL.probing || LOCAL.on) return;
     LOCAL.probing = true;
     renderStatus();
-    const ok = await detectLocal(ON_LOCAL_HOST ? 1500 : 60000);
+    const ok = await detectLocal(ON_LOCAL_HOST ? 20000 : 60000);  // במחשב עצמו המערכת עונה, גם אם לאט: מחכים, לא "לא מחובר"
     LOCAL.probing = false;
     if (ok) {
       LOCAL.on = true;

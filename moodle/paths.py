@@ -41,6 +41,9 @@ KEY = "Key - number to student.csv"
 # (hashes only: no names, no metadata values). Written by copying/check.py, read by the site's "העתקות" page
 COPYING = "Copying check.json"
 README = "README.txt"
+# The lecturer's or TA's grading material, in the assignment folder: rubric, solutions, accepted methods (.md/.txt).
+# Grading sends all of it to Claude. "פדגוגי" is the name the team gave it; "Pedagogy" works too.
+PEDAGOGY = ("Pedagogy", "פדגוגי")
 DOWNLOAD_PREFIX = "Moodle download"
 PULL_LOCK = "Pull in progress.txt"      # in the assignment folder while a pull runs (see lock.py)
 UPLOAD_LOCK = "Upload in progress.txt"  # in the assignment folder while an upload to Moodle runs

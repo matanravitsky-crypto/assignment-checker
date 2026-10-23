@@ -304,7 +304,7 @@ def start_grading(root: Path, course: str, assignment: str, numbers: list[str] |
         try:
             rep = grading.grade_assignment(a.dir, todo, ask=ask, on_progress=progress, **opts)
             job.report, job.summary = asdict(rep), rep.summary()
-        except grading.NoApiKey as e:
+        except (grading.NoApiKey, grading.ClaudeLimit) as e:
             job.error = str(e)
         except Exception as e:  # השגיאה מוצגת באתר במקום שהבדיקה תיעלם בשקט
             job.error = f"הבדיקה נכשלה: {e}"
@@ -652,6 +652,41 @@ def moodle_status() -> dict:
     return status
 
 
+_status_refresh = threading.Lock()
+
+
+def refresh_status_soon() -> None:
+    """בודק ברקע אם Claude Code מחובר (moodle_status), אם אין כבר בדיקה כזו שרצה. התשובה נשמרת במטמון."""
+    if not _status_refresh.acquire(blocking=False):
+        return
+
+    def run() -> None:
+        try:
+            moodle_status()
+        except Exception:  # בדיקה שנכשלה לא מפילה את השרת; הבאה תנסה שוב
+            pass
+        finally:
+            _status_refresh.release()
+    threading.Thread(target=run, daemon=True).start()
+
+
+def quick_status() -> dict | None:
+    """מה שידוע עכשיו על Claude Code, בלי לחכות: `claude auth status` לוקח במחשב של אורי עד 13 שניות, והאתר לא
+    מחכה לו. אם המידע ישן (או שעוד אין), בודקים ברקע. None = עוד לא ידוע."""
+    cached = _moodle_cache
+    if not cached or time.monotonic() - cached[0] >= MOODLE_STATUS_SECONDS or _login.running() or _install.running():
+        refresh_status_soon()
+    return cached[1] if cached else None
+
+
+def quick_via() -> str | None:
+    """כמו grading_via, בלי לחכות לבדיקה של Claude Code (quick_status)."""
+    if cfg.claude_key():
+        return "api"
+    st = quick_status()
+    return "code" if st and st.get("logged_in") else None
+
+
 def grading_via() -> str | None:
     """איך הבדיקה מדברת עם Claude: "api" (יש ANTHROPIC_API_KEY), "code" (Claude Code מחובר במחשב, grading/claude_cli.py), או None."""
     if cfg.claude_key():
@@ -860,6 +895,8 @@ def page_image(root: Path, course: str, assignment: str, number: str, page: int)
 def _note_fields(note: dict, res: dict) -> dict:
     """מה שהאתר צריך מ-Grading notes: הערות וטעויות לכל שאלה, מה Claude לא בטוח בו, הסימונים, ולמה צריך אדם."""
     failed = "" if res.get("grade") else str(note.get("error") or "")
+    if grading.is_limit(failed):  # נגמרה המכסה באמצע בדיקה: העבודה עוד לא נבדקה, אין מה לבדוק בה ידנית
+        failed = ""
     review = res.get("review") or ""
     # מקרה מיוחד (special ב-Grades.csv, מהבדיקה) קודם; אחרת הסוג מ-Grading notes
     kind = str(res.get("special") or note.get("review_kind") or "") if review else ""
@@ -968,7 +1005,7 @@ def state(root: Path) -> dict:
                 "subs": subs, "log": _activity(a, results, log), "copying": copying_state(a.dir),
             })
     return {"root": str(root), "courses": courses, "assignments": out,
-            "moodle": False, "claude": grading_via() is not None, "claudeVia": grading_via(), "grading": grade_status(), "sending": send_status(), "copyCheck": copying_status()}
+            "moodle": False, "claude": quick_via() is not None, "claudeVia": quick_via(), "grading": grade_status(), "sending": send_status(), "copyCheck": copying_status()}
 
 
 def _slots(course_dir: Path) -> list[folder_view.Assignment | int]:
