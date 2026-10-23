@@ -27,7 +27,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--parallel", type=int, default=grade.DEFAULT_PARALLEL, help="כמה עבודות במקביל")
     args = p.parse_args(argv)
 
-    labels = {"graded": "נבדקה", "failed": "נכשלה", "skipped": "כבר אושרה"}
+    labels = {"graded": "נבדקה", "failed": "נכשלה", "skipped": "כבר אושרה", "taken": "שמורה לבודק אחר"}
     try:
         folder = paths.assignment_dir(args.assignment_id)
         rep = grade.grade_assignment(folder, args.ids or None, model=args.model, parallel=args.parallel,

@@ -16,7 +16,7 @@ from urllib.parse import quote
 import pymupdf
 import pytest
 
-from moodle import claude_driver, paths
+from moodle import claims, claude_driver, grades, paths
 from dashboard import actions, folder_view
 from grading import grade as grading
 from tests.dashboard.helpers import hw
@@ -65,6 +65,7 @@ def root(tmp_path, monkeypatch):
         w.writeheader()
         w.writerows(rows)
     monkeypatch.setenv("ASSIGNMENT_CHECKER_ROOT", str(course_folder))
+    monkeypatch.setenv("GRADER_NAME", "בודק א")
     return r
 
 
@@ -192,11 +193,14 @@ def test_grading_writes_grades_csv_and_marked_pdfs(root):
     rep = grading.grade_assignment(a.dir, ask=fake, parallel=3)
     assert rep.graded == ["0001", "0002", "0003"] and not rep.failed and len(fake.requests) == 3
 
-    rows = read_csv(a.dir / grading.GRADES)
+    mine = a.dir / "Grades by בודק א.csv"  # הבדיקה כותבת לקובץ של הבודק, לא ל-Grades.csv המשותף
+    assert not (a.dir / grading.GRADES).exists()
+    rows = read_csv(mine)
     assert list(rows[0])[:3] == ["number", "grade", "feedback"]  # בדיוק מה ש-upload.py קורא
-    assert (a.dir / grading.GRADES).read_bytes().startswith(b"\xef\xbb\xbf")
+    assert mine.read_bytes().startswith(b"\xef\xbb\xbf")
     assert [(r["number"], r["grade"], r["points"]) for r in rows] == [(n, "85", "20;15;20;20;10") for n in ("0001", "0002", "0003")]
-    assert rows[0]["approved"] == "" and rows[0]["review"] == ""
+    assert rows[0]["approved"] == "" and rows[0]["review"] == "" and rows[0]["graded_by"] == "בודק א" and rows[0]["graded_at"]
+    assert set(claims.read_all(a.dir)) == {"0001", "0002", "0003"}  # ומה שנבדק נרשם על שם הבודק
 
     out = a.dir / paths.MARKED / "0001.pdf"
     assert out.stat().st_size <= grading.MAX_BYTES
@@ -243,6 +247,42 @@ def test_approved_rows_are_kept_and_not_regraded(root):
     assert rows["0002"]["grade"] == "70" and rows["0002"]["feedback"] == "אושר ידנית" and rows["0002"]["extra"] == "של המרצה"
     assert rows["0003"]["grade"] == "85"
     assert not (a.dir / paths.MARKED / "0002.pdf").exists()
+
+
+def test_two_graders_split_the_work_without_sharing_a_file(root):
+    """שני בודקים בשני מחשבים: כל אחד כותב רק לקבצים שלו, ומה שהשני לקח לא נבדק."""
+    a = asg(root)
+    claims.take(a.dir, ["0002"], who="בודקת ב")
+    fake = FakeClaude()
+    progress = {}
+    rep = grading.grade_assignment(a.dir, ask=fake, on_progress=progress.__setitem__)
+    assert rep.graded == ["0001", "0003"] and len(fake.requests) == 2 and progress["0002"] == "taken"
+    assert any("0002" in note for note in rep.notes)
+    assert rep.summary() == "נבדקו 2 מתוך 2"
+
+    rep = grading.grade_assignment(a.dir, ["0002"], ask=FakeClaude(lambda req: answer(points=(10, 10, 10, 10, 10))),
+                                   who="בודקת ב")
+    assert rep.graded == ["0002"]
+    assert [p.name for p in grades.files(a.dir)] == ["Grades by בודק א.csv", "Grades by בודקת ב.csv"]
+    rows = grading.read_grades(a.dir)
+    assert {n: r["grade"] for n, r in rows.items()} == {"0001": "85", "0002": "50", "0003": "85"}
+    assert rows["0002"]["graded_by"] == "בודקת ב"
+    assert grading.pending(a.dir) == []
+
+
+def test_merged_grades_prefer_approved_then_newest(root):
+    a = asg(root)
+    grading.write_grades(a.dir, {"0001": {"number": "0001", "grade": "60", "approved": "כן"},
+                                 "0002": {"number": "0002", "grade": "61"}})
+    grades.write_file(grades.own_file(a.dir, "א"), {
+        "0001": {"number": "0001", "grade": "90", "graded_at": "2026-10-23T10:00:00"},
+        "0002": {"number": "0002", "grade": "70", "graded_at": "2026-10-23T10:00:00"},
+        "0003": {"number": "0003", "grade": "71", "graded_at": "2026-10-23T11:00:00"}})
+    grades.write_file(grades.own_file(a.dir, "ב"), {
+        "0003": {"number": "0003", "grade": "72", "graded_at": "2026-10-23T09:00:00"}})
+    rows = grading.read_grades(a.dir)
+    # מאושרת גוברת, אחריה הבדיקה האחרונה, ושורה בלי זמן (Grades.csv הישן) מפסידה לשורה עם זמן
+    assert {n: r["grade"] for n, r in rows.items()} == {"0001": "60", "0002": "70", "0003": "71"}
 
 
 def test_pending_skips_graded_and_extra_marked_files(root):
@@ -596,6 +636,20 @@ def test_the_rubric_points_come_from_the_pedagogy_folder(root):
     assert "אין ניקוד" in grading.load_context(a.dir).no_rubric  # שאלה בלי ניקוד: עדיין אין ציונים
 
 
+def test_stop_leaves_the_rest_waiting_and_what_was_sent_is_saved(root):
+    a = asg(root)
+    stop = threading.Event()
+
+    def ask(req):
+        stop.set()  # the button is pressed while the first submission is with Claude
+        return answer()
+    rep = grading.grade_assignment(a.dir, ask=ask, parallel=1, stop=stop)
+    assert len(rep.graded) == 1 and len(rep.stopped) == 2 and not rep.failed
+    assert rep.stop_reason == "עצרת את הבדיקה" and "נעצרה: 2 לא נבדקו" in rep.summary()
+    assert sorted(grading.pending(a.dir)) == rep.stopped  # still waiting: the next "Grade" takes them
+    assert all("error" not in grading.read_notes(a.dir, n) for n in rep.stopped)
+
+
 def test_a_usage_limit_stops_grading_and_fails_no_work(root):
     a = asg(root)
     calls = []
@@ -616,3 +670,26 @@ def test_a_usage_limit_stops_grading_and_fails_no_work(root):
     grading.write_notes(a.dir, left, {"error": "Claude Code נכשל: You've hit your session limit", "failed_at": "x"})
     subs = {s["id"]: s for s in hw(actions.state(root))["subs"]}
     assert subs[left]["failed"] == "" and subs[left]["reviewKind"] == ""
+
+
+def test_server_stops_a_running_grading(root, server, monkeypatch):
+    started, release = threading.Event(), threading.Event()
+
+    def ask(req):
+        started.set()
+        release.wait(10)
+        return answer()
+    monkeypatch.setattr(grading, "claude_ask", lambda: ask)
+    st, job = call(server, "POST", "/api/grade", {"course": COURSE, "assignment": HW, "parallel": 1})
+    assert st == 202 and started.wait(10)
+    st, job = call(server, "POST", "/api/grade/stop", {})
+    assert st == 200 and job["stopping"] and job["running"]
+    release.set()
+    for _ in range(200):
+        _, job = call(server, "GET", "/api/grade")
+        if not job["running"]:
+            break
+        time.sleep(0.05)
+    assert not job["running"] and len(job["report"]["graded"]) == 1 and len(job["report"]["stopped"]) == 2
+    _, again = call(server, "POST", "/api/grade/stop", {})
+    assert again["stopping"] is False or again["running"] is False  # nothing running: stopping does nothing

@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Protocol
 
 from moodle import anonymize, lock, paths, upload, upload_log
+from moodle import grades as moodle_grades
 
 UPLOAD_LOCK = paths.UPLOAD_LOCK
 STALE_MESSAGE = "הקבצים השתנו מאז ההכנה. צריך להכין שוב."
@@ -109,6 +110,10 @@ def check_can_prepare(assignment_dir: Path) -> None:
         raise BatchBlocked(
             f"ב-OneDrive נוצר עותק כפול של טבלת המפתח ({', '.join(conflicts)}). "
             f"צריך לאחד אותו עם `{paths.KEY}` ולמחוק את העותק לפני העלאה, כדי ששום סטודנט לא יקבל עבודה של סטודנט אחר.")
+    copies = anonymize.submission_conflicts(assignment_dir)
+    if copies:
+        raise BatchBlocked(f"ב-OneDrive נוצרו עותקים כפולים של הגשות ({', '.join(copies[:5])}): לא ברור של מי כל קובץ. "
+                           "צריך לבדוק ולמחוק את העותק לפני העלאה, כדי ששום סטודנט לא יקבל עבודה של סטודנט אחר.")
     conflicts = upload_log.log_conflicts(assignment_dir)
     if conflicts:
         raise BatchBlocked(
@@ -167,7 +172,7 @@ def prepare_batch(assignment_dir: Path, max_bytes: int = upload.CLAUDE_MAX_ZIP_B
     upload_log.write_batch(assignment_dir, batch)
     upload_log.remove_old_batch_folders(assignment_dir, keep=zip_dir.name)
 
-    grades = upload.read_results(assignment_dir) if (assignment_dir / paths.GRADES).exists() else {}
+    grades = upload.read_results(assignment_dir) if moodle_grades.files(assignment_dir) else {}
     in_batch = {f["number"] for z in batch["zips"] for f in z["files"]}
     upload.write_instructions(upload_dir / upload.INSTRUCTIONS_FILE, {
         "assignment_id": batch["assignment_id"],

@@ -26,6 +26,7 @@
     polling: false, starting: false, stopping: false,
     rd: null,          // מוכנות המחשב להעלאה (Claude Code, התחברות, כרום ומודל), למטלה הנוכחית
     probing: false,    // מנסים עכשיו להתחבר למערכת במחשב
+    me: null,          // השם שלי בצוות: {name, set}. set=false עד שבחרו שם באתר (אז זה שם המשתמש של Windows)
   };
   const $ = (sel, root = document) => root.querySelector(sel);
   const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -56,6 +57,9 @@
     instr: { grade: store.get("instr.grade", DEFAULT_GRADE_INSTR) },  // נשלחות ל-Claude עם כל בדיקה
     claude: store.get("claude", { model: "claude-opus-5-5", parallel: 5, sendSolution: true }),
     loading: false,
+    teamCount: store.get("teamCount", 20),  // כמה עבודות פנויות לוקחים בלחיצה אחת
+    nameDraft: null,  // מה שהוקלד בשדה "השם שלך"
+    renaming: false,
     // לוח הבקרה: טעות נפוצה שנפתחה
     mistakeOpen: null,
     // הבדיקה הידנית: העבודה שפתוחה, סינון לפי סוג הבעיה, מה מוצג (מסומנת/מקורית) והטיוטה של כל עבודה עד השמירה
@@ -69,13 +73,13 @@
     pull: {
       no: 1, route: "/pull", name: "משיכת הגשות",
       desc: "Claude בכרום מוריד ממודל את קובץ ה-ZIP עם כל ההגשות של המטלה, והמערכת קולטת אותו: שומרת אותו בתיקיית המטלה, נותנת לכל סטודנט מספר קבוע ומעתיקה את ההגשות הממוספרות לתיקיית OneDrive, בלי שמות.",
-      steps: ["הורדת ה-ZIP ממודל (Claude בכרום)", "שמירת ה-ZIP בתיקיית המטלה", "חילוץ ומספור ההגשות", "עדכון טבלת המפתח"],
+      steps: ["הורדת ה-ZIP ממודל (Claude בכרום)", "בדיקה שה-ZIP שלם", "חילוץ ה-ZIP (במחשב הזה בלבד)", "מספור ההגשות ועדכון טבלת המפתח"],
       tabs: [["list", "ההגשות שנמשכו"], ["instr", "מה קורה במשיכה"], ["conn", "חיבור למודל"]],
     },
     grade: {
       no: 2, route: "/grade", name: "בדיקה וציון",
-      desc: "כל הגשה ממוספרת נשלחת ל-Claude כתמונות של העמודים, עם השאלות, המחוון, ההנחיות והפתרון הרשמי. Claude נותן ניקוד ומשפט לכל שאלה, כותב משוב ומסמן כל טעות במקום שלה. המערכת מחשבת את הציון, מציירת את ההערות על ה-PDF ושומרת אותו ב-\"2 - Graded with comments\", ואת הציון ב-Grades.csv. עבודה ש-Claude לא בטוח בה מסומנת לבדיקה ידנית.",
-      steps: ["קריאת השאלות, המחוון וההנחיות", "שליחת ההגשות ל-Claude", "סימון ההערות על ה-PDF", "שמירת הציונים ב-Grades.csv"],
+      desc: "כל הגשה ממוספרת נשלחת ל-Claude כתמונות של העמודים, עם השאלות, המחוון, ההנחיות והפתרון הרשמי. Claude נותן ניקוד ומשפט לכל שאלה, כותב משוב ומסמן כל טעות במקום שלה. המערכת מחשבת את הציון, מציירת את ההערות על ה-PDF ושומרת אותו ב-\"2 - Graded with comments\", ואת הציון בקובץ הציונים של הבודק. אפשר לחלק את העבודות בין חברי הצוות: כל אחד לוקח עבודות, וכולם רואים מי בודק מה. עבודה ש-Claude לא בטוח בה מסומנת לבדיקה ידנית.",
+      steps: ["קריאת השאלות, המחוון וההנחיות", "שליחת ההגשות ל-Claude", "סימון ההערות על ה-PDF", "שמירת הציונים"],
       tabs: [["list", "העבודות"], ["instr", "מחוון והנחיות לבדיקה"], ["conn", "חיבור ל-Claude"]],
     },
     ret: {
@@ -111,6 +115,7 @@
     pen: '<svg viewBox="0 0 24 24"><path d="M4 20l4-1 11-11-3-3L5 16z"/></svg>',
     warn: '<svg viewBox="0 0 24 24"><path d="M12 4l9 16H3z"/><path d="M12 10v4M12 17v.5"/></svg>',
     clock: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7v5l3 2"/></svg>',
+    stop: '<svg viewBox="0 0 24 24"><rect x="6.5" y="6.5" width="11" height="11" rx="2"/></svg>',
     download: '<svg viewBox="0 0 24 24"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>',
     eye: '<svg viewBox="0 0 24 24"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.8"/></svg>',
     hand: '<svg viewBox="0 0 24 24"><path d="M5 19c2-1 3-3 3-5V7a1.5 1.5 0 0 1 3 0v4m0-6a1.5 1.5 0 0 1 3 0v6m0-5a1.5 1.5 0 0 1 3 0v6m0-3a1.5 1.5 0 0 1 3 0v4c0 4-3 7-7 7h-2"/></svg>',
@@ -194,17 +199,25 @@
     }).sort((a, b) => b.count - a.count || a.q - b.q);
   }
 
+  // חלוקה בצוות (moodle/claims.py): s.claim = {who, at} של מי שלקח את העבודה, או null
+  const myName = () => LOCAL.me?.name || "";
+  const isMine = (s) => !!s.claim && s.claim.who === myName();
+
   function info(A = cur()) {
     const subs = A.subs;
     const ok = subs.filter((s) => s.status !== "error");
     const graded = ok.filter((s) => s.status === "graded" || s.status === "returned");
     const returned = ok.filter((s) => s.status === "returned");
+    const toGrade = ok.filter((s) => s.status === "pulled");
+    // ברגע שמישהו לקח עבודה, "בדוק" בודק רק את מה שלי. בלי חלוקה: את כל מה שמחכה, כמו קודם
+    const teamMode = subs.some((s) => s.claim);
     return {
-      subs, ok, graded, returned,
+      subs, ok, graded, returned, teamMode,
+      gradeIds: (teamMode ? toGrade.filter(isMine) : toGrade).map((s) => s.id),
       issues: subs.length - ok.length,
       files: subs.reduce((a, s) => a + s.files.length, 0),
       late: subs.filter((s) => s.late).length,
-      toGrade: ok.filter((s) => s.status === "pulled"),
+      toGrade,
       toReturn: ok.filter((s) => s.status === "graded"),
       done: {
         pull: !!A.pulledAt,
@@ -238,7 +251,7 @@
   function runStage(stage) {
     if (!LOCAL.on || !cur()) return;
     if (stage === "pull") runLocalPull();
-    if (stage === "grade") runLocalGrade(info().toGrade.map((s) => s.id));
+    if (stage === "grade") runLocalGrade(info().gradeIds);
     if (stage === "ret") startSendFlow();
   }
 
@@ -248,7 +261,11 @@
     const busy = !!run, mine = run?.stage === stage;
     let label, n = 0, primary = false;
     if (stage === "pull") { label = "משוך הגשות"; primary = !I.subs.length; }
-    if (stage === "grade") { n = I.toGrade.length; label = n ? `בדוק ${n} עבודות` : "הכל נבדק"; primary = n > 0; }
+    if (stage === "grade") {
+      n = I.gradeIds.length;
+      label = n ? (I.teamMode ? `בדוק ${n} שלי` : `בדוק ${n} עבודות`) : I.toGrade.length ? "אין עבודות שלך לבדיקה" : "הכל נבדק";
+      primary = n > 0;
+    }
     if (stage === "ret") { n = I.toReturn.length; label = n ? `החזר ${n} עבודות` : I.done.ret ? "הכל הוחזר" : "אין מה להחזיר"; primary = n > 0 && !I.toGrade.length; }
     let disabled = busy || (stage !== "pull" && !n);
     if (LOCAL.on && stage === "grade" && !LOCAL.health?.claude) {
@@ -264,9 +281,15 @@
       if (LOCAL.sending?.running && sendingHere()) { text = sendProgressText(); spinning = true; }
       if (LOCAL.rd?.flow && LOCAL.rd.assignmentId === A.id && !mine) { text = "בודק שהמחשב מוכן…"; spinning = true; disabled = true; }
     }
+    // משיכה והחזרה שמישהו אחר בצוות לקח: הכפתור אצלו. אפשר להעביר אליך מלוח המשימות
+    const owner = ownerOf(A, stage);
+    if (owner && owner.who !== myName() && !spinning) { text = `אצל ${owner.who}`; disabled = true; primary = false; }
     const icon = spinning ? ICON.spin : ICON[stage === "ret" ? "ret" : stage];
     const why = LOCAL.on && stage === "grade" && !LOCAL.health?.claude ? ` title="${esc(NO_KEY)}"` : "";
-    return `<button class="btn ${primary ? "primary" : "secondary"} ${big ? "lg" : ""}" data-run="${stage}" ${disabled ? "disabled" : ""}${why}>${icon}${text}</button>`;
+    // בזמן בדיקה: כפתור עצירה. מה שכבר נשלח ל-Claude מסתיים ונשמר, והשאר נשאר "ממתינה לבדיקה"
+    const stopBtn = mine && stage === "grade" ? `<button class="btn danger ${big ? "lg" : ""}" data-act="grade-stop" ${run.stopping ? "disabled" : ""}
+      title="העבודות שכבר נשלחו ל-Claude יסתיימו ויישמרו. השאר יחכו ללחיצה הבאה על 'בדוק'">${run.stopping ? ICON.spin : ICON.stop}${run.stopping ? "עוצר…" : "עצור בדיקה"}</button>` : "";
+    return `<button class="btn ${primary ? "primary" : "secondary"} ${big ? "lg" : ""}" data-run="${stage}" ${disabled ? "disabled" : ""}${why}>${icon}${text}</button>${stopBtn}`;
   }
 
   function stageState(stage) {
@@ -350,6 +373,7 @@
             </header>
             <div class="stage-count num">${nums[st][0]}<small>${nums[st][1]}</small></div>
             <div class="dots" aria-label="כל ריבוע הוא עבודה. לחיצה כפולה מורידה אותה">${dotsFor(st, I)}</div>
+            ${st === "pull" ? pullBarHTML(true) : ""}
             ${nums[st][2] ? `<p class="stage-warn">${ICON.warn}${nums[st][2]}</p>` : ""}
             <footer class="stage-foot">
               ${stageButton(st)}
@@ -383,7 +407,7 @@
     const gradedNow = I.graded.length;
     const marks = I.graded.reduce((a, s) => a + (s.q || []).filter((v, i) => v < rubric().questions[i]?.pts).length, 0);
     const results = {
-      pull: [`ZIP מ-${when(A.pulledAt)}`, "נשמר בתיקיית המטלה", `${I.subs.length} הגשות, ${I.files} קבצים`, "לכל הגשה מספר קבוע"],
+      pull: [`ZIP מ-${when(A.pulledAt)}`, "ה-ZIP שלם ונשמר בתיקיית המטלה", `${I.files} קבצים`, `${I.subs.length} הגשות, לכל הגשה מספר קבוע`],
       grade: [`${rubric().questions.length} שאלות, ${A.maxGrade || 100} נקודות`, `${gradedNow} עבודות`, `${marks} הורדות ניקוד`, `ממוצע ${avg(I.graded.map((s) => s.score)) ?? "—"}`],
       ret: [`${I.returned.length} עבודות מסומנות`, `${I.returned.length} עבודות עלו`, "מודל קלט את אותו מספר קבצים"],
     }[stage];
@@ -393,7 +417,8 @@
           const st = live ? live[i] : done ? "done" : "pending";
           return `<li class="${st}">
             <span class="rs-icon">${st === "done" ? ICON.check : st === "running" ? ICON.spin : `<span>${i + 1}</span>`}</span>
-            <span class="rs-text"><b>${name}</b><small>${st === "done" ? esc(results[i]) : st === "running" ? "רץ עכשיו…" : "ממתין"}</small></span>
+            <span class="rs-text"><b>${name}</b><small>${st === "done" ? esc(live && stage === "pull" ? run.notes?.[i] || "הושלם" : results[i])
+              : st === "running" ? esc(stage === "pull" && run?.stage === "pull" ? pullView(run.pull).text : "רץ עכשיו…") : "ממתין"}</small></span>
           </li>`;
         }).join("")}
       </ol>`;
@@ -414,13 +439,170 @@
           ${stageButton(stage, { big: true })}
         </div>
       </section>
+      ${stage === "pull" ? pullBarHTML() : ""}
       ${runStepsHTML(stage)}`;
+  }
+
+  // ---------- מד ההתקדמות של המשיכה ----------
+  // השרת אומר באיזה שלב המשיכה (GET /api/pull, dashboard/actions.py PullProgress), וכאן הופכים את זה לאחוזים:
+  // הורדה 0-60 (לפי גודל ההורדה הקודמת, אם יש), בדיקת ה-ZIP 60-70, חילוץ 70-90, מספור 90-100
+  // בין שני סימני כיוון (LRI…PDI), כדי ש-"600 MB" לא יתהפך בתוך משפט בעברית
+  const size = (b) => `⁦${b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${Math.round(b / 1e6)} MB`}⁩`;
+  const LONG_WAIT = "לא סוגרים את כרום ולא מכבים את המחשב. ZIP גדול ממודל יכול לקחת כמה דקות.";
+  const HERE = "מכאן הכול קורה במחשב הזה, בלי מודל. אפשר לעבור לחלון אחר.";
+  // כמה זמן נשאר, מ-eta_s שהשרת מחשב לפי הקצב של השלב עד עכשיו. אחרי ההורדה יש עוד חילוץ ומספור, בערך דקה
+  const left = (sec) => (sec == null ? "" : sec < 50 ? "נשארה פחות מדקה" : `נשארו בערך ${Math.round(sec / 60)} דקות`);
+  function pullView(p = {}) {
+    const v = pullPhase(p), eta = left(p.eta_s);
+    if (!eta) return v;
+    const tail = v.step === 0 ? ` להורדה, ואחריה עוד כדקה במחשב` : "";
+    return { ...v, text: `${v.text} · ${eta}${tail}`, soon: p.eta_s < 50 ? "פחות מדקה" : `עוד ${Math.round(p.eta_s / 60)} דק'` };
+  }
+  function pullPhase(p) {
+    // האחוז מבודד גם הוא: אחרי "ZIP" הדפדפן היה מצמיד אותו למילה האנגלית ומזיז אותו
+    const f = p.total ? Math.min(p.done / p.total, 1) : 0, pct = `⁦${Math.round(100 * f)}%⁩`;
+    switch (p.phase) {
+      case "claude": return { step: 0, pct: null, short: "Claude פותח את מודל…", text: "Claude פותח את מודל בכרום ומכין את ההורדה (בדרך כלל עד דקה)…", hint: LONG_WAIT };
+      case "download": return {
+        step: 0, pct: p.total ? Math.round(Math.min(58, 60 * f)) : null, short: "מוריד ממודל…",
+        text: p.total ? `מוריד ממודל: ${size(p.done)} מתוך כ-${size(p.total)}` : `מוריד ממודל: ${size(p.done)} עד עכשיו`,
+        hint: p.total ? LONG_WAIT : `${LONG_WAIT} זו ההורדה הראשונה של המטלה, אז עוד לא ידוע כמה גדול ה-ZIP.`,
+      };
+      // הורדה בחלקים (moodle/download_parts.js): כל חלק נשמר בהורדות כשהוא מגיע, והשרת סופר כמה כבר הגיעו
+      case "parts": return {
+        step: 0, pct: p.total ? Math.round(Math.min(58, 60 * f)) : null, short: "מוריד ממודל…",
+        text: p.total ? `מוריד ממודל בחלקים: ${p.done} מתוך ${p.total} חלקים הגיעו` : `מוריד ממודל בחלקים: ${p.done} חלקים הגיעו עד עכשיו`,
+        hint: LONG_WAIT,
+      };
+      case "check": return { step: 1, pct: Math.round(60 + 10 * f), short: "בודק את ה-ZIP…", text: `בודק שה-ZIP שלם: ${pct}%`, hint: HERE };
+      case "extract": return { step: 2, pct: Math.round(70 + 20 * f), short: "מחלץ…", text: `מחלץ את ה-ZIP: ${pct}%`, hint: HERE };
+      case "number": return { step: 3, pct: Math.round(90 + 10 * f), short: "ממספר הגשות…", text: `ממספר הגשות: ${p.done} מתוך ${p.total}`, hint: HERE };
+      default: return { step: 0, pct: 1, short: "מתחיל…", text: "מחפש ZIP של המטלה בתיקיית ההורדות…", hint: LONG_WAIT };
+    }
+  }
+  function elapsed(since) {
+    const sec = Math.max(0, Math.round((Date.now() - since) / 1000));
+    return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`;
+  }
+  // מה שהשרת אמר עכשיו → השלבים, הטקסט על הכפתור והמד
+  function showPull(run, p) {
+    run.pull = p;
+    const v = pullView(p);
+    run.steps = STAGES.pull.steps.map((_, i) => (i < v.step ? "done" : i === v.step ? "running" : "pending"));
+    run.notes = [p.downloaded ? "הורד ממודל" : "ה-ZIP כבר חיכה בתיקיית ההורדות"];
+    run.progress = [v.short, v.pct == null ? "" : `${v.pct}%`, v.soon ? `· ${v.soon}` : ""].filter(Boolean).join(" ");
+  }
+  function pullBarHTML(compact = false) {
+    const A = cur(), run = A && state.run[A.id];
+    if (run?.stage !== "pull") return "";
+    const v = pullView(run.pull), known = v.pct != null;
+    const bar = `<div class="send-bar ${known ? "" : "indet"}" role="progressbar" aria-label="התקדמות המשיכה" aria-valuemin="0" aria-valuemax="100"
+      ${known ? `aria-valuenow="${v.pct}"` : ""}><i style="width:${known ? v.pct : 30}%"></i></div>`;
+    if (compact) return `<div class="pull-progress compact">${bar}<p>${known ? `<b class="num">${v.pct}%</b>` : ""}${esc(v.text)}</p></div>`;
+    return `<section class="panel report send-panel pull-progress" aria-live="polite">
+      <div class="panel-head"><h3>המשיכה רצה${known ? ` · <span class="num">${v.pct}%</span>` : ""}</h3><span class="meta num">עברו ${elapsed(run.startedAt)} דקות</span></div>
+      <div class="panel-body">
+        <p class="send-line">${ICON.spin}<b>${esc(v.text)}</b></p>
+        ${bar}
+        <p class="hint">${esc(v.hint)}</p>
+      </div>
+    </section>`;
   }
 
   function tabsHTML(stage) {
     return `<div class="tabs" role="tablist">
       ${STAGES[stage].tabs.map(([k, label]) => `<button role="tab" class="tab" id="tab-${stage}-${k}" aria-selected="${state.tab[stage] === k}" data-tab="${stage}:${k}">${label}</button>`).join("")}
     </div>`;
+  }
+
+  // ---------- לוח המשימות: השלב הזה בכל המטלות של הקורס, כמו שהוא בתיקיית OneDrive ----------
+  // משיכה והחזרה הולכות לפי מטלה: לכל אחת אחראי/ת (A.owners, moodle/claims.py). בדיקה הולכת לפי עבודה (s.claim)
+  const TASK_STAGE = { pull: "pull", ret: "return" };
+  const ownerOf = (A, stage) => (TASK_STAGE[stage] && A.owners?.[TASK_STAGE[stage]]) || null;
+
+  function ownerCell(A, stage) {
+    const o = ownerOf(A, stage), mine = !!o && o.who === myName(), can = LOCAL.me?.set;
+    const btn = (act, label, kind) => `<button class="btn ${kind} small" data-act="${act}" data-id="${A.id}" data-stage="${stage}">${label}</button>`;
+    if (o) {
+      return `<span class="claim ${mine ? "mine" : ""}" title="${esc(`לקח/ה ${when(o.at)}`)}">${mine ? "שלך" : esc(o.who)}</span>`
+        + (can ? (mine ? btn("task-release", "שחרר", "ghost") : btn("task-take", "העבר אליי", "ghost")) : "");
+    }
+    return can ? btn("task-take", "קח", "secondary") : `<span class="muted">—</span>`;
+  }
+
+  // מי בודק כמה במטלה: "מתן 12 · אורי 8"
+  function peopleHTML(A) {
+    const by = {};
+    A.subs.forEach((s) => { if (s.claim) by[s.claim.who] = (by[s.claim.who] || 0) + 1; });
+    const list = Object.entries(by).sort((x, y) => y[1] - x[1]);
+    if (!list.length) return `<span class="muted">אף אחד עוד לא לקח</span>`;
+    return list.map(([who, c]) => `<span class="claim ${who === myName() ? "mine" : ""}">${who === myName() ? "שלך" : esc(who)} <b class="num">${c}</b></span>`).join(" ");
+  }
+
+  function progressHTML(done, total) {
+    const pct = total ? Math.round((100 * done) / total) : 0;
+    return `<span class="prog"><span class="track"><i style="width:${pct}%"></i></span><b class="num">${done}<small>/${total}</small></b></span>`;
+  }
+
+  function boardHTML(stage) {
+    if (!LOCAL.on) return "";
+    const all = D.assignments.filter((a) => a.courseId === state.courseId);
+    const list = stage === "pull" ? all : all.filter((A) => A.subs.length);
+    const rows = list.map((A) => {
+      const I = info(A), sel = A.id === state.assignmentId;
+      const busy = (A.warnings || []).find((w) => w.startsWith(stage === "ret" ? "העלאה בתהליך" : "משיכה בתהליך"));
+      let cells;
+      if (stage === "pull") {
+        cells = `<td>${A.empty ? `<span class="muted">עוד לא נמשכה</span>` : `<b class="num">${I.subs.length}</b> הגשות<small class="sub">נמשכה ${esc(when(A.pulledAt))}</small>`}
+            ${busy ? `<span class="flag">${esc(busy)}</span>` : ""}</td>
+          <td class="claim-cell">${ownerCell(A, stage)}</td>`;
+      } else if (stage === "grade") {
+        const free = I.toGrade.filter((s) => !s.claim).length;
+        cells = `<td>${progressHTML(I.graded.length, I.ok.length)}</td>
+          <td class="col-hide-sm">${peopleHTML(A)}</td>
+          <td>${free ? `<b class="num">${free}</b> פנויות` : `<span class="muted">${I.toGrade.length ? "הכל נלקח" : "הכל נבדק"}</span>`}</td>`;
+      } else {
+        cells = `<td>${I.toReturn.length ? `<b class="num">${I.toReturn.length}</b> מוכנות` : `<span class="muted">${I.graded.length ? "אין חדשות" : "עוד לא נבדקו"}</span>`}
+            ${busy ? `<span class="flag">${esc(busy)}</span>` : ""}</td>
+          <td class="col-hide-sm">${progressHTML(I.returned.length, I.ok.length)}</td>
+          <td class="claim-cell">${ownerCell(A, stage)}</td>`;
+      }
+      return `<tr class="clickable ${sel ? "sel" : ""}" data-assign="${A.id}" tabindex="0" ${sel ? 'aria-current="true"' : ""}><td><b>${esc(A.title)}</b></td>${cells}</tr>`;
+    }).join("");
+    const head = {
+      pull: "<th>בתיקייה</th><th>אחראי/ת</th>",
+      grade: `<th>נבדקו</th><th class="col-hide-sm">מי בודק</th><th>מה נשאר לקחת</th>`,
+      ret: `<th>להעלאה</th><th class="col-hide-sm">הוחזרו</th><th>אחראי/ת</th>`,
+    }[stage];
+    // מה עוד יש לעשות בשלב הזה, בכל הקורס
+    const todo = {
+      pull: () => {
+        const notYet = all.filter((A) => A.empty).length, noOwner = all.filter((A) => !ownerOf(A, "pull")).length;
+        return [`${notYet} עוד לא נמשכו`, `${noOwner} בלי אחראי/ת`];
+      },
+      grade: () => {
+        const free = list.reduce((n, A) => n + info(A).toGrade.filter((s) => !s.claim).length, 0);
+        const mine = list.reduce((n, A) => n + info(A).toGrade.filter(isMine).length, 0);
+        return [`${free} עבודות פנויות לקחת`, `${mine} שלך מחכות לבדיקה`];
+      },
+      ret: () => {
+        const ready = list.reduce((n, A) => n + info(A).toReturn.length, 0);
+        return [`${ready} עבודות מוכנות להעלאה`, `${list.filter((A) => info(A).toReturn.length && !ownerOf(A, "ret")).length} מטלות בלי אחראי/ת`];
+      },
+    }[stage]();
+    const empty = `<tr><td colspan="4"><div class="empty slim">${stage === "pull" ? "אין מטלות בקורס." : "עוד אין מטלות שנמשכו בקורס הזה."}</div></td></tr>`;
+    return `<section class="panel board" aria-label="${esc(STAGES[stage].name)} בכל המטלות">
+      <div class="panel-head">
+        <h2>${esc(STAGES[stage].name)} בכל המטלות</h2>
+        <div class="stats">${todo.map((t) => `<span>${esc(t)}</span>`).join("")}</div>
+        <span class="meta end">מתעדכן לבד מתיקיית OneDrive · לחיצה על שורה בוחרת מטלה</span>
+      </div>
+      ${LOCAL.me && !LOCAL.me.set && stage !== "grade" ? `<p class="board-note">כדי לקחת משימות צריך שם: בוחרים אותו בשלב "בדיקה וציון".</p>` : ""}
+      <div class="table-wrap"><table class="board-table">
+        <thead><tr><th>מטלה</th>${head}</tr></thead>
+        <tbody>${rows || empty}</tbody>
+      </table></div>
+    </section>`;
   }
 
   // ---------- Tables ----------
@@ -444,9 +626,15 @@
       <div class="field moodle-id"><label for="moodle-id">הקישור למטלה במודל, או רק המספר שאחרי <span dir="ltr">id=</span></label>
         <input id="moodle-id" dir="ltr" inputmode="url" autocomplete="off" data-moodle-id="${A.id}" value="${esc(state.moodleDraft[A.id] || "")}" placeholder="https://moodle.bgu.ac.il/moodle/mod/assign/view.php?id=…"></div>` : "";
     const lead = A.empty
-      ? `${esc(A.title)} עוד לא נמשכה. בפעם הראשונה המערכת צריכה לדעת איזו מטלה במודל זו: מדביקים כאן את הקישור לעמוד המטלה ולוחצים "משוך הגשות". מהפעם הבאה הוא כבר שמור.`
-      : `לוחצים "משוך הגשות": Claude בכרום מוריד ממודל את ה-ZIP של כל ההגשות, והמערכת קולטת אותו. צריך כרום פתוח עם התוסף Claude in Chrome והתחברות למודל.`;
-    return `<div class="empty"><strong>עוד אין הגשות במטלה הזו</strong>${lead}${idField}
+      ? `${esc(A.title)} עוד לא נמשכה. בפעם הראשונה המערכת צריכה לדעת איזו מטלה במודל זו: מדביקים כאן את הקישור לעמוד המטלה. מהפעם הבאה הוא כבר שמור.`
+      : "";
+    // מה עושים, בשלוש שורות: מי שנכנס בפעם הראשונה צריך לדעת רק את זה
+    const how = `<ol class="how-to">
+        <li>כרום פתוח, עם התוסף Claude in Chrome. ההתחברות למודל קורית לבד</li>
+        <li>לוחצים "משוך הגשות" פעם אחת${A.empty ? ", אחרי שהדבקתם את הקישור" : ""}</li>
+        <li>מחכים לבר: הוא מראה כמה נשאר. ההגשות נכנסות לתיקייה המשותפת ומופיעות כאן לכל הצוות</li>
+      </ol>`;
+    return `<div class="empty"><strong>עוד אין הגשות במטלה הזו</strong>${lead}${how}${idField}
       <div class="empty-act">${stageButton("pull")}${moodleLink(A)}<button class="btn secondary" data-act="open-inbox">${ICON.folder}פתח את תיקיית ההורדות</button></div></div>`;
   }
 
@@ -498,7 +686,7 @@
     }
     if (b && b.assignmentId === A.id) {
       const notes = [];
-      if (b.not_approved?.length) notes.push(`לידיעה: ${b.not_approved.length} מהן עוד לא סומנו כמאושרות ב-Grades.csv.`);
+      if (b.not_approved?.length) notes.push(`לידיעה: ${b.not_approved.length} מהן עוד לא סומנו כמאושרות בקובצי הציונים.`);
       if (b.too_big?.length) notes.push(`גדולות מדי ולא ייכללו: ${numList(b.too_big)}`);
       if (b.resubmitted?.length) notes.push(`הוגשו מחדש אחרי הבדיקה ולא ייכללו: ${numList(b.resubmitted)}`);
       const noteList = notes.length ? `<ul class="report-lines send-notes">${notes.map((n) => `<li>${esc(n)}</li>`).join("")}</ul>` : "";
@@ -834,14 +1022,79 @@
       </section>`;
   }
 
+  // ---------- חלוקת העבודה בצוות ----------
+  function nameFormHTML() {
+    const value = state.nameDraft ?? (state.renaming ? myName() : "");
+    return `<section class="panel team">
+      <div class="panel-head"><h3>חלוקת העבודה בצוות</h3>${state.renaming ? `<button class="btn ghost small end" data-act="rename-cancel">ביטול</button>` : ""}</div>
+      <div class="panel-body">
+        <p class="team-lead">כדי לחלק את העבודות בין חברי הצוות, המערכת צריכה לדעת מי בודק במחשב הזה. השם יופיע אצל כולם ליד העבודות שלוקחים.</p>
+        <div class="team-act">
+          <div class="field"><label for="my-name">השם שלך</label><input id="my-name" data-name-draft maxlength="40" autocomplete="name" value="${esc(value)}" placeholder="למשל: מתן"></div>
+          <button class="btn primary small" data-act="save-name">שמור</button>
+        </div>
+      </div>
+    </section>`;
+  }
+
+  function teamHTML() {
+    const A = cur(), I = info(A);
+    if (!LOCAL.on || !LOCAL.me) return "";
+    if (!LOCAL.me.set || state.renaming) return nameFormHTML();
+    const people = {};
+    I.subs.forEach((s) => {
+      if (!s.claim) return;
+      const p = (people[s.claim.who] ||= { all: 0, left: 0 });
+      p.all++;
+      if (s.status === "pulled") p.left++;
+    });
+    const mine = people[myName()] || { all: 0, left: 0 };
+    const others = Object.entries(people).filter(([who]) => who !== myName()).sort((x, y) => y[1].all - x[1].all);
+    const free = I.toGrade.filter((s) => !s.claim).length;
+    const count = Math.max(1, Math.min(state.teamCount || 1, free || 1));
+    return `<section class="panel team" aria-live="polite">
+      <div class="panel-head">
+        <h3>חלוקת העבודה בצוות</h3>
+        <span class="meta">בודק/ת במחשב הזה: <b>${esc(myName())}</b></span>
+        <button class="btn ghost small end" data-act="rename">שינוי שם</button>
+      </div>
+      <div class="panel-body">
+        <div class="team-people">
+          <span class="person mine"><b class="num">${mine.all}</b> שלך${mine.left ? ` · ${mine.left} עוד לא נבדקו` : ""}</span>
+          <span class="person free"><b class="num">${free}</b> פנויות</span>
+          ${others.map(([who, p]) => `<span class="person"><b class="num">${p.all}</b> ${esc(who)}${p.left ? ` · ${p.left} עוד לא נבדקו` : ""}</span>`).join("")}
+        </div>
+        <div class="team-act">
+          <label class="team-count">קח <input type="number" id="team-count" data-team-count min="1" max="${free || 1}" value="${count}" ${free ? "" : "disabled"}> עבודות פנויות</label>
+          <button class="btn primary small" data-act="claim-next" ${free ? "" : "disabled"}>סמן אותן עליי</button>
+          ${mine.left ? `<button class="btn secondary small" data-act="release-mine">שחרר ${plural(mine.left, "עבודה אחת שלי", "עבודות שלי")} שלא נבדקו</button>` : ""}
+        </div>
+        <p class="team-note">אפשר גם ללחוץ "קח" ליד עבודה בטבלה. הסימון נשמר בתיקיית OneDrive ומגיע לשאר הצוות תוך כמה שניות עד דקה. ${I.teamMode ? `"בדוק" בודק רק את העבודות שלך.` : `כל עוד אף אחד לא לקח עבודות, "בדוק" בודק את כולן.`}</p>
+      </div>
+    </section>`;
+  }
+
+  function claimCell(s) {
+    if (s.claim) {
+      const mine = isMine(s);
+      const release = mine && s.status === "pulled" ? `<button class="btn ghost small" data-act="release" data-id="${esc(s.id)}" title="להחזיר את העבודה לפנויות">שחרר</button>` : "";
+      return `<span class="claim ${mine ? "mine" : ""}" title="${esc(`לקח/ה ${when(s.claim.at)}`)}">${mine ? "שלך" : esc(s.claim.who)}</span>${release}`;
+    }
+    if (s.status === "pulled" && LOCAL.me?.set) return `<button class="btn secondary small" data-act="claim" data-id="${esc(s.id)}">קח</button>`;
+    return `<span class="muted">—</span>`;
+  }
+
   function gradeList() {
     const A = cur(), I = info(A);
     if (!I.subs.length) return `<section class="panel">${emptyPulled()}</section>`;
     const qs = rubric().questions;
-    const opts = [["all", "הכל", I.subs.length], ...Object.keys(STATUS).map((k) => [k, STATUS[k], I.subs.filter((s) => s.status === k).length])].filter(([k, , c]) => k === "all" || c);
+    const team = [["mine", "שלי", I.subs.filter(isMine).length], ["free", "פנויות", I.toGrade.filter((s) => !s.claim).length]];
+    const opts = [["all", "הכל", I.subs.length], ...(LOCAL.me?.set ? team : []), ...Object.keys(STATUS).map((k) => [k, STATUS[k], I.subs.filter((s) => s.status === k).length])]
+      .filter(([k, , c]) => k === "all" || c);
     if (!opts.some(([k]) => k === state.filter)) state.filter = "all";
-    const rows = I.subs.filter((s) => (state.filter === "all" || s.status === state.filter) && matches(s, state.query.grade));
-    return `
+    const shown = (s) => state.filter === "all" || (state.filter === "mine" ? isMine(s) : state.filter === "free" ? !s.claim && s.status === "pulled" : s.status === state.filter);
+    const rows = I.subs.filter((s) => shown(s) && matches(s, state.query.grade));
+    return `${teamHTML()}
       <section class="panel">
         <div class="panel-head">
           <div class="chips" role="group" aria-label="סינון לפי מצב">
@@ -850,17 +1103,18 @@
           <div class="end">${searchBox("grade")}</div>
         </div>
         <div class="table-wrap"><table>
-          <thead><tr><th>הגשה</th><th>מצב</th><th>ציון</th>${qs.map((q) => `<th class="col-hide qcol">ש${q.n}</th>`).join("")}<th class="col-hide-sm">הערות</th></tr></thead>
+          <thead><tr><th>הגשה</th><th>מצב</th><th>בודק/ת</th><th>ציון</th>${qs.map((q) => `<th class="col-hide qcol">ש${q.n}</th>`).join("")}<th class="col-hide-sm">הערות</th></tr></thead>
           <tbody>${rows.map((s) => {
             const lost = s.q ? s.q.filter((v, i) => v < qs[i].pts).length : 0;
-            return `<tr data-open="${s.id}" tabindex="0" class="clickable ${s.fresh ? "flash" : ""}" aria-label="פתח את העבודה של ${esc(s.name)}">
+            return `<tr data-open="${s.id}" tabindex="0" class="clickable ${s.fresh ? "flash" : ""} ${isMine(s) ? "mine" : ""}" aria-label="פתח את העבודה של ${esc(s.name)}">
               <td>${who(s)}</td>
               <td>${statusPill(s)}</td>
+              <td class="claim-cell">${claimCell(s)}</td>
               <td>${scoreHTML(s)}</td>
               ${qs.map((q, i) => `<td class="col-hide qcol num">${s.q ? `<span class="qv ${s.q[i] < q.pts ? "lost" : ""}">${s.q[i]}</span>` : `<span class="muted">·</span>`}</td>`).join("")}
               <td class="col-hide-sm">${s.issue ? `<span class="flag">${esc(s.issue)}</span>` : needsReview(s) ? `<span class="flag" title="${esc(s.failed || s.review)}">לבדיקה ידנית: ${esc(REVIEW_KIND[kindOf(s)][0])}</span>` : s.q ? (lost ? `<span class="pen-count">${ICON.pen}${plural(lost, "הערה אחת", "הערות")}</span>` : `<span class="muted">ללא הערות</span>`) : `<span class="muted">—</span>`}</td>
             </tr>`;
-          }).join("") || `<tr><td colspan="${4 + qs.length}"><div class="empty slim">אין עבודות שמתאימות לסינון.</div></td></tr>`}
+          }).join("") || `<tr><td colspan="${5 + qs.length}"><div class="empty slim">אין עבודות שמתאימות לסינון.</div></td></tr>`}
           </tbody>
         </table></div>
       </section>`;
@@ -1045,7 +1299,7 @@
       <section class="panel">
         <div class="panel-head"><h2>חיבור ל-Claude</h2>${LOCAL.health?.claude ? `<span class="end tag ok">מחובר</span>` : `<span class="end tag warn">עוד לא מחובר</span>`}</div>
         <div class="panel-body">
-          ${LOCAL.health?.claude ? `<div class="notice">${ICON.lock}<div><b>הבדיקה עובדת</b> (${LOCAL.health?.claudeVia === "api" ? "דרך מפתח ה-API" : "דרך Claude Code במחשב, במנוי של הצוות"}). ל-Claude נשלחים רק העמודים של ההגשה הממוספרת, בלי שמות. העבודה המסומנת נשמרת ב-"2 - Graded with comments" והציון ב-Grades.csv.</div></div>`
+          ${LOCAL.health?.claude ? `<div class="notice">${ICON.lock}<div><b>הבדיקה עובדת</b> (${LOCAL.health?.claudeVia === "api" ? "דרך מפתח ה-API" : "דרך Claude Code במחשב, במנוי של הצוות"}). ל-Claude נשלחים רק העמודים של ההגשה הממוספרת, בלי שמות. העבודה המסומנת נשמרת ב-"2 - Graded with comments" והציון בקובץ הציונים של הבודק ("Grades by <שם>.csv").</div></div>`
             : `<div class="notice">${ICON.lock}<div><b>הבדיקה עם Claude עוד לא מחוברת.</b> ${esc(NO_KEY)}</div></div>`}
           <div class="form-grid">
             <div class="field"><label for="c-model">מודל</label>
@@ -1125,7 +1379,9 @@
       grade: { list: gradeList, instr: gradeInstr, conn: gradeConn },
       ret: { list: returnList, instr: retInstr, conn: retConn },
     }[stage][t]();
-    return `${stageHeroHTML(stage)}${tabsHTML(stage)}<div class="tab-body" role="tabpanel" aria-labelledby="tab-${stage}-${t}">${body}</div>`;
+    return `${stageHeroHTML(stage)}${boardHTML(stage)}
+      <h2 class="picked">${esc(cur().title)}<small>המטלה שנבחרה</small></h2>
+      ${tabsHTML(stage)}<div class="tab-body" role="tabpanel" aria-labelledby="tab-${stage}-${t}">${body}</div>`;
   }
 
   function distHTML(I) {
@@ -1206,7 +1462,7 @@
 
   function perQuestionHTML(I) {
     const qs = rubric().questions;
-    // רק עבודות עם ניקוד לכל שאלה (ב-Grades.csv יש רק ציון סופי)
+    // רק עבודות עם ניקוד לכל שאלה (בשורות ישנות יש רק ציון סופי)
     const withQ = I.graded.filter((s) => Array.isArray(s.q) && s.q.length === qs.length);
     if (noRubric()) return `<p class="muted empty-line">אין מחוון, אז אין ניקוד לפי שאלה.</p>`;
     if (!withQ.length) return `<p class="muted empty-line">יופיע אחרי שיהיה ניקוד לכל שאלה.</p>`;
@@ -1367,7 +1623,7 @@
                 ${s.q && s.q.length === qs.length && !noRubric() ? `<ul class="breakdown">${qs.map((q, i) => `<li><label>${esc(q.req || `שאלה ${q.n}`)}</label><span class="num ${s.q[i] > q.pts ? "over" : ""}" ${s.q[i] > q.pts ? `title="יותר מהניקוד של השאלה במחוון: צריך לבדוק מחדש"` : ""}>${s.q[i]} / ${q.pts}</span><span class="track"><i class="${s.q[i] < q.pts ? "short" : ""}" style="width:${Math.min(100, (s.q[i] / q.pts) * 100)}%"></i></span></li>`).join("")}</ul>` : ""}
                 ${s.review ? `<p class="hint"><span class="flag" style="white-space: normal">${s.approved ? "נבדקה ידנית" : "לבדיקה ידנית"}: ${esc(s.review)}</span></p>` : ""}`
               : `<p class="muted" style="margin:0">עוד לא נבדקה.</p>`}
-            <p class="hint">אחרי הבדיקה, העבודה עם ההערות נשמרת ב-"2 - Graded with comments" באותו מספר, והציון ב-Grades.csv.</p>
+            <p class="hint">אחרי הבדיקה, העבודה עם ההערות נשמרת ב-"2 - Graded with comments" באותו מספר, והציון בקובץ הציונים של הבודק.</p>
           </div>
           ${s.feedback ? `<div class="grade-card"><h3 class="gc-title">משוב לסטודנט</h3><p style="margin:0; white-space: pre-line">${esc(s.feedback)}</p></div>` : ""}
         </aside>
@@ -1769,7 +2025,7 @@
     "/return": () => stageView("ret"),
     "/runs"() {
       return `
-        <div class="page-head"><div><h1>יומן פעילות</h1><p>מה שבאמת קרה בתיקיות של כל הקורסים: כל ZIP שנמשך ממודל, כל עדכון של Grades.csv וכל העלאה למודל שאומתה.</p></div></div>
+        <div class="page-head"><div><h1>יומן פעילות</h1><p>מה שבאמת קרה בתיקיות של כל הקורסים: כל ZIP שנמשך ממודל, כל עדכון של קובץ ציונים וכל העלאה למודל שאומתה.</p></div></div>
         <section class="panel"><div class="panel-body tight">${logHTML(80, false)}</div></section>`;
     },
     "/settings"() {
@@ -1985,6 +2241,7 @@
       const a = act.dataset.act, id = act.dataset.id;
       if (a === "close") closeDrawer();
       if (a === "grade-one") gradeOne(id);
+      if (a === "grade-stop") stopLocalGrade();
       if (a === "open-folder") openFolder("folder");
       if (a === "open-inbox") openFolder("inbox");
       if (a === "open-upload") openFolder("upload");
@@ -1999,6 +2256,14 @@
       if (a === "ready-install-yes" && LOCAL.rd) startReadyInstall(LOCAL.rd);
       if (a === "ready-login-retry" && LOCAL.rd) startReadyLogin(LOCAL.rd, true);
       if (a === "ready-check" && LOCAL.rd) checkReady(LOCAL.rd);
+      if (a === "save-name") saveName();
+      if (a === "rename") { state.renaming = true; state.nameDraft = null; render(); $("#my-name")?.focus(); }
+      if (a === "rename-cancel") { state.renaming = false; state.nameDraft = null; render(); }
+      if (a === "claim") changeClaims({ take: [id] });
+      if (a === "release") changeClaims({ release: [id] });
+      if (a === "claim-next") changeClaims({ next: Math.max(1, state.teamCount || 1) });
+      if (a === "release-mine") changeClaims({ release: info().toGrade.filter(isMine).map((s) => s.id) });
+      if (a === "task-take" || a === "task-release") changeTask(id, act.dataset.stage, a === "task-take");
       return;
     }
 
@@ -2051,6 +2316,7 @@
     if (e.key === "Escape") { closeDrawer(); $("#sidebar").classList.remove("open"); }
     if (e.key === "Enter" && e.target.matches("[data-open]")) openDrawer(e.target.dataset.open);
     if (e.key === "Enter" && e.target.matches("[data-assign]")) e.target.click();
+    if (e.key === "Enter" && e.target.matches("[data-name-draft]")) saveName();
   });
 
   let savedTimer;
@@ -2080,6 +2346,8 @@
     }
     if (t.dataset.query) { state.query[t.dataset.query] = t.value; render(); return; }
     if (t.dataset.moodleId) { state.moodleDraft[t.dataset.moodleId] = t.value; return; }
+    if (t.matches("[data-name-draft]")) { state.nameDraft = t.value; return; }
+    if (t.matches("[data-team-count]")) { state.teamCount = Math.max(1, parseInt(t.value, 10) || 1); store.set("teamCount", state.teamCount); return; }
     if (t.dataset.instr) {
       const st = t.dataset.instr;
       state.instr[st] = t.value;
@@ -2180,6 +2448,7 @@
   async function loadLocal() {
     try {
       const [data, health] = await Promise.all([api("api/state"), api("api/health").catch(() => null)]);
+      LOCAL.sig = JSON.stringify(data);
       D.courses.splice(0, D.courses.length, ...data.courses);
       D.assignments.splice(0, D.assignments.length, ...data.assignments.map((a) => ({
         ...a, phase: a.subs.length ? "current" : "new", gradedAt: a.gradedAt || null, returnedAt: a.returnedAt || null, lastFresh: null,
@@ -2195,8 +2464,16 @@
         .sort((x, y) => (y.at || "").localeCompare(x.at || "")));
       // מודל מחובר = Claude Code מחובר במחשב (דרכו Claude in Chrome עובד במודל)
       LOCAL.health = { ...LOCAL.health, ...(health || {}), root: data.root, claude: data.claude, claudeVia: data.claudeVia };
+      LOCAL.me = data.me || null;
       if (health?.checking) followHealth();
       if (!LOCAL.polling) LOCAL.sending = data.sending || null;
+      // בדיקה שרצה כשהדף נטען: מציגים את ההתקדמות ואת כפתור העצירה
+      const g = data.grading;
+      const gA = g?.running && D.assignments.find((a) => a.courseFolder === g.course && a.folder === g.assignment);
+      if (gA && !LOCAL.gradeFollow && !state.run[gA.id]) {
+        const run = (state.run[gA.id] = { stage: "grade", steps: STAGES.grade.steps.map((_, i) => (i === 0 ? "done" : i === 1 ? "running" : "pending")) });
+        setTimeout(() => followGrade(gA, run), 0);
+      }
       if (!D.assignments.some((a) => a.id === state.assignmentId)) {
         const first = D.assignments.find((a) => a.subs.length) || D.assignments[0];
         state.assignmentId = first?.id;
@@ -2208,8 +2485,11 @@
     renderPickers();
     render();
     if (LOCAL.sending?.running && !LOCAL.polling) followSend();  // העלאה שרצה כשהדף נטען: ממשיכים לעקוב אחריה
+    if (!Object.values(state.run).some((r) => r.stage === "pull")) resumePull();
   }
 
+  // מה שנמשך, נבדק או הועלה במחשב אחר (ההגשות מגיעות דרך OneDrive) מופיע לבד, בלי רענון: כל 20 שניות וכשחוזרים
+  // ללשונית. רק כשהלשונית גלויה, שום דבר לא רץ כאן ולא מקלידים, ומציירים מחדש רק אם משהו בתיקייה השתנה
   // "משוך הגשות" אמיתי: השרת מושך ממודל (אם יש טוקן) ומקובצי ZIP בקליטה, ישר לתיקיית OneDrive
   async function runLocalPull() {
     const A = cur();
@@ -2222,14 +2502,16 @@
       setTimeout(() => $("#moodle-id")?.focus(), 50);
       return;
     }
-    const run = (state.run[A.id] = { stage: "pull", steps: STAGES.pull.steps.map(() => "pending") });
-    // ההורדה ממודל לוקחת כמה דקות (ZIP גדול), והשרת עונה רק בסוף, אז השלב הראשון נשאר "רץ" עד התשובה
-    run.steps[0] = "running";
-    run.progress = "מוריד ממודל… (כמה דקות)";
+    const run = (state.run[A.id] = { stage: "pull", startedAt: Date.now() });
+    showPull(run, { phase: "find" });
     render();
-    toast("Claude בכרום מוריד את ה-ZIP ממודל. זה יכול לקחת כמה דקות: לא סוגרים את כרום.");
+    // השרת עונה רק בסוף המשיכה (הורדה של ZIP גדול: כמה דקות). בינתיים שואלים אותו כל שנייה כמה התקדמה
+    let settled = false;
+    const post = api("api/pull", { method: "POST", body: JSON.stringify({ course: A.courseFolder, assignment: A.folder, ...(moodleId && { moodleId }) }) })
+      .finally(() => { settled = true; });
+    followPull(A, run, () => settled);
     try {
-      const rep = await api("api/pull", { method: "POST", body: JSON.stringify({ course: A.courseFolder, assignment: A.folder, ...(moodleId && { moodleId }) }) });
+      const rep = await post;
       LOCAL.report = { ...rep, assignmentId: A.id };
       delete state.run[A.id];
       await loadLocal();
@@ -2254,6 +2536,33 @@
     }
   }
 
+  async function followPull(A, run, over) {
+    while (!over()) {
+      await new Promise((r) => setTimeout(r, 1000));
+      const p = await api("api/pull").catch(() => null);
+      if (over() || state.run[A.id] !== run) return;
+      if (p?.running && p.course === A.courseFolder && p.assignment === A.folder) showPull(run, p);
+      render();
+    }
+  }
+
+  // משיכה שרצה כשהדף נטען (רענון, או לשונית אחרת): מראים את המד עד שהיא נגמרת
+  async function resumePull() {
+    let p = await api("api/pull").catch(() => null);
+    const A = p?.running && D.assignments.find((a) => a.courseFolder === p.course && a.folder === p.assignment);
+    if (!A || state.run[A.id]) return;
+    const run = (state.run[A.id] = { stage: "pull", startedAt: Date.parse(p.started_at) || Date.now() });
+    while (p.running) {
+      showPull(run, p);
+      render();
+      await new Promise((r) => setTimeout(r, 1000));
+      p = (await api("api/pull").catch(() => null)) || { running: false, error: "החיבור למערכת נפל באמצע המשיכה." };
+    }
+    delete state.run[A.id];
+    await loadLocal();
+    toast(p.error || `המשיכה הסתיימה: ${p.summary}`, p.error ? ICON.warn : ICON.check);
+  }
+
   // "בדוק" אמיתי: השרת שולח את ההגשות הממוספרות ל-Claude ברקע, והאתר שואל מה המצב עד שזה נגמר
   async function runLocalGrade(ids) {
     const A = cur();
@@ -2271,21 +2580,7 @@
         model: c.model, parallel: c.parallel, sendSolution: c.sendSolution, instructions: state.instr.grade,
       }) });
       run.steps[0] = "done"; run.steps[1] = "running";
-      let job;
-      for (;;) {
-        await new Promise((r) => setTimeout(r, 1500));
-        job = await api("api/grade");
-        const done = Object.keys(job.done || {}).length;
-        run.progress = `נבדקו ${done} מתוך ${job.total}…`;
-        if (done) { run.steps[1] = "done"; run.steps[2] = "running"; }
-        render();
-        if (!job.running) break;
-      }
-      delete state.run[A.id];
-      await loadLocal();
-      refreshDrawer();
-      const failed = Object.keys(job.report?.failed || {}).length;
-      toast(job.error || `הבדיקה הסתיימה: ${job.summary}`, job.error || failed ? ICON.warn : ICON.check);
+      await followGrade(A, run);
     } catch (e) {
       delete state.run[A.id];
       await loadLocal();
@@ -2293,6 +2588,119 @@
       toast(e.message, ICON.warn);
     }
   }
+
+  // שואל את השרת על הבדיקה שרצה עד שהיא נגמרת. גם בדיקה שהתחילה לפני שהדף נטען (ואז אפשר לעצור אותה מכאן)
+  async function followGrade(A, run) {
+    if (LOCAL.gradeFollow) return;
+    LOCAL.gradeFollow = true;
+    let job;
+    try {
+      for (;;) {
+        await new Promise((r) => setTimeout(r, 1500));
+        job = await api("api/grade");
+        const done = Object.keys(job.done || {}).length;
+        run.stopping = !!job.stopping;
+        run.progress = job.stopping ? `עוצר… (נבדקו ${done})` : `נבדקו ${done} מתוך ${job.total}…`;
+        if (done) { run.steps[1] = "done"; run.steps[2] = "running"; }
+        render();
+        if (!job.running) break;
+      }
+    } finally {
+      LOCAL.gradeFollow = false;
+      delete state.run[A.id];
+    }
+    await loadLocal();
+    refreshDrawer();
+    const failed = Object.keys(job.report?.failed || {}).length, stopped = (job.report?.stopped || []).length;
+    toast(job.error || `${stopped ? "הבדיקה נעצרה" : "הבדיקה הסתיימה"}: ${job.summary}`, job.error || failed || stopped ? ICON.warn : ICON.check);
+  }
+
+  async function stopLocalGrade() {
+    const A = cur(), run = A && state.run[A.id];
+    if (!run || run.stage !== "grade" || run.stopping) return;
+    run.stopping = true;
+    run.progress = "עוצר…";
+    render();
+    try {
+      await api("api/grade/stop", { method: "POST", body: "{}" });
+      toast("הבדיקה נעצרת: העבודות שכבר נשלחו ל-Claude יסתיימו ויישמרו");
+    } catch (e) {
+      run.stopping = false;
+      render();
+      toast(e.message, ICON.warn);
+    }
+  }
+
+  // ---------- חלוקה בצוות: לקיחה, החזרה, ומה שאחרים סימנו ----------
+  async function saveName() {
+    const name = (state.nameDraft ?? "").trim();
+    if (!name) { toast("צריך לכתוב שם", ICON.warn); $("#my-name")?.focus(); return; }
+    try {
+      LOCAL.me = await api("api/me", { method: "POST", body: JSON.stringify({ name }) });
+      state.renaming = false;
+      state.nameDraft = null;
+      await loadLocal();
+      toast(`נשמר: ${LOCAL.me.name}. מעכשיו אפשר לקחת עבודות.`);
+    } catch (e) {
+      toast(e.message, ICON.warn);
+    }
+  }
+
+  // מעדכן את s.claim לפי מה שהשרת קרא מהתיקייה, בלי לחכות לטעינה הבאה
+  function applyClaims(A, view) {
+    A.subs.forEach((s) => { s.claim = view.claims?.[s.id] || null; });
+  }
+
+  async function changeClaims(body) {
+    const A = cur();
+    if (!A || !LOCAL.on) return;
+    try {
+      const rep = await api("api/claims", { method: "POST", body: JSON.stringify({ course: A.courseFolder, assignment: A.folder, ...body }) });
+      applyClaims(A, rep);
+      render();
+      const others = Object.keys(rep.others || {}).length;
+      const done = rep.released?.length ? `${plural(rep.released.length, "עבודה אחת חזרה", "עבודות חזרו")} לפנויות`
+        : rep.taken?.length ? `${plural(rep.taken.length, "עבודה אחת סומנה", "עבודות סומנו")} עליך` : "לא נמצאו עבודות פנויות";
+      toast(others ? `${done}. ${plural(others, "עבודה אחת כבר נלקחה", "עבודות כבר נלקחו")} על ידי מישהו אחר.` : done,
+        others || !(rep.taken?.length || rep.released?.length) ? ICON.warn : ICON.check);
+    } catch (e) {
+      toast(e.message, ICON.warn);
+    }
+  }
+
+  // לוקח (או משחרר) את המשיכה או את ההחזרה של מטלה. stage: "pull" או "ret"
+  async function changeTask(assignmentId, stage, take) {
+    const A = D.assignments.find((a) => a.id === assignmentId);
+    if (!A || !LOCAL.on || !TASK_STAGE[stage]) return;
+    try {
+      const rep = await api("api/tasks", { method: "POST", body: JSON.stringify({ course: A.courseFolder, assignment: A.folder, stage: TASK_STAGE[stage], take }) });
+      A.owners = { ...A.owners, [TASK_STAGE[stage]]: rep.owner };
+      render();
+      toast(take ? `${STAGES[stage].name} של ${A.title} אצלך עכשיו` : `${STAGES[stage].name} של ${A.title} שוחררה`);
+    } catch (e) {
+      toast(e.message, ICON.warn);
+    }
+  }
+
+  // מה שקורה בתיקיית OneDrive (בודקים אחרים לוקחים עבודות, ציונים מגיעים, מישהו משך או העלה) מופיע לבד:
+  // כל כמה שניות שואלים את המערכת על חתימת התיקייה, וכשהיא משתנה טוענים מחדש. רק כשהדף גלוי
+  let changesBusy = false, lastSig = null;
+  async function pollChanges() {
+    if (changesBusy || !LOCAL.on || !LOCAL.health?.root || document.hidden) return;
+    // לא באמצע ריצה ולא בזמן הקלדה: הסיבוב שאחרי יטען
+    if (LOCAL.polling || Object.keys(state.run).length || document.activeElement?.matches?.("input, textarea, select")) return;
+    changesBusy = true;
+    try {
+      const { sig } = await api("api/changes");
+      if (lastSig !== null && sig !== lastSig) { await loadLocal(); refreshDrawer(); }
+      lastSig = sig;
+    } catch {
+      // המערכת לא ענתה הפעם. מנסים שוב בסיבוב הבא
+    } finally {
+      changesBusy = false;
+    }
+  }
+  const CHANGES_POLL_MS = 5000;
 
   function openFolder(which) {
     const A = cur();
@@ -2348,5 +2756,7 @@
     renderPickers();
     render();
     if (!ON_LOCAL_HOST) setInterval(() => { if (!LOCAL.on) connect(); }, 5000);
+    setInterval(pollChanges, CHANGES_POLL_MS);
+    document.addEventListener("visibilitychange", pollChanges);
   })();
 })();

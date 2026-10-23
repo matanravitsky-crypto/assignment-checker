@@ -423,15 +423,18 @@ def test_a_matching_hash_runs(tmp_path):
     assert r.status == "imported" and len(fake.calls) == 1
 
 
-# ---------- download: start "Download all submissions" in Chrome ----------
-def test_download_opens_only_the_assignment_pages_without_tools():
-    run = FakeRun(cli_output({"status": "started", "message": "the download started"}))
+# ---------- download: the parts script in the grading page ----------
+def test_download_runs_the_parts_script_on_the_grading_page_without_tools():
+    run = FakeRun(cli_output({"status": "started", "users": 561, "parts": 15, "message": "the download started"}))
     out = driver(run).download(INFO)
-    assert out == {"status": "started", "message": "the download started"}
+    assert out == {"status": "started", "message": "the download started", "users": 561, "parts": 15}
     (cmd, kwargs), = run.calls
     prompt = cmd[-1]
-    assert claude_driver.DOWNLOAD_URL.format(id="3438636") in prompt and GRADING_URL.format(id="3438636") in prompt
-    assert "action=downloadall" in prompt and INFO["title"] in prompt
+    assert GRADING_URL.format(id="3438636") in prompt and INFO["title"] in prompt
+    assert "action=downloadall" not in prompt  # Moodle cuts the one big ZIP: never asked for any more
+    script = prompt[prompt.index("The script:"):]
+    assert 'const ID = "3438636";' in script and "__ASSIGNMENT_ID__" not in script
+    assert "downloadselected" in script
     assert cmd[cmd.index("--tools") + 1] == ""  # no built-in tools: nothing to read or write
     assert "--chrome" in cmd and kwargs["stdin"] == subprocess.DEVNULL
     assert run.seen == [{}]  # an empty folder of its own
@@ -450,3 +453,29 @@ def test_download_never_raises():
     out = driver(FakeRun(raises=subprocess.TimeoutExpired("claude", 300))).download(INFO)
     assert out["status"] == "error" and "דקות" in out["message"]
     assert driver(FakeRun()).download({"id": "1; rm"})["status"] == "error"  # an id that is not digits never reaches the prompt
+
+
+def test_every_prompt_renews_an_expired_session_before_giving_up(tmp_path):
+    """BGU Moodle shows "404 Not Found" for an expired session; the home page signs Chrome in again (2026-10-23)."""
+    info = {"id": "3438636", "title": "הגשה 0"}
+    prompts = [
+        claude_driver.render_prompt(info, tmp_path / "a.zip", 3, dry_run=False),
+        claude_driver.CHECK_PROMPT.format(grading_url="G", home_url=claude_driver.HOME_URL),
+        claude_driver.download_prompt(info),
+    ]
+    for prompt in prompts:
+        assert "404 Not Found" in prompt
+        assert prompt.count(claude_driver.HOME_URL) >= 2  # allowed, and what to open
+        assert "{grading_url}" not in prompt and "{home_url}" not in prompt and "{give_up}" not in prompt
+
+
+def test_download_prompt_holds_the_script_with_its_hash():
+    """The page runs the script only if its SHA-256 matches: a copying mistake by Claude fails before any download."""
+    import hashlib
+    script, sha = claude_driver.parts_script("3438636")
+    assert "`" not in script and "${" not in script  # it goes into String.raw
+    assert hashlib.sha256(script.encode("utf-8")).hexdigest() == sha
+    assert not any(line.lstrip().startswith("//") for line in script.split("\n"))  # less for Claude to copy
+    prompt = claude_driver.download_prompt(INFO)
+    assert "String.raw`" + script + "`" in prompt and f'H !== "{sha}"' in prompt
+    assert prompt.rstrip().endswith("await (0, eval)(T);")
