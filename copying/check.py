@@ -10,7 +10,10 @@
              רק "כדאי להסתכל".
   שכבה 1 - אותו עמוד בקובץ אחר
     page     סריקה: עמוד שנראה כמעט זהה לעמוד בהגשה אחרת (perceptual hash, dHash של 16x16): אותה תמונה
-             אחרי דחיסה מחדש, שינוי גודל, צילום מסך או איחוד ל-PDF אחר.
+             אחרי דחיסה מחדש, שינוי גודל, צילום מסך או איחוד ל-PDF אחר. רק עמוד שיש עליו כתיבה (MIN_INK):
+             כריכה של אפליקציית מחברות, דף ריק או דף משבצות כמעט ריק נראים זהים אצל כולם ולא אומרים כלום.
+             (בבדיקה על הגשה 0 באלגברה לינארית, 572 הגשות: 117 "חשדות", כמעט כולם כריכות ועמודים ריקים,
+             ובמרחקים של 16-24 ביטים, שהם צילומים שונים שדומים במקרה. אותה תמונה ממש: 0-8.)
     text     עמוד מוקלד (או סריקה שהאפליקציה הוסיפה לה טקסט): שני עמודים שחולקים הרבה רצפים נדירים של 3
              מילים, גם אם שינו שם או כמה מילים. כששני העמודים מוקלדים, הטקסט קובע ולא התמונה: עמודים
              מוקלדים מאותה תבנית נראים כמעט זהים ל-dHash גם כשהתשובות שונות. (לכן גם צילום מסך של עמוד
@@ -19,7 +22,9 @@
              (במתמטיקה תשובות נכונות דומות זו לזו). רק מה שמשותף לשניים ונדיר אצל האחרים הוא סימן להעתקה.
 
 ערך מטא-דאטה שמשותף להרבה הגשות הוא ברירת מחדל של תוכנה ("Microsoft Office User"), לא סימן להעתקה,
-ולכן הוא נחשב רק אם הוא אצל COMMON_META מספרים לכל היותר. עמוד שחוזר אצל יותר מ-COMMON_PAGE מספרים
+ולכן הוא נחשב רק אם הוא אצל COMMON_META מספרים לכל היותר. עמוד סרוק אחד משותף לא מספיק (MIN_PAGES): זה בדרך
+כלל כריכה או תבנית, ועבודה שהועתקה חולקת כמה עמודים. עמוד מוקלד שזהה אצל יותר משני מספרים (TEXT_COMMON) הוא
+חומר של הקורס, למשל עמוד מחוברת השאלות שסטודנטים צירפו. עמוד שחוזר אצל יותר מ-COMMON_PAGE מספרים
 הוא בדרך כלל דף שאלות או תבנית, אבל יכול להיות גם פתרון שעבר בקבוצה: הוא לא נכנס לזוגות, ומופיע בנפרד
 ב-"repeated" כדי שאדם יחליט. עמוד כמעט ריק לא נחשב בכלל.
 
@@ -47,13 +52,16 @@ import pymupdf
 from moodle import lock, paths
 
 REPORT = paths.COPYING
-VERSION = 3  # טביעת אצבע בפורמט אחר: קבצים מהמטמון של גרסה אחרת נקראים מחדש
+VERSION = 4  # טביעת אצבע בפורמט אחר: קבצים מהמטמון של גרסה אחרת נקראים מחדש
 IMAGE_TYPES = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tif", ".tiff", ".webp"}  # כמו grading.grade.IMAGE_TYPES
 
 # ---------- הגדרות ----------
 GRID = 16             # dHash של GRID x GRID ביטים לכל עמוד (256)
-RENDER_SIDE = 128     # העמוד מצויר קטן, באפור, לפני החישוב: הצד הארוך בפיקסלים
-MAX_DISTANCE = 24     # עד כמה ביטים שונים (מתוך 256) שני עמודים נחשבים אותה תמונה. תמונות שונות: בערך 128
+RENDER_SIDE = 256     # העמוד מצויר קטן, באפור, לפני החישוב: הצד הארוך בפיקסלים
+MAX_DISTANCE = 10     # עד כמה ביטים שונים (מתוך 256) שני עמודים נחשבים אותה תמונה. אותה תמונה: 0-8. צילומים שונים: 16 ומעלה
+MIN_INK = 15          # כמה כתיבה צריכה להיות בעמוד (קצוות חדים לכל 1000 פיקסלים) כדי שישווה כתמונה.
+                      # כריכות ודפים ריקים: 0-5. עמודים עם כתב יד: בדרך כלל 20-115
+INK_STEP = 24         # הפרש בהירות בין שני פיקסלים שכנים (0-255) שנחשב קצה של קו
 MIN_CONTRAST = 6      # הפרש בין המשבצת הבהירה לכהה (0-255) שמתחתיו העמוד נחשב ריק ולא נבדק
 BUCKET_LIMIT = 300    # רצועה של dHash שמשותפת ליותר עמודים מזה לא משמשת לחיפוש (ראו _image_matches)
 MIN_WORDS = 12        # עמוד עם פחות מילים מזה נחשב לא מוקלד (כותרת, מספר עמוד) ומושווה כתמונה
@@ -61,6 +69,8 @@ SHINGLE = 3           # הטקסט מושווה ברצפים של 3 מילים
 TEXT_SHARED = 10      # כמה רצפים נדירים לפחות שני עמודים מוקלדים צריכים לחלוק
 TEXT_SIMILAR = 0.7    # ואיזה חלק מהרצפים הנדירים של העמוד הקצר מביניהם
 COMMON_PAGE = 10      # עמוד שדומה לעמודים אצל יותר מספרים מזה לא נכנס לזוגות, אלא לרשימת העמודים שחוזרים
+MIN_PAGES = 2         # כמה עמודים סרוקים זהים (עם כתיבה) זוג צריך לחלוק. עבודה שהועתקה חולקת כמה עמודים
+TEXT_COMMON = 2       # עמוד מוקלד שזהה אצל יותר מספרים מזה הוא חומר של הקורס (דף שאלות, חוברת), לא פתרון של סטודנט
 COMMON_META = 3       # ערך מטא-דאטה שמשותף ליותר מספרים מזה הוא ברירת מחדל של תוכנה, לא העתקה
 STRONG = {"file", "doc_id", "page", "text"}  # מספיק אחד מאלה כדי שהזוג יהיה "חשד חזק"
 
@@ -79,10 +89,26 @@ def _short(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
 
 
-def page_hash(page: pymupdf.Page) -> str | None:
-    """dHash של עמוד: GRID x GRID ביטים, כל ביט אומר אם משבצת בהירה מזו שמימינה. None לעמוד ריק."""
+def _gray(page: pymupdf.Page) -> pymupdf.Pixmap:
     zoom = RENDER_SIDE / max(page.rect.width, page.rect.height, 1)
-    pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), colorspace=pymupdf.csGRAY, alpha=False)
+    return page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), colorspace=pymupdf.csGRAY, alpha=False)
+
+
+def page_ink(page: pymupdf.Page, pix: pymupdf.Pixmap | None = None) -> float:
+    """כמה כתיבה יש בעמוד: כמה זוגות של פיקסלים שכנים (לרוחב) נבדלים ביותר מ-INK_STEP, לכל 1000 פיקסלים.
+    כריכה צבעונית, דף ריק ודף משבצות כמעט ריק מקבלים 0-5, כי אין בהם קווים חדים כמו של כתב יד."""
+    pix = pix or _gray(page)
+    w, h, data, stride = pix.width, pix.height, pix.samples, pix.stride
+    edges = 0
+    for y in range(h):
+        row = data[y * stride:y * stride + w]
+        edges += sum(abs(a - b) > INK_STEP for a, b in zip(row, row[1:]))
+    return round(1000 * edges / max(w * h, 1), 1)
+
+
+def page_hash(page: pymupdf.Page, pix: pymupdf.Pixmap | None = None) -> str | None:
+    """dHash של עמוד: GRID x GRID ביטים, כל ביט אומר אם משבצת בהירה מזו שמימינה. None לעמוד ריק."""
+    pix = pix or _gray(page)
     w, h, data, stride = pix.width, pix.height, pix.samples, pix.stride
     cols, rows = GRID + 1, GRID
     cells = []
@@ -136,7 +162,7 @@ def _meta(doc: pymupdf.Document) -> dict[str, str]:
 
 
 def fingerprint(path: Path) -> dict:
-    """מה שמשווים בקובץ אחד: sha256, מטא-דאטה (כ-hash), ולכל עמוד dHash (h) ורצפי הטקסט (t, אם יש).
+    """מה שמשווים בקובץ אחד: sha256, מטא-דאטה (כ-hash), ולכל עמוד dHash (h), כמה כתיבה יש בו (i) ורצפי הטקסט (t, אם יש).
     קובץ פגום או שהוא לא PDF או תמונה: בלי עמודים."""
     data = path.read_bytes()
     fp = {"sha256": hashlib.sha256(data).hexdigest(), "meta": {}, "pages": []}
@@ -148,7 +174,8 @@ def fingerprint(path: Path) -> dict:
             if kind == ".pdf":
                 fp["meta"] = _meta(doc)
             for page in doc:
-                pg = {"h": page_hash(page)}
+                pix = _gray(page)
+                pg = {"h": page_hash(page, pix), "i": page_ink(page, pix)}
                 if kind == ".pdf" and (shingles := text_shingles(page.get_text())):
                     pg["t"] = shingles
                 fp["pages"].append(pg)
@@ -162,7 +189,7 @@ def fingerprint(path: Path) -> dict:
 class Page:
     number: str
     page: int                  # מ-1, רץ על כל הקבצים של המספר, כמו ב-PDF המאוחד שהאתר מציג
-    bits: int | None           # dHash, None לעמוד ריק
+    bits: int | None           # dHash, None לעמוד ריק או בלי כתיבה (MIN_INK)
     text: frozenset[int] | None  # רצפי הטקסט, None לעמוד לא מוקלד
 
 
@@ -283,14 +310,17 @@ def compare(prints: dict[str, list[dict]]) -> Report:
         for fp in files:
             for pg in fp.get("pages", []):
                 at += 1
-                pages.append(Page(n, at, int(pg["h"], 16) if pg.get("h") else None,
+                # עמוד בלי כתיבה (כריכה, דף ריק) לא מושווה כתמונה: הוא נראה אותו דבר אצל כולם
+                ink = pg.get("h") and pg.get("i", 0) >= MIN_INK
+                pages.append(Page(n, at, int(pg["h"], 16) if ink else None,
                                   _shingle_set(pg["t"]) if pg.get("t") else None))
     matches = {**_image_matches(pages), **_text_matches(pages)}
     partners: dict[int, set[str]] = {}
     for i, j in matches:
         partners.setdefault(i, set()).add(pages[j].number)
         partners.setdefault(j, set()).add(pages[i].number)
-    common = {i for i, ns in partners.items() if len(ns) > COMMON_PAGE}
+    # partners לא כולל את המספר של העמוד עצמו: עמוד מוקלד אצל 3 מספרים יש לו 2 שותפים
+    common = {i for i, ns in partners.items() if (len(ns) + 1 > TEXT_COMMON if pages[i].text else len(ns) > COMMON_PAGE)}
     rep.repeated = _repeated(pages, matches, common)
     by_pair: dict[tuple[str, str, str], list[list[int]]] = {}
     for (i, j), (kind, score) in sorted(matches.items()):
@@ -298,7 +328,13 @@ def compare(prints: dict[str, list[dict]]) -> Report:
             continue
         a, b = sorted((pages[i], pages[j]), key=lambda p: p.number)
         by_pair.setdefault((a.number, b.number, kind), []).append([a.page, b.page, score])
+    # מי שצירפו חומר של הקורס (עמוד מוקלד שחוזר אצל כמה): גם עמודים מוקלדים אחרים שהם חולקים הם כנראה מאותה חוברת
+    material = [{n for n, _ in g["pages"]} for g in rep.repeated if g["kind"] == "text"]
     for (a, b, kind), found in by_pair.items():
+        if kind == "page" and len(found) < MIN_PAGES:  # עמוד סרוק אחד משותף הוא בדרך כלל כריכה או תבנית
+            continue
+        if kind == "text" and any(a in g and b in g for g in material):
+            continue
         add(a, b, {"kind": kind, "pages": sorted(found)})
 
     for (a, b), rs in sorted(reasons.items()):
