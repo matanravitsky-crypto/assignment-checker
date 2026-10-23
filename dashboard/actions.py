@@ -782,7 +782,8 @@ def _note_fields(note: dict, res: dict) -> dict:
     """מה שהאתר צריך מ-Grading notes: הערות וטעויות לכל שאלה, מה Claude לא בטוח בו, הסימונים, ולמה צריך אדם."""
     failed = "" if res.get("grade") else str(note.get("error") or "")
     review = res.get("review") or ""
-    kind = str(note.get("review_kind") or "") if review else ""
+    # מקרה מיוחד (special ב-Grades.csv, מהבדיקה) קודם; אחרת הסוג מ-Grading notes
+    kind = str(res.get("special") or note.get("review_kind") or "") if review else ""
     return {
         "comments": [str(c) for c in note.get("comments") or []],
         "mistakes": [[str(m) for m in ms] for ms in note.get("mistakes") or [] if isinstance(ms, list)],
@@ -790,6 +791,7 @@ def _note_fields(note: dict, res: dict) -> dict:
         "marks": [{k: m.get(k) for k in ("page", "x0", "y0", "x1", "y1", "text")} for m in note.get("marks") or [] if isinstance(m, dict)],
         "failed": failed, "reviewKind": "failed" if failed else (kind or ("other" if review else "")),
         "reviewedBy": (note.get("reviewed") or {}).get("by") or "",
+        "missing": str(res.get("missing") or "") if review else "",
     }
 
 

@@ -80,6 +80,8 @@ REVIEW = {  # number -> (review_kind, reason, the question Claude is unsure of)
     "0013": ("missing", "שאלה 8 לא נמצאה בהגשה. ייתכן שחסר עמוד.", 4),
     "0017": ("format", "השאלות לא לפי הסדר: שאלה 6 מופיעה בסוף העמוד.", 2),
 }
+# The special-case columns the grading writes (grading.SPECIAL_CASES): the site shows the kind and what is missing
+SPECIAL = {"0013": {"special": "missing_question", "missing": "שאלה 8 (דף מספרים מרוכבים 8)"}}
 FAILED = {"0022": "Claude עמוס כרגע (מגבלת קצב). כדאי לנסות שוב בעוד כמה דקות."}
 
 # The page: A4, a block per question, the student's "ink" in blue
@@ -216,7 +218,8 @@ def build(root: Path, pad_mb: float = 5.0) -> Path:
         grading.write_notes(assignment, number, {**grading.graded_notes(g, "demo"), "graded_at": "2026-10-22T21:00:00"})
         approved = MARKED[number][1] if number in MARKED else "1" if not reason and int(number) % 3 == 0 else ""
         grades[number] = {"number": number, "grade": f"{g.grade:g}", "feedback": g.feedback,
-                          "points": ";".join(f"{p:g}" for p in points), "approved": approved, "review": reason}
+                          "points": ";".join(f"{p:g}" for p in points), "approved": approved, "review": reason,
+                          **SPECIAL.get(number, {})}
         if number in MARKED:
             # Written after the submissions: a submission newer than its marked file counts as resubmitted.
             # Random padding (it doesn't compress) makes two ZIPs in the upload demo

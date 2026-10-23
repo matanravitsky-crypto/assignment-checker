@@ -741,6 +741,8 @@ span.rv-arrow { visibility: hidden; }
 .rv-issue.k-failed .rv-kind { color: var(--red); }
 .rv-kind.ok { color: var(--ok); background: var(--ok-soft); }
 .rv-issue p { margin: 0; font-size: 15px; line-height: 1.55; }
+.rv-issue p.rv-missing { font-size: 17px; }
+.rv-issue p.rv-missing b { color: var(--red); }
 
 .rv-doc-tools { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: 13px; }
 .rv-toggle { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border-radius: 99px; border: 1px solid var(--rule); background: var(--sheet); color: var(--ink-2); font-weight: 600; font-size: 13px; }
