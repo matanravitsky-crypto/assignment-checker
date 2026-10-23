@@ -102,3 +102,15 @@ def test_without_a_key_claude_ask_uses_claude_code(monkeypatch):
     with pytest.raises(grading.NoApiKey) as e:
         grading.claude_ask()
     assert "claude auth login" in str(e.value) and "ANTHROPIC_API_KEY" in str(e.value)
+
+
+def test_through_claude_code_the_default_is_sonnet_medium(monkeypatch):
+    """דרך Claude Code (המנוי) ברירת המחדל Sonnet/medium; מודל שנבחר במפורש נשאר."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(claude_driver, "find_claude", lambda: "claude")
+    monkeypatch.setattr(claude_driver, "auth_status", lambda *a, **k: {"logged_in": True, "message": ""})
+    seen = []
+    monkeypatch.setattr(claude_cli, "cli_ask", lambda claude, schema, effort, **k: (lambda req: seen.append((effort, req["model"])) or "{}"))
+    ask = grading.claude_ask()
+    ask({"model": grading.DEFAULT_MODEL}); ask({"model": "claude-haiku-5-5"})
+    assert seen == [("medium", "claude-sonnet-5-5"), ("medium", "claude-haiku-5-5")]

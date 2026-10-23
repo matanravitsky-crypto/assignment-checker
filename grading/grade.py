@@ -64,9 +64,9 @@ GRADE_COLUMNS = grades.COLUMNS  # מה כל עמודה אומרת: moodle/grades
 DEFAULT_MODEL = "claude-opus-5-5"
 EFFORT = "high"
 # דרך Claude Code (המנוי): מודל וחשיבה זולים יותר, כי כל הגשה עולה הרבה שם (ראו claude_cli.py)
-# המעבר ל-Sonnet (כ-0.04 דולר להגשה במקום 1.1) מחכה למדגם עם ציוני מתרגלים: כרגע אותו מודל ואותה חשיבה
-CLI_MODEL = os.environ.get("GRADING_CLI_MODEL") or DEFAULT_MODEL
-CLI_EFFORT = os.environ.get("GRADING_CLI_EFFORT") or EFFORT
+# ברירת המחדל: Sonnet בחשיבה בינונית (כ-0.04 עד 0.16 דולר להגשה במקום 1.1 ב-Opus), לפי החלטת אורי ב-2026-10-23. אין עדיין מדגם עם ציוני מתרגלים שמשווה את האיכות; GRADING_CLI_MODEL / GRADING_CLI_EFFORT מחזירים ל-Opus
+CLI_MODEL = os.environ.get("GRADING_CLI_MODEL") or "claude-sonnet-5-5"
+CLI_EFFORT = os.environ.get("GRADING_CLI_EFFORT") or "medium"
 MAX_TOKENS = 32000
 # כמה עבודות נשלחות ל-Claude במקביל
 DEFAULT_PARALLEL = 4
