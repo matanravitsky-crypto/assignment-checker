@@ -543,7 +543,7 @@ def test_without_a_rubric_there_are_no_grades(root, server):
         grading.save_review(a.dir, "0001", [20] * 5, [], "", by="x")
     st, out = call(server, "POST", "/api/grade", {"course": COURSE, "assignment": HW})
     assert st == 422 and out["noRubric"] and "אך ורק לפי המחוון" in out["error"]
-    (A,) = actions.state(root)["assignments"]
+    A = hw(actions.state(root))
     assert "אין מחוון" in A["noRubric"] and [q["points"] for q in A["rubric"]] == [0] * 5
 
 
