@@ -346,3 +346,29 @@ def test_pull_does_not_download_while_an_upload_uses_chrome(root, monkeypatch):
     monkeypatch.setattr(actions._send, "running", True)
     with pytest.raises(actions.UserError, match="העלאה"):
         actions.pull(root, COURSE, HW)
+
+
+def test_health_answers_at_once_while_claude_is_checked_in_the_background(root, server, monkeypatch):
+    """`claude auth status` לוקח במחשב של אורי עד 13 שניות. /api/health לא מחכה לו: עונה מיד עם checking,
+    והבדיקה רצה ברקע. כשהיא נגמרת, השאלה הבאה מקבלת את התשובה."""
+    import threading
+    import time
+    from moodle import claude_driver
+    gate = threading.Event()
+
+    def slow_status(*a, **k):
+        gate.wait(10)
+        return {"logged_in": True, "message": "Claude Code מחובר."}
+    monkeypatch.setattr(claude_driver, "auth_status", slow_status)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    started = time.monotonic()
+    st, h = call(server, "GET", "/api/health")
+    assert st == 200 and time.monotonic() - started < 2
+    assert h["ok"] and h["root"] and h["checking"] is True and h["claude"] is False
+    gate.set()
+    for _ in range(100):
+        h = call(server, "GET", "/api/health")[1]
+        if not h["checking"]:
+            break
+        time.sleep(0.05)
+    assert h["checking"] is False and h["claude"] is True and h["moodle"] is True and h["claudeVia"] == "code"

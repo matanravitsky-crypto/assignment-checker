@@ -125,9 +125,12 @@ class Handler(SimpleHTTPRequestHandler):
             return self.send_error(HTTPStatus.FORBIDDEN)
         url = urlparse(self.path)
         if url.path == "/api/health":
+            # עונה מיד: מצב Claude Code נבדק ברקע (quick_status). checking=true עד שיש תשובה, והאתר שואל שוב
             root, err = actions.root_info()
+            st, via = actions.quick_status(), actions.quick_via()
             return self._json({"ok": True, "root": str(root) if root else None, "error": err,
-                               "moodle": actions.moodle_status()["logged_in"], "claude": actions.grading_via() is not None, "claudeVia": actions.grading_via()})
+                               "moodle": bool(st and st.get("logged_in")), "claude": via is not None, "claudeVia": via,
+                               "checking": st is None and via is None})
         if url.path == "/api/upload":
             return self._json(actions.send_status())
         if url.path == "/api/moodle":
@@ -333,6 +336,7 @@ def serve(port: int = 8765, open_browser: bool = True) -> None:
         print(err)
         print("\nהאתר יעלה בכל זאת, ויציג את ההסבר הזה עד שהתיקייה תסתנכרן.")
     httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    actions.refresh_status_soon()  # כבר עכשיו, כדי שהתשובה תהיה מוכנה כשהאתר נפתח
     url = f"http://localhost:{port}/"
     print(f"\nבודק חכם פועל: {url}\nכדי לעצור: Ctrl+C או לסגור את החלון.")
     if open_browser:

@@ -2026,6 +2026,21 @@
   // בלי מחוון יש רק את שמות השאלות. ניקוד 0 לכל אחת: לא מחלקים את הציון בעצמנו, ואין ציונים
   const noRubricQ = (labels, why) => ({ questions: labels.map((l, i) => ({ n: i + 1, pts: 0, req: l })), missing: why || `למטלה אין מחוון. ${RUBRIC_RULE}` });
 
+  // המערכת בודקת ברקע אם Claude Code מחובר (זה לוקח כמה שניות). שואלים שוב עד שיש תשובה, ומעדכנים את המסך
+  let healthTimer = null;
+  function followHealth() {
+    if (healthTimer) return;
+    healthTimer = setTimeout(async () => {
+      healthTimer = null;
+      const h = await api("api/health").catch(() => null);
+      if (!h) return;
+      LOCAL.health = { ...LOCAL.health, ...h };
+      renderStatus();
+      render();
+      if (h.checking) followHealth();
+    }, 2500);
+  }
+
   async function loadLocal() {
     try {
       const [data, health] = await Promise.all([api("api/state"), api("api/health").catch(() => null)]);
@@ -2044,6 +2059,7 @@
         .sort((x, y) => (y.at || "").localeCompare(x.at || "")));
       // מודל מחובר = Claude Code מחובר במחשב (דרכו Claude in Chrome עובד במודל)
       LOCAL.health = { ...LOCAL.health, ...(health || {}), root: data.root, claude: data.claude, claudeVia: data.claudeVia };
+      if (health?.checking) followHealth();
       if (!LOCAL.polling) LOCAL.sending = data.sending || null;
       if (!D.assignments.some((a) => a.id === state.assignmentId)) {
         const first = D.assignments.find((a) => a.subs.length) || D.assignments[0];
@@ -2175,7 +2191,7 @@
     if (LOCAL.probing || LOCAL.on) return;
     LOCAL.probing = true;
     renderStatus();
-    const ok = await detectLocal(ON_LOCAL_HOST ? 1500 : 60000);
+    const ok = await detectLocal(ON_LOCAL_HOST ? 20000 : 60000);  // במחשב עצמו המערכת עונה, גם אם לאט: מחכים, לא "לא מחובר"
     LOCAL.probing = false;
     if (ok) {
       LOCAL.on = true;

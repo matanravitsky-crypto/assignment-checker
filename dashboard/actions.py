@@ -573,6 +573,41 @@ def moodle_status() -> dict:
     return status
 
 
+_status_refresh = threading.Lock()
+
+
+def refresh_status_soon() -> None:
+    """בודק ברקע אם Claude Code מחובר (moodle_status), אם אין כבר בדיקה כזו שרצה. התשובה נשמרת במטמון."""
+    if not _status_refresh.acquire(blocking=False):
+        return
+
+    def run() -> None:
+        try:
+            moodle_status()
+        except Exception:  # בדיקה שנכשלה לא מפילה את השרת; הבאה תנסה שוב
+            pass
+        finally:
+            _status_refresh.release()
+    threading.Thread(target=run, daemon=True).start()
+
+
+def quick_status() -> dict | None:
+    """מה שידוע עכשיו על Claude Code, בלי לחכות: `claude auth status` לוקח במחשב של אורי עד 13 שניות, והאתר לא
+    מחכה לו. אם המידע ישן (או שעוד אין), בודקים ברקע. None = עוד לא ידוע."""
+    cached = _moodle_cache
+    if not cached or time.monotonic() - cached[0] >= MOODLE_STATUS_SECONDS or _login.running() or _install.running():
+        refresh_status_soon()
+    return cached[1] if cached else None
+
+
+def quick_via() -> str | None:
+    """כמו grading_via, בלי לחכות לבדיקה של Claude Code (quick_status)."""
+    if cfg.claude_key():
+        return "api"
+    st = quick_status()
+    return "code" if st and st.get("logged_in") else None
+
+
 def grading_via() -> str | None:
     """איך הבדיקה מדברת עם Claude: "api" (יש ANTHROPIC_API_KEY), "code" (Claude Code מחובר במחשב, grading/claude_cli.py), או None."""
     if cfg.claude_key():
@@ -891,7 +926,7 @@ def state(root: Path) -> dict:
                 "subs": subs, "log": _activity(a, results, log),
             })
     return {"root": str(root), "courses": courses, "assignments": out,
-            "moodle": False, "claude": grading_via() is not None, "claudeVia": grading_via(), "grading": grade_status(), "sending": send_status()}
+            "moodle": False, "claude": quick_via() is not None, "claudeVia": quick_via(), "grading": grade_status(), "sending": send_status()}
 
 
 def _slots(course_dir: Path) -> list[folder_view.Assignment | int]:
