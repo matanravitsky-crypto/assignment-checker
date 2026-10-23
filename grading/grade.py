@@ -6,6 +6,9 @@
   Assignment details.json                 השאלות (questions), כללי ההגשה (submission_rules), המחוון (rubric),
                                           הנחיות לבדיקה (grading_instructions) והציון המרבי (max_grade)
   Official solution.pdf                   הפתרון הרשמי, אם יש (לא חובה)
+  פדגוגי/ (או Pedagogy/)                  חומר הבדיקה של המטלה: מחוון, פתרונות, דרכים מקובלות. כל קובץ .md או .txt
+                                          בה נשלח ל-Claude. ניקוד לשאלה נלקח מטבלה שבה העמודה הראשונה היא שם
+                                          השאלה והשנייה הניקוד ("| קבוצות 11 | 20 |"), אם אין ניקוד ב-rubric
 
 פלט, בדיוק מה ששלב ההחזרה (moodle/upload.py של אורי) מצפה לו:
   Grades.csv                              number, grade, feedback, ועוד עמודות של המערכת (ראו GRADE_COLUMNS)
@@ -13,12 +16,13 @@
   Grading notes/0001.json ...             מה Claude אמר על כל שאלה: הערה, סוגי הטעויות, אם הוא לא בטוח, הסימונים,
                                           ולמה העבודה צריכה בדיקה ידנית. מזה האתר בונה את הסטטיסטיקה ואת תור הבדיקה הידנית
 
-הניקוד ניתן אך ורק לפי המחוון (RUBRIC_RULE). המחוון ("rubric" ב-Assignment details.json) הוא:
+הניקוד ניתן אך ורק לפי המחוון (RUBRIC_RULE). המחוון הוא "rubric" ב-Assignment details.json, או טבלת הניקוד
+שבתיקייה "פדגוגי" (Rubric.md). ב-Assignment details.json הוא נראה כך:
   {"questions": [{"label": "דף קבוצות 11", "points": 20, "criteria": "מה צריך להופיע",
                   "deductions": [{"text": "חסר נימוק להכלה ההפוכה", "points": 5}]}], "notes": "..."}
                                           deductions: טעויות מוכרות ובכמה מורידים עליהן. Claude משתמש בניסוח שלהן,
                                           והן ההערות המוכנות בבדיקה הידנית באתר
-בלי מחוון כזה (null, טקסט חופשי, או שאלה בלי ניקוד) אין ציונים בכלל: הבדיקה והאישור באתר מסרבים (NoRubric).
+בלי מחוון כזה (גם לא טבלת ניקוד ב"פדגוגי", או שאלה בלי ניקוד) אין ציונים בכלל: הבדיקה והאישור באתר מסרבים (NoRubric).
 הקוד לא ממציא חלוקה של הניקוד בין השאלות, ואף שאלה לא מקבלת יותר מהניקוד שלה במחוון.
 
 עבודה ש-Claude ביקש שאדם יבדוק (review ב-Grades.csv) מחכה בתור "בדיקה ידנית" באתר עד שמישהו מאשר אותה (save_review).
@@ -96,6 +100,18 @@ RUBRIC_RULE = ("הניקוד ניתן אך ורק לפי המחוון של המ�
 
 class NoRubric(GradingError):
     """למטלה אין מחוון עם ניקוד לכל שאלה, אז אסור לתת ציונים."""
+
+
+class ClaudeLimit(Exception):
+    """Claude הגיע למגבלת השימוש (או לקצב). זו לא בעיה של עבודה מסוימת: הבדיקה נעצרת, ושום עבודה לא מסומנת כנכשלה."""
+
+
+# הודעות של Claude Code ושל ה-API כשנגמרת המכסה. עבודה שנפלה בגללן לא "נכשלה", היא פשוט עוד לא נבדקה
+_LIMIT = re.compile(r"session limit|usage limit|weekly limit|rate limit|hit your .{0,20}limit|מגבלת קצב", re.I)
+
+
+def is_limit(message: str) -> bool:
+    return bool(_LIMIT.search(message or ""))
 
 
 # ---------- המחוון ----------
@@ -181,8 +197,43 @@ def _deductions(raw) -> list[dict]:
     return out
 
 
+# קובץ בתיקייה הפדגוגית שהשם שלו אומר שהוא גרסה ישנה או טיוטה לא נשלח ל-Claude: שני מחוונים סותרים מבלבלים אותו,
+# והניקוד נלקח מהטבלה הראשונה. גם קובץ שמתחיל ב-"_" לא נשלח, וגם מה שבתיקיות שבתוכה (למשל "Old")
+_NOT_SENT = re.compile(r"^_|(?<![a-z])v\d+(?![a-z])|(?<![a-z])(old|draft)(?![a-z])|ישן|טיוטה", re.I)
+
+
+def pedagogy_files(assignment_dir: Path) -> list[Path]:
+    """קובצי הטקסט בתיקיית חומר הבדיקה של המטלה (פדגוגי). המחוון קודם: Rubric.md או מחוון.md בדיוק, ואחריו
+    קבצים אחרים שבשם שלהם יש מחוון. גרסאות ישנות וטיוטות לא נשלחות (_NOT_SENT)."""
+    folder = next((assignment_dir / name for name in paths.PEDAGOGY if (assignment_dir / name).is_dir()), None)
+    if folder is None:
+        return []
+    files = [p for p in folder.iterdir() if p.is_file() and p.suffix.lower() in (".md", ".txt")
+             and p.name != paths.README and not _NOT_SENT.search(p.stem)]
+    return sorted(files, key=lambda p: (p.stem.lower() not in ("rubric", "מחוון"),
+                                        not re.search(r"rubric|מחוון", p.stem, re.I), p.name))
+
+
+def pedagogy_text(files: list[Path]) -> str:
+    return "\n\n".join(f"--- {p.name} ---\n{p.read_text(encoding='utf-8-sig').strip()}" for p in files)
+
+
+def pedagogy_points(text: str, labels: list[str]) -> dict[str, float]:
+    """ניקוד לשאלה מטבלת markdown: שורה שהתא הראשון שלה הוא סוף שם השאלה ("קבוצות 11" ל-"דף קבוצות 11"), והשני מספר."""
+    points: dict[str, float] = {}
+    for line in text.splitlines():
+        cells = [c.strip().strip("*").strip() for c in line.strip().strip("|").split("|")]
+        if len(cells) < 2 or not cells[0] or not re.fullmatch(r"\d+(\.\d+)?", cells[1]):
+            continue
+        for label in labels:
+            if label not in points and re.search(r"(^|\s)" + re.escape(cells[0]) + "$", label):
+                points[label] = float(cells[1])
+    return points
+
+
 def load_context(assignment_dir: Path, instructions: str = "", send_solution: bool = True) -> Context:
     d = read_details(assignment_dir)
+    pedagogy = pedagogy_text(pedagogy_files(assignment_dir))
     max_grade = _num(d.get("max_grade"), 100) or 100
     rubric = d.get("rubric")
     rubric_text = no_rubric = ""
@@ -195,9 +246,19 @@ def load_context(assignment_dir: Path, instructions: str = "", send_solution: bo
         if unset:
             no_rubric = f"במחוון אין ניקוד ל{', '.join(unset)}. {RUBRIC_RULE}"
     else:
-        # בלי מחוון: השאלות רק כדי להציג אותן. הניקוד שלהן 0, ואין חלוקה שווה או אחרת
-        qs = [Question(label, 0) for label in question_labels(d) or ["כל המטלה"]]
-        no_rubric = f"למטלה אין מחוון (rubric ב-{paths.INFO}). {RUBRIC_RULE}"
+        # בלי rubric: הניקוד מטבלת המחוון שבתיקייה "פדגוגי". שאלה שאין לה שם ניקוד נשארת 0, ואין חלוקה שווה או אחרת
+        labels = question_labels(d) or ["כל המטלה"]
+        found = pedagogy_points(pedagogy, labels)
+        qs = [Question(label, found.get(label, 0)) for label in labels]
+        if isinstance(rubric, str):
+            rubric_text = rubric
+        unset = [q.label for q in qs if not q.points]
+        if len(unset) == len(qs):
+            no_rubric = f"למטלה אין מחוון (rubric ב-{paths.INFO}, או טבלת ניקוד בתיקייה \"{paths.PEDAGOGY[1]}\"). {RUBRIC_RULE}"
+        elif unset:
+            no_rubric = f"במחוון אין ניקוד ל{', '.join(unset)}. {RUBRIC_RULE}"
+    if pedagogy:
+        rubric_text = "\n\n".join(t for t in (rubric_text, "חומר הבדיקה של המטלה (מחוון, פתרונות ודרכי פתרון):\n\n" + pedagogy) if t)
     solution = assignment_dir / SOLUTION
     return Context(
         title=d.get("title") or assignment_dir.name, course=d.get("course_title") or assignment_dir.parent.name,
@@ -786,7 +847,14 @@ def grade_assignment(assignment_dir: Path, numbers: list[str] | None = None, *, 
                 for f in futures:
                     f.cancel()
                 raise
-            except Exception as e:  # עבודה אחת שנכשלה לא עוצרת את השאר
+            except Exception as e:
+                if is_limit(str(e)):  # נגמרה המכסה: עוצרים. מה שלא נבדק נשאר לבדיקה, לא לבדיקה הידנית
+                    for f in futures:
+                        f.cancel()
+                    done = len(rep.graded)
+                    raise ClaudeLimit(f"Claude הגיע למגבלת השימוש, אז הבדיקה נעצרה אחרי {done} עבודות. "
+                                      f"העבודות שלא נבדקו לא סומנו כנכשלות: אפשר להמשיך כשהמכסה מתחדשת. ({e})") from e
+                # עבודה אחת שנכשלה לא עוצרת את השאר
                 rep.failed[n] = str(e)
                 failed(n, str(e))
                 on_progress and on_progress(n, "failed")

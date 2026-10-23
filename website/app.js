@@ -130,7 +130,7 @@
   // שאלות שהניקוד בהן עובר את המחוון: נבדקו לפי חלוקה אחרת, ואסור לאשר אותן ככה
   const overRubric = (points) => rubric().questions.map((q, i) => ({ q, i, p: points?.[i] })).filter((x) => x.p > x.q.pts);
   const rubricNoticeHTML = () => `<div class="notice rule-notice">${ICON.warn}<div><b>אין ציונים בלי מחוון.</b> ${esc(noRubric())}
-    <span class="muted" style="display:block">כדי לתת ציונים, המרצה מוסיף מחוון עם ניקוד לכל שאלה (rubric) ל-Assignment details.json שבתיקיית המטלה.</span></div></div>`;
+    <span class="muted" style="display:block">כדי לתת ציונים, שמים בתיקייה "פדגוגי" שבתיקיית המטלה את המחוון (Rubric.md) עם טבלת ניקוד לכל שאלה.</span></div></div>`;
   const pad = (n) => String(n).padStart(2, "0");
   const hhmm = (d) => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
   function when(iso) {

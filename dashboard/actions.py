@@ -301,7 +301,7 @@ def start_grading(root: Path, course: str, assignment: str, numbers: list[str] |
         try:
             rep = grading.grade_assignment(a.dir, todo, ask=ask, on_progress=progress, **opts)
             job.report, job.summary = asdict(rep), rep.summary()
-        except grading.NoApiKey as e:
+        except (grading.NoApiKey, grading.ClaudeLimit) as e:
             job.error = str(e)
         except Exception as e:  # השגיאה מוצגת באתר במקום שהבדיקה תיעלם בשקט
             job.error = f"הבדיקה נכשלה: {e}"
@@ -781,6 +781,8 @@ def page_image(root: Path, course: str, assignment: str, number: str, page: int)
 def _note_fields(note: dict, res: dict) -> dict:
     """מה שהאתר צריך מ-Grading notes: הערות וטעויות לכל שאלה, מה Claude לא בטוח בו, הסימונים, ולמה צריך אדם."""
     failed = "" if res.get("grade") else str(note.get("error") or "")
+    if grading.is_limit(failed):  # נגמרה המכסה באמצע בדיקה: העבודה עוד לא נבדקה, אין מה לבדוק בה ידנית
+        failed = ""
     review = res.get("review") or ""
     # מקרה מיוחד (special ב-Grades.csv, מהבדיקה) קודם; אחרת הסוג מ-Grading notes
     kind = str(res.get("special") or note.get("review_kind") or "") if review else ""

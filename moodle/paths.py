@@ -37,6 +37,9 @@ GRADES = "Grades.csv"
 NOTES = "Grading notes"
 KEY = "Key - number to student.csv"
 README = "README.txt"
+# The lecturer's or TA's grading material, in the assignment folder: rubric, solutions, accepted methods (.md/.txt).
+# Grading sends all of it to Claude. "פדגוגי" is the name the team gave it; "Pedagogy" works too.
+PEDAGOGY = ("Pedagogy", "פדגוגי")
 DOWNLOAD_PREFIX = "Moodle download"
 PULL_LOCK = "Pull in progress.txt"      # in the assignment folder while a pull runs (see lock.py)
 UPLOAD_LOCK = "Upload in progress.txt"  # in the assignment folder while an upload to Moodle runs
