@@ -148,13 +148,18 @@
   // עבודה בתור הבדיקה הידנית: Claude ביקש שאדם יבדוק, או שהבדיקה האוטומטית נכשלה. יוצאת מהתור כשמישהו מאשר
   const needsReview = (s) => !s.approved && (!!s.review || (!!s.failed && s.score == null));
   const wasReviewed = (s) => s.approved && (!!s.review || !!s.reviewedBy);
+  // מקרים מיוחדים: רק הם מגיעים לאדם (grading.SPECIAL_CASES, הסקיל "קשיחות והחלטות"), ועוד סוגים מבדיקות ישנות
   const REVIEW_KIND = {
+    missing_question: ["חסר תרגיל או סעיף", "שאלה שלמה או סעיף שלם לא נמצאו בהגשה"],
+    missing_page: ["חסר עמוד", "המספור קופץ, תשובה נקטעת, או עמוד חתוך"],
+    other_assignment: ["הגשה של מטלה אחרת", "ההגשה עונה על שאלות של מטלה אחרת"],
+    unreadable_file: ["עמוד שאי אפשר לקרוא", "עמוד ריק, שחור או מטושטש, או קובץ שאי אפשר לבדוק"],
     unreadable: ["כתב יד לא קריא", "Claude לא הצליח לקרוא חלק מהעבודה"],
     missing: ["חסרים עמודים או שאלות", "שאלה או עמוד לא נמצאו בהגשה"],
     uncertain: ["ניקוד לא ודאי", "Claude לא בטוח בניקוד של שאלה"],
     format: ["לא לפי כללי ההגשה", "ההגשה לא בפורמט שנדרש"],
     failed: ["הבדיקה האוטומטית נכשלה", "צריך לבדוק ידנית או לנסות שוב"],
-    other: ["אחר", "Claude ביקש שאדם יסתכל"],
+    other: ["מקרה מיוחד אחר", "משהו שלא קשור לבדיקה עצמה"],
   };
   const kindOf = (s) => s.reviewKind || (s.failed ? "failed" : "other");
 
@@ -1157,7 +1162,7 @@
     return `<section class="review-callout">
       <span class="rc-icon">${ICON.hand}</span>
       <div class="rc-text">
-        <b>${plural(queue.length, "עבודה אחת מחכה", "עבודות מחכות")} לבדיקה ידנית</b>
+        <b>${plural(queue.length, "מקרה מיוחד אחד מחכה", "מקרים מיוחדים מחכים")} לבדיקה ידנית</b>
         <div class="rc-kinds">${kinds.map(([k, c]) => `<span class="chip">${REVIEW_KIND[k][0]}<span class="c num">${c}</span></span>`).join("")}</div>
       </div>
       <a class="btn primary" href="#/review">${ICON.pen}התחל לבדוק</a>
@@ -1499,7 +1504,7 @@
     const total = queue.length + done.length;
     const top = `<header class="rv-top">
       <div><h1>בדיקה ידנית</h1>
-        <p>${queue.length ? `${plural(queue.length, "עבודה אחת מחכה", "עבודות מחכות")} לך` : "אין עבודות שמחכות"}${done.length ? ` · ${done.length} כבר נבדקו` : ""}</p></div>
+        <p>${queue.length ? `${plural(queue.length, "מקרה מיוחד אחד מחכה", "מקרים מיוחדים מחכים")} לך: חסר תרגיל, חסר עמוד, מטלה אחרת או עמוד שאי אפשר לקרוא` : "אין מקרים מיוחדים שמחכים"}${done.length ? ` · ${done.length} כבר נבדקו` : ""}</p></div>
       ${total ? `<div class="rv-meter" role="progressbar" aria-label="כמה נבדקו" aria-valuemin="0" aria-valuemax="${total}" aria-valuenow="${done.length}"><i style="width:${(100 * done.length) / total}%"></i></div>` : ""}
     </header>`;
     if (!I.subs.length) return `${top}<section class="panel">${emptyPulled()}</section>`;
@@ -1522,6 +1527,7 @@
           <div class="rv-issue ${flagged ? `k-${k}` : "ok"}">
             <div class="rv-issue-top"><span class="rv-work">עבודה <b class="num">${s.id}</b></span>
               ${flagged ? `<span class="rv-kind">${esc(REVIEW_KIND[k][0])}</span>` : s.approved ? `<span class="rv-kind ok">אושרה${s.reviewedBy ? ` · ${esc(s.reviewedBy)}` : ""}</span>` : ""}</div>
+            ${flagged && s.missing ? `<p class="rv-missing">חסר: <b>${esc(s.missing)}</b></p>` : ""}
             ${flagged ? `<p>${esc(s.failed || s.review || "Claude ביקש שאדם יבדוק את העבודה.")}</p>` : ""}
             ${s.failed && LOCAL.health?.claude ? `<button class="btn secondary small" data-act="grade-one" data-id="${s.id}" ${state.run[A.id] ? "disabled" : ""}>${ICON.redo}לבדוק שוב עם Claude</button>` : ""}
           </div>

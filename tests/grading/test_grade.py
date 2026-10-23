@@ -525,3 +525,15 @@ def test_server_review_and_downloads(root, server):
         assert conn.getresponse().status in (400, 404)
     for path in (paths.KEY, f"{paths.MARKED}/0003-2.jpg", f"{paths.NOTES}/0003.json"):
         assert get(rel + path)[0] == 404  # רק הגשות ועבודות מסומנות יוצאות. לא המפתח ולא שום דבר אחר
+
+
+def test_state_shows_the_special_case_and_what_is_missing(root):
+    """The grading writes "special" and "missing" to Grades.csv; the site's queue shows them."""
+    a = asg(root)
+    grading.write_grades(a.dir, {"0002": {"number": "0002", "grade": "80", "feedback": "", "points": "20;0;20;20;20",
+                                          "review": "חסר שאלה 12. בדוק במודל אם הוגש בקובץ נפרד.",
+                                          "special": "missing_question", "missing": "שאלה 12"},
+                                 "0003": {"number": "0003", "grade": "90", "feedback": "", "review": "", "special": ""}})
+    subs = {s["id"]: s for s in actions.state(root)["assignments"][0]["subs"]}
+    assert (subs["0002"]["reviewKind"], subs["0002"]["missing"]) == ("missing_question", "שאלה 12")
+    assert (subs["0003"]["reviewKind"], subs["0003"]["missing"]) == ("", "")
