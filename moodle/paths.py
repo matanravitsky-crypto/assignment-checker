@@ -14,6 +14,7 @@ a folder per assignment, with plain English names that say what each one is
           Grades.csv                                 number,grade,feedback (older grades, approvals by hand)
           Grades by <name>.csv                       each grader's own grades (see grades.py)
           Who grades what/<name>.json                the numbers each grader took (see claims.py)
+          Grading notes/              0001.json ...  per-question comments, mistakes, marks, why a person should look
           Key - number to student.csv                the key: number -> Moodle participant
           Moodle download <date>.zip                 the ZIP exactly as Moodle gave it
           README.txt
@@ -35,8 +36,14 @@ INFO = "Assignment details.json"
 GRADES = "Grades.csv"
 GRADES_BY = "Grades by {}.csv"           # one per grader, so two graders never write the same file (grades.py)
 CLAIMS = "Who grades what"               # folder: one "<name>.json" per grader, the numbers they took (claims.py)
+# What the grader said about each submission, per number (0001.json): per-question comments and mistakes, the marks
+# on the pages, and why it needs a person. Numbers only, never names. The site's manual review reads it
+NOTES = "Grading notes"
 KEY = "Key - number to student.csv"
 README = "README.txt"
+# The lecturer's or TA's grading material, in the assignment folder: rubric, solutions, accepted methods (.md/.txt).
+# Grading sends all of it to Claude. "פדגוגי" is the name the team gave it; "Pedagogy" works too.
+PEDAGOGY = ("Pedagogy", "פדגוגי")
 DOWNLOAD_PREFIX = "Moodle download"
 PULL_LOCK = "Pull in progress.txt"      # in the assignment folder while a pull runs (see lock.py)
 UPLOAD_LOCK = "Upload in progress.txt"  # in the assignment folder while an upload to Moodle runs

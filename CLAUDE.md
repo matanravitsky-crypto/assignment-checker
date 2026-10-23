@@ -44,6 +44,7 @@ Exercise Checking System/                  the data folder (ASSIGNMENT_DATA, def
       Grades.csv                  number,grade,feedback: older grades and approvals typed by hand
       Grades by <name>.csv        each grader's own grades  ← grading output (readers merge all of them, moodle/grades.py)
       Who grades what/<name>.json the numbers each grader took (moodle/claims.py)
+      Grading notes/              0001.json ...: per question comments, mistakes, "unsure", the marks, why a person should look (numbers only)
       Key - number to student.csv number → Moodle participant id → original folder  ← the one key
       Upload in progress.txt      exists only while an upload runs ("<user> (<PC>) pid=<pid>", since when; 30 minutes without an update = stuck)
       Pull in progress.txt        the same while a pull runs
@@ -281,6 +282,12 @@ and a line in a spreadsheet. So per submission the grader writes:
   at all; at ~1.5 MB it's about 15 ZIPs. Compress in the grading code: on Ori's computer, Windows Smart App
   Control blocks PyMuPDF's DLLs, so check what runs on the grading machine.
 - a row in `Grades.csv`: `number,grade,feedback`, where `feedback` is a short summary.
+- `Grading notes/0001.json`: what Claude said per question (comment, mistakes, unsure), the marks, and why it needs a person.
+
+**Manual review.** Claude sends every work it is not sure of (`needs_review`, with `review_reason` saying which question and page,
+and `review_kind`) and every work whose grading failed to the site's "בדיקה ידנית" queue (`#/review`). There a TA picks ready-made
+comments (the rubric's `deductions`, the assignment's common mistakes, Claude's own), the points follow, and "approve" calls
+`grading.save_review`: it writes `approved = "<user> (<PC>) <time>"` in `Grades.csv` and redraws the marked PDF's summary page.
 
 `python -m moodle upload` takes it from there.
 

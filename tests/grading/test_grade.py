@@ -11,6 +11,7 @@ import random
 import threading
 import time
 from http.server import ThreadingHTTPServer
+from urllib.parse import quote
 
 import pymupdf
 import pytest
@@ -25,6 +26,9 @@ COURSE, HW = "Linear Algebra", "Assignment 0 - Sets and Complex Numbers"
 NAMES = {"1001": "נועה כהן", "1002": "איתי לוי", "1003": "מאיה מזרחי"}
 LABELS = ["דף קבוצות 11", "דף קבוצות 12", "דף מספרים מרוכבים 6", "דף מספרים מרוכבים 7", "דף מספרים מרוכבים 8"]
 _real_claude_ask = grading.claude_ask
+# המחוון של מטלת הבדיקות: 20 נקודות לכל שאלה. בלי מחוון אין ציונים בכלל
+RUBRIC = {"questions": [{"label": l, "points": 20, "deductions": [{"text": "חסר נימוק", "points": 5}, "רק הערה"] if i == 1 else []}
+                        for i, l in enumerate(LABELS)]}
 
 
 @pytest.fixture(autouse=True)
@@ -48,7 +52,7 @@ def root(tmp_path, monkeypatch):
         (a.dir / sub).mkdir(parents=True)
     save_details(a, {"id": "3438636", "course": COURSE, "course_id": "67024", "name": HW,
                      "questions": [{"sheet": "דף קבוצות", "numbers": [11, 12]}, {"sheet": "דף מספרים מרוכבים", "numbers": [6, 7, 8]}],
-                     "submission_rules": ["כתב יד, קובץ PDF אחד"], "max_grade": None, "rubric": None,
+                     "submission_rules": ["כתב יד, קובץ PDF אחד"], "max_grade": None, "rubric": RUBRIC,
                      "title": "הגשה 0 - קבוצות ומרוכבים", "course_title": "אלגברה לינארית להנדסה"})
     rows = []
     for i, pid in enumerate(NAMES, start=1):
@@ -418,3 +422,237 @@ def test_server_grades_in_the_background(root, server, monkeypatch):
     assert st == 400
     st, out = call(server, "POST", "/api/grade", {"course": COURSE, "assignment": "../../x"})
     assert st == 404
+
+
+# ---------- Grading notes, טעויות נפוצות ובדיקה ידנית ----------
+
+
+def detailed(points=(20, 15, 20, 20, 10), review="", kind="", unsure=(), mistakes=None):
+    """תשובה של Claude עם סוגי הטעויות, שאלות לא ודאיות וסוג הבעיה."""
+    mistakes = mistakes or {1: ["חסר נימוק", "חסר נימוק."], 4: ["תחום לא נכון"]}
+    return json.dumps({
+        "questions": [{"label": l, "points": p, "comment": "", "mistakes": mistakes.get(i, []), "unsure": i in unsure}
+                      for i, (l, p) in enumerate(zip(LABELS, points))],
+        "feedback": "יפה", "annotations": [{"page": 1, "x0": 100, "y0": 100, "x1": 900, "y1": 160, "text": "חסר נימוק"}],
+        "needs_review": bool(review), "review_reason": review, "review_kind": kind,
+    }, ensure_ascii=False)
+
+
+def test_rubric_deductions_reach_claude(root):
+    a = asg(root)
+    save_details(a, {**a.details(), "rubric": RUBRIC})
+    ctx = grading.load_context(a.dir)
+    assert ctx.questions[1].deductions == [{"text": "חסר נימוק", "points": 5}, {"text": "רק הערה", "points": 0}]
+    prompt = grading.context_text(ctx)
+    assert '"חסר נימוק" (מורידים 5)' in prompt and '"רק הערה"' in prompt
+    assert "review_kind" in grading.SYSTEM and "בדיקה ידנית" in grading.SYSTEM
+    assert grading.SCHEMA["properties"]["review_kind"]["enum"] == ["", *grading.REVIEW_KINDS]
+
+
+def test_answer_keeps_mistakes_unsure_and_the_kind_of_problem(root):
+    ctx = grading.load_context(asg(root).dir)
+    g = grading.parse_answer(detailed(review="שאלה 12, עמוד 1: לא קריא", kind="unreadable", unsure=(1,)), ctx, 1)
+    assert g.mistakes[1] == ["חסר נימוק"] and g.mistakes[4] == ["תחום לא נכון"] and g.mistakes[0] == []
+    assert g.unsure == [False, True, False, False, False] and g.review_kind == "unreadable"
+    assert grading.parse_answer(detailed(review="משהו", kind="weird"), ctx, 1).review_kind == "other"
+    assert grading.parse_answer(detailed(kind="unreadable"), ctx, 1).review_kind == ""  # בלי סיבה אין בדיקה ידנית
+    assert grading.parse_answer(answer(), ctx, 1).mistakes == [[]] * 5  # תשובה בלי השדות החדשים עדיין נקראת
+
+
+def test_grading_writes_notes_and_a_failure_reaches_the_review_queue(root):
+    a = asg(root)
+    calls = []
+
+    def ask(req):
+        calls.append(1)
+        if len(calls) == 2:
+            raise grading.GradingError("Claude עמוס כרגע")
+        return detailed(review="שאלה 8 לא נמצאה", kind="missing", unsure=(4,))
+    rep = grading.grade_assignment(a.dir, ask=ask, parallel=1)
+    (bad,) = rep.failed
+    good = rep.graded[0]
+    note = grading.read_notes(a.dir, good)
+    assert note["mistakes"][1] == ["חסר נימוק"] and note["unsure"][4] and note["review_kind"] == "missing"
+    assert note["marks"][0]["text"] == "חסר נימוק" and note["points"] == [20, 15, 20, 20, 10]
+    assert grading.read_notes(a.dir, bad)["error"] == "Claude עמוס כרגע"
+    subs = {s["id"]: s for s in actions.state(root)["assignments"][0]["subs"]}
+    assert subs[good]["reviewKind"] == "missing" and subs[good]["unsure"][4] and subs[good]["mistakes"][4] == ["תחום לא נכון"]
+    assert subs[bad]["reviewKind"] == "failed" and subs[bad]["failed"] == "Claude עמוס כרגע" and subs[bad]["status"] == "pulled"
+    # בדיקה חוזרת שהצליחה מוחקת את הכישלון
+    grading.grade_assignment(a.dir, [bad], ask=lambda req: detailed())
+    assert "error" not in grading.read_notes(a.dir, bad)
+
+
+def test_save_review_approves_with_who_and_rewrites_the_summary_page(root):
+    a = asg(root)
+    grading.grade_assignment(a.dir, ["0001"], ask=lambda req: detailed(review="לא בטוח", kind="uncertain"))
+    out = grading.save_review(a.dir, "1", [20, 14.7, 20, 20, 0], ["", "חסר נימוק.", "", "", "השאלה לא נמצאה"],
+                              "עבודה טובה.", by="dana (PC)", mistakes=[[], ["חסר נימוק"], [], [], []])
+    assert out == {"number": "0001", "grade": 75}  # 14.7 → 14.5
+    row = grading.read_grades(a.dir)["0001"]
+    assert row["points"] == "20;14.5;20;20;0" and row["grade"] == "75" and row["feedback"] == "עבודה טובה."
+    assert row["approved"].startswith("dana (PC) ") and row["review"] == "לא בטוח" and grading.is_approved(row)
+    note = grading.read_notes(a.dir, "0001")
+    assert note["reviewed"]["by"] == "dana (PC)" and note["mistakes"][4] == [] and note["marks"]  # הסימונים של Claude נשארים
+    with pymupdf.open(a.dir / paths.MARKED / "0001.pdf") as doc, pymupdf.open(a.submissions / "0001.pdf") as src:
+        assert doc.page_count == src.page_count + 1 and "ציון: 75 מתוך 100" in text(doc[0])
+        assert "השאלה לא נמצאה" in text(doc[0]) and "נועה" not in text(doc[0])
+    # מאושרת: הבדיקה האוטומטית לא דורסת אותה
+    assert grading.grade_assignment(a.dir, ["0001"], ask=lambda req: detailed()).skipped == ["0001"]
+    subs = {s["id"]: s for s in actions.state(root)["assignments"][0]["subs"]}
+    assert subs["0001"]["approved"] and subs["0001"]["reviewedBy"] == "dana (PC)" and subs["0001"]["score"] == 75
+
+
+def test_save_review_of_work_graded_before_notes_keeps_its_marks(root):
+    """עבודה שנבדקה לפני שהיו Grading notes: מחליפים רק את עמוד הסיכום, והסימונים שב-PDF נשארים."""
+    a = asg(root)
+    grading.grade_assignment(a.dir, ["0002"], ask=lambda req: detailed())
+    grading.notes_path(a.dir, "0002").unlink()
+    with pymupdf.open(a.dir / paths.MARKED / "0002.pdf") as doc:
+        pages, marked_page = doc.page_count, len(doc[1].get_drawings())
+    grading.save_review(a.dir, "0002", [20] * 5, [], "", by="x")
+    with pymupdf.open(a.dir / paths.MARKED / "0002.pdf") as doc:
+        assert doc.page_count == pages and "ציון: 100 מתוך 100" in text(doc[0]) and len(doc[1].get_drawings()) == marked_page
+
+
+def test_save_review_refuses_what_it_cannot_match(root):
+    a = asg(root)
+    with pytest.raises(grading.GradingError):
+        grading.save_review(a.dir, "0009", [20] * 5, [], "", by="x")  # אין הגשה כזו
+    with pytest.raises(grading.GradingError):
+        grading.save_review(a.dir, "0001", [20] * 4, [], "", by="x")  # ניקוד לא לכל השאלות
+    assert not (a.dir / grading.GRADES).exists()
+
+
+def test_server_review_and_downloads(root, server):
+    a = asg(root)
+    st, out = call(server, "POST", "/api/review", {"course": COURSE, "assignment": HW, "number": "0003",
+                                                     "points": [20, 20, 20, 20, 10], "comments": [], "feedback": "יפה"})
+    assert st == 200 and out == {"number": "0003", "grade": 90}
+    assert grading.read_grades(a.dir)["0003"]["approved"]
+    for bad in ({"number": "../1", "points": [20] * 5}, {"number": "0003", "points": ["20"] * 5}, {"number": "0003", "points": [True] * 5}):
+        st, _ = call(server, "POST", "/api/review", {"course": COURSE, "assignment": HW, **bad})
+        assert st == 400
+    st, out = call(server, "POST", "/api/review", {"course": COURSE, "assignment": HW, "number": "0003", "points": [1]})
+    assert st == 422 and "5" in out["error"]
+
+    def get(path, download=False):
+        conn = http.client.HTTPConnection("127.0.0.1", server, timeout=30)
+        conn.request("GET", "/api/file?path=" + quote(path) + ("&download=1" if download else ""), headers={"Host": f"localhost:{server}"})
+        r = conn.getresponse()
+        return r.status, r.getheader("Content-Disposition"), r.read()
+    rel = f"{COURSE}/{HW}/"
+    st, disp, data = get(rel + f"{paths.MARKED}/0003.pdf")
+    assert st == 200 and disp is None and data[:4] == b"%PDF"
+    st, disp, _ = get(rel + f"{paths.MARKED}/0003.pdf", download=True)
+    assert st == 200 and disp == 'attachment; filename="0003 - graded.pdf"'
+    pix = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 10, 10), False)
+    (a.submissions / "0003-2.jpg").write_bytes(pix.tobytes("jpeg"))
+    st, disp, _ = get(rel + f"{paths.TO_GRADE}/0003-2.jpg", download=True)
+    assert st == 200 and disp == 'attachment; filename="0003-2 - submission.jpg"'
+    (a.dir / paths.MARKED / "0003-2.jpg").write_bytes(pix.tobytes("jpeg"))
+    # the review page shows the submission as images: every file of the number, in order, as Claude saw it
+    q = f"course={quote(COURSE)}&assignment={quote(HW)}&number=0003"
+    with pymupdf.open(a.submissions / "0003.pdf") as src:
+        pages = src.page_count
+    assert call(server, "GET", f"/api/pages?{q}") == (200, {"pages": pages + 1})
+    conn = http.client.HTTPConnection("127.0.0.1", server, timeout=30)
+    conn.request("GET", f"/api/page?{q}&page={pages + 1}", headers={"Host": f"localhost:{server}"})
+    r = conn.getresponse()
+    assert r.status == 200 and r.getheader("Content-Type") == "image/jpeg" and r.read()[:2] == b"\xff\xd8"
+    for bad in (f"/api/page?{q}&page=99", f"/api/page?{q}&page=x", f"/api/page?course={quote(COURSE)}&assignment={quote(HW)}&number=../1&page=1"):
+        conn = http.client.HTTPConnection("127.0.0.1", server, timeout=30)
+        conn.request("GET", bad, headers={"Host": f"localhost:{server}"})
+        assert conn.getresponse().status in (400, 404)
+    for path in (paths.KEY, f"{paths.MARKED}/0003-2.jpg", f"{paths.NOTES}/0003.json"):
+        assert get(rel + path)[0] == 404  # רק הגשות ועבודות מסומנות יוצאות. לא המפתח ולא שום דבר אחר
+
+
+def test_state_shows_the_special_case_and_what_is_missing(root):
+    """The grading writes "special" and "missing" to Grades.csv; the site's queue shows them."""
+    a = asg(root)
+    grading.write_grades(a.dir, {"0002": {"number": "0002", "grade": "80", "feedback": "", "points": "20;0;20;20;20",
+                                          "review": "חסר שאלה 12. בדוק במודל אם הוגש בקובץ נפרד.",
+                                          "special": "missing_question", "missing": "שאלה 12"},
+                                 "0003": {"number": "0003", "grade": "90", "feedback": "", "review": "", "special": ""}})
+    subs = {s["id"]: s for s in actions.state(root)["assignments"][0]["subs"]}
+    assert (subs["0002"]["reviewKind"], subs["0002"]["missing"]) == ("missing_question", "שאלה 12")
+    assert (subs["0003"]["reviewKind"], subs["0003"]["missing"]) == ("", "")
+
+
+# ---------- ניקוד רק לפי המחוון ----------
+def test_without_a_rubric_there_are_no_grades(root, server):
+    """בלי מחוון אין חלוקה שווה ואין שום חלוקה אחרת: לא בודקים, לא מאשרים, והאתר יודע למה."""
+    a = asg(root)
+    save_details(a, {**a.details(), "rubric": None})
+    ctx = grading.load_context(a.dir)
+    assert [q.points for q in ctx.questions] == [0] * 5 and "אין מחוון" in ctx.no_rubric
+    fake = FakeClaude()
+    with pytest.raises(grading.NoRubric):
+        grading.grade_assignment(a.dir, ["0001"], ask=fake)
+    assert not fake.requests and not (a.dir / grading.GRADES).exists()
+    with pytest.raises(grading.NoRubric):
+        grading.save_review(a.dir, "0001", [20] * 5, [], "", by="x")
+    st, out = call(server, "POST", "/api/grade", {"course": COURSE, "assignment": HW})
+    assert st == 422 and out["noRubric"] and "אך ורק לפי המחוון" in out["error"]
+    A = hw(actions.state(root))
+    assert "אין מחוון" in A["noRubric"] and [q["points"] for q in A["rubric"]] == [0] * 5
+
+
+def test_a_question_without_points_in_the_rubric_blocks_grading(root):
+    a = asg(root)
+    rubric = json.loads(json.dumps(RUBRIC))
+    rubric["questions"][4]["points"] = None
+    save_details(a, {**a.details(), "rubric": rubric})
+    with pytest.raises(grading.NoRubric) as e:
+        grading.grade_assignment(a.dir, ["0001"], ask=FakeClaude())
+    assert LABELS[4] in str(e.value)
+
+
+def test_points_above_the_rubric_are_never_kept(root):
+    a = asg(root)
+    ctx = grading.load_context(a.dir)
+    g = grading.parse_answer(detailed(points=(20, 20, 20, 20, 23)), ctx, 1)
+    assert g.points[4] == 20 and "יותר מהמחוון" in g.review and f"{LABELS[4]}: 23 מתוך 20" in g.review
+    with pytest.raises(grading.GradingError) as e:
+        grading.save_review(a.dir, "0001", [20, 20, 20, 20, 24], [], "", by="x")
+    assert f"{LABELS[4]}: 24 מתוך 20" in str(e.value) and not (a.dir / grading.GRADES).exists()
+
+
+def test_the_rubric_points_come_from_the_pedagogy_folder(root):
+    """בלי rubric ב-Assignment details.json הניקוד נלקח מטבלת המחוון שבתיקייה "פדגוגי", כמו שהצוות כותב אותו."""
+    a = asg(root)
+    save_details(a, {**a.details(), "rubric": None})
+    folder = a.dir / "פדגוגי"
+    folder.mkdir()
+    (folder / "Rubric.md").write_text("# מחוון\n\n| שאלה | נק' | סעיפים |\n|---|---|---|\n| קבוצות 11 | 20 | א 3 |\n"
+                                      "| קבוצות 12 | 24 | |\n| **מרוכבים 6** | 12 | |\n| מרוכבים 7 | 20 | |\n| מרוכבים 8 | 24 | |\n",
+                                      encoding="utf-8")
+    (folder / "Rubric v1.md").write_text("| קבוצות 11 | 99 |\n", encoding="utf-8")  # גרסה ישנה: לא נקראת
+    ctx = grading.load_context(a.dir)
+    assert [q.points for q in ctx.questions] == [20, 24, 12, 20, 24] and not ctx.no_rubric
+    assert "Rubric.md" in ctx.rubric_text and "99" not in ctx.rubric_text
+    (folder / "Rubric.md").write_text("| קבוצות 11 | 20 |\n", encoding="utf-8")
+    assert "אין ניקוד" in grading.load_context(a.dir).no_rubric  # שאלה בלי ניקוד: עדיין אין ציונים
+
+
+def test_a_usage_limit_stops_grading_and_fails_no_work(root):
+    a = asg(root)
+    calls = []
+
+    def ask(req):
+        calls.append(1)
+        if len(calls) >= 2:
+            raise grading.GradingError("Claude Code נכשל: You've hit your session limit · resets 2:50am")
+        return detailed()
+    with pytest.raises(grading.ClaudeLimit) as e:
+        grading.grade_assignment(a.dir, ask=ask, parallel=1)
+    assert "מגבלת השימוש" in str(e.value)
+    graded = grading.read_grades(a.dir)
+    assert len(graded) == 1
+    assert not [n for n in ("0001", "0002", "0003") if "error" in grading.read_notes(a.dir, n)]
+    # שגיאת מכסה ישנה ב-Grading notes (מריצה אחרת) לא שולחת את העבודה לבדיקה הידנית
+    left = next(n for n in ("0001", "0002", "0003") if n not in graded)
+    grading.write_notes(a.dir, left, {"error": "Claude Code נכשל: You've hit your session limit", "failed_at": "x"})
+    subs = {s["id"]: s for s in hw(actions.state(root))["subs"]}
+    assert subs[left]["failed"] == "" and subs[left]["reviewKind"] == ""
