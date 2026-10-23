@@ -151,6 +151,10 @@ class Handler(SimpleHTTPRequestHandler):
         if url.path == "/api/state":
             root = self._root()
             return root and self._json(actions.state(root))
+        if url.path == "/api/changes":
+            # חתימה של התיקייה. האתר שואל כל כמה שניות, וטוען מחדש רק כשהיא משתנה
+            root = self._root()
+            return root and self._json({"sig": actions.changes(root)})
         if url.path == "/api/grade":
             return self._json(actions.grade_status())
         if url.path == "/api/claims":
@@ -312,6 +316,19 @@ class Handler(SimpleHTTPRequestHandler):
             except RuntimeError as e:
                 return self._json({"error": str(e)}, HTTPStatus.CONFLICT)
             return self._json(job, HTTPStatus.ACCEPTED)
+        if url.path == "/api/tasks":
+            # לוקח או משחרר את המשיכה ("pull") או את ההחזרה ("return") של מטלה
+            course, assignment, stage = body.get("course"), body.get("assignment"), body.get("stage")
+            if not course or not isinstance(assignment, str) or not assignment or "/" in assignment or "\\" in assignment:
+                return self._json({"error": "חסרים קורס ומטלה"}, HTTPStatus.BAD_REQUEST)
+            try:
+                return self._json(actions.set_task(root, course, assignment, stage, body.get("take") is True))
+            except actions.UserError as e:
+                return self._json({"error": str(e)}, HTTPStatus.BAD_REQUEST)
+            except FileNotFoundError as e:
+                return self._json({"error": str(e)}, HTTPStatus.NOT_FOUND)
+            except (OSError, ValueError) as e:
+                return self._json({"error": f"הסימון לא נשמר: {e}"}, HTTPStatus.CONFLICT)
         if url.path == "/api/claims":
             # לוקח עבודות ("take": מספרים, או "next": כמה מהפנויות) או מחזיר עבודות שלי ("release")
             course, assignment = body.get("course"), body.get("assignment")

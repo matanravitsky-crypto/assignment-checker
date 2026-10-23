@@ -51,3 +51,40 @@ def test_my_name_is_saved_on_this_computer_and_moves_my_claims(root, server, tmp
     assert claims.read_all(a)["0001"]["who"] == "מתן רביצקי"
     assert not (a / paths.CLAIMS / "מתן.json").exists()
     assert call(server, "POST", "/api/me", {"name": "x" * 41}, HDR)[0] == 422
+
+
+def test_pull_and_return_owners_per_assignment(root, server):
+    st, rep = call(server, "POST", "/api/tasks", {"course": COURSE, "assignment": "Assignment 4", "stage": "pull", "take": True}, HDR)
+    assert st == 200 and rep["owner"]["who"] == "מתן"  # גם מטלה שעוד לא נמשכה ואין לה תיקייה
+    call(server, "POST", "/api/tasks", {**BODY, "stage": "return", "take": True}, HDR)
+    _, state = call(server, "GET", "/api/state")
+    by_folder = {a["folder"]: a for a in state["assignments"] if a["courseFolder"] == COURSE}
+    assert by_folder["Assignment 4"]["owners"]["pull"]["who"] == "מתן"
+    assert by_folder[HW]["owners"] == {"pull": None, "return": by_folder[HW]["owners"]["return"]}
+    assert by_folder[HW]["owners"]["return"]["who"] == "מתן"
+    st, rep = call(server, "POST", "/api/tasks", {**BODY, "stage": "return", "take": False}, HDR)
+    assert st == 200 and rep["owner"] is None
+    assert call(server, "POST", "/api/tasks", {**BODY, "stage": "grade", "take": True}, HDR)[0] == 400
+    assert call(server, "POST", "/api/tasks", {"course": "../x", "assignment": HW, "stage": "pull", "take": True}, HDR)[0] == 404
+    assert call(server, "POST", "/api/tasks", {**BODY, "stage": "pull", "take": True})[0] == 403
+
+
+def test_changes_signature_moves_when_the_folder_changes(root, server):
+    _, first = call(server, "GET", "/api/changes")
+    _, again = call(server, "GET", "/api/changes")
+    assert first["sig"] == again["sig"]
+    claims.take(root / COURSE / HW, ["0001"], who="אורי")  # OneDrive הביא סימון של מישהו אחר
+    _, after = call(server, "GET", "/api/changes")
+    assert after["sig"] != first["sig"]
+
+
+def test_pull_takes_the_pull_task_when_nobody_has_it(root, monkeypatch):
+    monkeypatch.setattr("moodle.ingest.ingest", lambda *a, **k: [])
+    actions.pull(root, COURSE, HW)
+    assert claims.task_owners(root / COURSE)[claims.task_key(HW, "pull")]["who"] == "מתן"
+
+
+def test_numbers_being_graded_here_show_as_grading(root, monkeypatch):
+    monkeypatch.setattr(actions, "_job", actions.GradeJob(COURSE, HW, ["0001", "0002"], running=True, done={"0001": "graded"}))
+    subs = {s["id"]: s["status"] for s in hw(actions.state(root))["subs"]}
+    assert subs["0002"] == "grading" and subs["0003"] == "pulled"
