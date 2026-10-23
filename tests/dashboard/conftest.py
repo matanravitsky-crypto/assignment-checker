@@ -8,7 +8,7 @@ from http.server import ThreadingHTTPServer
 import pytest
 
 from moodle import claude_driver, ingest, paths
-from dashboard import actions
+from dashboard import actions, pull_parts
 from tests.sample_files import homework_pdf
 
 from tests.dashboard.helpers import COURSE, HW, MID, NAMES, write_key
@@ -33,31 +33,34 @@ def fresh_dashboard_state(monkeypatch, tmp_path):
     downloads = tmp_path / "Downloads"
     downloads.mkdir()
     monkeypatch.setattr(ingest, "downloads_dir", lambda: downloads)
-    monkeypatch.setattr(actions, "PARTS_POLL_S", 0.01)
+    monkeypatch.setattr(pull_parts, "POLL_S", 0.01)
     monkeypatch.setattr(actions, "_make_downloader", lambda: FakeDownloader(downloads))
 
 
 class FakeDownloader:
-    """Moodle in the tests: the parts script in Moodle's tab "downloads" the assignment's ZIPs, as Chrome would,
-    and tells the local server that it finished (dashboard/pull_parts.py)."""
+    """Moodle in the tests: the parts script in Moodle's tab saves the assignment's ZIPs to Downloads, as Chrome
+    would, and then its summary "ECS pull <id> <run>.json" (dashboard/pull_parts.py waits for it)."""
 
     def __init__(self, downloads, result=None, parts=1, finish="done"):
         self.downloads, self.result, self.parts, self.finish, self.calls = downloads, result, parts, finish, []
 
-    def download_parts(self, info, base):
+    def download_parts(self, info, run):
         from dashboard import pull_parts
         self.calls.append(info["id"])
-        self.base = base
+        self.run = run
         if self.result:
             return self.result
         mid = info["id"]
-        names = [f"214193210120271-x-{mid}{f' ({i})' if i else ''}.zip" for i in range(self.parts)]
-        for name in names:
-            (self.downloads / name).write_bytes(b"zip from moodle")
-        pull_parts._runs[mid]["ok"].extend(names)  # what pull_parts.check records for every part that arrived whole
+        saved = []
+        for i in range(self.parts):
+            data = b"zip from moodle" + b"!" * i  # every part its own size
+            (self.downloads / f"214193210120271-x-{mid}{f' ({i})' if i else ''}.zip").write_bytes(data)
+            saved.append({"size": len(data), "students": 50, "asked": 50})
         if self.finish:
-            error = "" if self.finish == "done" else self.finish
-            pull_parts.finish(mid, "done" if self.finish == "done" else "error", str(self.parts * 50), "", str(self.parts), error)
+            summary = {"cmid": mid, "run": run, "stage": "done" if self.finish == "done" else "error",
+                       "users": self.parts * 50, "submitted": None, "retried": 0,
+                       "error": None if self.finish == "done" else self.finish, "parts": saved}
+            (self.downloads / pull_parts.summary_name(mid, run)).write_text(json.dumps(summary), encoding="utf-8")
         return {"status": "started", "message": "ok"}
 
 

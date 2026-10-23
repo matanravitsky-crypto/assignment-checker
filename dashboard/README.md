@@ -14,7 +14,7 @@ python -m dashboard serve
 | `folder_view.py` | קורא את המבנה לתצוגה: קורסים, מטלות ומספרי הגשות. בלי שמות |
 | `actions.py` | הפעולות: משיכה (`moodle ingest`) עם נעילה ובדיקת עותקים כפולים, בדיקה ברקע (`grading/`), הכנת החזרה (`moodle upload`), העלאה למודל ברקע (`moodle send`), והמצב לאתר |
 | `web_server.py` | השרת: מגיש את האתר ואת `/api/...` |
-| `pull_parts.py` | המשיכה בחלקים: עונה לסקריפט שבלשונית של מודל (`moodle/parts.js`) אם ה-ZIP של כל חלק הגיע שלם, מסמן קטוע ב-`BROKEN`, ושומר בזיכרון מה הגיע (מספרים ושמות קבצים בלבד) |
+| `pull_parts.py` | המשיכה בחלקים: מחכה בתיקיית ההורדות לקובץ הסיכום של הסקריפט שבלשונית של מודל (`moodle/parts.js`), ומתאים אליו את החלקים לפי הגודל המדויק. הדף של מודל לא יכול לפנות לשרת הזה |
 | `settings.py` | קורא את `.env` (מפתח Claude) |
 
 ## ה-API של השרת
@@ -43,7 +43,7 @@ python -m dashboard serve
 | `POST /api/claude/install` | מתקין את Claude Code במחשב |
 | `POST /api/open` | פותח תיקייה בסייר הקבצים |
 
-**אבטחה:** השרת מאזין רק למחשב עצמו. כל בקשה שמשנה משהו חייבת את הכותרת `X-Assignment-Checker`, Host של המחשב, ו-Origin של המחשב או של האתר הציבורי (`https://bodek-hacham.vercel.app` בדיוק, `SITE_ORIGINS` ב-`web_server.py`), כדי שאתרים אחרים לא יוכלו להפעיל אותו. רק האתר הציבורי מקבל הרשאת CORS לקרוא תשובות (כולל ה-preflight של Private Network Access בכרום). כתובות תצוגה מקדימה של Vercel לא מקבלות אותה. חוץ ממנו, `https://moodle.bgu.ac.il` מקבל CORS רק ל-`/api/pull/` ורק לקריאה (המשיכה בחלקים).
+**אבטחה:** השרת מאזין רק למחשב עצמו. כל בקשה שמשנה משהו חייבת את הכותרת `X-Assignment-Checker`, Host של המחשב, ו-Origin של המחשב או של האתר הציבורי (`https://bodek-hacham.vercel.app` בדיוק, `SITE_ORIGINS` ב-`web_server.py`), כדי שאתרים אחרים לא יוכלו להפעיל אותו. רק האתר הציבורי מקבל הרשאת CORS לקרוא תשובות (כולל ה-preflight של Private Network Access בכרום). כתובות תצוגה מקדימה של Vercel לא מקבלות אותה.
 
 ## הדגמה בלי מודל
 

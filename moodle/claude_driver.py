@@ -32,6 +32,7 @@ through as it is, capped at 300 characters, and the prompt tells it to name nobo
 and Claude Code is logged in. Nothing here is run by the tests: they give the driver a fake `run`.
 """
 
+import hashlib
 import json
 import re
 import shutil
@@ -132,6 +133,7 @@ Steps:
 Return only the structured result. "message" says what happened in one short sentence.
 """
 
+PARTS_SCRIPT = Path(__file__).with_name("parts.js")
 PARTS_PROMPT = """You start the download of all submissions of one Moodle assignment in parts, for a university course. Use only the Chrome tools.
 
 Rules (never break them):
@@ -139,19 +141,34 @@ Rules (never break them):
 - If a login page appears, do not type anything anywhere. Stop and return status "needs_login".
 - Never type anything. Never take a screenshot. Never write any person's name in your answer.
 - Never change grades, submissions or assignment settings. The only thing you may click is the one checkbox in step 2.
-- Run only the JavaScript of step 3, exactly as written. Do not run any other JavaScript.
+- Run only the JavaScript of step 3, exactly as written, character for character. Do not run any other JavaScript.
 
 Steps:
 1. Open {grading_url}. Check the address has id={assignment_id} and the page is the grading page of the assignment "{title}". If not, return "error".
 2. In the options of that page (usually near the bottom), find the checkbox "הורדת הגשות בתיקיות" (in English "Download submissions in folders").
    If it is there and not checked, click it once so that it is checked (it is a personal display option, not an assignment setting). If it is not there, go on.
-3. In that tab, run this JavaScript with the javascript tool and read its result:
-   eval(await (await fetch("{base}parts.js")).text()); window.__ecsParts.start({{ cmid: "{assignment_id}", base: "{base}" }})
+3. In that tab, run this JavaScript with the javascript tool, exactly as it is between the lines, and read its result:
+----------
+const S = String.raw`@@SCRIPT@@`;
+const T = S.replace(/\\r\\n/g, "\\n");
+const H = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(T)))].map(b => b.toString(16).padStart(2, "0")).join("");
+if (H !== "{sha256}") throw new Error("script check failed");
+eval(T);
+window.__ecsParts.start({{ cmid: "{assignment_id}", run: "{run}" }})
+----------
    If the result has started: true, return "started". The download goes on by itself in the tab: do not navigate away, do not close it.
-   If it fails (for example the fetch is blocked), return "error" with the reason in one short sentence.
+   If it fails, return "error" with the reason in one short sentence.
 
 Return only the structured result. "message" says what happened in one short sentence.
 """
+
+
+def parts_script() -> tuple[str, str]:
+    """moodle/parts.js as the page will see it (LF line ends), and its sha256. It goes into String.raw`...`."""
+    text = PARTS_SCRIPT.read_text(encoding="utf-8").replace("\r\n", "\n")
+    if "`" in text or "${" in text:
+        raise ValueError("parts.js must not contain a backtick or ${: it goes into String.raw`...`")
+    return text, hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 # A failed run whose output is one of these means Claude Code itself is not logged in
 AUTH_PROBLEM = re.compile(r"authenticat|oauth|not logged in|/login|invalid api key", re.IGNORECASE)
@@ -314,21 +331,23 @@ class ClaudeChromeDriver:
         return self.run(cmd, capture_output=True, text=True, encoding="utf-8", timeout=timeout_s,
                         cwd=folder, stdin=subprocess.DEVNULL)
 
-    def download_parts(self, info: dict, base: str) -> dict:
+    def download_parts(self, info: dict, run: str) -> dict:
         """Start the download of all submissions in parts (moodle/parts.js) in the user's Chrome.
 
-        Same contract as download(). `base` is the local server's /api/pull/ address: the page loads parts.js from it
-        and asks it after every part whether the ZIP arrived whole (dashboard/pull_parts.py). Never raises."""
+        Same contract as download(). The page can't reach this computer (Moodle's connect-src), so the script goes
+        into the prompt, checked against its sha256 in the page, and it saves the parts and a summary
+        "ECS pull <id> <run>.json" to Downloads (dashboard/pull_parts.py waits for it). Never raises."""
         claude = self.claude or find_claude()
         if not claude:
             return {"status": "error", "message": NOT_INSTALLED}
         timeout_s = min(self.timeout_s, DOWNLOAD_TIMEOUT_S)
         try:
             mid = assignment_id(info)
-            if not re.fullmatch(r"http://127\.0\.0\.1:\d{2,5}/api/pull/", base):  # it goes into the prompt as is
-                raise ValueError(f"not the local server's address: {base!r}")
-            prompt = PARTS_PROMPT.format(grading_url=GRADING_URL.format(id=mid), assignment_id=mid, base=base,
-                                         title=info.get("title") or info.get("name") or "")
+            if not re.fullmatch(r"\d{1,12}", str(run)):  # it goes into the prompt as is
+                raise ValueError(f"not a run id: {run!r}")
+            script, sha = parts_script()
+            prompt = PARTS_PROMPT.format(grading_url=GRADING_URL.format(id=mid), assignment_id=mid, run=run, sha256=sha,
+                                         title=info.get("title") or info.get("name") or "").replace("@@SCRIPT@@", script)
             with tempfile.TemporaryDirectory(prefix="moodle-download-", ignore_cleanup_errors=True) as empty:
                 proc = self.execute(claude, prompt, Path(empty), DOWNLOAD_SCHEMA, DOWNLOAD_BUDGET_USD, timeout_s)
         except Exception as error:  # never raise: the caller shows the message

@@ -301,14 +301,14 @@ def test_pull_downloads_from_moodle_when_no_zip_is_waiting(root, monkeypatch):
     seen, fake = [], FakeDownloader(ingest.downloads_dir())
     monkeypatch.setattr(actions, "_make_downloader", lambda: fake)
     monkeypatch.setattr("moodle.ingest.ingest", _record_ingest(seen))
-    monkeypatch.setattr(actions, "SERVER_PORT", 8799)
     actions.pull(root, COURSE, HW)
-    assert fake.calls == [MID] and fake.base == "http://127.0.0.1:8799/api/pull/"
+    assert fake.calls == [MID] and fake.run.isdigit()
+    assert not list(ingest.downloads_dir().glob("ECS pull *.json"))  # the summary is ours, and it is gone
     assert [p.name for p in seen] == [f"214193210120271-x-{MID}.zip"]
 
 
 def test_pull_takes_every_part_that_arrived_whole(root, monkeypatch):
-    """מטלה גדולה יורדת בחלקים של 50. כל החלקים שהגיעו שלמים נקלטים יחד, וחלק שסומן קטוע לא."""
+    """מטלה גדולה יורדת בחלקים של 50. כל החלקים שבסיכום נקלטים יחד."""
     from moodle import ingest
     seen, fake = [], FakeDownloader(ingest.downloads_dir(), parts=3)
     monkeypatch.setattr(actions, "_make_downloader", lambda: fake)
@@ -322,7 +322,6 @@ def test_pull_takes_a_zip_that_was_downloaded_by_hand(root, monkeypatch):
     from moodle import ingest
     by_hand = ingest.downloads_dir() / f"קורס-הגשה 0-{MID}.zip"
     by_hand.write_bytes(b"zip")
-    (ingest.downloads_dir() / f"BROKEN קורס-הגשה 0-{MID} (1).zip").write_bytes(b"cut off")  # newer, but broken
     seen, fake = [], FakeDownloader(ingest.downloads_dir())
     monkeypatch.setattr(actions, "_make_downloader", lambda: fake)
     monkeypatch.setattr("moodle.ingest.ingest", _record_ingest(seen))
@@ -330,14 +329,16 @@ def test_pull_takes_a_zip_that_was_downloaded_by_hand(root, monkeypatch):
     assert seen == [by_hand] and fake.calls == []  # לא מורידים שוב
 
 
-def test_a_broken_zip_alone_is_not_taken(root, monkeypatch):
+def test_parts_left_by_a_pull_that_stopped_are_taken_together(root, monkeypatch):
     from moodle import ingest
-    (ingest.downloads_dir() / f"BROKEN קורס-הגשה 0-{MID}.zip").write_bytes(b"cut off")
-    fake = FakeDownloader(ingest.downloads_dir())
+    left = [ingest.downloads_dir() / f"קורס-הגשה 0-{MID}{s}.zip" for s in ("", " (1)")]
+    for p in left:
+        p.write_bytes(b"zip")
+    seen, fake = [], FakeDownloader(ingest.downloads_dir())
     monkeypatch.setattr(actions, "_make_downloader", lambda: fake)
-    monkeypatch.setattr("moodle.ingest.ingest", _record_ingest([]))
+    monkeypatch.setattr("moodle.ingest.ingest", _record_ingest(seen))
     actions.pull(root, COURSE, HW)
-    assert fake.calls == [MID]
+    assert sorted(seen[0]) == sorted(left) and fake.calls == []
 
 
 def test_pull_explains_a_download_that_did_not_start(root, monkeypatch):
@@ -363,12 +364,12 @@ def test_pull_explains_a_parts_download_that_stopped(root, monkeypatch):
 
 
 def test_pull_gives_up_when_the_moodle_tab_stops_answering_and_keeps_its_lock_alive(root, monkeypatch):
-    """הלשונית של מודל נסגרה: אין חלק חדש ואין "סיימתי". בינתיים הנעילה מתחדשת, כי משיכה ארוכה מ-30 דקות."""
+    """הלשונית של מודל נסגרה: אין חלק חדש ואין סיכום. בינתיים הנעילה מתחדשת, כי משיכה ארוכה מ-30 דקות."""
+    from dashboard import pull_parts
     from moodle import ingest
     fake = FakeDownloader(ingest.downloads_dir(), parts=0, finish=None)
     monkeypatch.setattr(actions, "_make_downloader", lambda: fake)
-    monkeypatch.setattr(actions, "PARTS_STALL_S", 0.3)
-    monkeypatch.setattr(actions, "LOCK_REFRESH_S", 0.05)
+    monkeypatch.setattr(pull_parts, "STALL_S", 0.3)
     refreshed = []
     monkeypatch.setattr(actions.moodle_lock, "refresh", lambda lock: refreshed.append(lock))
     with pytest.raises(actions.UserError, match="לא הסתיימה בזמן"):

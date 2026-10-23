@@ -1,7 +1,6 @@
-"""המשיכה בחלקים (dashboard/pull_parts.py ו-/api/pull/ ב-web_server): מה השרת המקומי עונה לסקריפט שבלשונית של מודל."""
+"""המשיכה בחלקים (dashboard/pull_parts.py): מחכים בתיקיית ההורדות לסיכום של הסקריפט שבלשונית של מודל, ולוקחים את החלקים שבו."""
 from __future__ import annotations
 
-import http.client
 import json
 import os
 import time
@@ -11,97 +10,77 @@ import pytest
 from dashboard import pull_parts
 from moodle import ingest
 
-MID = "3453769"
-MOODLE = "https://moodle.bgu.ac.il"
+MID, RUN = "3453769", "12345678"
 
 
 @pytest.fixture
-def downloads(monkeypatch):
-    """תיקיית ההורדות הזמנית של הבדיקות (conftest), ו-7-Zip מדומה: ZIP שהתוכן שלו "cut" קטוע, ובכל ZIP שלם
-    יש שלושה סטודנטים."""
-    d = ingest.downloads_dir()
-
-    def check_zip(p):
-        if p.read_bytes() == b"cut":
-            raise ValueError(f"{p.name} is incomplete")
-    monkeypatch.setattr(ingest, "check_zip", check_zip)
-    monkeypatch.setattr(ingest, "participants_in", lambda p: {"1", "2", "3"})
-    pull_parts._runs.clear()
-    return d
+def downloads():
+    """תיקיית ההורדות הזמנית של הבדיקות (conftest)."""
+    return ingest.downloads_dir()
 
 
-def since_ms():
-    return (time.time() - 1) * 1000
+def summary(d, parts, stage="done", error=None):
+    (d / pull_parts.summary_name(MID, RUN)).write_text(json.dumps(
+        {"cmid": MID, "run": RUN, "stage": stage, "users": 100, "error": error,
+         "parts": [{"size": s, "students": 50, "asked": 50} for s in parts]}), encoding="utf-8")
 
 
-def test_a_part_is_ok_only_after_chrome_finished_and_its_size_held(downloads):
-    since = since_ms()
-    pull_parts.begin(MID)
-    assert pull_parts.check(MID, since, 3, downloads)["status"] == "waiting"  # עוד לא הגיע כלום
-    (downloads / "Unconfirmed 1.crdownload").write_bytes(b"...")
-    zip_path = downloads / f"x-{MID}.zip"
-    zip_path.write_bytes(b"whole")
-    assert pull_parts.check(MID, since, 3, downloads)["status"] == "waiting"  # כרום עוד מוריד
-    (downloads / "Unconfirmed 1.crdownload").unlink()
-    assert pull_parts.check(MID, since, 3, downloads)["status"] == "waiting"  # הגודל נמדד פעם ראשונה
-    r = pull_parts.check(MID, since, 3, downloads)
-    assert r == {"status": "ok", "name": zip_path.name, "participants": 3, "expected": 3}
-    assert pull_parts.status(MID)["ok"] == [zip_path.name]
-    # החלק הבא לא מקבל שוב את אותו ZIP
-    assert pull_parts.check(MID, since, 3, downloads)["status"] == "waiting"
+def no_sleep(_):
+    pass
 
 
-def test_a_cut_off_part_is_marked_broken_and_never_taken(downloads):
-    since = since_ms()
-    pull_parts.begin(MID)
-    (downloads / f"x-{MID}.zip").write_bytes(b"cut")
-    pull_parts.check(MID, since, 50, downloads)
-    r = pull_parts.check(MID, since, 50, downloads)
-    assert r == {"status": "broken", "name": f"{pull_parts.BROKEN_PREFIX}x-{MID}.zip"}
-    assert not (downloads / f"x-{MID}.zip").exists() and (downloads / r["name"]).exists()
-    assert pull_parts.status(MID)["broken"] == [r["name"]]
+def test_parts_are_matched_to_the_summary_by_exact_size(downloads):
+    since = time.time() - 1
+    a, b = downloads / f"x-{MID}.zip", downloads / f"x-{MID} (1).zip"
+    a.write_bytes(b"1" * 10)
+    b.write_bytes(b"2" * 20)
+    (downloads / "x-999.zip").write_bytes(b"3" * 20)  # another assignment
+    summary(downloads, [10, 20])
+    zips, s = pull_parts.wait(MID, RUN, since, downloads, sleep=no_sleep)
+    assert zips == [a, b] and s["users"] == 100
+    assert not (downloads / pull_parts.summary_name(MID, RUN)).exists()
 
 
-def test_an_old_zip_or_another_assignment_is_not_a_part(downloads):
+def test_waits_while_chrome_is_still_writing_a_part(downloads, monkeypatch):
+    since = time.time() - 1
+    (downloads / f"x-{MID}.zip").write_bytes(b"1" * 10)
+    summary(downloads, [10, 20])
+    calls = []
+
+    def later(_):  # the second part lands while we wait
+        calls.append(1)
+        if len(calls) == 2:
+            (downloads / f"x-{MID} (1).zip").write_bytes(b"2" * 20)
+    zips, _ = pull_parts.wait(MID, RUN, since, downloads, sleep=later)
+    assert len(zips) == 2 and len(calls) == 2
+
+
+def test_an_old_zip_of_the_same_size_is_not_a_part(downloads, monkeypatch):
     old = downloads / f"x-{MID}.zip"
-    old.write_bytes(b"whole")
+    old.write_bytes(b"1" * 10)
     os.utime(old, (time.time() - 3600, time.time() - 3600))
-    (downloads / "x-999.zip").write_bytes(b"whole")
-    pull_parts.begin(MID)
-    for _ in range(3):
-        assert pull_parts.check(MID, since_ms(), 3, downloads)["status"] == "waiting"
+    summary(downloads, [10])
+    monkeypatch.setattr(pull_parts, "SETTLE_S", 0)
+    with pytest.raises(pull_parts.PartsError, match="לא כל החלקים"):
+        pull_parts.wait(MID, RUN, time.time() - 1, downloads, sleep=no_sleep)
 
 
-def test_finish_keeps_numbers_only(downloads):
-    pull_parts.begin(MID)
-    pull_parts.finish(MID, "done", "120", "121", "3", "x" * 1000)
-    st = pull_parts.status(MID)
-    assert st["finished"] and (st["users"], st["submitted"], st["parts"]) == (120, 121, 3) and len(st["error"]) == 300
-    pull_parts.finish(MID, "error", "<b>", "", "", "")
-    assert pull_parts.status(MID)["users"] is None and pull_parts.status(MID)["submitted"] is None
+@pytest.mark.parametrize("error, message", [("needs_login", "להתחבר מחדש"), ("no_submissions", "אין עדיין"),
+                                            ("Moodle 503", "Moodle 503")])
+def test_a_run_that_stopped_says_why(downloads, error, message):
+    summary(downloads, [], stage="error", error=error)
+    with pytest.raises(pull_parts.PartsError, match=message):
+        pull_parts.wait(MID, RUN, time.time() - 1, downloads, sleep=no_sleep)
 
 
-def get(port, path, origin=None, method="GET"):
-    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
-    conn.request(method, path, headers={"Host": f"localhost:{port}", **({"Origin": origin} if origin else {})})
-    r = conn.getresponse()
-    return r.status, dict(r.getheaders()), r.read()
+def test_gives_up_when_nothing_changes_and_keeps_the_lock_alive_meanwhile(downloads, monkeypatch):
+    monkeypatch.setattr(pull_parts, "STALL_S", 0.2)
+    alive = []
+    with pytest.raises(pull_parts.PartsError, match="לא הסתיימה בזמן"):
+        pull_parts.wait(MID, RUN, time.time() - 1, downloads, keep_alive=lambda: alive.append(1),
+                        sleep=lambda s: time.sleep(0.05))
+    assert len(alive) > 2
 
 
-def test_moodle_gets_the_script_and_the_part_checks_and_nothing_else(downloads, root, server):
-    status, headers, body = get(server, "/api/pull/parts.js", MOODLE)
-    assert status == 200 and b"__ecsParts" in body and headers.get("Access-Control-Allow-Origin") == MOODLE
-    status, headers, body = get(server, f"/api/pull/zip?mid={MID}&since={since_ms()}&expect=50", MOODLE)
-    assert status == 200 and json.loads(body)["status"] == "waiting" and headers.get("Access-Control-Allow-Origin") == MOODLE
-    status, _, body = get(server, f"/api/pull/finish?mid={MID}&stage=done&users=2&submitted=2&parts=1&error=", MOODLE)
-    assert status == 200 and pull_parts.status(MID)["finished"]
-    for bad in ("/api/pull/zip?mid=1;x", "/api/pull/zip?mid=1&since=soon", "/api/pull/other?mid=1"):
-        assert get(server, bad, MOODLE)[0] in (400, 404)
-    # Chrome שואל לפני שאתר פונה לשרת במחשב (preflight): רק לקריאה
-    status, headers, _ = get(server, "/api/pull/zip", MOODLE, method="OPTIONS")
-    assert status == 204 and headers.get("Access-Control-Allow-Methods") == "GET"
-    # מודל לא מקבל CORS לשאר השרת, ואתר אחר לא מקבל אותו ל-/api/pull/
-    assert "Access-Control-Allow-Origin" not in get(server, "/api/state", MOODLE)[1]
-    assert get(server, "/api/state", MOODLE, method="OPTIONS")[0] == 403
-    assert "Access-Control-Allow-Origin" not in get(server, "/api/pull/parts.js", "https://evil.example")[1]
-    assert get(server, "/api/pull/zip", "https://evil.example", method="OPTIONS")[0] == 403
+def test_run_ids_are_digits_only():
+    assert all(pull_parts.new_run().isdigit() and len(pull_parts.new_run()) == 8 for _ in range(20))

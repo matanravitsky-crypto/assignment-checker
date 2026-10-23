@@ -1,92 +1,107 @@
-"""משיכה בחלקים: מה השרת המקומי עונה לסקריפט שבלשונית של מודל (moodle/parts.js).
+"""משיכה בחלקים: מחכים בתיקיית ההורדות לחלקים שהסקריפט בלשונית של מודל (moodle/parts.js) שומר שם.
 
-הסקריפט מבקש ממודל ZIP לכל חלק של 50 סטודנטים, ואחרי כל חלק שואל כאן (/api/pull/zip) אם ה-ZIP הגיע לתיקיית
-ההורדות שלם ועם מספר הסטודנטים הנכון. ZIP קטוע מקבל את התחילית "BROKEN", כדי שלא ייקלט, והסקריפט מבקש את
-אותם סטודנטים שוב בשני חצאים. בסוף הסקריפט מודיע (/api/pull/finish), והמשיכה (actions.pull) קולטת את כל החלקים.
-
-המצב נשמר בזיכרון, לכל מטלה: מספרים ושמות קבצים בלבד, בלי שמות של סטודנטים.
+הדף של מודל לא יכול לפנות לשרת במחשב (מדיניות האבטחה של מודל חוסמת http://127.0.0.1), ולכן הכל עובר דרך
+תיקיית ההורדות: הסקריפט בודק בעצמו שכל ZIP שלם לפני שהוא שומר אותו, ובסוף שומר קובץ סיכום
+"ECS pull <מזהה מטלה> <מזהה ריצה>.json" עם הגודל וכמה סטודנטים בכל חלק (מספרים בלבד).
+כאן מחכים לקובץ הזה, ומחזירים את ה-ZIPים שהגודל שלהם מתאים לחלקים שבסיכום. 7-Zip בודק אותם שוב ב-ingest.
 """
 from __future__ import annotations
 
+import json
 import re
-import threading
+import secrets
 import time
 from pathlib import Path
+from typing import Callable
 
 from moodle import ingest as moodle_ingest
 
 SCRIPT = Path(__file__).resolve().parents[1] / "moodle" / "parts.js"
-BROKEN_PREFIX = "BROKEN "
-
-_lock = threading.Lock()
-_runs: dict[str, dict] = {}
-
-
-def begin(mid: str) -> None:
-    with _lock:
-        _runs[str(mid)] = {"started": time.time(), "finished": False, "stage": "starting", "ok": [], "broken": [],
-                           "sizes": {}, "users": None, "submitted": None, "parts": 0, "error": ""}
+POLL_S = 5.0  # כל כמה שניות מסתכלים בתיקיית ההורדות
+WAIT_S = 90 * 60  # הכי הרבה שמחכים לכל החלקים (מטלה של 1,000 סטודנטים: 20 חלקים)
+STALL_S = 20 * 60  # בלי שום שינוי בתיקיית ההורדות כל הזמן הזה: הלשונית נסגרה או נתקעה
+SETTLE_S = 3 * 60  # אחרי הסיכום: עד כמה מחכים שכרום יסיים לכתוב את החלקים
 
 
-def status(mid: str) -> dict:
-    with _lock:
-        run = _runs.get(str(mid))
-        return {k: v for k, v in run.items() if k != "sizes"} if run else {}
+class PartsError(Exception):
+    """ההורדה בחלקים לא הסתיימה. ההודעה בעברית, בלי שמות."""
+
+
+def new_run() -> str:
+    """מזהה ריצה: ספרות בלבד, כי הוא נכנס להנחיה של Claude ולשם קובץ הסיכום."""
+    return str(secrets.randbelow(90_000_000) + 10_000_000)
+
+
+def summary_name(mid: str, run: str) -> str:
+    return f"ECS pull {mid} {run}.json"
 
 
 def _zips(mid: str, downloads: Path, since: float) -> list[Path]:
     pattern = re.compile(rf"-{re.escape(str(mid))}( \(\d+\))?$")
+    return [p for p in downloads.glob("*.zip") if pattern.search(p.stem) and moodle_ingest._mtime(p) >= since - 2]
+
+
+def _snapshot(mid: str, downloads: Path, since: float) -> tuple:
+    """מה השתנה בתיקיית ההורדות מאז שהמשיכה התחילה: ZIPים של המטלה והורדות שכרום עוד כותב."""
+    zips = sorted((p.name, p.stat().st_size) for p in _zips(mid, downloads, since) if p.exists())
+    partial = sorted(p.name for p in downloads.glob("*.crdownload") if moodle_ingest._mtime(p) >= since - 2)
+    return tuple(zips), tuple(partial)
+
+
+def match(summary: dict, mid: str, downloads: Path, since: float) -> list[Path] | None:
+    """ה-ZIP של כל חלק שבסיכום, לפי הגודל המדויק שלו, או None כל עוד חסר אחד (כרום עוד כותב)."""
+    free = sorted(_zips(mid, downloads, since), key=moodle_ingest._mtime)
     found = []
-    for p in downloads.glob("*.zip"):
-        try:
-            if pattern.search(p.stem) and not p.name.startswith(BROKEN_PREFIX) and p.stat().st_mtime >= since - 2:
-                found.append(p)
-        except OSError:
-            continue
-    return sorted(found, key=lambda p: p.stat().st_mtime)
+    for part in summary.get("parts") or []:
+        same = [p for p in free if p.exists() and p.stat().st_size == part.get("size")]
+        if not same:
+            return None
+        found.append(same[0])
+        free.remove(same[0])
+    return found
 
 
-def check(mid: str, since_ms: float, expect: int, downloads: Path | None = None) -> dict:
-    """Has the ZIP of the part asked for at `since_ms` arrived whole? {"status": "waiting"|"ok"|"broken", ...}.
-
-    "ok" carries how many students are in it. A ZIP must hold the same size twice in a row before it is tested
-    (Chrome renames it when done, but OneDrive or the antivirus may still hold it)."""
+def wait(mid: str, run: str, since: float, downloads: Path | None = None, keep_alive: Callable[[], None] = lambda: None,
+         sleep: Callable[[float], None] = time.sleep) -> tuple[list[Path], dict]:
+    """מחכה לקובץ הסיכום של הריצה, ומחזיר (ה-ZIPים של החלקים, הסיכום). keep_alive נקרא בכל סיבוב (מחדש את הנעילה)."""
     mid = str(mid)
     downloads = downloads or moodle_ingest.downloads_dir()
-    since = since_ms / 1000
-    with _lock:
-        run = _runs.setdefault(mid, {"started": since, "finished": False, "stage": "downloading", "ok": [], "broken": [],
-                                     "sizes": {}, "users": None, "submitted": None, "parts": 0, "error": ""})
-        seen = set(run["ok"]) | set(run["broken"])
-    if any(moodle_ingest._mtime(p) >= since - 2 for p in downloads.glob("*.crdownload")):
-        return {"status": "waiting"}  # כרום עוד מוריד
-    fresh = [p for p in _zips(mid, downloads, since) if p.name not in seen]
-    if not fresh:
-        return {"status": "waiting"}
-    zip_path = fresh[0]
-    size = zip_path.stat().st_size
-    with _lock:
-        if run["sizes"].get(zip_path.name) != size:
-            run["sizes"][zip_path.name] = size
-            return {"status": "waiting"}
-    try:
-        moodle_ingest.check_zip(zip_path)
-    except ValueError:
-        broken = zip_path.with_name(BROKEN_PREFIX + zip_path.name)
-        zip_path.rename(broken)
-        with _lock:
-            run["broken"].append(broken.name)
-        return {"status": "broken", "name": broken.name}
-    count = len(moodle_ingest.participants_in(zip_path))
-    with _lock:
-        run["ok"].append(zip_path.name)
-    return {"status": "ok", "name": zip_path.name, "participants": count, "expected": expect}
+    path = downloads / summary_name(mid, run)
+    start = last_change = time.monotonic()
+    seen = None
+    summary, summary_at = None, None
+    while True:
+        keep_alive()
+        now = time.monotonic()
+        if summary is None and path.exists():
+            try:
+                summary = json.loads(path.read_text(encoding="utf-8"))
+                summary_at = now
+            except (OSError, ValueError):
+                pass  # כרום עוד כותב אותו
+        if summary is not None:
+            if summary.get("stage") != "done":
+                path.unlink(missing_ok=True)
+                raise PartsError(_stopped(summary.get("error") or ""))
+            zips = match(summary, mid, downloads, since)
+            if zips:
+                path.unlink(missing_ok=True)  # שלנו, בלי נתונים של סטודנטים
+                return zips, summary
+            if now - summary_at > SETTLE_S:
+                raise PartsError("ההורדה בחלקים הסתיימה, אבל לא כל החלקים נמצאו בתיקיית ההורדות. מושכים שוב.")
+        else:
+            snap = _snapshot(mid, downloads, since)
+            if snap != seen:
+                seen, last_change = snap, now
+            if now - start > WAIT_S or now - last_change > STALL_S:
+                raise PartsError("ההורדה בחלקים לא הסתיימה בזמן (אולי הלשונית של מודל נסגרה, או שכרום שואל אם "
+                                 "לאפשר למודל להוריד כמה קבצים: עונים \"אפשר\"). מושכים שוב.")
+        sleep(POLL_S)
 
 
-def finish(mid: str, stage: str, users: str, submitted: str, parts: str, error: str) -> None:
-    def number(v):
-        return int(v) if str(v).isdigit() else None
-    with _lock:
-        run = _runs.setdefault(str(mid), {"started": time.time(), "ok": [], "broken": [], "sizes": {}})
-        run.update({"finished": True, "stage": stage, "users": number(users), "submitted": number(submitted),
-                    "parts": number(parts) or 0, "error": error[:300]})
+def _stopped(error: str) -> str:
+    if error == "needs_login":
+        return "מודל ביקש להתחבר מחדש באמצע ההורדה. מתחברים למודל בכרום ומושכים שוב."
+    if error == "no_submissions":
+        return "במודל אין עדיין אף הגשה במטלה הזו."
+    return f"ההורדה בחלקים נעצרה ({error or 'לא ידוע'}). מושכים שוב."

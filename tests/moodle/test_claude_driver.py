@@ -452,15 +452,19 @@ def test_download_never_raises():
     assert driver(FakeRun()).download({"id": "1; rm"})["status"] == "error"  # an id that is not digits never reaches the prompt
 
 
-def test_download_parts_runs_the_parts_script_from_the_local_server_only():
-    base = "http://127.0.0.1:8765/api/pull/"
+def test_download_parts_puts_the_checked_script_into_the_prompt():
+    """The Moodle page can't reach this computer, so the script goes into the prompt, checked by its sha256 in the page."""
+    import hashlib
     run = FakeRun(cli_output({"status": "started", "message": "started"}))
-    assert driver(run).download_parts(INFO, base) == {"status": "started", "message": "started"}
+    assert driver(run).download_parts(INFO, "12345678") == {"status": "started", "message": "started"}
     (cmd, kwargs), = run.calls
     prompt = cmd[-1]
-    assert GRADING_URL.format(id="3438636") in prompt and f'fetch("{base}parts.js")' in prompt
-    assert 'cmid: "3438636"' in prompt and "action=downloadall" not in prompt
+    script, sha = claude_driver.parts_script()
+    assert sha == hashlib.sha256(script.encode()).hexdigest() and chr(13) not in script
+    assert "String.raw`" + script + "`;" in prompt and f'H !== "{sha}"' in prompt
+    assert 'cmid: "3438636", run: "12345678"' in prompt and GRADING_URL.format(id="3438636") in prompt
+    assert "/api/pull" not in prompt and "action=downloadall" not in prompt  # no call to the local server
     assert cmd[cmd.index("--tools") + 1] == "" and "--chrome" in cmd
-    for bad in ("https://evil.example/api/pull/", 'http://127.0.0.1:8765/api/pull/"); alert(1); ("'):
+    for bad in ("1; alert(1)", "", "12a"):
         run = FakeRun(cli_output({"status": "started", "message": ""}))
         assert driver(run).download_parts(INFO, bad)["status"] == "error" and run.calls == []
