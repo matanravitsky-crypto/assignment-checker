@@ -15,9 +15,10 @@ from moodle import paths
 #   eval(await (await fetch("http://127.0.0.1:8765/api/sync/script.js")).text()); await window.__ecsSyncAll()
 SCRIPT = Path(__file__).resolve().parents[1] / "onedrive" / "sync.js"
 
-# לא מעלים: קבצים זמניים של Windows ו-Office, קבצים חצי כתובים, ומנעולים של משיכה, בדיקה והעלאה
-# (מנעול שעולה לוואן דרייב היה נשאר שם תקוע)
-SKIP = re.compile(r"(^|/)(desktop\.ini|thumbs\.db|~\$[^/]*|[^/]*\.tmp|[^/]* in progress\.txt)$", re.I)
+# לא מעלים: קבצים זמניים של Windows ו-Office, קבצים חצי כתובים, מנעולים של משיכה, בדיקה והעלאה
+# (מנעול שעולה לוואן דרייב היה נשאר שם תקוע), ואף פעם לא ZIP: קובצי ה-ZIP של מודל (עד 2.8GB למטלה, עם השמות
+# של הסטודנטים) נשארים במחשב שהוריד, וקובצי ה-ZIP להחזרה למודל נבנים מחדש בכל הכנה
+SKIP = re.compile(r"(^|/)(desktop\.ini|thumbs\.db|~\$[^/]*|[^/]*\.tmp|[^/]* in progress\.txt|[^/]*\.zip)$", re.I)
 
 
 def courses() -> list[str]:

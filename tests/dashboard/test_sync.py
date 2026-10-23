@@ -37,6 +37,13 @@ def test_lists_every_course_file_but_locks_and_temp_files(data):
     files = {f["path"]: f for f in sync.list_files(COURSE)}
     assert f"{HW}/{paths.TO_GRADE}/0001.pdf" in files and f"{HW}/{paths.KEY}" in files
     assert not any(p.endswith((paths.PULL_LOCK, ".tmp")) for p in files)
+    # ZIP לעולם לא עולה: ה-ZIP של מודל שבתיקיית המטלה (conftest) ו-ZIP להחזרה למודל
+    (data / COURSE / HW / paths.UPLOAD / "Graded - part 01.zip").write_bytes(b"PK")
+    files = {f["path"] for f in sync.list_files(COURSE)}
+    assert not any(p.lower().endswith(".zip") for p in files)
+    with pytest.raises(FileNotFoundError):
+        sync.read_file(COURSE, f"{HW}/{paths.UPLOAD}/Graded - part 01.zip")
+    files = {f["path"]: f for f in sync.list_files(COURSE)}
     f = files[f"{HW}/{paths.TO_GRADE}/0001.pdf"]
     assert f["size"] == (data / COURSE / f["path"]).stat().st_size and f["mtime"] > 1_600_000_000_000
 
