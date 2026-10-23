@@ -24,12 +24,16 @@ from urllib.parse import parse_qs, urlparse
 
 from grading import grade as grading
 
-from . import actions, folder_view, scheduler, settings as cfg
+from . import actions, folder_view, scheduler, settings as cfg, sync
 
 WEBSITE = cfg.REPO_DIR / "website"
 HEADER = "X-Assignment-Checker"
 # האתר הציבורי ב-Vercel: רק הכתובת הזו בדיוק (לא כתובות תצוגה מקדימה של Vercel)
 SITE_ORIGINS = ("https://bodek-hacham.vercel.app",)
+# הוואן דרייב של המרצה: סקריפט בלשונית שלו (onedrive/sync.js) קורא מכאן את קובצי הקורס ומעלה רק מה שהשתנה.
+# המקור הזה מקבל CORS רק לכתובות /api/sync/, ורק לקריאה
+SYNC_ORIGIN = "https://bgu365-my.sharepoint.com"
+SYNC_PREFIX = "/api/sync/"
 _lock = threading.Lock()  # משיכה אחת בכל פעם
 FILE_TYPES = (".pdf", ".jpg", ".jpeg", ".png")  # מה אפשר להוריד מ-"1 - Submissions to grade"
 STALE_UPLOAD = "הקבצים השתנו מאז ההכנה. צריך ללחוץ שוב על 'העלה למודל'."
@@ -69,7 +73,7 @@ class Handler(SimpleHTTPRequestHandler):
         # האתר הציבורי קורא את התשובות (CORS). אתרים אחרים לא
         headers = getattr(self, "headers", None)
         origin = headers.get("Origin") if headers else None
-        if origin in SITE_ORIGINS:
+        if origin in SITE_ORIGINS or (origin == SYNC_ORIGIN and self.path.startswith(SYNC_PREFIX)):
             self.send_header("Access-Control-Allow-Origin", origin)
             self.send_header("Vary", "Origin")
         if not urlparse(getattr(self, "path", "") or "").path.startswith("/api/"):
@@ -79,10 +83,12 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_OPTIONS(self):
         """בקשת ה-preflight של הדפדפן לפני שהאתר הציבורי פונה לשרת (כולל Private Network Access של Chrome)."""
-        if not self._host_ok() or self.headers.get("Origin") not in SITE_ORIGINS:
+        origin = self.headers.get("Origin")
+        sync = origin == SYNC_ORIGIN and self.path.startswith(SYNC_PREFIX)
+        if not self._host_ok() or (origin not in SITE_ORIGINS and not sync):
             return self.send_error(HTTPStatus.FORBIDDEN)
         self.send_response(HTTPStatus.NO_CONTENT)
-        self.send_header("Access-Control-Allow-Methods", "GET, POST")
+        self.send_header("Access-Control-Allow-Methods", "GET" if sync else "GET, POST")
         self.send_header("Access-Control-Allow-Headers", f"Content-Type, {HEADER}")
         self.send_header("Access-Control-Allow-Private-Network", "true")
         self.send_header("Access-Control-Max-Age", "600")
@@ -222,9 +228,46 @@ class Handler(SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(data)
             return
+        if url.path.startswith(SYNC_PREFIX):
+            return self._sync(url)
         if url.path.startswith("/api/"):
             return self.send_error(HTTPStatus.NOT_FOUND)
         return super().do_GET()
+
+    def _sync(self, url) -> None:
+        """בשביל onedrive/sync.js בלשונית של הוואן דרייב: אילו קורסים יש, אילו קבצים יש בקורס, והקובץ עצמו.
+
+        הכל מתוך תיקיית הנתונים במחשב הזה (ASSIGNMENT_DATA, ברירת מחדל ~/Exercise Checking System), שממנה
+        מעלים לוואן דרייב. רק קריאה, ורק מתוך תיקיית קורס. Moodle originals, עם השמות, לא שם ולא יוצא מכאן."""
+        query = parse_qs(url.query)
+        try:
+            if url.path == SYNC_PREFIX + "courses":
+                return self._json({"courses": sync.courses()})
+            if url.path == SYNC_PREFIX + "script.js":
+                # הסקריפט עצמו, כדי שהלשונית תטען אותו מכאן בשורה אחת (קוד מהריפו, בלי נתונים)
+                data = sync.SCRIPT.read_bytes()
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "text/javascript; charset=utf-8")
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(data)
+                return
+            course = query.get("course", [""])[0]
+            if url.path == SYNC_PREFIX + "list":
+                return self._json({"course": course, "files": sync.list_files(course)})
+            if url.path == SYNC_PREFIX + "file":
+                data = sync.read_file(course, query.get("path", [""])[0])
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(data)
+                return
+        except FileNotFoundError:
+            return self.send_error(HTTPStatus.NOT_FOUND)
+        return self.send_error(HTTPStatus.NOT_FOUND)
 
     # ---------- POST ----------
     def do_POST(self):
