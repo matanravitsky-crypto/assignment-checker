@@ -1,16 +1,23 @@
-"""משיכה מתוזמנת: מיד אחרי שההגשה נגמרת, המערכת מושכת את ההגשות מעצמה, בלי ללחוץ על כלום.
+"""משיכה מתוזמנת: אחרי שההגשה נגמרת, המערכת מושכת את ההגשות מעצמה, בלי ללחוץ על כלום.
 
 הזמן והיום:
-- היום הוא יום המועד של המטלה (`due` ב-`Assignment details.json`), לפי השעון של המחשב. המשיכה היא בלילה שאחריו,
-  ב-`SCHEDULE_PULL_TIME` ב-.env (ברירת מחדל 00:05), כדי שגם מי שהגיש ב-23:59 ייכנס.
-- חצי שעה לפני (`SCHEDULE_WARN_MIN`, כלומר 23:35 ביום המועד) יוצאת התראה בווינדוס, ומאותו רגע המחשב לא נרדם
-  עד שהמשיכה נגמרת.
-- מחשב שנדלק אחרי השעה (עד שלוש שעות) מושך מיד. אחרי זה לא מושכים לבד: לוחצים "משוך הגשות".
-- כל מטלה נמשכת פעם אחת. אם המשיכה נכשלה, ההתראה אומרת למה ואין ניסיון חוזר לבד.
+- היום הוא יום המועד של המטלה (`due` ב-`Assignment details.json`), לפי השעון של המחשב. כל משיכה קוראת אותו ממודל
+  ושומרת אותו (actions._due_from_moodle), כך שאחרי המשיכה הראשונה אף אחד לא מקליד אותו.
+- המשיכה הראשונה היא בלילה שאחריו, ב-`SCHEDULE_PULL_TIME` ב-.env (ברירת מחדל 00:05), כדי שגם מי שהגיש ב-23:59 ייכנס.
+  היא מושכת את כולם. חצי שעה לפני (`SCHEDULE_WARN_MIN`) יוצאת התראה בווינדוס, ומאותו רגע המחשב לא נרדם עד שהיא נגמרת.
+- אחריה, באותה שעה בכל לילה במשך `SCHEDULE_REPULL_DAYS` לילות (ברירת מחדל 7): משיכה חוזרת של מה שהשתנה בלבד
+  (הגשות מאוחרות, הארכות, החלפת קובץ). כמה דקות, בלי התראה, חוץ מכשנכנסו הגשות חדשות או כשהיא נכשלה.
+- מחשב שנדלק אחרי השעה (עד שלוש שעות) מושך מיד. אחרי זה לא מושכים לבד באותו לילה.
+- משיכה שנכשלה (מודל לא ענה, כרום לא התחבר) מנסה שוב אחרי חצי שעה, עד 3 פעמים בלילה. ההתראה אומרת למה.
 - שורה `SCHEDULE_PULL=off` ב-.env מכבה את כל זה.
 
-המשיכה עצמה היא `actions.pull`, אותה אחת של הכפתור, עם אותן נעילות ובדיקות. ה-Claude שבכרום
-צריך שכרום יהיה פתוח ומחובר למודל: ההתראה אומרת את זה.
+מי מושך: רק המחשב של מי שלקח את "משיכה" של המטלה באתר (claims.task_owners; המשיכה הראשונה בכפתור רושמת את
+מי שלחץ), ורק כשהתיקייה המשותפת מסונכרנת בו (paths.in_shared_folder). כך שני מחשבים מסונכרנים לא מושכים את אותה
+מטלה באותו לילה, לפני ש-OneDrive הספיק להעביר ביניהם את הנעילה ואת טבלת המפתח. מטלה שאף אחד לא לקח את המשיכה
+שלה לא נמשכת לבד.
+
+המשיכה עצמה היא `actions.pull`, אותה אחת של הכפתור, עם אותן נעילות ובדיקות. כרום סגור נפתח לבד
+(claude_driver.open_chrome), אבל צריך שיהיה מחובר למודל ולתוסף של Claude: ההתראה אומרת את זה.
 """
 from __future__ import annotations
 
@@ -22,13 +29,15 @@ import threading
 from datetime import date, datetime, time as dtime, timedelta
 from pathlib import Path
 
-from moodle import paths
+from moodle import claims, paths
 
 from . import actions, folder_view
 
 STATE_FILE = "Scheduled pulls.json"  # בתיקיית העבודה המקומית: שייך למחשב הזה
 CATCH_UP = timedelta(hours=3)
 TICK_S = 30
+TRIES = 3  # ניסיונות בלילה אחד
+RETRY_AFTER = timedelta(minutes=30)
 
 _ES_CONTINUOUS, _ES_SYSTEM_REQUIRED = 0x80000000, 0x00000001
 
@@ -52,6 +61,13 @@ def warn_minutes() -> int:
         return 30
 
 
+def repull_days() -> int:
+    try:
+        return min(30, max(0, int(os.environ.get("SCHEDULE_REPULL_DAYS", "7"))))
+    except ValueError:
+        return 7
+
+
 def due_day(details: dict) -> date | None:
     raw = details.get("due")
     if not raw:
@@ -73,6 +89,19 @@ def scheduled(root: Path) -> list[tuple[str, str, str, date]]:
             if day:
                 out.append((course_dir.name, a.dir.name, a.title, day))
     return out
+
+
+def puller(root: Path, course: str, assignment: str) -> str | None:
+    """מי לקח את המשיכה של המטלה (השם שלו בצוות), או None."""
+    owner = claims.task_owners(root / course).get(claims.task_key(assignment, "pull"))
+    return owner["who"] if owner else None
+
+
+def mine(root: Path, course: str, assignment: str) -> bool:
+    """המחשב הזה מושך את המטלה בלילה: המשיכה שלה רשומה עליי, והתיקייה המשותפת מסונכרנת כאן."""
+    if not paths.in_shared_folder(root) and os.environ.get("MOODLE_DRIVER") != "simulate":
+        return False
+    return puller(root, course, assignment) == claims.me()
 
 
 def _state_path() -> Path:
@@ -115,34 +144,56 @@ def keep_awake(on: bool) -> None:
         ctypes.windll.kernel32.SetThreadExecutionState(_ES_CONTINUOUS | (_ES_SYSTEM_REQUIRED if on else 0))
 
 
-def tick(root: Path, now: datetime, state: dict, run_pull) -> bool:
-    """צעד אחד של התזמון. מחזיר אם המחשב צריך להישאר ער. `run_pull(course, assignment)` מושך ומחזיר טקסט תוצאה."""
+def tick(root: Path, now: datetime, state: dict, run_pull, is_mine=mine) -> bool:
+    """צעד אחד של התזמון. מחזיר אם המחשב צריך להישאר ער.
+
+    `run_pull(course, assignment, full)` מושך ומחזיר {"text": תוצאה, "new": כמה הגשות חדשות}; full בלילה הראשון."""
     awake = False
     for course, assignment, title, day in scheduled(root):
-        at = datetime.combine(day + timedelta(days=1), pull_time())
-        warn_at = at - timedelta(minutes=warn_minutes())
-        key = f"{course}/{assignment}@{day.isoformat()}"
-        job = state.setdefault(key, {})
-        if job.get("done"):
+        if not is_mine(root, course, assignment):
             continue
-        if now < warn_at or now > at + CATCH_UP:
-            continue
-        awake = True
-        if not job.get("warned") and now < at:
-            notify("בודק חכם: משיכה ב-" + at.strftime("%H:%M"),
-                   f"{title}: ההגשה נגמרה. משאירים את המחשב דלוק, וכרום פתוח ומחובר למודל.")
-            job["warned"] = now.isoformat(timespec="seconds")
+        for k in range(repull_days() + 1):
+            night = day + timedelta(days=1 + k)
+            first = k == 0
+            at = datetime.combine(night, pull_time())
+            warn_at = at - timedelta(minutes=warn_minutes()) if first else at
+            if now < warn_at or now > at + CATCH_UP:
+                continue
+            job = state.setdefault(f"{course}/{assignment}@{night.isoformat()}", {})
+            if job.get("done"):
+                continue
+            awake = True
+            if first and not job.get("warned") and now < at:
+                notify("בודק חכם: משיכה ב-" + at.strftime("%H:%M"),
+                       f"{title}: ההגשה נגמרה. משאירים את המחשב דלוק, וכרום מחובר למודל.")
+                job["warned"] = now.isoformat(timespec="seconds")
+                _save(state)
+            if now < at or (job.get("retry_at") and now < datetime.fromisoformat(job["retry_at"])):
+                continue
+            # לפני המשיכה: קריסה באמצע לא תמשוך שוב ושוב, והניסיון הבא רק אחרי חצי שעה
+            job["tries"] = job.get("tries", 0) + 1
+            job["retry_at"] = (now + RETRY_AFTER).isoformat(timespec="seconds")
             _save(state)
-        if now >= at:
-            job["done"] = now.isoformat(timespec="seconds")  # לפני המשיכה: קריסה באמצע לא תמשוך שוב ושוב
-            _save(state)
-            notify("בודק חכם: מתחילה משיכה", f"{title}: מושכים עכשיו ממודל.")
+            if first:
+                notify("בודק חכם: מתחילה משיכה", f"{title}: מושכים עכשיו ממודל.")
             try:
-                job["result"] = run_pull(course, assignment)
+                res = run_pull(course, assignment, first)
             except Exception as e:  # noqa: BLE001 - מוצג בהתראה
                 job["result"] = f"נכשלה: {e}"
+                if job["tries"] < TRIES:
+                    notify("בודק חכם: " + title,
+                           f"המשיכה נכשלה ({e}). מנסה שוב ב-{(now + RETRY_AFTER):%H:%M}.")
+                else:
+                    job["done"] = now.isoformat(timespec="seconds")
+                    notify("בודק חכם: " + title,
+                           f"המשיכה נכשלה {TRIES} פעמים ({e}). לוחצים \"משוך הגשות\" באתר כשאפשר.")
+                _save(state)
+                continue
+            job["done"] = now.isoformat(timespec="seconds")
+            job["result"] = res["text"]
             _save(state)
-            notify("בודק חכם: " + title, job["result"])
+            if first or res.get("new"):
+                notify("בודק חכם: " + title, res["text"])
     return awake
 
 
@@ -151,13 +202,13 @@ def start(lock: threading.Lock) -> None:
     if not enabled():
         return
 
-    def run_pull(course: str, assignment: str) -> str:
+    def run_pull(course: str, assignment: str, full: bool) -> dict:
         root, err = actions.root_info()
         if not root:
             raise RuntimeError(err)
         with lock:
-            rep = actions.pull(root, course, assignment)
-        return "המשיכה הסתיימה: " + rep["summary"]
+            rep = actions.pull(root, course, assignment, full=full)
+        return {"text": "המשיכה הסתיימה: " + rep["summary"], "new": rep["result"]["new"]}
 
     def loop() -> None:
         state, awake = _load(), False

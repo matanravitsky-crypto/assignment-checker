@@ -34,10 +34,12 @@ and Claude Code is logged in. Nothing here is run by the tests: they give the dr
 
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 from moodle import upload_log
@@ -143,7 +145,8 @@ Steps:
    return "error" with the message "folders option is off". null (not there): go on.
 3. On that same page, run the script below with the javascript tool, copied exactly, character for character (the page checks
    that it is exact before it runs). It downloads the submissions in parts in the background and answers at once with
-   {{"users": ..., "parts": ...}}. Do not run it twice, and never navigate away from the page or close the tab: the download
+   {{"users": ..., "changed": ..., "parts": ...}} ("parts" is 0 when no submission changed since the last pull: go on to
+   step 4 all the same). Do not run it twice, and never navigate away from the page or close the tab: the download
    stops if the page goes away. If it answers {{"error": ...}} or throws, return "error" with that text.
 4. Wait on the same page until the download is done: run this with the javascript tool, again and again (each run waits 20 seconds),
    until "state" is "saved" or "error". It takes about 15 seconds per part, at most {wait_minutes} minutes in all.
@@ -157,12 +160,14 @@ The script:
 """
 
 
-def parts_script(mid: str) -> tuple[str, str]:
-    """The parts script for this assignment, and its SHA-256: (text, hex).
+def parts_script(mid: str, since_ms: int = 0) -> tuple[str, str]:
+    """The parts script for this assignment, and its SHA-256: (text, hex). `since_ms`: only the students whose
+    submission changed since then (milliseconds since 1970; 0 = everyone).
 
     Comment lines are left out (less for Claude to copy), line ends are LF. It goes into String.raw`...` in the
     page, so it may hold no backtick and no "${"."""
-    lines = PARTS_SCRIPT.read_text(encoding="utf-8").replace("\r\n", "\n").replace("__ASSIGNMENT_ID__", mid).split("\n")
+    lines = PARTS_SCRIPT.read_text(encoding="utf-8").replace("\r\n", "\n").replace("__ASSIGNMENT_ID__", mid) \
+        .replace("__SINCE__", str(max(0, int(since_ms)))).split("\n")
     text = "\n".join(line for line in lines if not line.lstrip().startswith("//")).strip()
     if "`" in text or "${" in text:
         raise ValueError("download_parts.js may not hold a backtick or ${: it goes into String.raw")
@@ -179,9 +184,10 @@ await (0, eval)(T);"""
 
 
 def download_prompt(info: dict) -> str:
-    """DOWNLOAD_PROMPT for this assignment, with the checked parts script (its braces stay out of str.format)."""
+    """DOWNLOAD_PROMPT for this assignment, with the checked parts script (its braces stay out of str.format).
+    `info["since"]`: download only what changed since then (milliseconds since 1970), see download_parts.js."""
     mid = assignment_id(info)
-    script, sha = parts_script(mid)
+    script, sha = parts_script(mid, int(info.get("since") or 0))
     return DOWNLOAD_PROMPT.format(grading_url=GRADING_URL.format(id=mid), home_url=HOME_URL, assignment_id=mid,
                                   title=info.get("title") or info.get("name") or "",
                                   wait_minutes=round(DOWNLOAD_TIMEOUT_S / 60) - 2) + \
@@ -210,6 +216,41 @@ def find_claude() -> str | None:
         if candidate.is_file():
             return str(candidate)
     return None
+
+
+CHROME_PATHS = (r"%ProgramFiles%\Google\Chrome\Application\chrome.exe",
+                r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe",
+                r"%LocalAppData%\Google\Chrome\Application\chrome.exe")
+CHROME_START_S = 20  # Claude in Chrome's extension connects a few seconds after Chrome opens
+
+
+def chrome_running(run=subprocess.run) -> bool:
+    """Is Chrome open on this computer? Windows only (elsewhere: we can't tell, so yes)."""
+    if os.name != "nt":
+        return True
+    try:
+        out = run(["tasklist", "/FI", "IMAGENAME eq chrome.exe", "/NH"], capture_output=True, text=True, timeout=15,
+                  creationflags=0x08000000).stdout or ""
+    except (OSError, subprocess.SubprocessError):
+        return True  # can't tell: let the run find out
+    return "chrome.exe" in out.lower()
+
+
+def open_chrome(run=subprocess.run, popen=subprocess.Popen, sleep=time.sleep) -> bool:
+    """Open Chrome on Moodle's home page when it is closed (the night pull: nobody is at the computer), and give the
+    Claude extension time to connect. The user's own Chrome, with their own profile and Moodle session; opening the
+    home page also renews the session (SSO). True if Chrome was opened."""
+    if chrome_running(run):
+        return False
+    exe = next((p for p in (os.path.expandvars(c) for c in CHROME_PATHS) if os.path.isfile(p)), None)
+    if not exe:
+        return False
+    try:
+        popen([exe, HOME_URL], creationflags=0x00000008)  # DETACHED_PROCESS: Chrome outlives the dashboard
+    except OSError:
+        return False
+    sleep(CHROME_START_S)
+    return True
 
 
 def assignment_id(info: dict) -> str:
