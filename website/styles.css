@@ -153,6 +153,8 @@ main {
 .btn.secondary { background: var(--sheet); border-color: var(--rule-strong); color: var(--ink); }
 .btn.secondary:hover { border-color: var(--blue); color: var(--blue); }
 .btn.ghost { background: none; color: var(--ink-2); padding: 8px; }
+.btn.danger { background: var(--sheet); border-color: var(--red); color: var(--red); }
+.btn.danger:hover { background: var(--red-soft); }
 .btn.ghost:hover { background: var(--sheet-2); color: var(--ink); }
 .btn.small { padding: 6px 12px; font-size: 13px; }
 .btn.lg { padding: 12px 22px; font-size: 15px; }

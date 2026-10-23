@@ -254,6 +254,8 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json({"error": str(e)}, HTTPStatus.CONFLICT)
         if url.path == "/api/upload/stop":
             return self._json(actions.stop_send())
+        if url.path == "/api/grade/stop":
+            return self._json(actions.stop_grading())
         if url.path in ("/api/moodle/check", "/api/ready/check"):
             course, assignment = body.get("course"), body.get("assignment")
             if not course or not assignment:

@@ -758,9 +758,13 @@ class GradeReport:
     skipped: list[str] = field(default_factory=list)    # כבר אושרו, ולכן לא נבדקו שוב
     failed: dict[str, str] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
+    stopped: list[str] = field(default_factory=list)    # לא נבדקו כי הבדיקה נעצרה (כפתור, או שנגמרו הטוקנים)
+    stop_reason: str = ""
 
     def summary(self) -> str:
         parts = [f"נבדקו {len(self.graded)} מתוך {self.total}"]
+        if self.stopped:
+            parts.append(f"נעצרה: {len(self.stopped)} לא נבדקו" + (f" ({self.stop_reason})" if self.stop_reason else ""))
         if self.review:
             parts.append(f"{len(self.review)} לבדיקה ידנית")
         if self.skipped:
@@ -779,10 +783,19 @@ def grade_one(pdf: bytes, ctx: Context, ask: Ask, model: str = DEFAULT_MODEL, na
     return g, mark_pdf(pdf, g, ctx)
 
 
+class Stopped(Exception):
+    """הבדיקה נעצרה לפני שההגשה הזו נשלחה ל-Claude."""
+
+
 def grade_assignment(assignment_dir: Path, numbers: list[str] | None = None, *, ask: Ask | None = None,
                      model: str = DEFAULT_MODEL, parallel: int = DEFAULT_PARALLEL, instructions: str = "",
-                     send_solution: bool = True, on_progress: Callable[[str, str], None] | None = None) -> GradeReport:
-    """בודק הגשות של מטלה. numbers=None: כל מה שעוד לא נבדק. on_progress(number, "graded"/"failed"/"skipped")."""
+                     send_solution: bool = True, on_progress: Callable[[str, str], None] | None = None,
+                     stop: threading.Event | None = None) -> GradeReport:
+    """בודק הגשות של מטלה. numbers=None: כל מה שעוד לא נבדק. on_progress(number, "graded"/"failed"/"skipped").
+
+    stop: כשהוא מסומן, הגשות שעוד לא נשלחו ל-Claude לא נשלחות (rep.stopped), ואלה שבאמצע מסתיימות ונשמרות.
+    כשנגמרת המכסה של Claude הבדיקה נעצרת לבד באותה דרך, ואחרי שמה שבאמצע נשמר זורקת ClaudeLimit."""
+    stop = stop or threading.Event()
     if ask is None:
         ask = claude_ask()
     rep = GradeReport()
@@ -808,12 +821,23 @@ def grade_assignment(assignment_dir: Path, numbers: list[str] | None = None, *, 
     marked.mkdir(exist_ok=True)
 
     files = submission_files(assignment_dir)
+    limit: list[str] = []  # הבדיקה נעצרה כי נגמרה המכסה של Claude: ההודעה
 
     def work(n: str) -> tuple[str, Graded, bytes]:
+        if stop.is_set():
+            raise Stopped()
         pdf, skipped = submission_pdf(files[n])
         if not pdf:
             raise GradingError(f"אין בהגשה קובץ שאפשר לבדוק ({', '.join(skipped)}).")
-        g, out = grade_one(pdf, ctx, ask, model, names.get(n))
+        try:
+            g, out = grade_one(pdf, ctx, ask, model, names.get(n))
+        except Exception as e:
+            if is_limit(str(e)):
+                # נגמרה המכסה: עוצרים מיד, לפני שההגשה הבאה נשלחת. העבודה הזו לא "נכשלה", היא עוד לא נבדקה
+                limit.append(str(e))
+                stop.set()
+                raise Stopped() from e
+            raise
         if skipped:
             g.review = " ".join(filter(None, [g.review, f"קבצים שלא נבדקו: {', '.join(skipped)}."]))
         return n, g, out
@@ -847,14 +871,10 @@ def grade_assignment(assignment_dir: Path, numbers: list[str] | None = None, *, 
                 for f in futures:
                     f.cancel()
                 raise
-            except Exception as e:
-                if is_limit(str(e)):  # נגמרה המכסה: עוצרים. מה שלא נבדק נשאר לבדיקה, לא לבדיקה הידנית
-                    for f in futures:
-                        f.cancel()
-                    done = len(rep.graded)
-                    raise ClaudeLimit(f"Claude הגיע למגבלת השימוש, אז הבדיקה נעצרה אחרי {done} עבודות. "
-                                      f"העבודות שלא נבדקו לא סומנו כנכשלות: אפשר להמשיך כשהמכסה מתחדשת. ({e})") from e
-                # עבודה אחת שנכשלה לא עוצרת את השאר
+            except Stopped:
+                rep.stopped.append(n)
+                continue
+            except Exception as e:  # עבודה אחת שנכשלה לא עוצרת את השאר
                 rep.failed[n] = str(e)
                 failed(n, str(e))
                 on_progress and on_progress(n, "failed")
@@ -870,6 +890,12 @@ def grade_assignment(assignment_dir: Path, numbers: list[str] | None = None, *, 
 
     rep.graded.sort()
     rep.review.sort()
+    rep.stopped.sort()
+    if limit:  # מה שכבר היה אצל Claude נשמר; את השאר אפשר להמשיך כשהמכסה מתחדשת
+        raise ClaudeLimit(f"Claude הגיע למגבלת השימוש, אז הבדיקה נעצרה אחרי {len(rep.graded)} עבודות. "
+                          f"העבודות שלא נבדקו לא סומנו כנכשלות: אפשר להמשיך כשהמכסה מתחדשת. ({limit[0]})")
+    if rep.stopped:
+        rep.stop_reason = "עצרת את הבדיקה"
     return rep
 
 
