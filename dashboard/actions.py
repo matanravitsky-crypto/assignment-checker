@@ -489,10 +489,21 @@ class GradeJob:
     error: str = ""
     started_at: str = ""
     finished_at: str = ""
+    stopping: bool = False  # ביקשו לעצור: הגשות שעוד לא נשלחו ל-Claude לא יישלחו
 
 
 _job = GradeJob()
 _job_lock = threading.Lock()
+_stop = threading.Event()  # הדגל שהבדיקה שרצה בודקת לפני כל הגשה
+
+
+def stop_grading() -> dict:
+    """עוצר את הבדיקה שרצה: מה שכבר נשלח ל-Claude מסתיים ונשמר, והשאר נשאר "ממתינה לבדיקה"."""
+    with _job_lock:
+        if _job.running:
+            _job.stopping = True
+            _stop.set()
+    return grade_status()
 
 
 def grade_status() -> dict:
@@ -515,6 +526,7 @@ def start_grading(root: Path, course: str, assignment: str, numbers: list[str] |
         _job = GradeJob(course, assignment, todo, running=bool(todo),
                         started_at=datetime.now().isoformat(timespec="seconds"))
         job = _job
+        _stop.clear()
     if not todo:
         job.summary = "אין הגשות שמחכות לבדיקה."
         job.finished_at = job.started_at
@@ -526,7 +538,7 @@ def start_grading(root: Path, course: str, assignment: str, numbers: list[str] |
 
     def run() -> None:
         try:
-            rep = grading.grade_assignment(a.dir, todo, ask=ask, on_progress=progress, **opts)
+            rep = grading.grade_assignment(a.dir, todo, ask=ask, on_progress=progress, stop=_stop, **opts)
             job.report, job.summary = asdict(rep), rep.summary()
         except (grading.NoApiKey, grading.ClaudeLimit) as e:
             job.error = str(e)

@@ -111,6 +111,7 @@
     pen: '<svg viewBox="0 0 24 24"><path d="M4 20l4-1 11-11-3-3L5 16z"/></svg>',
     warn: '<svg viewBox="0 0 24 24"><path d="M12 4l9 16H3z"/><path d="M12 10v4M12 17v.5"/></svg>',
     clock: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7v5l3 2"/></svg>',
+    stop: '<svg viewBox="0 0 24 24"><rect x="6.5" y="6.5" width="11" height="11" rx="2"/></svg>',
     download: '<svg viewBox="0 0 24 24"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>',
     eye: '<svg viewBox="0 0 24 24"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.8"/></svg>',
     hand: '<svg viewBox="0 0 24 24"><path d="M5 19c2-1 3-3 3-5V7a1.5 1.5 0 0 1 3 0v4m0-6a1.5 1.5 0 0 1 3 0v6m0-5a1.5 1.5 0 0 1 3 0v6m0-3a1.5 1.5 0 0 1 3 0v4c0 4-3 7-7 7h-2"/></svg>',
@@ -266,7 +267,10 @@
     }
     const icon = spinning ? ICON.spin : ICON[stage === "ret" ? "ret" : stage];
     const why = LOCAL.on && stage === "grade" && !LOCAL.health?.claude ? ` title="${esc(NO_KEY)}"` : "";
-    return `<button class="btn ${primary ? "primary" : "secondary"} ${big ? "lg" : ""}" data-run="${stage}" ${disabled ? "disabled" : ""}${why}>${icon}${text}</button>`;
+    // בזמן בדיקה: כפתור עצירה. מה שכבר נשלח ל-Claude מסתיים ונשמר, והשאר נשאר "ממתינה לבדיקה"
+    const stopBtn = mine && stage === "grade" ? `<button class="btn danger ${big ? "lg" : ""}" data-act="grade-stop" ${run.stopping ? "disabled" : ""}
+      title="העבודות שכבר נשלחו ל-Claude יסתיימו ויישמרו. השאר יחכו ללחיצה הבאה על 'בדוק'">${run.stopping ? ICON.spin : ICON.stop}${run.stopping ? "עוצר…" : "עצור בדיקה"}</button>` : "";
+    return `<button class="btn ${primary ? "primary" : "secondary"} ${big ? "lg" : ""}" data-run="${stage}" ${disabled ? "disabled" : ""}${why}>${icon}${text}</button>${stopBtn}`;
   }
 
   function stageState(stage) {
@@ -2060,6 +2064,7 @@
       const a = act.dataset.act, id = act.dataset.id;
       if (a === "close") closeDrawer();
       if (a === "grade-one") gradeOne(id);
+      if (a === "grade-stop") stopLocalGrade();
       if (a === "open-folder") openFolder("folder");
       if (a === "open-inbox") openFolder("inbox");
       if (a === "open-upload") openFolder("upload");
@@ -2273,6 +2278,13 @@
       LOCAL.health = { ...LOCAL.health, ...(health || {}), root: data.root, claude: data.claude, claudeVia: data.claudeVia };
       if (health?.checking) followHealth();
       if (!LOCAL.polling) LOCAL.sending = data.sending || null;
+      // בדיקה שרצה כשהדף נטען: מציגים את ההתקדמות ואת כפתור העצירה
+      const g = data.grading;
+      const gA = g?.running && D.assignments.find((a) => a.courseFolder === g.course && a.folder === g.assignment);
+      if (gA && !LOCAL.gradeFollow && !state.run[gA.id]) {
+        const run = (state.run[gA.id] = { stage: "grade", steps: STAGES.grade.steps.map((_, i) => (i === 0 ? "done" : i === 1 ? "running" : "pending")) });
+        setTimeout(() => followGrade(gA, run), 0);
+      }
       if (!D.assignments.some((a) => a.id === state.assignmentId)) {
         const first = D.assignments.find((a) => a.subs.length) || D.assignments[0];
         state.assignmentId = first?.id;
@@ -2386,25 +2398,53 @@
         model: c.model, parallel: c.parallel, sendSolution: c.sendSolution, instructions: state.instr.grade,
       }) });
       run.steps[0] = "done"; run.steps[1] = "running";
-      let job;
-      for (;;) {
-        await new Promise((r) => setTimeout(r, 1500));
-        job = await api("api/grade");
-        const done = Object.keys(job.done || {}).length;
-        run.progress = `נבדקו ${done} מתוך ${job.total}…`;
-        if (done) { run.steps[1] = "done"; run.steps[2] = "running"; }
-        render();
-        if (!job.running) break;
-      }
-      delete state.run[A.id];
-      await loadLocal();
-      refreshDrawer();
-      const failed = Object.keys(job.report?.failed || {}).length;
-      toast(job.error || `הבדיקה הסתיימה: ${job.summary}`, job.error || failed ? ICON.warn : ICON.check);
+      await followGrade(A, run);
     } catch (e) {
       delete state.run[A.id];
       await loadLocal();
       refreshDrawer();
+      toast(e.message, ICON.warn);
+    }
+  }
+
+  // שואל את השרת על הבדיקה שרצה עד שהיא נגמרת. גם בדיקה שהתחילה לפני שהדף נטען (ואז אפשר לעצור אותה מכאן)
+  async function followGrade(A, run) {
+    if (LOCAL.gradeFollow) return;
+    LOCAL.gradeFollow = true;
+    let job;
+    try {
+      for (;;) {
+        await new Promise((r) => setTimeout(r, 1500));
+        job = await api("api/grade");
+        const done = Object.keys(job.done || {}).length;
+        run.stopping = !!job.stopping;
+        run.progress = job.stopping ? `עוצר… (נבדקו ${done})` : `נבדקו ${done} מתוך ${job.total}…`;
+        if (done) { run.steps[1] = "done"; run.steps[2] = "running"; }
+        render();
+        if (!job.running) break;
+      }
+    } finally {
+      LOCAL.gradeFollow = false;
+      delete state.run[A.id];
+    }
+    await loadLocal();
+    refreshDrawer();
+    const failed = Object.keys(job.report?.failed || {}).length, stopped = (job.report?.stopped || []).length;
+    toast(job.error || `${stopped ? "הבדיקה נעצרה" : "הבדיקה הסתיימה"}: ${job.summary}`, job.error || failed || stopped ? ICON.warn : ICON.check);
+  }
+
+  async function stopLocalGrade() {
+    const A = cur(), run = A && state.run[A.id];
+    if (!run || run.stage !== "grade" || run.stopping) return;
+    run.stopping = true;
+    run.progress = "עוצר…";
+    render();
+    try {
+      await api("api/grade/stop", { method: "POST", body: "{}" });
+      toast("הבדיקה נעצרת: העבודות שכבר נשלחו ל-Claude יסתיימו ויישמרו");
+    } catch (e) {
+      run.stopping = false;
+      render();
       toast(e.message, ICON.warn);
     }
   }

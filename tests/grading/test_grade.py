@@ -596,6 +596,20 @@ def test_the_rubric_points_come_from_the_pedagogy_folder(root):
     assert "אין ניקוד" in grading.load_context(a.dir).no_rubric  # שאלה בלי ניקוד: עדיין אין ציונים
 
 
+def test_stop_leaves_the_rest_waiting_and_what_was_sent_is_saved(root):
+    a = asg(root)
+    stop = threading.Event()
+
+    def ask(req):
+        stop.set()  # the button is pressed while the first submission is with Claude
+        return answer()
+    rep = grading.grade_assignment(a.dir, ask=ask, parallel=1, stop=stop)
+    assert len(rep.graded) == 1 and len(rep.stopped) == 2 and not rep.failed
+    assert rep.stop_reason == "עצרת את הבדיקה" and "נעצרה: 2 לא נבדקו" in rep.summary()
+    assert sorted(grading.pending(a.dir)) == rep.stopped  # still waiting: the next "Grade" takes them
+    assert all("error" not in grading.read_notes(a.dir, n) for n in rep.stopped)
+
+
 def test_a_usage_limit_stops_grading_and_fails_no_work(root):
     a = asg(root)
     calls = []
@@ -616,3 +630,26 @@ def test_a_usage_limit_stops_grading_and_fails_no_work(root):
     grading.write_notes(a.dir, left, {"error": "Claude Code נכשל: You've hit your session limit", "failed_at": "x"})
     subs = {s["id"]: s for s in hw(actions.state(root))["subs"]}
     assert subs[left]["failed"] == "" and subs[left]["reviewKind"] == ""
+
+
+def test_server_stops_a_running_grading(root, server, monkeypatch):
+    started, release = threading.Event(), threading.Event()
+
+    def ask(req):
+        started.set()
+        release.wait(10)
+        return answer()
+    monkeypatch.setattr(grading, "claude_ask", lambda: ask)
+    st, job = call(server, "POST", "/api/grade", {"course": COURSE, "assignment": HW, "parallel": 1})
+    assert st == 202 and started.wait(10)
+    st, job = call(server, "POST", "/api/grade/stop", {})
+    assert st == 200 and job["stopping"] and job["running"]
+    release.set()
+    for _ in range(200):
+        _, job = call(server, "GET", "/api/grade")
+        if not job["running"]:
+            break
+        time.sleep(0.05)
+    assert not job["running"] and len(job["report"]["graded"]) == 1 and len(job["report"]["stopped"]) == 2
+    _, again = call(server, "POST", "/api/grade/stop", {})
+    assert again["stopping"] is False or again["running"] is False  # nothing running: stopping does nothing
