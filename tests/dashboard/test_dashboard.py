@@ -16,7 +16,7 @@ from dashboard import actions, folder_view, shared_folder
 from tests.sample_files import homework_pdf
 
 from tests.dashboard.conftest import FakeDownloader
-from tests.dashboard.helpers import COURSE, HW, MID, NAMES, call, write_key
+from tests.dashboard.helpers import COURSE, HDR, HW, MID, NAMES, call, hw, write_key
 
 
 # ---------- איתור התיקייה ----------
@@ -50,8 +50,8 @@ def test_state_groups_files_by_number_and_hides_names(root):
     with (a_dir / paths.GRADES).open("w", encoding="utf-8", newline="") as fh:
         fh.write("number,grade,feedback\n0003,87,עבודה טובה\n")
     st = actions.state(root)
-    assert [c["name"] for c in st["courses"]] == ["אלגברה לינארית להנדסה"]  # קורס בלי מטלות לא מוצג
-    (a,) = st["assignments"]
+    assert [c["name"] for c in st["courses"]] == ["מתמטיקה בדידה", "אלגברה לינארית להנדסה"]
+    a = next(x for x in st["assignments"] if x["folder"] == HW)
     assert a["title"] == "הגשה 0 - קבוצות ומרוכבים" and a["questions"] == 5 and a["moodleId"] == MID
     assert a["pulledAt"].startswith("2026-10-21T16:28")  # מתוך שם ה-ZIP ששמור בתיקייה
     subs = {s["id"]: s for s in a["subs"]}
@@ -62,6 +62,65 @@ def test_state_groups_files_by_number_and_hides_names(root):
     assert subs["0002"]["status"] == "pulled"
     raw = json.dumps(st, ensure_ascii=False)
     assert not any(name in raw for name in NAMES.values())
+
+
+def test_every_course_has_ten_assignments(root):
+    """עשר הגשות בכל קורס, גם בקורס שעוד אין בו אף מטלה. מה שעוד לא נמשך הוא מקום ריק בלי מזהה מודל."""
+    st = actions.state(root)
+    by_course = {c["folder"]: [a for a in st["assignments"] if a["courseId"] == c["id"]] for c in st["courses"]}
+    assert {k: len(v) for k, v in by_course.items()} == {"Discrete Mathematics": 10, COURSE: 10}
+    assert [a["title"] for a in by_course["Discrete Mathematics"]] == [f"הגשה {n}" for n in range(10)]
+    la = by_course[COURSE]
+    assert la[0]["folder"] == HW and la[0]["moodleId"] == MID and not la[0].get("empty")
+    assert la[3] == {**la[3], "folder": "Assignment 3", "title": "הגשה 3", "moodleId": None, "subs": [], "empty": True}
+    assert len({a["id"] for a in st["assignments"]}) == 20
+
+
+def test_first_pull_of_an_empty_slot_saves_the_moodle_id(root, monkeypatch):
+    seen = {}
+
+    def fake_ingest(assignment_id, zip_path=None, course=None, name=None):
+        seen["id"], seen["dir"] = assignment_id, paths.find_assignment(assignment_id)
+        return []
+
+    monkeypatch.setattr("moodle.ingest.ingest", fake_ingest)
+    actions.pull(root, "Discrete Mathematics", "Assignment 2", moodle_id="3500001")
+    a_dir = root / "Discrete Mathematics" / "Assignment 2"
+    assert seen == {"id": "3500001", "dir": a_dir}
+    info = json.loads((a_dir / paths.INFO).read_text(encoding="utf-8"))
+    assert info == {"id": "3500001", "course": "Discrete Mathematics", "name": "Assignment 2", "title": "x"}  # הכותרת משם ה-ZIP
+    dm = [a for a in actions.state(root)["assignments"] if a["courseFolder"] == "Discrete Mathematics"]
+    assert len(dm) == 10 and dm[2]["moodleId"] == "3500001" and not dm[2].get("empty")
+    actions.pull(root, "Discrete Mathematics", "Assignment 2", moodle_id="3500001")  # שוב עם אותו מזהה: בסדר
+
+
+@pytest.mark.parametrize("course, assignment, mid, expect", [
+    ("Discrete Mathematics", "Assignment 2", "abc", "המספר שאחרי id="),
+    ("Discrete Mathematics", "Assignment 2", MID, "כבר שייך"),  # המזהה של הגשה 0 באלגברה
+    (COURSE, "Assignment 0", "3500001", "כבר יש תיקייה"),
+])
+def test_empty_slot_pull_is_refused(root, course, assignment, mid, expect):
+    with pytest.raises(actions.UserError) as e:
+        actions.pull(root, course, assignment, moodle_id=mid)
+    assert expect in str(e.value)
+
+
+@pytest.mark.parametrize("course, assignment", [
+    ("Discrete Mathematics", "Assignment 10"), ("Discrete Mathematics", "../x"), ("Physics", "Assignment 1"),
+    ("Discrete Mathematics", "Assignment 1 - Logic"),
+])
+def test_empty_slot_pull_takes_only_the_ten_slots(root, course, assignment):
+    with pytest.raises(FileNotFoundError):
+        actions.pull(root, course, assignment, moodle_id="3500001")
+    assert not (root / course / assignment).exists()
+
+
+def test_server_passes_the_moodle_id_of_a_new_slot(root, server, monkeypatch):
+    monkeypatch.setattr("moodle.ingest.ingest", lambda *a, **k: [])
+    st, rep = call(server, "POST", "/api/pull", {"course": "Discrete Mathematics", "assignment": "Assignment 1",
+                                                 "moodleId": "3500002"}, HDR)
+    assert st == 200, rep
+    assert paths.read_info(root / "Discrete Mathematics" / "Assignment 1")["id"] == "3500002"
 
 
 # ---------- משיכה: moodle ingest ----------
@@ -128,7 +187,7 @@ def test_server_pull_error_and_files(root, server, monkeypatch):
     st, rep = call(server, "POST", "/api/pull", {"course": COURSE, "assignment": HW}, {"X-Assignment-Checker": "1"})
     assert st == 422 and "תיקיית ההורדות" in rep["error"]
     _, state = call(server, "GET", "/api/state")
-    f = state["assignments"][0]["subs"][0]["files"][0]
+    f = hw(state)["subs"][0]["files"][0]
     st, data = call(server, "GET", f"/api/file?path={quote(f['path'])}")
     assert st == 200 and data[:4] == b"%PDF"
     st, index = call(server, "GET", "/")
@@ -177,14 +236,14 @@ def test_public_site_can_connect_and_others_cannot(root, server):
 def test_activity_log_comes_from_the_folder(root):
     """היומן באתר: רק מה שבאמת קרה. משיכות (ה-ZIP-ים שנשמרו), Grades.csv, והעלאות מיומן ההעלאה."""
     a_dir = root / COURSE / HW
-    assert [(x["kind"], x["at"]) for x in actions.state(root)["assignments"][0]["log"]] == [("pull", "2026-10-21T16:28")]
+    assert [(x["kind"], x["at"]) for x in hw(actions.state(root))["log"]] == [("pull", "2026-10-21T16:28")]
     with (a_dir / paths.GRADES).open("w", encoding="utf-8", newline="") as fh:
         fh.write("number,grade,feedback\n0001,90,טוב\n0002,,\n")
     with (a_dir / paths.UPLOAD / "Upload log.csv").open("w", encoding="utf-8", newline="") as fh:
         fh.write("number,file,sha256,zip,uploaded_at,by\n"
                  "0001,0001.pdf,a,Graded - part 01.zip,2026-10-22T10:00:05,matan (PC)\n"
                  "0003,0003.pdf,b,Graded - part 01.zip,2026-10-22T10:00:09,matan (PC)\n")
-    log = {x["kind"]: x for x in actions.state(root)["assignments"][0]["log"]}
+    log = {x["kind"]: x for x in hw(actions.state(root))["log"]}
     assert log["grade"]["text"] == "Grades.csv עודכן: 1 ציונים"
     assert log["return"]["text"] == "הועלו למודל 2 עבודות מסומנות (Graded - part 01.zip)"
     assert log["return"]["actor"] == "matan (PC)" and log["return"]["at"] == "2026-10-22T10:00"
@@ -203,7 +262,7 @@ def test_pull_waits_for_someone_elses_pull(root, monkeypatch):
     with pytest.raises(actions.UserError) as e:
         actions.pull(root, COURSE, HW)
     assert "uri (URI-LAPTOP) מושך" in str(e.value)
-    assert actions.state(root)["assignments"][0]["warnings"] == ["משיכה בתהליך: uri (URI-LAPTOP)"]
+    assert hw(actions.state(root))["warnings"] == ["משיכה בתהליך: uri (URI-LAPTOP)"]
     old = time.time() - 31 * 60  # נעילה ישנה (משיכה שנתקעה) לא חוסמת
     os.utime(lock, (old, old))
     actions.pull(root, COURSE, HW)
@@ -226,7 +285,7 @@ def test_onedrive_conflict_copy_blocks_pull(root, monkeypatch):
     with pytest.raises(actions.UserError) as e:
         actions.pull(root, COURSE, HW)
     assert "עותק כפול" in str(e.value)
-    assert actions.state(root)["assignments"][0]["warnings"] == ["עותק כפול של טבלת המפתח: Key - number to student-DESKTOP-ABC.csv"]
+    assert hw(actions.state(root))["warnings"] == ["עותק כפול של טבלת המפתח: Key - number to student-DESKTOP-ABC.csv"]
 
 
 # ---------- משיכה: ההורדה ממודל דרך Claude בכרום ----------
@@ -287,3 +346,29 @@ def test_pull_does_not_download_while_an_upload_uses_chrome(root, monkeypatch):
     monkeypatch.setattr(actions._send, "running", True)
     with pytest.raises(actions.UserError, match="העלאה"):
         actions.pull(root, COURSE, HW)
+
+
+def test_health_answers_at_once_while_claude_is_checked_in_the_background(root, server, monkeypatch):
+    """`claude auth status` לוקח במחשב של אורי עד 13 שניות. /api/health לא מחכה לו: עונה מיד עם checking,
+    והבדיקה רצה ברקע. כשהיא נגמרת, השאלה הבאה מקבלת את התשובה."""
+    import threading
+    import time
+    from moodle import claude_driver
+    gate = threading.Event()
+
+    def slow_status(*a, **k):
+        gate.wait(10)
+        return {"logged_in": True, "message": "Claude Code מחובר."}
+    monkeypatch.setattr(claude_driver, "auth_status", slow_status)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    started = time.monotonic()
+    st, h = call(server, "GET", "/api/health")
+    assert st == 200 and time.monotonic() - started < 2
+    assert h["ok"] and h["root"] and h["checking"] is True and h["claude"] is False
+    gate.set()
+    for _ in range(100):
+        h = call(server, "GET", "/api/health")[1]
+        if not h["checking"]:
+            break
+        time.sleep(0.05)
+    assert h["checking"] is False and h["claude"] is True and h["moodle"] is True and h["claudeVia"] == "code"

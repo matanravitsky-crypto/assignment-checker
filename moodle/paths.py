@@ -12,6 +12,7 @@ a folder per assignment, with plain English names that say what each one is
           3 - Ready to upload to Moodle/             built for the upload to Moodle
           Assignment details.json                    Moodle id, questions, rules, rubric
           Grades.csv                                 number,grade,feedback (from grading)
+          Grading notes/              0001.json ...  per-question comments, mistakes, marks, why a person should look
           Key - number to student.csv                the key: number -> Moodle participant
           README.txt
 
@@ -31,8 +32,14 @@ MARKED = "2 - Graded with comments"
 UPLOAD = "3 - Ready to upload to Moodle"
 INFO = "Assignment details.json"
 GRADES = "Grades.csv"
+# What the grader said about each submission, per number (0001.json): per-question comments and mistakes, the marks
+# on the pages, and why it needs a person. Numbers only, never names. The site's manual review reads it
+NOTES = "Grading notes"
 KEY = "Key - number to student.csv"
 README = "README.txt"
+# The lecturer's or TA's grading material, in the assignment folder: rubric, solutions, accepted methods (.md/.txt).
+# Grading sends all of it to Claude. "פדגוגי" is the name the team gave it; "Pedagogy" works too.
+PEDAGOGY = ("Pedagogy", "פדגוגי")
 DOWNLOAD_PREFIX = "Moodle download"
 # The ZIPs as Moodle gave them: a backup kept on the downloader's computer only. They repeat
 # "1 - Submissions to grade" several times over (2.8 GB for one assignment), so they stay out of OneDrive.

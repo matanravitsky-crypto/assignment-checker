@@ -16,14 +16,18 @@
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
 import threading
 import time
+from collections import OrderedDict
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
+
+import pymupdf
 
 from grading import grade as grading
 from moodle import (anonymize as moodle_anonymize, claude_driver, ingest as moodle_ingest, lock as moodle_lock, paths,
@@ -91,8 +95,48 @@ def _take_lock(a: folder_view.Assignment) -> Path:
 
 
 # ---------- משיכה ----------
-def pull(root: Path, course: str, assignment: str) -> dict:
-    a = find_assignment(root, course, assignment)
+def new_assignment(root: Path, course: str, assignment: str, moodle_id: str) -> folder_view.Assignment:
+    """הגשה שעוד לא נמשכה (מקום ריק מהעשרה): יוצרים לה תיקייה עם מזהה המודל שלה, ואז מושכים כרגיל.
+
+    הכותרת בעברית נכתבת אחרי המשיכה, מתוך שם ה-ZIP של מודל (כמו ב-ingest)."""
+    mid = str(moodle_id).strip()
+    if not re.fullmatch(r"\d{4,12}", mid):
+        raise UserError("מזהה המטלה במודל הוא מספר: המספר שאחרי id= בכתובת של עמוד המטלה.")
+    course_dir = next((c for c in folder_view.courses(root) if c.name == course), None)
+    n = folder_view.slot(assignment)
+    if course_dir is None or n is None or n >= folder_view.SLOTS or assignment != folder_view.slot_folder(n):
+        raise FileNotFoundError(f"המטלה {course} / {assignment} לא נמצאה בתיקייה")
+    _use_root(root)
+    taken = paths.find_assignment(mid)
+    if taken and taken.resolve() != (course_dir / assignment).resolve():
+        raise UserError(f"מזהה המודל {mid} כבר שייך למטלה {folder_view.Assignment(taken).title}.")
+    other = next((a for a in folder_view.assignments(course_dir) if folder_view.slot(a.dir.name) == n and a.dir.name != assignment), None)
+    if other:
+        raise UserError(f"ל{folder_view.slot_title(n)} כבר יש תיקייה ({other.dir.name}). כדאי לרענן את הדף.")
+    a = folder_view.Assignment(course_dir / assignment)
+    old = a.details().get("id")
+    if old and str(old) != mid:
+        raise UserError(f"ל{a.title} כבר שמור מזהה מודל אחר ({old}).")
+    if not old:
+        a.dir.mkdir(exist_ok=True)
+        _write_info(a, {"id": mid, "course": course, "name": assignment})
+    return a
+
+
+def _write_info(a: folder_view.Assignment, info: dict) -> None:
+    (a.dir / paths.INFO).write_text(json.dumps(info, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _title_from_zip(a: folder_view.Assignment, zip_path: Path, mid: str) -> None:
+    """הגשה שנוצרה מכאן עוד בלי כותרת: הכותרת של מודל, מתוך שם ה-ZIP ("הגשה 3 - וקטורים")."""
+    info = a.details()
+    if info and not info.get("title"):
+        info["title"] = moodle_ingest.name_from_zip(zip_path, mid)
+        _write_info(a, info)
+
+
+def pull(root: Path, course: str, assignment: str, moodle_id: str | None = None) -> dict:
+    a = new_assignment(root, course, assignment, moodle_id) if moodle_id else find_assignment(root, course, assignment)
     mid = _moodle_id(a)
     conflicts = key_conflicts(a)
     if conflicts:
@@ -102,7 +146,9 @@ def pull(root: Path, course: str, assignment: str) -> dict:
     before = {r["number"] for r in a.key_rows()}
     lock = _take_lock(a)
     try:
-        rows = moodle_ingest.ingest(mid, _zip_from_moodle(a, mid))
+        zip_path = _zip_from_moodle(a, mid)
+        _title_from_zip(a, zip_path, mid)
+        rows = moodle_ingest.ingest(mid, zip_path)
     except (FileNotFoundError, ValueError) as e:
         raise UserError(_hebrew_error(e, mid)) from e
     finally:
@@ -229,9 +275,10 @@ def grade_status() -> dict:
 
 def start_grading(root: Path, course: str, assignment: str, numbers: list[str] | None = None,
                   ask: grading.Ask | None = None, wait: bool = False, **opts) -> dict:
-    """מתחיל לבדוק ברקע. זורק NoApiKey אם אין מפתח, ו-RuntimeError אם כבר רצה בדיקה."""
+    """מתחיל לבדוק ברקע. זורק NoRubric אם למטלה אין מחוון, NoApiKey אם אין מפתח, ו-RuntimeError אם כבר רצה בדיקה."""
     global _job
     a = find_assignment(root, course, assignment)
+    grading.require_rubric(grading.load_context(a.dir, send_solution=False))
     if ask is None:
         ask = grading.claude_ask()
     todo = grading.pending(a.dir) if numbers is None else [grading.number_key(n) for n in numbers]
@@ -254,7 +301,7 @@ def start_grading(root: Path, course: str, assignment: str, numbers: list[str] |
         try:
             rep = grading.grade_assignment(a.dir, todo, ask=ask, on_progress=progress, **opts)
             job.report, job.summary = asdict(rep), rep.summary()
-        except grading.NoApiKey as e:
+        except (grading.NoApiKey, grading.ClaudeLimit) as e:
             job.error = str(e)
         except Exception as e:  # השגיאה מוצגת באתר במקום שהבדיקה תיעלם בשקט
             job.error = f"הבדיקה נכשלה: {e}"
@@ -526,6 +573,41 @@ def moodle_status() -> dict:
     return status
 
 
+_status_refresh = threading.Lock()
+
+
+def refresh_status_soon() -> None:
+    """בודק ברקע אם Claude Code מחובר (moodle_status), אם אין כבר בדיקה כזו שרצה. התשובה נשמרת במטמון."""
+    if not _status_refresh.acquire(blocking=False):
+        return
+
+    def run() -> None:
+        try:
+            moodle_status()
+        except Exception:  # בדיקה שנכשלה לא מפילה את השרת; הבאה תנסה שוב
+            pass
+        finally:
+            _status_refresh.release()
+    threading.Thread(target=run, daemon=True).start()
+
+
+def quick_status() -> dict | None:
+    """מה שידוע עכשיו על Claude Code, בלי לחכות: `claude auth status` לוקח במחשב של אורי עד 13 שניות, והאתר לא
+    מחכה לו. אם המידע ישן (או שעוד אין), בודקים ברקע. None = עוד לא ידוע."""
+    cached = _moodle_cache
+    if not cached or time.monotonic() - cached[0] >= MOODLE_STATUS_SECONDS or _login.running() or _install.running():
+        refresh_status_soon()
+    return cached[1] if cached else None
+
+
+def quick_via() -> str | None:
+    """כמו grading_via, בלי לחכות לבדיקה של Claude Code (quick_status)."""
+    if cfg.claude_key():
+        return "api"
+    st = quick_status()
+    return "code" if st and st.get("logged_in") else None
+
+
 def grading_via() -> str | None:
     """איך הבדיקה מדברת עם Claude: "api" (יש ANTHROPIC_API_KEY), "code" (Claude Code מחובר במחשב, grading/claude_cli.py), או None."""
     if cfg.claude_key():
@@ -668,6 +750,88 @@ def returned_numbers(assignment_dir: Path, marked: dict[str, list[Path]]) -> set
             if files and all(p.name in uploaded and cached_hash(p) == uploaded[p.name] for p in files)}
 
 
+# ---------- בדיקה ידנית ----------
+def save_review(root: Path, course: str, assignment: str, number: str, points: list, comments: list, feedback: str,
+                mistakes: list | None = None) -> dict:
+    """אדם אישר עבודה בתור הבדיקה הידנית (או תיקן ציון): grading.save_review, עם מי שאישר."""
+    a = find_assignment(root, course, assignment)
+    return grading.save_review(a.dir, number, points, comments, feedback, by=moodle_lock.me(), mistakes=mistakes)
+
+
+# Grading notes של כל העבודות נקראים בכל טעינה של האתר. קובץ שלא השתנה לא נקרא שוב
+_notes: dict[str, tuple[int, int, dict]] = {}
+
+
+def cached_notes(assignment_dir: Path, number: str) -> dict:
+    path = grading.notes_path(assignment_dir, number)
+    try:
+        st = path.stat()
+    except OSError:
+        return {}
+    hit = _notes.get(str(path))
+    if hit and hit[:2] == (st.st_size, st.st_mtime_ns):
+        return hit[2]
+    data = grading.read_notes(assignment_dir, number)
+    _notes[str(path)] = (st.st_size, st.st_mtime_ns, data)
+    return data
+
+
+# עמודי ההגשה כתמונות, לבדיקה הידנית באתר: בלי מציג ה-PDF של הדפדפן, והסימונים של Claude מצוירים מעליהם.
+# כל הקבצים של הגשה (0001.pdf, 0001-2.jpg) הם PDF אחד, כמו ש-Claude ראה אותם, כדי שמספרי העמודים בסימונים יתאימו
+_docs: OrderedDict[tuple, bytes] = OrderedDict()
+PAGE_DPI = 110
+
+
+def _submission_doc(root: Path, course: str, assignment: str, number: str) -> bytes:
+    a = find_assignment(root, course, assignment)
+    files = grading.submission_files(a.dir).get(grading.number_key(number))
+    if not files:
+        raise FileNotFoundError(f"אין הגשה {number}")
+    key = (str(a.dir), number, tuple((f.name, f.stat().st_mtime_ns) for f in files))
+    if key not in _docs:
+        _docs[key] = grading.submission_pdf(files)[0]
+        while len(_docs) > 8:
+            _docs.popitem(last=False)
+    _docs.move_to_end(key)
+    return _docs[key]
+
+
+def page_count(root: Path, course: str, assignment: str, number: str) -> int:
+    data = _submission_doc(root, course, assignment, number)
+    if not data:
+        return 0
+    with pymupdf.open(stream=data, filetype="pdf") as doc:
+        return doc.page_count
+
+
+def page_image(root: Path, course: str, assignment: str, number: str, page: int) -> bytes:
+    """עמוד אחד (מ-1) כ-JPEG. FileNotFoundError אם אין הגשה כזו או עמוד כזה."""
+    data = _submission_doc(root, course, assignment, number)
+    with pymupdf.open(stream=data or None, filetype="pdf") as doc:
+        if not 1 <= page <= doc.page_count:
+            raise FileNotFoundError(f"אין עמוד {page}")
+        return doc[page - 1].get_pixmap(dpi=PAGE_DPI).tobytes("jpeg", jpg_quality=80)
+
+
+def _note_fields(note: dict, res: dict) -> dict:
+    """מה שהאתר צריך מ-Grading notes: הערות וטעויות לכל שאלה, מה Claude לא בטוח בו, הסימונים, ולמה צריך אדם."""
+    failed = "" if res.get("grade") else str(note.get("error") or "")
+    if grading.is_limit(failed):  # נגמרה המכסה באמצע בדיקה: העבודה עוד לא נבדקה, אין מה לבדוק בה ידנית
+        failed = ""
+    review = res.get("review") or ""
+    # מקרה מיוחד (special ב-Grades.csv, מהבדיקה) קודם; אחרת הסוג מ-Grading notes
+    kind = str(res.get("special") or note.get("review_kind") or "") if review else ""
+    return {
+        "comments": [str(c) for c in note.get("comments") or []],
+        "mistakes": [[str(m) for m in ms] for ms in note.get("mistakes") or [] if isinstance(ms, list)],
+        "unsure": [bool(u) for u in note.get("unsure") or []],
+        "marks": [{k: m.get(k) for k in ("page", "x0", "y0", "x1", "y1", "text")} for m in note.get("marks") or [] if isinstance(m, dict)],
+        "failed": failed, "reviewKind": "failed" if failed else (kind or ("other" if review else "")),
+        "reviewedBy": (note.get("reviewed") or {}).get("by") or "",
+        "missing": str(res.get("missing") or "") if review else "",
+    }
+
+
 # ---------- מצב לאתר ----------
 _DOWNLOAD = re.compile(re.escape(paths.DOWNLOAD_PREFIX) + r" (\d{4}-\d{2}-\d{2} \d{2}-\d{2})( part \d+)?\.zip$")
 
@@ -706,12 +870,12 @@ def state(root: Path) -> dict:
     """הקורסים, המטלות וההגשות כפי שהם בתיקייה. בלי שמות של סטודנטים: רק מספרים."""
     courses, out = [], []
     for ci, course_dir in enumerate(folder_view.courses(root)):
-        items = folder_view.assignments(course_dir)
-        if not items:
-            continue
         cid = f"c{ci}"
         courses.append({"id": cid, "name": folder_view.course_title(course_dir), "folder": course_dir.name})
-        for ai, a in enumerate(items):
+        for ai, a in enumerate(_slots(course_dir)):
+            if isinstance(a, int):
+                out.append(_empty_slot(cid, course_dir, ai, a))
+                continue
             d = a.details()
             marked, results = grading.marked_files(a.dir), grading.read_grades(a.dir)
             # הוחזרה = הועלתה למודל בפועל: כל הקבצים המסומנים של המספר זהים למה שביומן ההעלאה
@@ -735,6 +899,7 @@ def state(root: Path) -> dict:
                     "late": False, "scanned": False, "status": status, "q": grading.parse_points(res.get("points")),
                     "score": _score(grade), "feedback": res.get("feedback") or None, "issue": None,
                     "approved": grading.is_approved(res), "review": res.get("review") or "",
+                    **_note_fields(cached_notes(a.dir, n), res),
                     "files": [{"name": f.name, "pages": 0, "size": f.stat().st_size, "path": f.relative_to(root).as_posix()} for f in files]
                              + [{"name": m.name, "pages": 0, "size": m.stat().st_size, "path": m.relative_to(root).as_posix(),
                                  "marked": True} for m in marked.get(n, [])],
@@ -750,8 +915,9 @@ def state(root: Path) -> dict:
                 "n": ai + 1, "due": d.get("due"), "questions": a.question_count(), "questionLabels": a.question_labels(),
                 "pulledAt": pulled, "returnedAt": max((r["uploaded_at"] for r in log), default=None), "moodleId": d.get("id"),
                 "gradedAt": datetime.fromtimestamp(grades_file.stat().st_mtime).isoformat(timespec="minutes") if grades_file.exists() else None,
-                "rubric": [{"label": q.label, "points": q.points, "criteria": q.criteria} for q in ctx.questions],
-                "maxGrade": ctx.max_grade, "solution": (a.dir / grading.SOLUTION).is_file(),
+                "rubric": [{"label": q.label, "points": q.points, "criteria": q.criteria, "deductions": q.deductions}
+                           for q in ctx.questions],
+                "noRubric": ctx.no_rubric, "maxGrade": ctx.max_grade, "solution": (a.dir / grading.SOLUTION).is_file(),
                 "notes": d.get("notes") or "", "rules": d.get("submission_rules") or [],
                 "warnings": [f"עותק כפול של טבלת המפתח: {c}" for c in key_conflicts(a)]
                             + [f"עותק כפול של יומן ההעלאה: {c}" for c in upload_log.log_conflicts(a.dir)]
@@ -760,7 +926,31 @@ def state(root: Path) -> dict:
                 "subs": subs, "log": _activity(a, results, log),
             })
     return {"root": str(root), "courses": courses, "assignments": out,
-            "moodle": False, "claude": grading_via() is not None, "claudeVia": grading_via(), "grading": grade_status(), "sending": send_status()}
+            "moodle": False, "claude": quick_via() is not None, "claudeVia": quick_via(), "grading": grade_status(), "sending": send_status()}
+
+
+def _slots(course_dir: Path) -> list[folder_view.Assignment | int]:
+    """עשר ההגשות של הקורס לפי הסדר: המטלה שבתיקייה, או המספר שלה אם עוד אין לה תיקייה.
+    מטלה בלי מספר בשם התיקייה (או מעבר לעשר) מופיעה בסוף."""
+    items = folder_view.assignments(course_dir)
+    by_slot = {}
+    for a in items:
+        n = folder_view.slot(a.dir.name)
+        if n is not None and n < folder_view.SLOTS and n not in by_slot:
+            by_slot[n] = a
+    rest = [a for a in items if a not in by_slot.values()]
+    return [by_slot.get(n, n) for n in range(folder_view.SLOTS)] + rest
+
+
+def _empty_slot(cid: str, course_dir: Path, ai: int, n: int) -> dict:
+    """הגשה שעוד לא נמשכה: אין תיקייה ואין מזהה מודל. המשיכה הראשונה מקבלת את המזהה ויוצרת אותה."""
+    return {
+        "id": f"{cid}a{ai}", "courseId": cid, "course": folder_view.course_title(course_dir),
+        "courseFolder": course_dir.name, "folder": folder_view.slot_folder(n), "title": folder_view.slot_title(n),
+        "n": ai + 1, "due": None, "questions": 4, "questionLabels": [], "pulledAt": None, "returnedAt": None,
+        "moodleId": None, "gradedAt": None, "rubric": [], "maxGrade": None, "solution": False, "notes": "", "rules": [],
+        "warnings": [], "subs": [], "log": [], "empty": True,
+    }
 
 
 def _score(raw: str | None) -> float | int | None:

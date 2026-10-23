@@ -32,7 +32,7 @@ def main(argv: list[str] | None = None) -> int:
         folder = paths.assignment_dir(args.assignment_id)
         rep = grade.grade_assignment(folder, args.ids or None, model=args.model, parallel=args.parallel,
                                      on_progress=lambda n, what: print(f"  {n}: {labels[what]}"))
-    except (FileNotFoundError, grade.NoApiKey) as e:
+    except (FileNotFoundError, grade.NoApiKey, grade.NoRubric, grade.ClaudeLimit) as e:
         print(e)
         return 2
     print(rep.summary())
