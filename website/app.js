@@ -71,7 +71,7 @@
     pull: {
       no: 1, route: "/pull", name: "משיכת הגשות",
       desc: "Claude בכרום מוריד ממודל את קובץ ה-ZIP עם כל ההגשות של המטלה, והמערכת קולטת אותו: שומרת אותו בתיקיית המטלה, נותנת לכל סטודנט מספר קבוע ומעתיקה את ההגשות הממוספרות לתיקיית OneDrive, בלי שמות.",
-      steps: ["הורדת ה-ZIP ממודל (Claude בכרום)", "שמירת ה-ZIP בתיקיית המטלה", "חילוץ ומספור ההגשות", "עדכון טבלת המפתח"],
+      steps: ["הורדת ה-ZIP ממודל (Claude בכרום)", "בדיקה שה-ZIP שלם", "חילוץ ה-ZIP (במחשב הזה בלבד)", "מספור ההגשות ועדכון טבלת המפתח"],
       tabs: [["list", "ההגשות שנמשכו"], ["instr", "מה קורה במשיכה"], ["conn", "חיבור למודל"]],
     },
     grade: {
@@ -364,6 +364,7 @@
             </header>
             <div class="stage-count num">${nums[st][0]}<small>${nums[st][1]}</small></div>
             <div class="dots" aria-label="כל ריבוע הוא עבודה. לחיצה כפולה מורידה אותה">${dotsFor(st, I)}</div>
+            ${st === "pull" ? pullBarHTML(true) : ""}
             ${nums[st][2] ? `<p class="stage-warn">${ICON.warn}${nums[st][2]}</p>` : ""}
             <footer class="stage-foot">
               ${stageButton(st)}
@@ -397,7 +398,7 @@
     const gradedNow = I.graded.length;
     const marks = I.graded.reduce((a, s) => a + (s.q || []).filter((v, i) => v < rubric().questions[i]?.pts).length, 0);
     const results = {
-      pull: [`ZIP מ-${when(A.pulledAt)}`, "נשמר בתיקיית המטלה", `${I.subs.length} הגשות, ${I.files} קבצים`, "לכל הגשה מספר קבוע"],
+      pull: [`ZIP מ-${when(A.pulledAt)}`, "ה-ZIP שלם ונשמר בתיקיית המטלה", `${I.files} קבצים`, `${I.subs.length} הגשות, לכל הגשה מספר קבוע`],
       grade: [`${rubric().questions.length} שאלות, ${A.maxGrade || 100} נקודות`, `${gradedNow} עבודות`, `${marks} הורדות ניקוד`, `ממוצע ${avg(I.graded.map((s) => s.score)) ?? "—"}`],
       ret: [`${I.returned.length} עבודות מסומנות`, `${I.returned.length} עבודות עלו`, "מודל קלט את אותו מספר קבצים"],
     }[stage];
@@ -407,7 +408,8 @@
           const st = live ? live[i] : done ? "done" : "pending";
           return `<li class="${st}">
             <span class="rs-icon">${st === "done" ? ICON.check : st === "running" ? ICON.spin : `<span>${i + 1}</span>`}</span>
-            <span class="rs-text"><b>${name}</b><small>${st === "done" ? esc(results[i]) : st === "running" ? "רץ עכשיו…" : "ממתין"}</small></span>
+            <span class="rs-text"><b>${name}</b><small>${st === "done" ? esc(live && stage === "pull" ? run.notes?.[i] || "הושלם" : results[i])
+              : st === "running" ? esc(stage === "pull" && run?.stage === "pull" ? pullView(run.pull).text : "רץ עכשיו…") : "ממתין"}</small></span>
           </li>`;
         }).join("")}
       </ol>`;
@@ -428,7 +430,74 @@
           ${stageButton(stage, { big: true })}
         </div>
       </section>
+      ${stage === "pull" ? pullBarHTML() : ""}
       ${runStepsHTML(stage)}`;
+  }
+
+  // ---------- מד ההתקדמות של המשיכה ----------
+  // השרת אומר באיזה שלב המשיכה (GET /api/pull, dashboard/actions.py PullProgress), וכאן הופכים את זה לאחוזים:
+  // הורדה 0-60 (לפי גודל ההורדה הקודמת, אם יש), בדיקת ה-ZIP 60-70, חילוץ 70-90, מספור 90-100
+  // בין שני סימני כיוון (LRI…PDI), כדי ש-"600 MB" לא יתהפך בתוך משפט בעברית
+  const size = (b) => `⁦${b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${Math.round(b / 1e6)} MB`}⁩`;
+  const LONG_WAIT = "לא סוגרים את כרום ולא מכבים את המחשב. ZIP גדול ממודל יכול לקחת כמה דקות.";
+  const HERE = "מכאן הכול קורה במחשב הזה, בלי מודל. אפשר לעבור לחלון אחר.";
+  // כמה זמן נשאר, מ-eta_s שהשרת מחשב לפי הקצב של השלב עד עכשיו. אחרי ההורדה יש עוד חילוץ ומספור, בערך דקה
+  const left = (sec) => (sec == null ? "" : sec < 50 ? "נשארה פחות מדקה" : `נשארו בערך ${Math.round(sec / 60)} דקות`);
+  function pullView(p = {}) {
+    const v = pullPhase(p), eta = left(p.eta_s);
+    if (!eta) return v;
+    const tail = v.step === 0 ? ` להורדה, ואחריה עוד כדקה במחשב` : "";
+    return { ...v, text: `${v.text} · ${eta}${tail}`, soon: p.eta_s < 50 ? "פחות מדקה" : `עוד ${Math.round(p.eta_s / 60)} דק'` };
+  }
+  function pullPhase(p) {
+    // האחוז מבודד גם הוא: אחרי "ZIP" הדפדפן היה מצמיד אותו למילה האנגלית ומזיז אותו
+    const f = p.total ? Math.min(p.done / p.total, 1) : 0, pct = `⁦${Math.round(100 * f)}%⁩`;
+    switch (p.phase) {
+      case "claude": return { step: 0, pct: null, short: "Claude פותח את מודל…", text: "Claude פותח את מודל בכרום ומכין את ההורדה (בדרך כלל עד דקה)…", hint: LONG_WAIT };
+      case "download": return {
+        step: 0, pct: p.total ? Math.round(Math.min(58, 60 * f)) : null, short: "מוריד ממודל…",
+        text: p.total ? `מוריד ממודל: ${size(p.done)} מתוך כ-${size(p.total)}` : `מוריד ממודל: ${size(p.done)} עד עכשיו`,
+        hint: p.total ? LONG_WAIT : `${LONG_WAIT} זו ההורדה הראשונה של המטלה, אז עוד לא ידוע כמה גדול ה-ZIP.`,
+      };
+      // הורדה בחלקים (moodle/download_parts.js): כל חלק נשמר בהורדות כשהוא מגיע, והשרת סופר כמה כבר הגיעו
+      case "parts": return {
+        step: 0, pct: p.total ? Math.round(Math.min(58, 60 * f)) : null, short: "מוריד ממודל…",
+        text: p.total ? `מוריד ממודל בחלקים: ${p.done} מתוך ${p.total} חלקים הגיעו` : `מוריד ממודל בחלקים: ${p.done} חלקים הגיעו עד עכשיו`,
+        hint: LONG_WAIT,
+      };
+      case "check": return { step: 1, pct: Math.round(60 + 10 * f), short: "בודק את ה-ZIP…", text: `בודק שה-ZIP שלם: ${pct}%`, hint: HERE };
+      case "extract": return { step: 2, pct: Math.round(70 + 20 * f), short: "מחלץ…", text: `מחלץ את ה-ZIP: ${pct}%`, hint: HERE };
+      case "number": return { step: 3, pct: Math.round(90 + 10 * f), short: "ממספר הגשות…", text: `ממספר הגשות: ${p.done} מתוך ${p.total}`, hint: HERE };
+      default: return { step: 0, pct: 1, short: "מתחיל…", text: "מחפש ZIP של המטלה בתיקיית ההורדות…", hint: LONG_WAIT };
+    }
+  }
+  function elapsed(since) {
+    const sec = Math.max(0, Math.round((Date.now() - since) / 1000));
+    return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`;
+  }
+  // מה שהשרת אמר עכשיו → השלבים, הטקסט על הכפתור והמד
+  function showPull(run, p) {
+    run.pull = p;
+    const v = pullView(p);
+    run.steps = STAGES.pull.steps.map((_, i) => (i < v.step ? "done" : i === v.step ? "running" : "pending"));
+    run.notes = [p.downloaded ? "הורד ממודל" : "ה-ZIP כבר חיכה בתיקיית ההורדות"];
+    run.progress = [v.short, v.pct == null ? "" : `${v.pct}%`, v.soon ? `· ${v.soon}` : ""].filter(Boolean).join(" ");
+  }
+  function pullBarHTML(compact = false) {
+    const A = cur(), run = A && state.run[A.id];
+    if (run?.stage !== "pull") return "";
+    const v = pullView(run.pull), known = v.pct != null;
+    const bar = `<div class="send-bar ${known ? "" : "indet"}" role="progressbar" aria-label="התקדמות המשיכה" aria-valuemin="0" aria-valuemax="100"
+      ${known ? `aria-valuenow="${v.pct}"` : ""}><i style="width:${known ? v.pct : 30}%"></i></div>`;
+    if (compact) return `<div class="pull-progress compact">${bar}<p>${known ? `<b class="num">${v.pct}%</b>` : ""}${esc(v.text)}</p></div>`;
+    return `<section class="panel report send-panel pull-progress" aria-live="polite">
+      <div class="panel-head"><h3>המשיכה רצה${known ? ` · <span class="num">${v.pct}%</span>` : ""}</h3><span class="meta num">עברו ${elapsed(run.startedAt)} דקות</span></div>
+      <div class="panel-body">
+        <p class="send-line">${ICON.spin}<b>${esc(v.text)}</b></p>
+        ${bar}
+        <p class="hint">${esc(v.hint)}</p>
+      </div>
+    </section>`;
   }
 
   function tabsHTML(stage) {
@@ -458,9 +527,15 @@
       <div class="field moodle-id"><label for="moodle-id">הקישור למטלה במודל, או רק המספר שאחרי <span dir="ltr">id=</span></label>
         <input id="moodle-id" dir="ltr" inputmode="url" autocomplete="off" data-moodle-id="${A.id}" value="${esc(state.moodleDraft[A.id] || "")}" placeholder="https://moodle.bgu.ac.il/moodle/mod/assign/view.php?id=…"></div>` : "";
     const lead = A.empty
-      ? `${esc(A.title)} עוד לא נמשכה. בפעם הראשונה המערכת צריכה לדעת איזו מטלה במודל זו: מדביקים כאן את הקישור לעמוד המטלה ולוחצים "משוך הגשות". מהפעם הבאה הוא כבר שמור.`
-      : `לוחצים "משוך הגשות": Claude בכרום מוריד ממודל את ה-ZIP של כל ההגשות, והמערכת קולטת אותו. צריך כרום פתוח עם התוסף Claude in Chrome והתחברות למודל.`;
-    return `<div class="empty"><strong>עוד אין הגשות במטלה הזו</strong>${lead}${idField}
+      ? `${esc(A.title)} עוד לא נמשכה. בפעם הראשונה המערכת צריכה לדעת איזו מטלה במודל זו: מדביקים כאן את הקישור לעמוד המטלה. מהפעם הבאה הוא כבר שמור.`
+      : "";
+    // מה עושים, בשלוש שורות: מי שנכנס בפעם הראשונה צריך לדעת רק את זה
+    const how = `<ol class="how-to">
+        <li>כרום פתוח, עם התוסף Claude in Chrome. ההתחברות למודל קורית לבד</li>
+        <li>לוחצים "משוך הגשות" פעם אחת${A.empty ? ", אחרי שהדבקתם את הקישור" : ""}</li>
+        <li>מחכים לבר: הוא מראה כמה נשאר. ההגשות נכנסות לתיקייה המשותפת ומופיעות כאן לכל הצוות</li>
+      </ol>`;
+    return `<div class="empty"><strong>עוד אין הגשות במטלה הזו</strong>${lead}${how}${idField}
       <div class="empty-act">${stageButton("pull")}${moodleLink(A)}<button class="btn secondary" data-act="open-inbox">${ICON.folder}פתח את תיקיית ההורדות</button></div></div>`;
   }
 
@@ -2136,6 +2211,7 @@
   async function loadLocal() {
     try {
       const [data, health] = await Promise.all([api("api/state"), api("api/health").catch(() => null)]);
+      LOCAL.sig = JSON.stringify(data);
       D.courses.splice(0, D.courses.length, ...data.courses);
       D.assignments.splice(0, D.assignments.length, ...data.assignments.map((a) => ({
         ...a, phase: a.subs.length ? "current" : "new", gradedAt: a.gradedAt || null, returnedAt: a.returnedAt || null, lastFresh: null,
@@ -2165,6 +2241,16 @@
     renderPickers();
     render();
     if (LOCAL.sending?.running && !LOCAL.polling) followSend();  // העלאה שרצה כשהדף נטען: ממשיכים לעקוב אחריה
+    if (!Object.values(state.run).some((r) => r.stage === "pull")) resumePull();
+  }
+
+  // מה שנמשך, נבדק או הועלה במחשב אחר (ההגשות מגיעות דרך OneDrive) מופיע לבד, בלי רענון: כל 20 שניות וכשחוזרים
+  // ללשונית. רק כשהלשונית גלויה, שום דבר לא רץ כאן ולא מקלידים, ומציירים מחדש רק אם משהו בתיקייה השתנה
+  async function refreshQuietly() {
+    if (!LOCAL.on || !LOCAL.health?.root || document.hidden || LOCAL.polling || Object.keys(state.run).length) return;
+    if (document.activeElement?.matches?.("input, textarea, select")) return;
+    const data = await api("api/state").catch(() => null);
+    if (data && JSON.stringify(data) !== LOCAL.sig && !Object.keys(state.run).length) await loadLocal();
   }
 
   // "משוך הגשות" אמיתי: השרת מושך ממודל (אם יש טוקן) ומקובצי ZIP בקליטה, ישר לתיקיית OneDrive
@@ -2179,14 +2265,16 @@
       setTimeout(() => $("#moodle-id")?.focus(), 50);
       return;
     }
-    const run = (state.run[A.id] = { stage: "pull", steps: STAGES.pull.steps.map(() => "pending") });
-    // ההורדה ממודל לוקחת כמה דקות (ZIP גדול), והשרת עונה רק בסוף, אז השלב הראשון נשאר "רץ" עד התשובה
-    run.steps[0] = "running";
-    run.progress = "מוריד ממודל… (כמה דקות)";
+    const run = (state.run[A.id] = { stage: "pull", startedAt: Date.now() });
+    showPull(run, { phase: "find" });
     render();
-    toast("Claude בכרום מוריד את ה-ZIP ממודל. זה יכול לקחת כמה דקות: לא סוגרים את כרום.");
+    // השרת עונה רק בסוף המשיכה (הורדה של ZIP גדול: כמה דקות). בינתיים שואלים אותו כל שנייה כמה התקדמה
+    let settled = false;
+    const post = api("api/pull", { method: "POST", body: JSON.stringify({ course: A.courseFolder, assignment: A.folder, ...(moodleId && { moodleId }) }) })
+      .finally(() => { settled = true; });
+    followPull(A, run, () => settled);
     try {
-      const rep = await api("api/pull", { method: "POST", body: JSON.stringify({ course: A.courseFolder, assignment: A.folder, ...(moodleId && { moodleId }) }) });
+      const rep = await post;
       LOCAL.report = { ...rep, assignmentId: A.id };
       delete state.run[A.id];
       await loadLocal();
@@ -2209,6 +2297,33 @@
       if (moodleId) await loadLocal(); else render();
       toast(e.message, ICON.warn);
     }
+  }
+
+  async function followPull(A, run, over) {
+    while (!over()) {
+      await new Promise((r) => setTimeout(r, 1000));
+      const p = await api("api/pull").catch(() => null);
+      if (over() || state.run[A.id] !== run) return;
+      if (p?.running && p.course === A.courseFolder && p.assignment === A.folder) showPull(run, p);
+      render();
+    }
+  }
+
+  // משיכה שרצה כשהדף נטען (רענון, או לשונית אחרת): מראים את המד עד שהיא נגמרת
+  async function resumePull() {
+    let p = await api("api/pull").catch(() => null);
+    const A = p?.running && D.assignments.find((a) => a.courseFolder === p.course && a.folder === p.assignment);
+    if (!A || state.run[A.id]) return;
+    const run = (state.run[A.id] = { stage: "pull", startedAt: Date.parse(p.started_at) || Date.now() });
+    while (p.running) {
+      showPull(run, p);
+      render();
+      await new Promise((r) => setTimeout(r, 1000));
+      p = (await api("api/pull").catch(() => null)) || { running: false, error: "החיבור למערכת נפל באמצע המשיכה." };
+    }
+    delete state.run[A.id];
+    await loadLocal();
+    toast(p.error || `המשיכה הסתיימה: ${p.summary}`, p.error ? ICON.warn : ICON.check);
   }
 
   // "בדוק" אמיתי: השרת שולח את ההגשות הממוספרות ל-Claude ברקע, והאתר שואל מה המצב עד שזה נגמר
@@ -2370,5 +2485,7 @@
     render();
     if (!ON_LOCAL_HOST) setInterval(() => { if (!LOCAL.on) connect(); }, 5000);
     setInterval(pollClaims, CLAIMS_POLL_MS);
+    setInterval(refreshQuietly, 20000);
+    document.addEventListener("visibilitychange", refreshQuietly);
   })();
 })();

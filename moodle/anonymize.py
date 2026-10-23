@@ -29,16 +29,31 @@ def parse_folder(folder_name: str) -> str:
     return match.group("participant")
 
 
-def prepare(original: Path, assignment_dir: Path) -> list[dict]:
-    anon = assignment_dir / paths.TO_GRADE
-    if anon.exists():
-        shutil.rmtree(anon)
-    anon.mkdir()
+def prepare(original: Path, assignment_dir: Path, on_folder=None) -> list[dict]:
+    """`on_folder(done, total)` hears every student folder that was copied, for the dashboard's progress bar.
 
+    The key never loses a student: one who is not in this download (a part that came without folders, a submission
+    removed in Moodle) keeps their rows and their files in "1 - Submissions to grade" as they were. On 2026-10-23 a
+    download with two parts without folders dropped 74 students from the key, and the key had to be rebuilt."""
+    loose = [f.name for f in original.iterdir() if not f.is_dir()]
+    if loose:  # Moodle's "download in folders" was off: a file without its folder has no participant id
+        raise ValueError(f"{len(loose)} files in the download are not in a folder per student: "
+                         "turn on the folders option in Moodle and pull again")
     folders = sorted(
         (f for f in original.iterdir() if f.is_dir()),
         key=lambda f: int(parse_folder(f.name)),
     )
+    old_rows = existing_rows(assignment_dir)
+
+    # The files of this download replace the old ones; the old folder is set aside first, so the files of a student
+    # who is not in this download can be put back
+    anon = assignment_dir / paths.TO_GRADE
+    previous = assignment_dir / f"{paths.TO_GRADE} (previous)"
+    if previous.exists():
+        shutil.rmtree(previous)
+    if anon.exists():
+        anon.rename(previous)
+    anon.mkdir()
 
     # A student keeps their number across downloads, even after grading started;
     # students who submitted since the last download get the next free numbers
@@ -54,7 +69,9 @@ def prepare(original: Path, assignment_dir: Path) -> list[dict]:
             next_number += 1
 
     rows = []
-    for folder in sorted(folders, key=numbers.get):
+    for done, folder in enumerate(sorted(folders, key=numbers.get)):
+        if on_folder:
+            on_folder(done, len(folders))
         number = numbers[folder]
         files = sorted(p for p in folder.rglob("*") if p.is_file())
         for index, file in enumerate(files):
@@ -70,19 +87,37 @@ def prepare(original: Path, assignment_dir: Path) -> list[dict]:
                 "original_file": str(file.relative_to(folder)),
             })
 
+    # Students of the key who are not in this download: their rows stay, and so do their files
+    here = {parse_folder(f.name) for f in folders}
+    for row in old_rows:
+        if row["participant_id"] in here:
+            continue
+        rows.append({k: row.get(k, "") for k in MAPPING_FIELDS})
+        old_file = previous / row["anon_file"]
+        if old_file.is_file() and not (anon / row["anon_file"]).exists():
+            old_file.rename(anon / row["anon_file"])
+    rows.sort(key=lambda r: r["number"])  # stable: a student's files stay in their order (0001.pdf, then 0001-2.pdf)
+
     with open(assignment_dir / paths.KEY, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.DictWriter(f, fieldnames=MAPPING_FIELDS)
         writer.writeheader()
         writer.writerows(rows)
+    if previous.exists():
+        shutil.rmtree(previous)
     return rows
+
+
+def existing_rows(assignment_dir: Path) -> list[dict]:
+    """The rows of the key table, if the assignment has one."""
+    if not (assignment_dir / paths.KEY).exists():
+        return []
+    with open(assignment_dir / paths.KEY, encoding="utf-8-sig") as f:
+        return list(csv.DictReader(f))
 
 
 def existing_numbers(assignment_dir: Path) -> dict[str, int]:
     """{participant id: number} from the key table, if the assignment has one."""
-    if not (assignment_dir / paths.KEY).exists():
-        return {}
-    with open(assignment_dir / paths.KEY, encoding="utf-8-sig") as f:
-        return {row["participant_id"]: int(row["number"]) for row in csv.DictReader(f)}
+    return {row["participant_id"]: int(row["number"]) for row in existing_rows(assignment_dir)}
 
 
 def key_conflicts(assignment_dir: Path) -> list[str]:
