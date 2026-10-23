@@ -465,8 +465,14 @@ def test_pull_in_parts_keeps_every_number_and_adds_the_new_student(root, monkeyp
     assert rep["result"]["total"] == 4 and rep["result"]["new"] == 1
     key = {r["participant_id"]: r["number"] for r in folder_view.Assignment(root / COURSE / HW).key_rows()}
     assert key["1001"] == "0001" and key["1002"] == "0002" and key["1003"] == "0003" and key["2000"] == "0004"
-    kept = [p for p in (root / COURSE / HW).iterdir() if p.is_dir() and p.name.startswith(paths.DOWNLOAD_PREFIX)]
+    # the download is kept on this computer only, never in the shared folder; the shared folder logs the pull
+    old = f"{paths.DOWNLOAD_PREFIX} 2026-10-21 16-28.zip"  # the fixture's, from before downloads stayed local
+    assert [p.name for p in (root / COURSE / HW).iterdir() if p.name.startswith(paths.DOWNLOAD_PREFIX)] == [old]
+    backup = tmp_path / "Moodle originals" / paths.BACKUP / COURSE / HW
+    kept = [p for p in backup.iterdir() if p.is_dir() and p.name.startswith(paths.DOWNLOAD_PREFIX)]
     assert len(kept) == 1 and sorted(p.name for p in kept[0].iterdir()) == ["part 001.zip", "part 002.zip", "parts.json"]
+    log = (root / COURSE / HW / paths.PULL_LOG).read_text(encoding="utf-8-sig").splitlines()
+    assert log[0] == "pulled_at,by,students,new,files,parts" and log[-1].split(",")[2:] == ["4", "1", "4", "2"]
     assert list(ingest.downloads_dir().iterdir()) == []  # every part was taken
     assert actions.pull_status()["phase"] == "number"
     assert len(list((tmp_path / "Moodle originals" / COURSE / HW).iterdir())) == 4
@@ -521,3 +527,32 @@ def test_the_site_dates_every_kind_of_kept_download(root):
     assert len(times) == 3 and times[0] == "2026-10-22T09:30" and times == sorted(times)
     assert actions._last_download(a) == times[-1] != "2026-10-22T09:30"
     assert len(status.status(a.dir)["downloads"]) == 4  # moodle status lists the folder of parts too
+
+
+def test_a_local_copy_does_not_pull(tmp_path, monkeypatch):
+    """תיקיית מערכת מקומית (לא בתוך YallaLinearit המסונכרנת) לא מושכת: לפני כרום ולפני שנוצר משהו."""
+    from moodle import ingest
+    local = tmp_path / "Exercise Checking System"
+    (local / COURSE).mkdir(parents=True)
+    fake = FakeDownloader(ingest.downloads_dir())
+    monkeypatch.setattr(actions, "_make_downloader", lambda: fake)
+    with pytest.raises(actions.UserError, match="עותק מקומי"):
+        actions.pull(local, COURSE, "Assignment 3", moodle_id="3453769")
+    assert fake.calls == [] and not (local / COURSE / "Assignment 3").exists()
+    monkeypatch.setenv("MOODLE_DRIVER", "simulate")  # the demo has no OneDrive: it may
+
+    def past_the_rule(*a, **k):
+        raise actions.UserError("past the rule")
+    monkeypatch.setattr(actions, "new_assignment", past_the_rule)
+    with pytest.raises(actions.UserError, match="past the rule"):
+        actions.pull(local, COURSE, "Assignment 3", moodle_id="3453769")
+
+
+def test_the_site_dates_pulls_from_the_pull_log_and_old_kept_zips(root):
+    from moodle import ingest
+    a = actions.find_assignment(root, COURSE, HW)
+    (a.dir / paths.PULL_LOG).write_text("pulled_at,by,students,new,files,parts\n"
+                                        "2026-10-23T10:55:07,ori34 (OriLaptop),14,10,14,1\n", encoding="utf-8-sig")
+    assert ingest.pulls(a.dir) == ["2026-10-23T10:55:07"]
+    times = actions._downloads(a)
+    assert times[-1] == "2026-10-23T10:55" and "2026-10-21T16:28" in times  # the fixture's old ZIP still counts

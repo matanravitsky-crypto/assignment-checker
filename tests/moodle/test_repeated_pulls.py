@@ -121,8 +121,10 @@ def test_eight_pulls_in_a_row_overwrite_nothing(data, seed):
                 assert mine, f"round {round_no}: {numbers[pid]} (not in this download) lost its files"
         assert not list(data.iterdir()), "something was left in Downloads"
         assert not [p for p in folder().rglob("*") if p.name.endswith(".tmp") or "(previous)" in p.name]
-    kept = [p for p in folder().iterdir() if p.name.startswith(paths.DOWNLOAD_PREFIX)]
+    assert not [p for p in folder().iterdir() if p.name.startswith(paths.DOWNLOAD_PREFIX)], "a download in OneDrive"
+    kept = [p for p in paths.backup_dir(folder()).iterdir() if p.name.startswith(paths.DOWNLOAD_PREFIX)]
     assert len(kept) == 8, "a download kept in the same minute as another overwrote it"
+    assert len(ingest.pulls(folder())) == 8  # every pull is in the shared folder's log
 
 
 def test_a_pull_that_fails_halfway_loses_nothing(data, monkeypatch):

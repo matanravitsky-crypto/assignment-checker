@@ -46,6 +46,15 @@ README = "README.txt"
 # Grading sends all of it to Claude. "פדגוגי" is the name the team gave it; "Pedagogy" works too.
 PEDAGOGY = ("Pedagogy", "פדגוגי")
 DOWNLOAD_PREFIX = "Moodle download"
+# Every Moodle download is kept, as Moodle gave it, on the computer that pulled only (it has the students' names, and
+# 2-3 GB per pull would fill OneDrive): <ASSIGNMENT_WORK>/Backup - Moodle downloads/<course>/<assignment>/
+BACKUP = "Backup - Moodle downloads"
+# In the assignment folder: one row per pull (when, who, how many), so every computer sees when it was pulled
+PULL_LOG = "Pull log.csv"
+# The shared folder is the course's OneDrive folder ("YallaLinearit", or "<owner> - YallaLinearit" as OneDrive names
+# it): pulls write the one key there. A copy outside it (a local folder) must not pull: its key would not see the
+# numbers another computer gave, and two students would get one number
+SHARED_COURSE_FOLDER = "YallaLinearit"
 PULL_LOCK = "Pull in progress.txt"      # in the assignment folder while a pull runs (see lock.py)
 UPLOAD_LOCK = "Upload in progress.txt"  # in the assignment folder while an upload to Moodle runs
 
@@ -80,6 +89,18 @@ def assignment_dir(assignment_id: str) -> Path:
     if found is None:
         raise FileNotFoundError(f"No assignment with Moodle id {assignment_id} under {data_dir()}")
     return found
+
+
+def backup_dir(assignment_dir: Path) -> Path:
+    """Where this computer keeps the assignment's Moodle downloads (never in OneDrive)."""
+    return work_dir() / BACKUP / assignment_dir.relative_to(data_dir())
+
+
+def in_shared_folder(path: Path) -> bool:
+    """Is this folder inside the course's synced OneDrive folder, where the one key of every assignment lives?"""
+    name = SHARED_COURSE_FOLDER
+    return any(p.name == name or p.name.endswith(f" - {name}") or p.name.startswith(f"{name} - ")
+               for p in Path(path).resolve().parents)
 
 
 def original_dir(assignment_dir: Path) -> Path:

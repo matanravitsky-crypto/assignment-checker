@@ -72,7 +72,7 @@ Exercise Checking System/
       Grades.csv                      number,grade,feedback (ציונים ישנים ואישורים ביד)
       Grades by <שם>.csv              הציונים שכל בודק כתב (מה שהבדיקה מחזירה)
       Who grades what/<שם>.json       אילו עבודות כל בודק לקח (חלוקה בצוות)
-      Moodle download <תאריך>.zip     ה-ZIP בדיוק כפי שמודל נתן
+      Pull log.csv                    מתי משכו, מי וכמה (מספרים בלבד). ה-ZIP של מודל נשאר במחשב שמשך
 ```
 
 השמות של כל התיקיות והקבצים מוגדרים במקום אחד: [`moodle/paths.py`](moodle/paths.py).

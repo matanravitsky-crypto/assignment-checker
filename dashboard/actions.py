@@ -204,9 +204,23 @@ def _eta(phase: str, done: int, total: int, elapsed: float, measured: int) -> in
 
 def _expected_zip_size(a: folder_view.Assignment) -> int:
     """בערך כמה גדול ה-ZIP: ההורדה הקודמת הכי גדולה של המטלה (אותן הגשות, ועוד מה שהוגש מאז). 0 אם אין."""
-    sizes = [p.stat().st_size for p in a.dir.glob(f"{paths.DOWNLOAD_PREFIX} *.zip")
-             if p.is_file() and f"({moodle_ingest.INCOMPLETE})" not in p.name]  # a cut download is no measure
+    sizes = []
+    for folder in (a.dir, _backup_dir(a)):  # kept on this computer; older pulls kept it in the assignment folder
+        for p in folder.glob(f"{paths.DOWNLOAD_PREFIX} *") if folder else []:
+            if f"({moodle_ingest.INCOMPLETE})" in p.name:  # a cut download is no measure
+                continue
+            if p.is_file() and p.suffix.lower() == ".zip":
+                sizes.append(p.stat().st_size)
+            elif p.is_dir():  # a download in parts
+                sizes.append(sum(z.stat().st_size for z in p.glob("*.zip")))
     return max(sizes, default=0)
+
+
+def _backup_dir(a: folder_view.Assignment) -> Path | None:
+    try:
+        return paths.backup_dir(a.dir)
+    except ValueError:  # an assignment outside the data folder (it can't be pulled from here anyway)
+        return None
 
 
 def pull(root: Path, course: str, assignment: str, moodle_id: str | None = None) -> dict:
@@ -227,7 +241,16 @@ def pull(root: Path, course: str, assignment: str, moodle_id: str | None = None)
             job.running = False
 
 
+NOT_SHARED = ("במחשב הזה תיקיית המערכת היא עותק מקומי ({root}), לא התיקייה המשותפת של הקורס ב-OneDrive, ולכן "
+              "לא מושכים ממנו. טבלת המפתח של כל מטלה נמצאת בתיקייה המשותפת: משיכה מעותק מקומי לא הייתה רואה את "
+              "המספרים שמחשב אחר כבר נתן, ושני סטודנטים היו מקבלים אותו מספר. מושכים ממחשב שהתיקייה YallaLinearit "
+              "מסונכרנת בו (OneDrive ← \"הוסף קיצור דרך לקבצים שלי\"), למשל של יוסי.")
+
+
 def _do_pull(root: Path, course: str, assignment: str, moodle_id: str | None) -> dict:
+    # Pull only into the synced shared folder (moodle/paths.py in_shared_folder); the demo has no Moodle and no OneDrive
+    if not paths.in_shared_folder(root) and os.environ.get("MOODLE_DRIVER") != "simulate":
+        raise UserError(NOT_SHARED.format(root=root))
     a = new_assignment(root, course, assignment, moodle_id) if moodle_id else find_assignment(root, course, assignment)
     _take_task_if_free(a.dir.parent, assignment, "pull")
     mid = _moodle_id(a)
@@ -257,7 +280,7 @@ def _do_pull(root: Path, course: str, assignment: str, moodle_id: str | None) ->
         "course": course, "assignment": assignment,
         "result": {"total": len(numbers), "new": len(new), "files": len(rows)},
         "summary": f"{len(numbers)} הגשות" + (f", {len(new)} חדשות" if new else ", אין חדשות"),
-        "notes": [f"הקבצים נשמרו ב-\"{paths.TO_GRADE}\", וה-ZIP נשמר בתיקיית המטלה."]
+        "notes": [f"הקבצים נשמרו ב-\"{paths.TO_GRADE}\". ה-ZIP של מודל נשמר רק במחשב הזה, ב-\"{paths.BACKUP}\"."]
                  + ([f"{without_file} סטודנטים בטבלת ההגשות במודל הגיעו בלי קובץ (לא הגישו קובץ, או שמודל לא שלח אותו)."]
                     if without_file else []),
         "pulled_at": datetime.now().isoformat(timespec="seconds"),
@@ -1139,10 +1162,11 @@ def _download_time(stamp: str) -> datetime:
 
 
 def _downloads(a: folder_view.Assignment) -> list[str]:
-    """מתי נמשכו ה-ZIP-ים של המטלה (כל הורדה נשמרת בתיקיית המטלה), מהישן לחדש."""
-    times = sorted(_download_time(m.group(1)) for p in a.dir.glob(f"{paths.DOWNLOAD_PREFIX} *")
-                   if (m := _DOWNLOAD.match(p.name)))
-    return [t.isoformat(timespec="minutes") for t in times]
+    """מתי נמשכה המטלה, מהישן לחדש: מיומן המשיכות ("Pull log.csv", שורה לכל משיכה), ומשיכות ישנות שהשאירו את
+    ה-ZIP בתיקיית המטלה. ה-ZIP עצמו נשמר היום רק במחשב שמשך, אז היומן הוא מה שכל המחשבים רואים."""
+    times = [datetime.fromisoformat(t) for t in moodle_ingest.pulls(a.dir)]
+    times += [_download_time(m.group(1)) for p in a.dir.glob(f"{paths.DOWNLOAD_PREFIX} *") if (m := _DOWNLOAD.match(p.name))]
+    return [t.isoformat(timespec="minutes") for t in sorted(times)]
 
 
 def _last_download(a: folder_view.Assignment) -> str | None:
@@ -1151,7 +1175,7 @@ def _last_download(a: folder_view.Assignment) -> str | None:
 
 def _activity(a: folder_view.Assignment, log: list[dict]) -> list[dict]:
     """יומן הפעילות של המטלה, רק ממה שבאמת קרה בתיקייה: משיכות, עדכון קובצי הציונים והעלאות למודל. בלי שמות של סטודנטים."""
-    out = [{"at": at, "kind": "pull", "text": "נמשכו הגשות ממודל (ZIP נקלט לתיקיית המטלה)"} for at in _downloads(a)]
+    out = [{"at": at, "kind": "pull", "text": "נמשכו הגשות ממודל"} for at in _downloads(a)]
     for f in moodle_grades.files(a.dir):  # Grades.csv, וקובץ לכל בודק
         n = sum(1 for r in moodle_grades.read_file(f).values() if r.get("grade"))
         out.append({"at": datetime.fromtimestamp(f.stat().st_mtime).isoformat(timespec="minutes"),
