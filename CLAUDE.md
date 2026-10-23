@@ -130,14 +130,19 @@ There is **no Moodle API**. Claude in Chrome works in the user's own logged-in C
 - Download: Actions (פעולות) → "הורדת כל ההגשות (השתמש ב 7ZIP לפתיחה)", or straight `view.php?id=<id>&action=downloadall`.
   Keep "הורדת הגשות בתיקיות" (download submissions in folders) checked: `anonymize` needs a folder per student.
   The ZIP lands in Downloads as `<course code>-<assignment>-<id>.zip`. Open with 7-Zip, not Python's zipfile (it garbles some Hebrew names).
-- **The pull button downloads by itself.** `POST /api/pull` first looks for an unconsumed ZIP of the assignment in Downloads
-  (`ingest` moves every ZIP it takes, so one still there was downloaded by hand and not pulled yet). If there is none,
-  `ClaudeChromeDriver.download` runs one locked-down `claude -p --chrome` (`--tools ""`, an empty temp folder, prompt
-  `DOWNLOAD_PROMPT`): it opens the grading page, ticks "הורדת הגשות בתיקיות" if it is off (a personal display option, the
-  only click it may make), and opens the `downloadall` address. Python then waits for the ZIP in Downloads
-  (`ingest.wait_for_download`: nothing within 3 minutes = Chrome never started it, say because it asks where to save; at most
-  25 minutes, under the 30 minutes after which the pull lock counts as stuck), and ingests it. The download shares the
-  "one Chrome job at a time" guard with the connection check and the upload. Not yet run against the real Moodle (2026-10-22).
+- **The pull button downloads by itself, in parts.** `POST /api/pull` first looks for an unconsumed ZIP of the assignment in
+  Downloads (`ingest` moves every ZIP it takes, so one still there was downloaded by hand and not pulled yet; a `BROKEN ` one
+  never counts). If there is none, `ClaudeChromeDriver.download_parts` runs one locked-down `claude -p --chrome` (`--tools ""`,
+  an empty temp folder, prompt `PARTS_PROMPT`): it opens the grading page, ticks "הורדת הגשות בתיקיות" if it is off (a personal
+  display option, the only click it may make), and runs `moodle/parts.js` from the local server in that tab. One `downloadall`
+  ZIP comes out cut off at about 2 GB, so the script collects the user ids of everyone who submitted (reading only) and asks
+  Moodle for 50 at a time, the same POST as the "Download" of selected rows (`operation=downloadselected`). After each part it
+  asks the dashboard (`/api/pull/zip`, `dashboard/pull_parts.py`) whether the ZIP arrived whole (7-Zip test); a cut-off one is
+  renamed `BROKEN ...` and the same students are asked for again in halves. When the script reports `/api/pull/finish`,
+  Python ingests all the parts together. The pull waits up to 90 minutes (35 without a new part = the tab was closed) and
+  refreshes its lock every minute. Only `https://moodle.bgu.ac.il` gets CORS, only for `/api/pull/`, read only; Chrome asks
+  once to allow Moodle to reach the local server. The download shares the "one Chrome job at a time" guard with the
+  connection check and the upload. Not yet run end to end against the real Moodle (2026-10-23).
 - Feedback upload: Actions → "העלאת מספר קובצי משוב כקובץ 7Zip אחד" → the ZIPs in `3 - Ready to upload to Moodle`
   (`Graded - part 01.zip` ...), one at a time. **BGU Moodle imports at once**: clicking "יבוא קבצי משוב" imports
   immediately, with no confirmation list (file → student) before it. Moodle then lands on the grading page with a

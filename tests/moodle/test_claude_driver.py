@@ -450,3 +450,17 @@ def test_download_never_raises():
     out = driver(FakeRun(raises=subprocess.TimeoutExpired("claude", 300))).download(INFO)
     assert out["status"] == "error" and "דקות" in out["message"]
     assert driver(FakeRun()).download({"id": "1; rm"})["status"] == "error"  # an id that is not digits never reaches the prompt
+
+
+def test_download_parts_runs_the_parts_script_from_the_local_server_only():
+    base = "http://127.0.0.1:8765/api/pull/"
+    run = FakeRun(cli_output({"status": "started", "message": "started"}))
+    assert driver(run).download_parts(INFO, base) == {"status": "started", "message": "started"}
+    (cmd, kwargs), = run.calls
+    prompt = cmd[-1]
+    assert GRADING_URL.format(id="3438636") in prompt and f'fetch("{base}parts.js")' in prompt
+    assert 'cmid: "3438636"' in prompt and "action=downloadall" not in prompt
+    assert cmd[cmd.index("--tools") + 1] == "" and "--chrome" in cmd
+    for bad in ("https://evil.example/api/pull/", 'http://127.0.0.1:8765/api/pull/"); alert(1); ("'):
+        run = FakeRun(cli_output({"status": "started", "message": ""}))
+        assert driver(run).download_parts(INFO, bad)["status"] == "error" and run.calls == []

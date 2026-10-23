@@ -33,7 +33,7 @@ from grading import grade as grading
 from moodle import (anonymize as moodle_anonymize, claude_driver, ingest as moodle_ingest, lock as moodle_lock, paths,
                     send as moodle_send, upload as moodle_upload, upload_log)
 
-from . import folder_view, settings as cfg, shared_folder
+from . import folder_view, pull_parts, settings as cfg, shared_folder
 
 
 def root_info() -> tuple[Path | None, str | None]:
@@ -146,9 +146,9 @@ def pull(root: Path, course: str, assignment: str, moodle_id: str | None = None)
     before = {r["number"] for r in a.key_rows()}
     lock = _take_lock(a)
     try:
-        zip_path = _zip_from_moodle(a, mid)
-        _title_from_zip(a, zip_path, mid)
-        rows = moodle_ingest.ingest(mid, zip_path)
+        zips = _zips_from_moodle(a, mid, lock)
+        _title_from_zip(a, zips[0], mid)
+        rows = moodle_ingest.ingest(mid, zips if len(zips) > 1 else zips[0])
     except (FileNotFoundError, ValueError) as e:
         raise UserError(_hebrew_error(e, mid)) from e
     finally:
@@ -164,14 +164,17 @@ def pull(root: Path, course: str, assignment: str, moodle_id: str | None = None)
     }
 
 
-DOWNLOAD_POLL_S = 2.0  # כל כמה שניות מסתכלים בתיקיית ההורדות אם ה-ZIP הגיע
-DOWNLOAD_WAIT_S = 25 * 60  # הכי הרבה שמחכים להורדה: פחות מ-30 הדקות שאחריהן נעילת המשיכה נחשבת תקועה
+PARTS_POLL_S = 5.0  # כל כמה שניות שואלים את pull_parts אם הסקריפט שבלשונית של מודל סיים
+PARTS_WAIT_S = 90 * 60  # הכי הרבה שמחכים לכל החלקים (מטלה של 1,000 סטודנטים: 20 חלקים)
+PARTS_STALL_S = 35 * 60  # בלי אף חלק חדש כל הזמן הזה: הלשונית נסגרה או נתקעה (חלק אחד: עד 15 דקות, ואז חצאים)
+LOCK_REFRESH_S = 60  # המשיכה ארוכה מ-30 הדקות שאחריהן נעילה נחשבת תקועה, אז מחדשים אותה
+SERVER_PORT = 8765  # הכתובת שהסקריפט בלשונית של מודל פונה אליה. serve() כותב כאן את הפורט שלו
 
 
 class _SimDownloader:
     """הדגמה (MOODLE_DRIVER=simulate): אין מודל, אז אין ממה להוריד."""
 
-    def download(self, info: dict) -> dict:
+    def download_parts(self, info: dict, base: str) -> dict:
         return {"status": "error", "message": "בהדגמה אין מודל. שמים ZIP של המטלה בתיקיית ההורדות ומושכים שוב."}
 
 
@@ -179,24 +182,34 @@ def _make_downloader():
     return _SimDownloader() if os.environ.get("MOODLE_DRIVER") == "simulate" else claude_driver.ClaudeChromeDriver()
 
 
-def _zip_from_moodle(a: folder_view.Assignment, mid: str) -> Path:
-    """ה-ZIP של כל ההגשות: מה שכבר מחכה בתיקיית ההורדות (מישהו הוריד ידנית), ואם אין, Claude בכרום מוריד אותו עכשיו.
-
-    ingest מעביר כל ZIP שנקלט מתיקיית ההורדות לתיקיית המטלה, כך ש-ZIP שנשאר שם עוד לא נקלט."""
-    global _checking
+def _waiting_zip(mid: str) -> Path | None:
+    """ZIP של המטלה שכבר מחכה בתיקיית ההורדות (מישהו הוריד ידנית). ingest מעביר כל ZIP שנקלט, כך שמה שנשאר עוד
+    לא נקלט. ZIP שסומן קטוע (BROKEN) לא נחשב."""
     try:
-        return moodle_ingest.find_download(mid)
+        zips = [p for p in moodle_ingest.find_parts(mid) if not p.name.startswith(pull_parts.BROKEN_PREFIX)]
     except FileNotFoundError:
-        pass
+        return None
+    return max(zips, key=lambda p: p.stat().st_mtime) if zips else None
+
+
+def _zips_from_moodle(a: folder_view.Assignment, mid: str, lock: Path) -> list[Path]:
+    """ה-ZIPים של כל ההגשות: מה שכבר מחכה בתיקיית ההורדות, ואם אין, Claude בכרום מפעיל בלשונית של מודל את ההורדה
+    בחלקים של 50 (moodle/parts.js), ומחכים שכל החלקים יגיעו שלמים (dashboard/pull_parts.py).
+
+    ZIP אחד של כל המטלה מודל קוטע בערך ב-2GB, ולכן מורידים בחלקים."""
+    global _checking
+    waiting = _waiting_zip(mid)
+    if waiting:
+        return [waiting]
     with _send_lock:  # ההורדה, הבדיקה וההעלאה היו מפעילות את אותו כרום
         if _send.running:
             raise UserError("העלאה למודל רצה עכשיו בכרום. אפשר למשוך כשהיא תסתיים.")
         if _checking:
             raise UserError("בדיקת החיבור למודל רצה עכשיו בכרום. כדאי לנסות שוב בעוד דקה.")
         _checking = True
-    since = time.time()
+    pull_parts.begin(mid)
     try:
-        result = _make_downloader().download(paths.read_info(a.dir))
+        result = _make_downloader().download_parts(paths.read_info(a.dir), f"http://127.0.0.1:{SERVER_PORT}/api/pull/")
     finally:
         with _send_lock:
             _checking = False
@@ -204,14 +217,39 @@ def _zip_from_moodle(a: folder_view.Assignment, mid: str) -> Path:
         if result.get("message") == claude_driver.NOT_LOGGED_IN:
             _drop_status_cache()
         raise UserError(f"ההורדה ממודל לא התחילה: {result.get('message') or 'Claude לא פירט למה.'}")
-    try:
-        return moodle_ingest.wait_for_download(mid, since, poll_s=DOWNLOAD_POLL_S, total_s=DOWNLOAD_WAIT_S)
-    except TimeoutError as e:
-        if "did not start" in str(e):
-            raise UserError("Claude ביקש ממודל את ה-ZIP, אבל ההורדה לא התחילה בכרום. אם כרום שואל איפה לשמור, "
-                            "מכבים בהגדרות שלו את \"שאל איפה לשמור כל קובץ\" ומושכים שוב.") from e
-        raise UserError("ההורדה ממודל לא הסתיימה בזמן. כשהיא תסתיים בכרום, לוחצים שוב \"משוך הגשות\": "
-                        "ה-ZIP שבתיקיית ההורדות ייקלט בלי להוריד שוב.") from e
+    run = _wait_for_parts(mid, lock)
+    if run.get("stage") != "done":
+        error = run.get("error") or "לא ידוע"
+        if error == "needs_login":
+            _drop_status_cache()
+            raise UserError("מודל ביקש להתחבר מחדש באמצע ההורדה. מתחברים למודל בכרום ומושכים שוב.")
+        raise UserError(f"ההורדה בחלקים נעצרה ({error}). החלקים שהגיעו נשארו בתיקיית ההורדות; מושכים שוב.")
+    zips = [moodle_ingest.downloads_dir() / name for name in run.get("ok", [])]
+    zips = [p for p in zips if p.exists()]
+    if not zips:
+        raise UserError("ההורדה בחלקים הסתיימה, אבל אף ZIP לא נמצא בתיקיית ההורדות.")
+    return zips
+
+
+def _wait_for_parts(mid: str, lock: Path) -> dict:
+    """מחכה שהסקריפט בלשונית של מודל יודיע שסיים, ומחדש בינתיים את נעילת המשיכה."""
+    start = last_change = last_refresh = time.monotonic()
+    seen = 0
+    while True:
+        run = pull_parts.status(mid)
+        if run.get("finished"):
+            return run
+        now = time.monotonic()
+        progress = len(run.get("ok", [])) + len(run.get("broken", []))
+        if progress != seen:
+            seen, last_change = progress, now
+        if now - start > PARTS_WAIT_S or now - last_change > PARTS_STALL_S:
+            raise UserError("ההורדה בחלקים לא הסתיימה בזמן (אולי הלשונית של מודל נסגרה). החלקים שהגיעו נשארו "
+                            "בתיקיית ההורדות; מושכים שוב.")
+        if now - last_refresh > LOCK_REFRESH_S:
+            moodle_lock.refresh(lock)
+            last_refresh = now
+        time.sleep(PARTS_POLL_S)
 
 
 # ---------- החזרה ----------

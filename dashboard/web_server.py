@@ -24,12 +24,16 @@ from urllib.parse import parse_qs, urlparse
 
 from grading import grade as grading
 
-from . import actions, folder_view, settings as cfg
+from . import actions, folder_view, pull_parts, settings as cfg
 
 WEBSITE = cfg.REPO_DIR / "website"
 HEADER = "X-Assignment-Checker"
 # האתר הציבורי ב-Vercel: רק הכתובת הזו בדיוק (לא כתובות תצוגה מקדימה של Vercel)
 SITE_ORIGINS = ("https://bodek-hacham.vercel.app",)
+# מודל: הסקריפט של המשיכה בחלקים (moodle/parts.js) רץ בלשונית שלו ושואל כאן אחרי כל חלק (dashboard/pull_parts.py).
+# המקור הזה מקבל CORS רק לכתובות /api/pull/, ורק לקריאה
+MOODLE_ORIGIN = "https://moodle.bgu.ac.il"
+PULL_PREFIX = "/api/pull/"
 _lock = threading.Lock()  # משיכה אחת בכל פעם
 FILE_TYPES = (".pdf", ".jpg", ".jpeg", ".png")  # מה אפשר להוריד מ-"1 - Submissions to grade"
 STALE_UPLOAD = "הקבצים השתנו מאז ההכנה. צריך ללחוץ שוב על 'העלה למודל'."
@@ -69,7 +73,8 @@ class Handler(SimpleHTTPRequestHandler):
         # האתר הציבורי קורא את התשובות (CORS). אתרים אחרים לא
         headers = getattr(self, "headers", None)
         origin = headers.get("Origin") if headers else None
-        if origin in SITE_ORIGINS:
+        moodle = origin == MOODLE_ORIGIN and urlparse(getattr(self, "path", "") or "").path.startswith(PULL_PREFIX)
+        if origin in SITE_ORIGINS or moodle:
             self.send_header("Access-Control-Allow-Origin", origin)
             self.send_header("Vary", "Origin")
         if not urlparse(getattr(self, "path", "") or "").path.startswith("/api/"):
@@ -79,10 +84,12 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_OPTIONS(self):
         """בקשת ה-preflight של הדפדפן לפני שהאתר הציבורי פונה לשרת (כולל Private Network Access של Chrome)."""
-        if not self._host_ok() or self.headers.get("Origin") not in SITE_ORIGINS:
+        origin = self.headers.get("Origin")
+        moodle = origin == MOODLE_ORIGIN and urlparse(self.path).path.startswith(PULL_PREFIX)
+        if not self._host_ok() or (origin not in SITE_ORIGINS and not moodle):
             return self.send_error(HTTPStatus.FORBIDDEN)
         self.send_response(HTTPStatus.NO_CONTENT)
-        self.send_header("Access-Control-Allow-Methods", "GET, POST")
+        self.send_header("Access-Control-Allow-Methods", "GET" if moodle else "GET, POST")
         self.send_header("Access-Control-Allow-Headers", f"Content-Type, {HEADER}")
         self.send_header("Access-Control-Allow-Private-Network", "true")
         self.send_header("Access-Control-Max-Age", "600")
@@ -199,9 +206,38 @@ class Handler(SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(data)
             return
+        if url.path.startswith(PULL_PREFIX):
+            return self._pull_parts(url)
         if url.path.startswith("/api/"):
             return self.send_error(HTTPStatus.NOT_FOUND)
         return super().do_GET()
+
+    def _pull_parts(self, url) -> None:
+        """בשביל moodle/parts.js בלשונית של מודל: הסקריפט עצמו, בדיקה של ZIP של חלק, וסוף המשיכה."""
+        query = {k: v[0] for k, v in parse_qs(url.query).items()}
+        if url.path == PULL_PREFIX + "parts.js":
+            data = pull_parts.SCRIPT.read_bytes()
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/javascript; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(data)
+            return
+        mid = query.get("mid", "")
+        if not mid.isdigit():
+            return self.send_error(HTTPStatus.BAD_REQUEST)
+        if url.path == PULL_PREFIX + "zip":
+            try:
+                since, expect = float(query.get("since", "0")), int(query.get("expect", "0"))
+            except ValueError:
+                return self.send_error(HTTPStatus.BAD_REQUEST)
+            return self._json(pull_parts.check(mid, since, expect))
+        if url.path == PULL_PREFIX + "finish":
+            pull_parts.finish(mid, query.get("stage", ""), query.get("users", ""), query.get("submitted", ""),
+                              query.get("parts", ""), query.get("error", ""))
+            return self._json({"ok": True})
+        return self.send_error(HTTPStatus.NOT_FOUND)
 
     # ---------- POST ----------
     def do_POST(self):
@@ -336,6 +372,7 @@ def serve(port: int = 8765, open_browser: bool = True) -> None:
         print(err)
         print("\nהאתר יעלה בכל זאת, ויציג את ההסבר הזה עד שהתיקייה תסתנכרן.")
     httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    actions.SERVER_PORT = port  # הסקריפט של המשיכה בחלקים פונה לפורט הזה
     actions.refresh_status_soon()  # כבר עכשיו, כדי שהתשובה תהיה מוכנה כשהאתר נפתח
     url = f"http://localhost:{port}/"
     print(f"\nבודק חכם פועל: {url}\nכדי לעצור: Ctrl+C או לסגור את החלון.")

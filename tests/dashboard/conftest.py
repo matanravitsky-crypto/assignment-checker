@@ -33,21 +33,31 @@ def fresh_dashboard_state(monkeypatch, tmp_path):
     downloads = tmp_path / "Downloads"
     downloads.mkdir()
     monkeypatch.setattr(ingest, "downloads_dir", lambda: downloads)
-    monkeypatch.setattr(actions, "DOWNLOAD_POLL_S", 0.01)
+    monkeypatch.setattr(actions, "PARTS_POLL_S", 0.01)
     monkeypatch.setattr(actions, "_make_downloader", lambda: FakeDownloader(downloads))
 
 
 class FakeDownloader:
-    """Moodle in the tests: "downloads" a ZIP of the assignment, as Chrome would."""
+    """Moodle in the tests: the parts script in Moodle's tab "downloads" the assignment's ZIPs, as Chrome would,
+    and tells the local server that it finished (dashboard/pull_parts.py)."""
 
-    def __init__(self, downloads, result=None):
-        self.downloads, self.result, self.calls = downloads, result, []
+    def __init__(self, downloads, result=None, parts=1, finish="done"):
+        self.downloads, self.result, self.parts, self.finish, self.calls = downloads, result, parts, finish, []
 
-    def download(self, info):
+    def download_parts(self, info, base):
+        from dashboard import pull_parts
         self.calls.append(info["id"])
+        self.base = base
         if self.result:
             return self.result
-        (self.downloads / f"214193210120271-x-{info['id']}.zip").write_bytes(b"zip from moodle")
+        mid = info["id"]
+        names = [f"214193210120271-x-{mid}{f' ({i})' if i else ''}.zip" for i in range(self.parts)]
+        for name in names:
+            (self.downloads / name).write_bytes(b"zip from moodle")
+        pull_parts._runs[mid]["ok"].extend(names)  # what pull_parts.check records for every part that arrived whole
+        if self.finish:
+            error = "" if self.finish == "done" else self.finish
+            pull_parts.finish(mid, "done" if self.finish == "done" else "error", str(self.parts * 50), "", str(self.parts), error)
         return {"status": "started", "message": "ok"}
 
 

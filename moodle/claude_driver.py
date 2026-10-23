@@ -132,6 +132,27 @@ Steps:
 Return only the structured result. "message" says what happened in one short sentence.
 """
 
+PARTS_PROMPT = """You start the download of all submissions of one Moodle assignment in parts, for a university course. Use only the Chrome tools.
+
+Rules (never break them):
+- Go only to this address: {grading_url}. Never open assignment settings or any other page.
+- If a login page appears, do not type anything anywhere. Stop and return status "needs_login".
+- Never type anything. Never take a screenshot. Never write any person's name in your answer.
+- Never change grades, submissions or assignment settings. The only thing you may click is the one checkbox in step 2.
+- Run only the JavaScript of step 3, exactly as written. Do not run any other JavaScript.
+
+Steps:
+1. Open {grading_url}. Check the address has id={assignment_id} and the page is the grading page of the assignment "{title}". If not, return "error".
+2. In the options of that page (usually near the bottom), find the checkbox "הורדת הגשות בתיקיות" (in English "Download submissions in folders").
+   If it is there and not checked, click it once so that it is checked (it is a personal display option, not an assignment setting). If it is not there, go on.
+3. In that tab, run this JavaScript with the javascript tool and read its result:
+   eval(await (await fetch("{base}parts.js")).text()); window.__ecsParts.start({{ cmid: "{assignment_id}", base: "{base}" }})
+   If the result has started: true, return "started". The download goes on by itself in the tab: do not navigate away, do not close it.
+   If it fails (for example the fetch is blocked), return "error" with the reason in one short sentence.
+
+Return only the structured result. "message" says what happened in one short sentence.
+"""
+
 # A failed run whose output is one of these means Claude Code itself is not logged in
 AUTH_PROBLEM = re.compile(r"authenticat|oauth|not logged in|/login|invalid api key", re.IGNORECASE)
 # What to say when Claude gives a failing status without a message
@@ -292,6 +313,34 @@ class ClaudeChromeDriver:
         # stdin closed: a headless run must not wait for input nobody types
         return self.run(cmd, capture_output=True, text=True, encoding="utf-8", timeout=timeout_s,
                         cwd=folder, stdin=subprocess.DEVNULL)
+
+    def download_parts(self, info: dict, base: str) -> dict:
+        """Start the download of all submissions in parts (moodle/parts.js) in the user's Chrome.
+
+        Same contract as download(). `base` is the local server's /api/pull/ address: the page loads parts.js from it
+        and asks it after every part whether the ZIP arrived whole (dashboard/pull_parts.py). Never raises."""
+        claude = self.claude or find_claude()
+        if not claude:
+            return {"status": "error", "message": NOT_INSTALLED}
+        timeout_s = min(self.timeout_s, DOWNLOAD_TIMEOUT_S)
+        try:
+            mid = assignment_id(info)
+            if not re.fullmatch(r"http://127\.0\.0\.1:\d{2,5}/api/pull/", base):  # it goes into the prompt as is
+                raise ValueError(f"not the local server's address: {base!r}")
+            prompt = PARTS_PROMPT.format(grading_url=GRADING_URL.format(id=mid), assignment_id=mid, base=base,
+                                         title=info.get("title") or info.get("name") or "")
+            with tempfile.TemporaryDirectory(prefix="moodle-download-", ignore_cleanup_errors=True) as empty:
+                proc = self.execute(claude, prompt, Path(empty), DOWNLOAD_SCHEMA, DOWNLOAD_BUDGET_USD, timeout_s)
+        except Exception as error:  # never raise: the caller shows the message
+            return {"status": "error", "message": failure_message(error, timeout_s)}
+        answer, problem = read_run(proc)
+        if answer is None:
+            return {"status": "error", "message": problem}
+        status = answer.get("status")
+        if status not in DOWNLOAD_STATUSES:
+            return {"status": "error", "message": UNEXPECTED}
+        message = str(answer.get("message") or "")[:MESSAGE_MAX] or DEFAULT_MESSAGES.get(status, "")
+        return {"status": status, "message": message}
 
     def upload_zip(self, info: dict, zip_path: Path, expected: int, dry_run: bool,
                    sha256: str | None = None) -> UploadResult:

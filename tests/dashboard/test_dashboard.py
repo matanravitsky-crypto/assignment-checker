@@ -301,20 +301,43 @@ def test_pull_downloads_from_moodle_when_no_zip_is_waiting(root, monkeypatch):
     seen, fake = [], FakeDownloader(ingest.downloads_dir())
     monkeypatch.setattr(actions, "_make_downloader", lambda: fake)
     monkeypatch.setattr("moodle.ingest.ingest", _record_ingest(seen))
+    monkeypatch.setattr(actions, "SERVER_PORT", 8799)
     actions.pull(root, COURSE, HW)
-    assert fake.calls == [MID]
+    assert fake.calls == [MID] and fake.base == "http://127.0.0.1:8799/api/pull/"
     assert [p.name for p in seen] == [f"214193210120271-x-{MID}.zip"]
+
+
+def test_pull_takes_every_part_that_arrived_whole(root, monkeypatch):
+    """מטלה גדולה יורדת בחלקים של 50. כל החלקים שהגיעו שלמים נקלטים יחד, וחלק שסומן קטוע לא."""
+    from moodle import ingest
+    seen, fake = [], FakeDownloader(ingest.downloads_dir(), parts=3)
+    monkeypatch.setattr(actions, "_make_downloader", lambda: fake)
+    monkeypatch.setattr("moodle.ingest.ingest", _record_ingest(seen))
+    actions.pull(root, COURSE, HW)
+    assert [p.name for p in seen[0]] == [f"214193210120271-x-{MID}.zip", f"214193210120271-x-{MID} (1).zip",
+                                         f"214193210120271-x-{MID} (2).zip"]
 
 
 def test_pull_takes_a_zip_that_was_downloaded_by_hand(root, monkeypatch):
     from moodle import ingest
     by_hand = ingest.downloads_dir() / f"קורס-הגשה 0-{MID}.zip"
     by_hand.write_bytes(b"zip")
+    (ingest.downloads_dir() / f"BROKEN קורס-הגשה 0-{MID} (1).zip").write_bytes(b"cut off")  # newer, but broken
     seen, fake = [], FakeDownloader(ingest.downloads_dir())
     monkeypatch.setattr(actions, "_make_downloader", lambda: fake)
     monkeypatch.setattr("moodle.ingest.ingest", _record_ingest(seen))
     actions.pull(root, COURSE, HW)
     assert seen == [by_hand] and fake.calls == []  # לא מורידים שוב
+
+
+def test_a_broken_zip_alone_is_not_taken(root, monkeypatch):
+    from moodle import ingest
+    (ingest.downloads_dir() / f"BROKEN קורס-הגשה 0-{MID}.zip").write_bytes(b"cut off")
+    fake = FakeDownloader(ingest.downloads_dir())
+    monkeypatch.setattr(actions, "_make_downloader", lambda: fake)
+    monkeypatch.setattr("moodle.ingest.ingest", _record_ingest([]))
+    actions.pull(root, COURSE, HW)
+    assert fake.calls == [MID]
 
 
 def test_pull_explains_a_download_that_did_not_start(root, monkeypatch):
@@ -327,19 +350,30 @@ def test_pull_explains_a_download_that_did_not_start(root, monkeypatch):
     assert not (root / COURSE / HW / actions.LOCK_FILE).exists()
 
 
-def test_pull_waits_for_chrome_to_finish_and_explains_a_stuck_download(root, monkeypatch):
+def test_pull_explains_a_parts_download_that_stopped(root, monkeypatch):
     from moodle import ingest
+    monkeypatch.setattr("moodle.ingest.ingest", lambda *a, **k: pytest.fail("nothing to ingest"))
+    for finish, message in (("needs_login", "להתחבר מחדש"), ("Moodle 503", "Moodle 503")):
+        fake = FakeDownloader(ingest.downloads_dir(), finish=finish)
+        monkeypatch.setattr(actions, "_make_downloader", lambda: fake)
+        with pytest.raises(actions.UserError, match=message):
+            actions.pull(root, COURSE, HW)
+        for p in ingest.downloads_dir().glob("*.zip"):
+            p.unlink()
 
-    class NothingArrives:
-        def download(self, info):
-            return {"status": "started", "message": "ok"}
 
-    monkeypatch.setattr(actions, "_make_downloader", NothingArrives)
-    def no_start(*a, **k):
-        raise TimeoutError("The download did not start in Chrome")
-    monkeypatch.setattr(ingest, "wait_for_download", no_start)
-    with pytest.raises(actions.UserError, match="שאל איפה לשמור"):
+def test_pull_gives_up_when_the_moodle_tab_stops_answering_and_keeps_its_lock_alive(root, monkeypatch):
+    """הלשונית של מודל נסגרה: אין חלק חדש ואין "סיימתי". בינתיים הנעילה מתחדשת, כי משיכה ארוכה מ-30 דקות."""
+    from moodle import ingest
+    fake = FakeDownloader(ingest.downloads_dir(), parts=0, finish=None)
+    monkeypatch.setattr(actions, "_make_downloader", lambda: fake)
+    monkeypatch.setattr(actions, "PARTS_STALL_S", 0.3)
+    monkeypatch.setattr(actions, "LOCK_REFRESH_S", 0.05)
+    refreshed = []
+    monkeypatch.setattr(actions.moodle_lock, "refresh", lambda lock: refreshed.append(lock))
+    with pytest.raises(actions.UserError, match="לא הסתיימה בזמן"):
         actions.pull(root, COURSE, HW)
+    assert refreshed and refreshed[0].name == actions.LOCK_FILE
 
 
 def test_pull_does_not_download_while_an_upload_uses_chrome(root, monkeypatch):
