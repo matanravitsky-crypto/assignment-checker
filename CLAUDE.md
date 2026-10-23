@@ -13,6 +13,8 @@ Each folder has a README.md that explains it.
 | `moodle/` | Steps 1 and 3: Moodle ZIP → numbered submissions (`ingest`), grades + marked files → ZIPs (`upload`), and the automatic upload to Moodle (`send`, `record`). `python -m moodle ingest|status|upload|send|record <id>`, `guide` |
 | `moodle/paths.py` | Every folder and file name in the shared folder (constants). Everything else imports names from here |
 | `grading/` | Step 2: grading with Claude. `python -m grading <id>` or the dashboard's "Grade" button. Through the API with `ANTHROPIC_API_KEY`, otherwise through the logged-in Claude Code (`grading/claude_cli.py`). Its README has the input/output contract, the rubric format and the `Grades.csv` columns |
+| `copying/` | Suspected copying between submissions, no Claude and no tokens: `python -m copying <id>` or the site's "העתקות" page (`#/copying`). Layer 0: the same file, or the same PDF document id / author / creation time. Layer 1: the same page (dHash for scans, rare shared 3-word sequences for typed pages). Writes `Copying check.json` (numbers and hashes only). Its README has the thresholds and what it can't catch |
+| `.claude/skills/rubric/` | "מחוון": builds an assignment's rubric, solutions, solution methods and common mistakes from a random sample (`python -m grading.sample`), a council of agents (`.claude/workflows/rubric.js`) and a field test. Output goes to the assignment's `פדגוגי/` folder. Follow the skill exactly; don't re-explore |
 | `dashboard/` | Local server that connects the website to the shared folder: `python -m dashboard serve` (or `start.bat`) |
 | `dashboard/actions.py` | Pull (Claude in Chrome downloads the ZIP when none waits in Downloads, then `moodle ingest`, with a lock and a key-conflict check), prepare return (`moodle upload`), upload to Moodle in the background (`moodle send`) with a readiness check, and the state the site shows (numbers only, no names) |
 | `website/` | The dashboard site "בודק חכם" (static HTML/JS, Hebrew RTL). Published to Vercel (project `bodek-hacham`, root dir `website`, https://bodek-hacham.vercel.app) from `main` through Vercel's Git integration. No demo data: it shows only what `dashboard/` reads from the shared folder, and the Vercel page connects to the dashboard on the same PC at `http://127.0.0.1:8765` (CORS for that exact origin only, `SITE_ORIGINS` in `dashboard/web_server.py`) |
@@ -46,12 +48,17 @@ Exercise Checking System/                  the data folder (ASSIGNMENT_DATA, def
       Who grades what/<name>.json the numbers each grader took (moodle/claims.py)
       Grading notes/              0001.json ...: per question comments, mistakes, "unsure", the marks, why a person should look (numbers only)
       Key - number to student.csv number → Moodle participant id → original folder  ← the one key
+      Copying check.json          suspected copying: pairs of numbers and why, per-file hashes (`python -m copying`)
       Upload in progress.txt      exists only while an upload runs ("<user> (<PC>) pid=<pid>", since when; 30 minutes without an update = stuck)
       Pull in progress.txt        the same while a pull runs
-      Moodle download <date>.zip  the ZIP exactly as Moodle gave it (every download is kept)
+      Pull log.csv                pulled_at,by,students,new,files,parts: one row per pull (numbers only), so every
+                                  computer sees when it was pulled
+      (older pulls left "Moodle download <date>.zip" here; new ones keep it on the puller's computer only)
 
 Moodle originals/                          on the downloader's computer only (ASSIGNMENT_WORK)
   <course>/<assignment>/   the extracted ZIP: one folder per student, "<full name>_<participant id>_assignsubmission_file"
+  Backup - Moodle downloads/<course>/<assignment>/   every download exactly as Moodle gave it ("Moodle download <date>.zip",
+                           or a "Moodle download <date>/" folder of parts). Never in OneDrive: names, and 2-3 GB a pull
 ```
 
 The extracted ZIP never goes to OneDrive: students' file names break its sync (see below). It can be rebuilt
@@ -73,12 +80,18 @@ The **key** that links a number back to a student is the Moodle *participant id*
 `anonymize.prepare` reads the existing key, and students who submitted since then get the next free numbers.
 Never delete or rebuild the key table of an assignment that is being graded.
 
-## Anyone can pull, one key
+## Pull only where the shared folder is synced, one key
 
-Anyone on the team can download from Moodle and pull: the dashboard's "Pull submissions" button or
-`python -m moodle ingest <id>` on their own computer. There is still **one** key table per assignment, in the
-shared folder, and `anonymize.prepare` reads it before numbering, so every student keeps their number no matter
-who pulls. What can break it is two pulls of the same assignment at once, before OneDrive synced the key between them.
+Ori's decision (2026-10-23): pulls happen only on a computer where the course's OneDrive folder ("YallaLinearit", synced
+through "Add shortcut to My files") is the data folder, like Yossi's or Matan's. There, anyone on the team can press
+"Pull submissions" (or run `python -m moodle ingest <id>`). A local copy (Ori's laptop: `~/Exercise Checking System`,
+uploaded to OneDrive by the browser sync) does not pull: its key would not see the numbers another computer gave, and
+its newer key would then be uploaded over the shared one, with two students on one number. `paths.in_shared_folder` is
+the rule (a folder named YallaLinearit, or "<owner> - YallaLinearit", above the data folder); `actions.pull` refuses
+before Chrome opens and before anything is created (`NOT_SHARED`), and so does `moodle ingest`. The demo
+(`MOODLE_DRIVER=simulate`) is exempt. There is **one** key table per assignment, in the shared folder, and
+`anonymize.prepare` reads it before numbering, so every student keeps their number no matter who pulls. What can still
+break it is two pulls of the same assignment at once, before OneDrive synced the key between them.
 So `dashboard/actions.py` guards the dashboard's pull:
 - **Lock:** while a pull runs, the assignment folder has `Pull in progress.txt` (who and since when). Another
   pull of that assignment waits until it's gone (a lock older than 30 minutes counts as stuck and is ignored).
@@ -88,6 +101,18 @@ So `dashboard/actions.py` guards the dashboard's pull:
 - **Conflicts:** if OneDrive still made a conflict copy of the key (`Key - number to student-<PC>.csv`), the
   dashboard shows it and refuses to pull until someone merges the copy into the main key and deletes it.
 - Let OneDrive finish syncing (the cloud icon) before pulling on another computer.
+- **A pull deletes nothing and overwrites nothing** (`anonymize.prepare`): files are written in place, a file that is
+  byte for byte the same stays untouched, and one a newer download replaces (a resubmission, a second file that is gone)
+  moves to `Earlier versions/<date>/` first. The key is checked before any file is touched (`check_key`: every old
+  student keeps their number, no number has two students; otherwise `KeyBroken` and nothing changes), written whole
+  through a temp file, and the old key is copied to `Key history/` (not next to the key: that would look like an
+  OneDrive conflict copy). A kept download never replaces another (`ingest._free`).
+  If the key changes on disk during the pull (another computer pulled the same assignment and OneDrive brought its
+  key), the pull puts back every file it copied or moved and writes nothing. OneDrive conflict copies of submissions
+  (`0571-DESKTOP-ABC.pdf`, `anonymize.submission_conflicts`) stop the pull and the upload until a person checks them.
+- **The right folder:** a ZIP is taken only by its exact `-<id>` ending, and `paths.find_assignment` refuses an id that
+  two assignment folders carry (`TwoFolders`), so הגשה 0 of Linear Algebra can never land in הגשה 1 of Discrete Mathematics.
+  When Moodle's grading table listed fewer students than the key has (a filter left on), the pull says so.
 
 Then:
 - Team: grade from `1 - Submissions to grade`, write `Grades by <name>.csv` and `2 - Graded with comments` next to it
@@ -134,6 +159,18 @@ with `python -m moodle status <id>`.
   Re-uploading replaces files with the same name. The folder picker is a native Windows dialog Claude can't see,
   so Ori picks the folder himself.
 
+**Automatic upload to the lecturer's OneDrive (`onedrive/`).** Instead of dragging the course folder and pressing
+"Replace", `onedrive/sync.js` runs in the lecturer's OneDrive tab (Claude in Chrome, `javascript_tool`) and uploads only
+what is new or changed, through SharePoint REST with the signed-in user's own rights (no app, no admin consent):
+`eval(await (await fetch("http://127.0.0.1:8765/api/sync/script.js")).text()); await window.__ecsSyncAll({dryRun: true})`,
+then without `dryRun`. The files come from the dashboard (`/api/sync/`, `dashboard/sync.py`: course list, file list
+with size and mtime, file bytes; only from inside a course folder of `ASSIGNMENT_DATA`, CORS only for
+`https://bgu365-my.sharepoint.com`), so they go computer → browser → OneDrive and not through Claude (few tokens, no
+10 MB limit). It never deletes, never overwrites a OneDrive file newer than the local one (a team's `Grades.csv`),
+skips locks and temp files, and checks sizes after uploading. Don't sync while `Grading part N in progress.txt` exists.
+Once per computer Chrome asks to allow the site to reach the local network: the user clicks "Allow".
+Checked 2026-10-23: 12 MB from the computer in 10 s, byte-identical; a dry run found Discrete Mathematics identical.
+
 When working with this data:
 - Grade from `1 - Submissions to grade` only. Don't open the extracted originals or print names, ת"ז or emails into chat, commits or logs.
 - The key table sits in the shared folder, so everyone with access to it can link numbers to students. Don't open it while grading.
@@ -144,8 +181,10 @@ When working with this data:
 
 There is **no Moodle API**. Claude in Chrome works in the user's own logged-in Chrome.
 - The user logs in themselves. Claude never types Moodle passwords.
-- Download only when someone on the team asks. No scheduled downloads: Moodle sessions expire, and
-  downloading per schedule wastes runs. Every **upload** to Moodle (grades or feedback) needs a person's yes.
+- Download when someone on the team asks, and once right after an assignment closes: `dashboard/scheduler.py` (a thread of
+  the dashboard server) warns 30 minutes before `SCHEDULE_PULL_TIME` (default 00:05 on the day after `due`, so a 23:59 deadline is in; `.env`), keeps the PC awake, and runs the
+  same `actions.pull` as the button. The day is the assignment's `due` date in `Assignment details.json`; it needs the PC on,
+  Chrome open and logged in to Moodle (sessions expire). `SCHEDULE_PULL=off` turns it off. No other scheduled downloads. Every **upload** to Moodle (grades or feedback) needs a person's yes.
 - Submissions page: `https://moodle.bgu.ac.il/moodle/mod/assign/view.php?id=<assignment id>&action=grading`.
   The assignment id is the `id=` in that URL (the number at the end of the ZIP name too).
 - Download by hand: Actions (פעולות) → "הורדת כל ההגשות (השתמש ב 7ZIP לפתיחה)", or straight `view.php?id=<id>&action=downloadall`.
@@ -164,12 +203,15 @@ There is **no Moodle API**. Claude in Chrome works in the user's own logged-in C
   Moodle for ~40 at a time (POST `action=gradingbatchoperation&operation=downloadselected`, ~10 s per part), counts the
   students in each ZIP's central directory, asks again in two halves for a part that is not whole (a single student together
   with one who already came: Moodle sends one file without a ZIP), and saves each part to Downloads at once
-  (`<name>-<id> part 003.zip`); last comes `<name>-<id>.json`, the list of parts with their sizes. A student that fails 3 times
+  (`<name>-<id> part 003 of 015.zip`: "of" is the parts planned so far, so the bar knows the total from the first part); last comes `<name>-<id>.json`, the list of parts with their sizes. A student that fails 3 times
   stops it all with an error and no list. **Claude waits in its run until the script says "saved"**: Claude in Chrome closes
   the tab of an ended run within ~2 minutes (the parts stopped at 14 of 15). Meanwhile the dashboard counts the parts in
-  Downloads for the progress bar (`GET /api/pull`, phases claude/parts/check/extract/number). `ingest.gather_parts` takes the
+  Downloads for the progress bar (`GET /api/pull`, phases claude/parts/check/extract/number, with `eta_s`: the seconds left in
+  the phase at its pace so far, shown as "נשארו בערך N דקות"). A pull with new submissions starts the copying check by itself.
+  The site asks `/api/changes` every 5 seconds (when visible and idle) and reloads when the folder changed, so a pull on another PC shows up through OneDrive without a refresh. `ingest.gather_parts` takes the
   list only if every part is there with its exact size, checks each, extracts all into one originals folder and numbers once;
-  the parts are kept in `Moodle download <date>/`. Run for real on 3438636 on 2026-10-23: 566 students in 15 parts, every
+  the parts are kept in `Moodle download <date>/` under `Backup - Moodle downloads` on the puller's computer, and the pull is
+  logged in the assignment's `Pull log.csv`. Run for real on 3438636 on 2026-10-23: 566 students in 15 parts, every
   earlier number kept. The download shares the "one Chrome job at a time" guard with the connection check and the upload.
 - Feedback upload: Actions → "העלאת מספר קובצי משוב כקובץ 7Zip אחד" → the ZIPs in `3 - Ready to upload to Moodle`
   (`Graded - part 01.zip` ...), one at a time. **BGU Moodle imports at once**: clicking "יבוא קבצי משוב" imports

@@ -14,6 +14,7 @@
 assignment-checker/
 ├── moodle/       שלבים 1 ו-3: הורדה ממודל ומספור, והכנת ההחזרה למודל
 ├── grading/      שלב 2: הבדיקה עם Claude
+├── copying/      חשד להעתקה בין הגשות, בלי Claude ובלי טוקנים
 ├── dashboard/    השרת המקומי: מחבר את האתר לתיקייה המשותפת ולכפתורים
 ├── website/      האתר עצמו (HTML/JS). מתפרסם ב-Vercel
 ├── tests/        כל הבדיקות, תיקייה לכל חלק
@@ -72,7 +73,7 @@ Exercise Checking System/
       Grades.csv                      number,grade,feedback (ציונים ישנים ואישורים ביד)
       Grades by <שם>.csv              הציונים שכל בודק כתב (מה שהבדיקה מחזירה)
       Who grades what/<שם>.json       אילו עבודות כל בודק לקח (חלוקה בצוות)
-      Moodle download <תאריך>.zip     ה-ZIP בדיוק כפי שמודל נתן
+      Pull log.csv                    מתי משכו, מי וכמה (מספרים בלבד). ה-ZIP של מודל נשאר במחשב שמשך
 ```
 
 השמות של כל התיקיות והקבצים מוגדרים במקום אחד: [`moodle/paths.py`](moodle/paths.py).

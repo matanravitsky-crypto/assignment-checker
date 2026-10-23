@@ -127,6 +127,11 @@ def main() -> None:
         return
 
     if args.command == "ingest":
+        if not paths.in_shared_folder(paths.data_dir()):
+            # its key would not see the numbers another computer gave: two students would get one number
+            raise SystemExit(f"{paths.data_dir()} is not in the course's synced OneDrive folder ({paths.SHARED_COURSE_FOLDER}). "
+                             "Pull only on a computer where it is synced, and set ASSIGNMENT_DATA to its "
+                             "\"Exercise Checking System\". Nothing was changed.")
         rows = ingest.ingest(args.assignment_id, args.zip, args.course, args.name)
         students = len({row["number"] for row in rows})
         print(f"{students} submissions, {len(rows)} files -> {paths.assignment_dir(args.assignment_id) / paths.TO_GRADE}")

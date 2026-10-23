@@ -12,7 +12,7 @@ python -m dashboard serve
 |---|---|
 | `shared_folder.py` | מוצא במחשב את `YallaLinearit/Exercise Checking System` |
 | `folder_view.py` | קורא את המבנה לתצוגה: קורסים, מטלות ומספרי הגשות. בלי שמות |
-| `actions.py` | הפעולות: משיכה (`moodle ingest`) עם נעילה ובדיקת עותקים כפולים, בדיקה ברקע (`grading/`), הכנת החזרה (`moodle upload`), העלאה למודל ברקע (`moodle send`), והמצב לאתר |
+| `actions.py` | הפעולות: משיכה (`moodle ingest`) עם נעילה ובדיקת עותקים כפולים, בדיקה ברקע (`grading/`), בדיקת העתקות ברקע (`copying/`), הכנת החזרה (`moodle upload`), העלאה למודל ברקע (`moodle send`), והמצב לאתר |
 | `web_server.py` | השרת: מגיש את האתר ואת `/api/...` |
 | `settings.py` | קורא את `.env` (מפתח Claude) |
 
@@ -31,6 +31,8 @@ python -m dashboard serve
 | `POST /api/pull` | משיכה: אם אין ZIP של המטלה בתיקיית ההורדות, Claude בכרום מוריד אותו ממודל (המערכת מחכה עד שההורדה מסתיימת), ואז `moodle ingest`. 422 עם הסבר אם ההורדה לא התחילה. בהגשה שעוד לא נמשכה (מקום ריק מעשר ההגשות של הקורס) שולחים גם `moodleId`, והתיקייה `Assignment N` נוצרת עם המזהה |
 | `POST /api/grade` | מתחיל בדיקה עם Claude ברקע: `{course, assignment, ids?, model?, parallel?, instructions?, sendSolution?}`. דרך מפתח ה-API אם יש, אחרת דרך Claude Code שמחובר במחשב. בלי שניהם: 400 עם הסבר |
 | `GET /api/grade` | מצב הבדיקה שרצה: כמה נבדקו, מה נכשל, וסיכום בסוף |
+| `POST /api/copying` | מתחיל בדיקת העתקות ברקע (`copying/check.py`, בלי Claude): `{course, assignment}`. 202 עם המצב, 409 אם כבר רצה אחת. התוצאה ב-`copying` של המטלה ב-`/api/state`: הזוגות החשודים (מספרים בלבד), העמודים שחוזרים אצל הרבה הגשות, ו-`stale` אם הגיעו קבצים מאז |
+| `GET /api/copying` | מצב בדיקת ההעתקות שרצה: `done` מתוך `total` קבצים, וסיכום בסוף |
 | `GET /api/pages?course=&assignment=&number=` | כמה עמודים יש בהגשה (כל הקבצים שלה יחד, כמו ש-Claude ראה אותם) |
 | `GET /api/page?course=&assignment=&number=&page=` | עמוד אחד של הגשה כתמונה (JPEG), לבדיקה הידנית |
 | `POST /api/review` | בדיקה ידנית: `{course, assignment, number, points[], comments[], feedback, mistakes[][]}`. שומר ב-Grades.csv כמאושר (מי ומתי) ומעדכן את עמוד הציון בעבודה המסומנת. 422 אם הניקוד לא לכל השאלות |

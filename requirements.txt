@@ -1,3 +1,4 @@
 pymupdf>=1.26
 anthropic>=2.1
 pytest>=8
+numpy>=1.26

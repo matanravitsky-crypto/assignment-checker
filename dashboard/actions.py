@@ -9,6 +9,8 @@
   החזרה  → moodle.upload.prepare_upload(<תיקיית המטלה>)
            בונה ב-"3 - Ready to upload to Moodle" את גיליון הציונים, את קובצי המשוב ואת
            הוראות ההעלאה. מישהו מהצוות מעלה אותם למודל ומאשר.
+  העתקות → copying.check.check_assignment: משווה את ההגשות זו לזו (קובץ זהה, מטא-דאטה, עמודים זהים), בלי Claude.
+           רץ ברקע, והתוצאה נכתבת ב-Copying check.json בתיקיית המטלה.
   העלאה  → moodle.send.prepare_batch / run_batch
            מכינים אצווה של עבודות מסומנות שהן חדשות או השתנו, ואחרי "כן" של אדם מעלים אותה ברקע
            דרך Claude in Chrome (מי שהעלה נרשם ב-Upload log.csv). האתר שואל מה המצב עד שהיא נגמרת.
@@ -20,6 +22,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import random
 import re
 import subprocess
 import threading
@@ -31,6 +34,7 @@ from pathlib import Path
 
 import pymupdf
 
+from copying import check as copying
 from grading import grade as grading
 from moodle import (anonymize as moodle_anonymize, claims, claude_driver, grades as moodle_grades,
                     ingest as moodle_ingest, lock as moodle_lock, paths, send as moodle_send, upload as moodle_upload,
@@ -79,6 +83,18 @@ def _hebrew_error(e: Exception, mid: str) -> str:
                 "לוחצים שוב \"משוך הגשות\" כדי להוריד מחדש.")
     if "7-Zip" in text:
         return "7-Zip לא מותקן במחשב הזה. מתקינים פעם אחת: winget install 7zip.7zip, ומנסים שוב."
+    if isinstance(e, paths.TwoFolders):
+        return (f"מזהה המודל {mid} שמור בשתי תיקיות מטלה, ולכן לא משכתי: לא ברור לאיזו מהן ההגשות שייכות. "
+                f"משאירים את המזהה רק בתיקייה הנכונה (ב-{paths.INFO}) ומושכים שוב. ({text})")
+    if isinstance(e, moodle_anonymize.KeyBroken) and "changed during the pull" in text:
+        return ("טבלת המפתח השתנתה באמצע המשיכה: כנראה מחשב אחר משך את אותה מטלה, ו-OneDrive הביא את הטבלה שלו. "
+                "המשיכה החזירה כל קובץ למקומו ולא שינתה כלום. מחכים ש-OneDrive יסיים לסנכרן ומושכים שוב.")
+    if isinstance(e, moodle_anonymize.KeyBroken) and "conflict copies" in text:
+        return ("ב-OneDrive יש עותקים כפולים של הגשות, ולכן לא משכתי: לא ברור של מי כל קובץ. "
+                f"בודקים אותם מול טבלת המפתח ומוחקים את העותק, ואז מושכים שוב. ({text})")
+    if isinstance(e, moodle_anonymize.KeyBroken):
+        return ("המשיכה נעצרה לפני ששינתה משהו: טבלת המפתח החדשה הייתה מזיזה או מאבדת סטודנט, או נותנת מספר אחד לשניים. "
+                f"שום הגשה ושום מספר לא השתנו. צריך לבדוק את \"{paths.KEY}\" לפני משיכה נוספת. ({text})")
     if "No ZIP" in text:
         return (f"לא נמצא ZIP של המטלה בתיקיית ההורדות (Downloads). במודל: \"הצגת כל ההגשות\" ← "
                 f"\"הורדת כל ההגשות\", ושם הקובץ צריך להיגמר ב-\"-{mid}.zip\".")
@@ -169,6 +185,7 @@ class PullProgress:
     eta_s: int | None = None
     phase_at: float = 0.0  # מתי השלב הזה התחיל (time.time()), ו-phase_done: כמה היה גמור אז. מהם הקצב
     phase_done: int = 0
+    moved_at: float = 0.0  # מתי done עלה בפעם האחרונה: מאז הזמן שנשאר יורד, ולא עולה בזמן שמחכים לחלק הבא
 
 
 _pull = PullProgress()
@@ -187,26 +204,48 @@ def _pull_report(phase: str, done: int = 0, total: int = 0) -> None:
     with _pull_lock:
         now = time.time()
         if phase != _pull.phase or done < _pull.phase_done:
-            _pull.phase_at, _pull.phase_done = now, done
+            _pull.phase_at, _pull.phase_done, _pull.moved_at = now, done, now
+        elif done > _pull.done:
+            _pull.moved_at = now
         _pull.phase, _pull.done, _pull.total = phase, done, total
         _pull.downloaded = _pull.downloaded or phase in ("download", "parts")
-        _pull.eta_s = _eta(phase, done, total, now - _pull.phase_at, done - _pull.phase_done)
+        _pull.eta_s = _eta(phase, done, total, _pull.moved_at - _pull.phase_at, done - _pull.phase_done,
+                           waiting=now - _pull.moved_at)
 
 
-def _eta(phase: str, done: int, total: int, elapsed: float, measured: int) -> int | None:
-    """כמה שניות נשארו לשלב, לפי הקצב שלו מאז שהתחיל. None כשאין ממה לדעת."""
+def _eta(phase: str, done: int, total: int, elapsed: float, measured: int, waiting: float = 0) -> int | None:
+    """כמה שניות נשארו לשלב, לפי הקצב שלו מתחילתו ועד ההתקדמות האחרונה, פחות מה שכבר עבר מאז (`waiting`).
+    כך הוא יורד בין חלק לחלק, ולא יורד מתחת לזמן של החלקים שעוד לא התחילו. None כשאין ממה לדעת."""
     if total <= 0 or done >= total:
         return 0 if total > 0 else None
     if measured > 0 and elapsed >= 1:
-        return round(elapsed / measured * (total - done))
-    return PART_S * (total - done) if phase == "parts" else None
+        each = elapsed / measured
+    elif phase == "parts":
+        each = PART_S
+    else:
+        return None
+    return round(max(each * (total - done) - waiting, each * (total - done - 1)))
 
 
 def _expected_zip_size(a: folder_view.Assignment) -> int:
     """בערך כמה גדול ה-ZIP: ההורדה הקודמת הכי גדולה של המטלה (אותן הגשות, ועוד מה שהוגש מאז). 0 אם אין."""
-    sizes = [p.stat().st_size for p in a.dir.glob(f"{paths.DOWNLOAD_PREFIX} *.zip")
-             if p.is_file() and f"({moodle_ingest.INCOMPLETE})" not in p.name]  # a cut download is no measure
+    sizes = []
+    for folder in (a.dir, _backup_dir(a)):  # kept on this computer; older pulls kept it in the assignment folder
+        for p in folder.glob(f"{paths.DOWNLOAD_PREFIX} *") if folder else []:
+            if f"({moodle_ingest.INCOMPLETE})" in p.name:  # a cut download is no measure
+                continue
+            if p.is_file() and p.suffix.lower() == ".zip":
+                sizes.append(p.stat().st_size)
+            elif p.is_dir():  # a download in parts
+                sizes.append(sum(z.stat().st_size for z in p.glob("*.zip")))
     return max(sizes, default=0)
+
+
+def _backup_dir(a: folder_view.Assignment) -> Path | None:
+    try:
+        return paths.backup_dir(a.dir)
+    except ValueError:  # an assignment outside the data folder (it can't be pulled from here anyway)
+        return None
 
 
 def pull(root: Path, course: str, assignment: str, moodle_id: str | None = None) -> dict:
@@ -218,6 +257,13 @@ def pull(root: Path, course: str, assignment: str, moodle_id: str | None = None)
     try:
         rep = _do_pull(root, course, assignment, moodle_id)
         job.summary = rep["summary"]
+        if rep["result"]["new"]:
+            # new submissions: the copying check (no Claude, no tokens) starts by itself, instead of a click on its page
+            try:
+                start_copying(root, course, assignment)
+                rep["notes"].append("בדיקת ההעתקות רצה עכשיו ברקע, והתוצאה תופיע בעמוד \"העתקות\".")
+            except (RuntimeError, OSError, UserError):
+                pass  # one already runs, or the folder went away: the button on that page still works
         return rep
     except Exception as e:
         job.error = str(e)
@@ -227,7 +273,16 @@ def pull(root: Path, course: str, assignment: str, moodle_id: str | None = None)
             job.running = False
 
 
+NOT_SHARED = ("במחשב הזה תיקיית המערכת היא עותק מקומי ({root}), לא התיקייה המשותפת של הקורס ב-OneDrive, ולכן "
+              "לא מושכים ממנו. טבלת המפתח של כל מטלה נמצאת בתיקייה המשותפת: משיכה מעותק מקומי לא הייתה רואה את "
+              "המספרים שמחשב אחר כבר נתן, ושני סטודנטים היו מקבלים אותו מספר. מושכים ממחשב שהתיקייה YallaLinearit "
+              "מסונכרנת בו (OneDrive ← \"הוסף קיצור דרך לקבצים שלי\"), למשל של יוסי.")
+
+
 def _do_pull(root: Path, course: str, assignment: str, moodle_id: str | None) -> dict:
+    # Pull only into the synced shared folder (moodle/paths.py in_shared_folder); the demo has no Moodle and no OneDrive
+    if not paths.in_shared_folder(root) and os.environ.get("MOODLE_DRIVER") != "simulate":
+        raise UserError(NOT_SHARED.format(root=root))
     a = new_assignment(root, course, assignment, moodle_id) if moodle_id else find_assignment(root, course, assignment)
     _take_task_if_free(a.dir.parent, assignment, "pull")
     mid = _moodle_id(a)
@@ -235,17 +290,26 @@ def _do_pull(root: Path, course: str, assignment: str, moodle_id: str | None) ->
     if conflicts:
         raise UserError(f"ב-OneDrive נוצר עותק כפול של טבלת המפתח ({', '.join(conflicts)}). "
                         "לפני משיכה נוספת צריך לאחד אותו עם הטבלה הראשית ולמחוק את העותק, כדי ששני סטודנטים לא יקבלו אותו מספר.")
+    copies = moodle_anonymize.submission_conflicts(a.dir)
+    if copies:
+        raise UserError(f"ב-OneDrive נוצרו עותקים כפולים של הגשות ({', '.join(copies[:5])}): שני מחשבים כתבו את אותו מספר. "
+                        "לא מושכים עד שמישהו בודק לאיזה סטודנט שייך כל קובץ (לפי טבלת המפתח) ומוחק את העותק.")
     _use_root(root)
     try:
         moodle_anonymize.check_key(a.dir)  # before downloading anything: a broken key would renumber everyone
-    except ValueError as e:
+        target = paths.find_assignment(mid)  # the ZIP of this id goes to this folder, and only to it
+    except ValueError as e:  # paths.TwoFolders is one too
         raise UserError(_hebrew_error(e, mid)) from e
-    before = {r["number"] for r in a.key_rows()}
+    if target is None or target.resolve() != a.dir.resolve():
+        raise UserError(f"מזהה המודל {mid} לא מוביל לתיקייה של {a.title}, ולכן לא משכתי. כדאי לרענן את הדף.")
+    old_rows = a.key_rows()
+    before = {r["number"] for r in old_rows}
     lock = _take_lock(a)
     try:
         zip_path = _zip_from_moodle(a, mid)
         _title_from_zip(a, zip_path, mid)
         without_file = _without_file(zip_path)
+        listed = _listed_users(zip_path)
         rows = moodle_ingest.ingest(mid, zip_path, on_progress=_pull_report)
     except (FileNotFoundError, ValueError) as e:
         raise UserError(_hebrew_error(e, mid)) from e
@@ -257,9 +321,12 @@ def _do_pull(root: Path, course: str, assignment: str, moodle_id: str | None) ->
         "course": course, "assignment": assignment,
         "result": {"total": len(numbers), "new": len(new), "files": len(rows)},
         "summary": f"{len(numbers)} הגשות" + (f", {len(new)} חדשות" if new else ", אין חדשות"),
-        "notes": [f"הקבצים נשמרו ב-\"{paths.TO_GRADE}\", וה-ZIP נשמר בתיקיית המטלה."]
+        "notes": [f"הקבצים נשמרו ב-\"{paths.TO_GRADE}\". ה-ZIP של מודל נשמר רק במחשב הזה, ב-\"{paths.BACKUP}\"."]
                  + ([f"{without_file} סטודנטים בטבלת ההגשות במודל הגיעו בלי קובץ (לא הגישו קובץ, או שמודל לא שלח אותו)."]
-                    if without_file else []),
+                    if without_file else [])
+                 + ([f"בטבלת ההגשות במודל הופיעו רק {listed} סטודנטים, ובטבלת המפתח יש {known}. אף אחד לא נמחק ואף מספר לא השתנה, "
+                     "אבל אם בטבלה במודל יש סינון (למשל \"לא נבדקו\" או אות ראשונה של שם), מבטלים אותו ומושכים שוב כדי לא לפספס הגשות."]
+                    if listed and listed < (known := len({r["participant_id"] for r in old_rows})) else []),
         "pulled_at": datetime.now().isoformat(timespec="seconds"),
     }
 
@@ -273,6 +340,16 @@ def _without_file(download: Path) -> int:
         asked = sum(int(f.get("asked") or 0) for f in listed.get("files") or [])
         came = sum(int(f.get("students") or 0) for f in listed.get("files") or [])
         return max(0, asked - came) + int(listed.get("empty") or 0)
+    except (OSError, ValueError, TypeError, AttributeError):
+        return 0
+
+
+def _listed_users(download: Path) -> int:
+    """בהורדה בחלקים: כמה סטודנטים היו בטבלת ההגשות במודל (0 כשלא ידוע)."""
+    if download.suffix.lower() != moodle_ingest.LIST:
+        return 0
+    try:
+        return int(json.loads(download.read_text(encoding="utf-8")).get("users") or 0)
     except (OSError, ValueError, TypeError, AttributeError):
         return 0
 
@@ -445,10 +522,21 @@ class GradeJob:
     error: str = ""
     started_at: str = ""
     finished_at: str = ""
+    stopping: bool = False  # ביקשו לעצור: הגשות שעוד לא נשלחו ל-Claude לא יישלחו
 
 
 _job = GradeJob()
 _job_lock = threading.Lock()
+_stop = threading.Event()  # הדגל שהבדיקה שרצה בודקת לפני כל הגשה
+
+
+def stop_grading() -> dict:
+    """עוצר את הבדיקה שרצה: מה שכבר נשלח ל-Claude מסתיים ונשמר, והשאר נשאר "ממתינה לבדיקה"."""
+    with _job_lock:
+        if _job.running:
+            _job.stopping = True
+            _stop.set()
+    return grade_status()
 
 
 def grade_status() -> dict:
@@ -471,6 +559,7 @@ def start_grading(root: Path, course: str, assignment: str, numbers: list[str] |
         _job = GradeJob(course, assignment, todo, running=bool(todo),
                         started_at=datetime.now().isoformat(timespec="seconds"))
         job = _job
+        _stop.clear()
     if not todo:
         job.summary = "אין הגשות שמחכות לבדיקה."
         job.finished_at = job.started_at
@@ -482,7 +571,7 @@ def start_grading(root: Path, course: str, assignment: str, numbers: list[str] |
 
     def run() -> None:
         try:
-            rep = grading.grade_assignment(a.dir, todo, ask=ask, on_progress=progress, **opts)
+            rep = grading.grade_assignment(a.dir, todo, ask=ask, on_progress=progress, stop=_stop, **opts)
             job.report, job.summary = asdict(rep), rep.summary()
         except (grading.NoApiKey, grading.ClaudeLimit) as e:
             job.error = str(e)
@@ -498,6 +587,82 @@ def start_grading(root: Path, course: str, assignment: str, numbers: list[str] |
     if wait:
         t.join()
     return grade_status()
+
+
+# ---------- העתקות ----------
+# בדיקת העתקות אחת בכל פעם בתהליך הזה. היא כותבת רק את Copying check.json, אז שתי בדיקות בשני מחשבים
+# לכל היותר דורסות זו את התוצאה של זו, באותו תוכן
+@dataclass
+class CopyJob:
+    course: str = ""
+    assignment: str = ""
+    running: bool = False
+    done: int = 0
+    total: int = 0
+    summary: str = ""
+    error: str = ""
+    started_at: str = ""
+    finished_at: str = ""
+
+
+_copy = CopyJob()
+_copy_lock = threading.Lock()
+
+
+def copying_status() -> dict:
+    with _copy_lock:
+        return asdict(_copy)
+
+
+def start_copying(root: Path, course: str, assignment: str, wait: bool = False) -> dict:
+    """מתחיל בדיקת העתקות ברקע. RuntimeError אם כבר רצה אחת."""
+    global _copy
+    a = find_assignment(root, course, assignment)
+    with _copy_lock:
+        if _copy.running:
+            raise RuntimeError("בדיקת העתקות כבר רצה. כדאי לחכות שתסתיים.")
+        _copy = CopyJob(course, assignment, running=True, started_at=datetime.now().isoformat(timespec="seconds"))
+        job = _copy
+
+    def progress(done: int, total: int) -> None:
+        with _copy_lock:
+            job.done, job.total = done, total
+
+    def run() -> None:
+        try:
+            job.summary = copying.check_assignment(a.dir, on_progress=progress).summary()
+        except Exception as e:  # השגיאה מוצגת באתר במקום שהבדיקה תיעלם בשקט
+            job.error = f"בדיקת ההעתקות נכשלה: {e}"
+        finally:
+            with _copy_lock:
+                job.running = False
+                job.finished_at = datetime.now().isoformat(timespec="seconds")
+
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    if wait:
+        t.join()
+    return copying_status()
+
+
+_copy_reports: dict[str, tuple[int, int, dict]] = {}
+
+
+def copying_state(assignment_dir: Path) -> dict | None:
+    """מה שהאתר מציג בדף "העתקות": הזוגות החשודים (מספרים בלבד), מתי נבדק, והאם הגיעו קבצים מאז."""
+    path = copying.report_path(assignment_dir)
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    hit = _copy_reports.get(str(path))
+    if not hit or hit[:2] != (st.st_size, st.st_mtime_ns):
+        hit = (st.st_size, st.st_mtime_ns, copying.read_report(assignment_dir))
+        _copy_reports[str(path)] = hit
+    rep = hit[2]
+    return {"checkedAt": rep.get("checked_at"), "by": rep.get("by") or "", "summary": rep.get("summary") or "",
+            "checked": rep.get("checked") or 0, "repeated": rep.get("repeated") or [],
+            "pairs": rep.get("pairs") or [], "stale": copying.is_stale(assignment_dir, rep)}
 
 
 # ---------- חלוקת העבודות בצוות ----------
@@ -602,8 +767,11 @@ def change_claims(root: Path, course: str, assignment: str, take: list[str] | No
     out: dict = {"taken": [], "others": {}, "released": []}
     with _claims_lock:
         if next_count:
+            # פנויות באקראי ולא הראשונות ברשימה: שניים שלוחצים באותו רגע, לפני ש-OneDrive סנכרן, כמעט לא יקחו
+            # את אותן עבודות. מה שבכל זאת נלקח פעמיים נשאר אצל מי שלקח ראשון, והבדיקה של השני מוותרת עליו
             held = claims.read_all(a.dir)
-            take += [n for n in grading.pending(a.dir) if n not in held and n not in take][:next_count]
+            free = [n for n in grading.pending(a.dir) if n not in held and n not in take]
+            take += sorted(random.sample(free, min(next_count, len(free))))
         if take:
             out.update(claims.take(a.dir, take))
         if release:
@@ -1139,10 +1307,11 @@ def _download_time(stamp: str) -> datetime:
 
 
 def _downloads(a: folder_view.Assignment) -> list[str]:
-    """מתי נמשכו ה-ZIP-ים של המטלה (כל הורדה נשמרת בתיקיית המטלה), מהישן לחדש."""
-    times = sorted(_download_time(m.group(1)) for p in a.dir.glob(f"{paths.DOWNLOAD_PREFIX} *")
-                   if (m := _DOWNLOAD.match(p.name)))
-    return [t.isoformat(timespec="minutes") for t in times]
+    """מתי נמשכה המטלה, מהישן לחדש: מיומן המשיכות ("Pull log.csv", שורה לכל משיכה), ומשיכות ישנות שהשאירו את
+    ה-ZIP בתיקיית המטלה. ה-ZIP עצמו נשמר היום רק במחשב שמשך, אז היומן הוא מה שכל המחשבים רואים."""
+    times = [datetime.fromisoformat(t) for t in moodle_ingest.pulls(a.dir)]
+    times += [_download_time(m.group(1)) for p in a.dir.glob(f"{paths.DOWNLOAD_PREFIX} *") if (m := _DOWNLOAD.match(p.name))]
+    return [t.isoformat(timespec="minutes") for t in sorted(times)]
 
 
 def _last_download(a: folder_view.Assignment) -> str | None:
@@ -1151,7 +1320,7 @@ def _last_download(a: folder_view.Assignment) -> str | None:
 
 def _activity(a: folder_view.Assignment, log: list[dict]) -> list[dict]:
     """יומן הפעילות של המטלה, רק ממה שבאמת קרה בתיקייה: משיכות, עדכון קובצי הציונים והעלאות למודל. בלי שמות של סטודנטים."""
-    out = [{"at": at, "kind": "pull", "text": "נמשכו הגשות ממודל (ZIP נקלט לתיקיית המטלה)"} for at in _downloads(a)]
+    out = [{"at": at, "kind": "pull", "text": "נמשכו הגשות ממודל"} for at in _downloads(a)]
     for f in moodle_grades.files(a.dir):  # Grades.csv, וקובץ לכל בודק
         n = sum(1 for r in moodle_grades.read_file(f).values() if r.get("grade"))
         out.append({"at": datetime.fromtimestamp(f.stat().st_mtime).isoformat(timespec="minutes"),
@@ -1232,13 +1401,14 @@ def state(root: Path) -> dict:
                 "noRubric": ctx.no_rubric, "maxGrade": ctx.max_grade, "solution": (a.dir / grading.SOLUTION).is_file(),
                 "notes": d.get("notes") or "", "rules": d.get("submission_rules") or [],
                 "warnings": [f"עותק כפול של טבלת המפתח: {c}" for c in key_conflicts(a)]
+                            + [f"עותק כפול של הגשה: {c}" for c in moodle_anonymize.submission_conflicts(a.dir)]
                             + [f"עותק כפול של יומן ההעלאה: {c}" for c in upload_log.log_conflicts(a.dir)]
                             + ([f"משיכה בתהליך: {moodle_lock.parse((a.dir / LOCK_FILE).read_text(encoding='utf-8'))[0]}"] if (a.dir / LOCK_FILE).exists() else [])
                             + ([f"העלאה בתהליך: {who}"] if (who := _upload_lock_holder(a)) else []),
-                "subs": subs, "log": _activity(a, log), "owners": owners,
+                "subs": subs, "log": _activity(a, log), "owners": owners, "copying": copying_state(a.dir),
             })
     return {"root": str(root), "courses": courses, "assignments": out, "me": me(),
-            "moodle": False, "claude": quick_via() is not None, "claudeVia": quick_via(), "grading": grade_status(), "sending": send_status()}
+            "moodle": False, "claude": quick_via() is not None, "claudeVia": quick_via(), "grading": grade_status(), "sending": send_status(), "copyCheck": copying_status()}
 
 
 def _slots(course_dir: Path) -> list[folder_view.Assignment | int]:
