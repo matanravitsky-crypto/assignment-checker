@@ -57,6 +57,9 @@ CHECK_TIMEOUT_S = 180
 AUTH_TIMEOUT_S = 30
 DOWNLOAD_BUDGET_USD = 1.0  # opens two pages and maybe ticks one box
 DOWNLOAD_TIMEOUT_S = 300
+# The parts download: Claude stays in the run until the last part (Chrome closes the run's tab ~2 minutes after it ends)
+PARTS_TIMEOUT_S = 75 * 60
+PARTS_BUDGET_USD = 4.0  # one short wait call every 25 seconds
 MESSAGE_MAX = 300
 
 NOT_LOGGED_IN = "Claude Code לא מחובר במחשב הזה. מריצים פעם אחת: claude auth login"
@@ -156,8 +159,12 @@ if (H !== "{sha256}") throw new Error("script check failed");
 eval(T);
 window.__ecsParts.start({{ cmid: "{assignment_id}", run: "{run}" }})
 ----------
-   If the result has started: true, return "started". The download goes on by itself in the tab: do not navigate away, do not close it.
-   If it fails, return "error" with the reason in one short sentence.
+   If the result is not started: true, return "error" with the reason in one short sentence.
+4. The download now runs in that tab, and the tab must stay open until it ends. Run this JavaScript with the javascript tool:
+   await window.__ecsParts.wait(25000)
+   It waits up to 25 seconds and returns the state. Run it again and again, exactly as written, until its result has over: true.
+   Do not navigate away, do not close the tab, and do not do anything else meanwhile.
+   When over is true, return "started" (whether the stage is "done" or "error": the computer reads the details from Downloads).
 
 Return only the structured result. "message" says what happened in one short sentence.
 """
@@ -336,11 +343,12 @@ class ClaudeChromeDriver:
 
         Same contract as download(). The page can't reach this computer (Moodle's connect-src), so the script goes
         into the prompt, checked against its sha256 in the page, and it saves the parts and a summary
-        "ECS pull <id> <run>.json" to Downloads (dashboard/pull_parts.py waits for it). Never raises."""
+        "ECS pull <id> <run>.json" to Downloads (dashboard/pull_parts.py waits for it). Claude stays in the run until the
+        download ends: Chrome closes the run's tab about two minutes after the run ends. Never raises."""
         claude = self.claude or find_claude()
         if not claude:
             return {"status": "error", "message": NOT_INSTALLED}
-        timeout_s = min(self.timeout_s, DOWNLOAD_TIMEOUT_S)
+        timeout_s = PARTS_TIMEOUT_S
         try:
             mid = assignment_id(info)
             if not re.fullmatch(r"\d{1,12}", str(run)):  # it goes into the prompt as is
@@ -349,7 +357,7 @@ class ClaudeChromeDriver:
             prompt = PARTS_PROMPT.format(grading_url=GRADING_URL.format(id=mid), assignment_id=mid, run=run, sha256=sha,
                                          title=info.get("title") or info.get("name") or "").replace("@@SCRIPT@@", script)
             with tempfile.TemporaryDirectory(prefix="moodle-download-", ignore_cleanup_errors=True) as empty:
-                proc = self.execute(claude, prompt, Path(empty), DOWNLOAD_SCHEMA, DOWNLOAD_BUDGET_USD, timeout_s)
+                proc = self.execute(claude, prompt, Path(empty), DOWNLOAD_SCHEMA, PARTS_BUDGET_USD, timeout_s)
         except Exception as error:  # never raise: the caller shows the message
             return {"status": "error", "message": failure_message(error, timeout_s)}
         answer, problem = read_run(proc)

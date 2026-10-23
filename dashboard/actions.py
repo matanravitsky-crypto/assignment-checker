@@ -208,6 +208,15 @@ def _make_downloader():
     return _SimDownloader() if os.environ.get("MOODLE_DRIVER") == "simulate" else claude_driver.ClaudeChromeDriver()
 
 
+LOCK_REFRESH_S = 60  # המשיכה ארוכה מ-30 הדקות שאחריהן נעילה נחשבת תקועה, אז מחדשים אותה כל דקה
+
+
+class _DownloadDidNotStart(Exception):
+    def __init__(self, answer: dict):
+        super().__init__(answer.get("message", ""))
+        self.answer = answer
+
+
 def _zips_from_moodle(a: folder_view.Assignment, mid: str, lock: Path) -> list[Path]:
     """ה-ZIPים של כל ההגשות: מה שכבר מחכה בתיקיית ההורדות (מישהו הוריד ידנית), ואם אין, Claude בכרום מפעיל
     בלשונית של מודל את ההורדה בחלקים של 50 (moodle/parts.js), ומחכים לכל החלקים (dashboard/pull_parts.py).
@@ -227,19 +236,41 @@ def _zips_from_moodle(a: folder_view.Assignment, mid: str, lock: Path) -> list[P
         _checking = True
     run, since = pull_parts.new_run(), time.time()
     _set_progress(phase="claude")
+    # Claude נשאר בריצה עד החלק האחרון (כרום סוגר את הלשונית של הריצה כשתי דקות אחרי שהיא נגמרת), אז הריצה
+    # רצה ברקע, ובינתיים עוקבים אחרי החלקים בתיקיית ההורדות כדי לעדכן את המד
+    answer: dict = {}
+    info = paths.read_info(a.dir)
+
+    def drive() -> None:
+        global _checking
+        try:
+            answer.update(_make_downloader().download_parts(info, run))
+        except Exception as e:  # the driver never raises; a fake one might
+            answer.update(status="error", message=str(e))
+        finally:
+            with _send_lock:
+                _checking = False
+    claude_run = threading.Thread(target=drive, daemon=True)
+    claude_run.start()
+
+    refreshed = [0.0]
+
+    def keep_alive() -> None:
+        if time.monotonic() - refreshed[0] >= LOCK_REFRESH_S:  # not every 5 seconds: the lock may sit in OneDrive
+            moodle_lock.refresh(lock)
+            refreshed[0] = time.monotonic()
+        if not claude_run.is_alive() and answer.get("status") != "started":
+            raise _DownloadDidNotStart(answer)
+
+    def progress(done: int, total: int | None) -> None:
+        if total:
+            _set_progress(phase="download", done=done, total=total)
     try:
-        result = _make_downloader().download_parts(paths.read_info(a.dir), run)
-    finally:
-        with _send_lock:
-            _checking = False
-    if result.get("status") != "started":
-        if result.get("message") == claude_driver.NOT_LOGGED_IN:
+        zips, _summary = pull_parts.wait(mid, run, since, keep_alive=keep_alive, on_progress=progress)
+    except _DownloadDidNotStart as e:
+        if e.answer.get("message") == claude_driver.NOT_LOGGED_IN:
             _drop_status_cache()
-        raise UserError(f"ההורדה ממודל לא התחילה: {result.get('message') or 'Claude לא פירט למה.'}")
-    try:
-        _set_progress(phase="download")
-        zips, _summary = pull_parts.wait(mid, run, since, keep_alive=lambda: moodle_lock.refresh(lock),
-                                         on_progress=lambda done, total: _set_progress(done=done, total=total))
+        raise UserError(f"ההורדה ממודל לא התחילה: {e.answer.get('message') or 'Claude לא פירט למה.'}") from e
     except pull_parts.PartsError as e:
         raise UserError(str(e)) from e
     return zips

@@ -3,6 +3,7 @@
 // רץ בלשונית של מודל (הדף "הגשות" של המטלה), עם החיבור של מי שמחובר בה. Claude בכרום מריץ אותו כמו שהוא
 // (moodle/claude_driver.py, PARTS_PROMPT), אחרי בדיקת sha256 של הטקסט, ואז:
 //   window.__ecsParts.start({ cmid: "3453769", run: "12345678" })
+// ומחכה בריצה עד הסוף: await window.__ecsParts.wait(25000), שוב ושוב עד ש-over הוא true.
 //
 // הדף לא מדבר עם המחשב: מדיניות האבטחה של מודל (connect-src) חוסמת כל פנייה ל-http://127.0.0.1. הכל עובר
 // דרך תיקיית ההורדות:
@@ -179,6 +180,19 @@
       saved.length = 0;
       run(String(cmid), String(runId), chunk);
       return { started: true };
+    },
+    // מחכה עד ms אלפיות שנייה, או עד שההורדה הסתיימה, ומחזיר את המצב. Claude קורא לזה שוב ושוב עד הסוף:
+    // כרום סוגר את הלשונית של ריצת Claude בערך שתי דקות אחרי שהריצה נגמרת, וזה היה קוטע את ההורדה
+    wait(ms) {
+      const until = Date.now() + Math.min(Number(ms) || 25000, 60000);
+      return new Promise((resolve) => {
+        const tick = () => {
+          const over = state.stage === "done" || state.stage === "error";
+          if (over || Date.now() >= until) resolve(Object.assign({ over: over }, state));
+          else setTimeout(tick, 1000);
+        };
+        tick();
+      });
     },
   };
 })();

@@ -464,6 +464,9 @@ def test_download_parts_puts_the_checked_script_into_the_prompt():
     assert "String.raw`" + script + "`;" in prompt and f'H !== "{sha}"' in prompt
     assert 'cmid: "3438636", run: "12345678"' in prompt and GRADING_URL.format(id="3438636") in prompt
     assert "/api/pull" not in prompt and "action=downloadall" not in prompt  # no call to the local server
+    # Claude stays in the run until the download ends: Chrome closes the run's tab ~2 minutes after the run
+    assert "await window.__ecsParts.wait(25000)" in prompt and "over: true" in prompt
+    assert kwargs["timeout"] == claude_driver.PARTS_TIMEOUT_S
     assert cmd[cmd.index("--tools") + 1] == "" and "--chrome" in cmd
     for bad in ("1; alert(1)", "", "12a"):
         run = FakeRun(cli_output({"status": "started", "message": ""}))
