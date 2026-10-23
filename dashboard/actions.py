@@ -4,7 +4,8 @@
            אם אין בתיקיית ההורדות (Downloads) ZIP שנגמר ב-"-<מזהה>.zip", Claude בכרום מוריד אותו ממודל
            והמערכת מחכה שיגיע. אחר כך: שומר אותו בתיקיית המטלה, מחלץ עם 7-Zip, ממספר ומעדכן את טבלת המפתח.
   בדיקה  → grading.grade.grade_assignment (שלב 2): שולח את ההגשות הממוספרות ל-Claude (API או Claude Code), כותב
-           Grades.csv ועבודות מסומנות. רץ ברקע, והאתר שואל מה המצב.
+           "Grades by <שם>.csv" ועבודות מסומנות. רץ ברקע, והאתר שואל מה המצב.
+  חלוקה  → moodle.claims: כל בודק מסמן אילו עבודות הוא לוקח, וכולם רואים (דרך OneDrive) מי לקח מה.
   החזרה  → moodle.upload.prepare_upload(<תיקיית המטלה>)
            בונה ב-"3 - Ready to upload to Moodle" את גיליון הציונים, את קובצי המשוב ואת
            הוראות ההעלאה. מישהו מהצוות מעלה אותם למודל ומאשר.
@@ -18,6 +19,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -33,8 +35,9 @@ import pymupdf
 
 from copying import check as copying
 from grading import grade as grading
-from moodle import (anonymize as moodle_anonymize, claude_driver, ingest as moodle_ingest, lock as moodle_lock, paths,
-                    send as moodle_send, upload as moodle_upload, upload_log)
+from moodle import (anonymize as moodle_anonymize, claims, claude_driver, grades as moodle_grades,
+                    ingest as moodle_ingest, lock as moodle_lock, paths, send as moodle_send, upload as moodle_upload,
+                    upload_log)
 
 from . import folder_view, settings as cfg, shared_folder
 
@@ -253,6 +256,7 @@ def pull(root: Path, course: str, assignment: str, moodle_id: str | None = None)
 
 def _do_pull(root: Path, course: str, assignment: str, moodle_id: str | None) -> dict:
     a = new_assignment(root, course, assignment, moodle_id) if moodle_id else find_assignment(root, course, assignment)
+    _take_task_if_free(a.dir.parent, assignment, "pull")
     mid = _moodle_id(a)
     conflicts = key_conflicts(a)
     if conflicts:
@@ -632,6 +636,117 @@ def copying_state(assignment_dir: Path) -> dict | None:
             "pairs": rep.get("pairs") or [], "stale": copying.is_stale(assignment_dir, rep)}
 
 
+# ---------- חלוקת העבודות בצוות ----------
+# כל בודק כותב רק לקובץ שלו ב-"Who grades what" (moodle/claims.py). הנעילה רק מונעת משתי לשוניות באותו מחשב
+# לכתוב אותו קובץ בבת אחת. בין מחשבים OneDrive מעביר את הקבצים, והאתר שואל כל כמה שניות (GET /api/claims).
+MAX_NAME = 40
+_claims_lock = threading.Lock()
+
+
+def me() -> dict:
+    return {"name": claims.me(), "set": claims.name_set()}
+
+
+def set_my_name(root: Path | None, name: str) -> dict:
+    """השם שלי בצוות: נשמר ב-.env של המחשב הזה. מה שכבר לקחתי עובר לשם החדש."""
+    name = " ".join(str(name or "").split())
+    if not name or len(name) > MAX_NAME:
+        raise UserError(f"השם צריך להיות באורך 1 עד {MAX_NAME} תווים.")
+    old = claims.me()
+    with _claims_lock:
+        cfg.save_env("GRADER_NAME", name)
+        if root:
+            for course_dir in folder_view.courses(root):
+                claims.rename_tasks(course_dir, old, name)
+                for a in folder_view.assignments(course_dir):
+                    claims.rename(a.dir, old, name)
+    return me()
+
+
+def _course_dir(root: Path, course: str) -> Path:
+    d = root / course
+    if not course or not d.is_dir() or d.resolve().parent != root.resolve():
+        raise FileNotFoundError(f"הקורס {course} לא נמצא בתיקייה")
+    return d
+
+
+def set_task(root: Path, course: str, assignment: str, stage: str, take: bool) -> dict:
+    """לוקח (או משחרר) את המשיכה או את ההחזרה של מטלה. גם של מטלה שעוד לא נמשכה ואין לה תיקייה."""
+    if stage not in claims.STAGES:
+        raise UserError("שלב לא מוכר")
+    key = claims.task_key(assignment, stage)
+    with _claims_lock:
+        owner = claims.set_task(_course_dir(root, course), key, take)
+    return {"stage": stage, "owner": owner}
+
+
+def _take_task_if_free(course_dir: Path, assignment: str, stage: str) -> None:
+    """מי שמושך או מעלה בלי שמישהו לקח את המשימה נרשם עליה, כדי שהצוות יראה מי עושה אותה."""
+    key = claims.task_key(assignment, stage)
+    with _claims_lock:
+        if key not in claims.task_owners(course_dir):
+            claims.set_task(course_dir, key, True)
+
+
+# ---------- מה השתנה בתיקייה ----------
+# האתר שואל כל כמה שניות (GET /api/changes) ומקבל חתימה של התיקייה: שמות, זמני שינוי וגדלים של הקבצים שהמצב
+# נבנה מהם. כשמשהו השתנה (בודק אחר לקח עבודות, OneDrive הביא ציונים, מישהו משך), החתימה משתנה והאתר טוען מחדש.
+_WATCHED = (paths.TO_GRADE, paths.MARKED, paths.UPLOAD, paths.NOTES, paths.CLAIMS)
+
+
+def _scan(h, folder: Path) -> None:
+    try:
+        with os.scandir(folder) as it:
+            for e in sorted(it, key=lambda e: e.name):
+                if e.is_dir(follow_symlinks=False):  # תיקייה: רק השם. Windows מעדכן את הזמן שלה באיחור, ואת התוכן סורקים בנפרד
+                    h.update(f"{e.name}/\n".encode("utf-8", "surrogatepass"))
+                    continue
+                st = e.stat(follow_symlinks=False)
+                h.update(f"{e.name}|{st.st_mtime_ns}|{st.st_size}\n".encode("utf-8", "surrogatepass"))
+    except OSError:
+        h.update(b"-\n")
+
+
+def changes(root: Path) -> str:
+    h = hashlib.sha1()
+    for course_dir in folder_view.courses(root):
+        h.update(f"#{course_dir.name}\n".encode("utf-8", "surrogatepass"))
+        _scan(h, course_dir)
+        _scan(h, course_dir / paths.TASKS)
+        for a in folder_view.assignments(course_dir):
+            _scan(h, a.dir)
+            for sub in _WATCHED:
+                _scan(h, a.dir / sub)
+    with _job_lock:  # הבדיקה שרצה כאן: כל עבודה שנגמרה משנה את מה שהאתר מציג
+        h.update(f"{_job.running}|{len(_job.done)}\n".encode())
+    return h.hexdigest()
+
+
+def claims_view(root: Path, course: str, assignment: str) -> dict:
+    """מי לקח מה, ואילו עבודות כבר נבדקו. קל מספיק כדי שהאתר ישאל כל כמה שניות."""
+    a = find_assignment(root, course, assignment)
+    done = set(grading.read_grades(a.dir)) | set(grading.marked_files(a.dir))
+    return {"me": claims.me(), "claims": claims.read_all(a.dir), "graded": sorted(done)}
+
+
+def change_claims(root: Path, course: str, assignment: str, take: list[str] | None = None,
+                  release: list[str] | None = None, next_count: int = 0) -> dict:
+    """לוקח עבודות (מספרים מסוימים, או next_count הפנויות הבאות שעוד לא נבדקו) או מחזיר עבודות שלי."""
+    a = find_assignment(root, course, assignment)
+    existing = set(grading.submission_numbers(a.dir))
+    take = [grading.number_key(n) for n in take or [] if grading.number_key(n) in existing]
+    out: dict = {"taken": [], "others": {}, "released": []}
+    with _claims_lock:
+        if next_count:
+            held = claims.read_all(a.dir)
+            take += [n for n in grading.pending(a.dir) if n not in held and n not in take][:next_count]
+        if take:
+            out.update(claims.take(a.dir, take))
+        if release:
+            out["released"] = claims.release(a.dir, [grading.number_key(n) for n in release])
+    return {**claims_view(root, course, assignment), **out}
+
+
 # ---------- העלאה למודל ----------
 # הכנה (prepare_send) בונה אצווה ורושמת אותה ב-Upload batch.json. ההעלאה עצמה (start_send) רצה ברקע,
 # ואחרי "כן" של אדם: האתר שולח את ה-id של האצווה שהאדם ראה, ואם בינתיים הוכנה אצווה אחרת, לא מעלים.
@@ -740,6 +855,7 @@ def start_send(root: Path, course: str, assignment: str, batch_id: str,
         _send = job = SendJob(course, assignment, batch_id, dry_run, running=True, total=len(batch["zips"]),
                               done=already, started_at=datetime.now().isoformat(timespec="seconds"))
         _stop.clear()
+    _take_task_if_free(a.dir.parent, assignment, "return")
     tracked = _Tracking(base_driver, job)
 
     def progress(index: int, total: int, name: str) -> None:
@@ -1162,14 +1278,13 @@ def _last_download(a: folder_view.Assignment) -> str | None:
     return (_downloads(a) or [None])[-1]
 
 
-def _activity(a: folder_view.Assignment, results: dict, log: list[dict]) -> list[dict]:
-    """יומן הפעילות של המטלה, רק ממה שבאמת קרה בתיקייה: משיכות, עדכון Grades.csv והעלאות למודל. בלי שמות."""
+def _activity(a: folder_view.Assignment, log: list[dict]) -> list[dict]:
+    """יומן הפעילות של המטלה, רק ממה שבאמת קרה בתיקייה: משיכות, עדכון קובצי הציונים והעלאות למודל. בלי שמות של סטודנטים."""
     out = [{"at": at, "kind": "pull", "text": "נמשכו הגשות ממודל (ZIP נקלט לתיקיית המטלה)"} for at in _downloads(a)]
-    grades_file = a.dir / grading.GRADES
-    if grades_file.exists():
-        n = sum(1 for r in results.values() if r.get("grade"))
-        out.append({"at": datetime.fromtimestamp(grades_file.stat().st_mtime).isoformat(timespec="minutes"),
-                    "kind": "grade", "text": f"Grades.csv עודכן: {n} ציונים"})
+    for f in moodle_grades.files(a.dir):  # Grades.csv, וקובץ לכל בודק
+        n = sum(1 for r in moodle_grades.read_file(f).values() if r.get("grade"))
+        out.append({"at": datetime.fromtimestamp(f.stat().st_mtime).isoformat(timespec="minutes"),
+                    "kind": "grade", "text": f"{f.name} עודכן: {n} ציונים"})
     uploads: dict[tuple[str, str], dict] = {}
     for r in log:  # שורה לכל קובץ שעלה. מקבצים לפי ה-ZIP והדקה
         at = (r.get("uploaded_at") or "")[:16]
@@ -1185,13 +1300,19 @@ def _activity(a: folder_view.Assignment, results: dict, log: list[dict]) -> list
 def state(root: Path) -> dict:
     """הקורסים, המטלות וההגשות כפי שהם בתיקייה. בלי שמות של סטודנטים: רק מספרים."""
     courses, out = [], []
+    with _job_lock:  # הבדיקה שרצה עכשיו במחשב הזה: העבודות שלה שעוד לא נגמרו מוצגות "בבדיקה"
+        job = (_job.course, _job.assignment, set(_job.numbers) - set(_job.done)) if _job.running else None
     for ci, course_dir in enumerate(folder_view.courses(root)):
         cid = f"c{ci}"
         courses.append({"id": cid, "name": folder_view.course_title(course_dir), "folder": course_dir.name})
+        tasks = claims.task_owners(course_dir)  # מי לקח את המשיכה ואת ההחזרה של כל מטלה
         for ai, a in enumerate(_slots(course_dir)):
+            folder = folder_view.slot_folder(a) if isinstance(a, int) else a.dir.name
+            owners = {st: tasks.get(claims.task_key(folder, st)) for st in claims.STAGES}
             if isinstance(a, int):
-                out.append(_empty_slot(cid, course_dir, ai, a))
+                out.append({**_empty_slot(cid, course_dir, ai, a), "owners": owners})
                 continue
+            grading_now = job[2] if job and job[:2] == (course_dir.name, a.dir.name) else set()
             d = a.details()
             marked, results = grading.marked_files(a.dir), grading.read_grades(a.dir)
             # הוחזרה = הועלתה למודל בפועל: כל הקבצים המסומנים של המספר זהים למה שביומן ההעלאה
@@ -1202,12 +1323,15 @@ def state(root: Path) -> dict:
                 f = a.submissions / r.get("anon_file", "")
                 if r.get("number") and f.exists():
                     by_number.setdefault(r["number"], []).append(f)
+            held = claims.read_all(a.dir)
             subs = []
             for n, files in sorted(by_number.items()):
                 res = results.get(grading.number_key(n)) or {}
                 grade = res.get("grade")
                 graded = n in marked or bool(grade)
                 status = "returned" if graded and n in returned else "graded" if graded else "pulled"
+                if grading.number_key(n) in grading_now:
+                    status = "grading"
                 newest = max(f.stat().st_mtime for f in files)
                 subs.append({
                     "id": n, "name": f"הגשה {n}", "studentId": n, "email": "",
@@ -1215,6 +1339,7 @@ def state(root: Path) -> dict:
                     "late": False, "scanned": False, "status": status, "q": grading.parse_points(res.get("points")),
                     "score": _score(grade), "feedback": res.get("feedback") or None, "issue": None,
                     "approved": grading.is_approved(res), "review": res.get("review") or "",
+                    "claim": held.get(grading.number_key(n)), "gradedBy": res.get("graded_by") or None,
                     **_note_fields(cached_notes(a.dir, n), res),
                     "files": [{"name": f.name, "pages": 0, "size": f.stat().st_size, "path": f.relative_to(root).as_posix()} for f in files]
                              + [{"name": m.name, "pages": 0, "size": m.stat().st_size, "path": m.relative_to(root).as_posix(),
@@ -1223,14 +1348,14 @@ def state(root: Path) -> dict:
             pulled = _last_download(a) or (
                 datetime.fromtimestamp((a.dir / paths.KEY).stat().st_mtime).isoformat(timespec="minutes")
                 if subs and (a.dir / paths.KEY).exists() else None)
-            grades_file = a.dir / grading.GRADES
+            graded_at = max((f.stat().st_mtime for f in moodle_grades.files(a.dir)), default=None)
             ctx = grading.load_context(a.dir, send_solution=False)
             out.append({
                 "id": f"{cid}a{ai}", "courseId": cid, "course": folder_view.course_title(course_dir),
                 "courseFolder": course_dir.name, "folder": a.dir.name, "title": a.title,
                 "n": ai + 1, "due": d.get("due"), "questions": a.question_count(), "questionLabels": a.question_labels(),
                 "pulledAt": pulled, "returnedAt": max((r["uploaded_at"] for r in log), default=None), "moodleId": d.get("id"),
-                "gradedAt": datetime.fromtimestamp(grades_file.stat().st_mtime).isoformat(timespec="minutes") if grades_file.exists() else None,
+                "gradedAt": datetime.fromtimestamp(graded_at).isoformat(timespec="minutes") if graded_at else None,
                 "rubric": [{"label": q.label, "points": q.points, "criteria": q.criteria, "deductions": q.deductions}
                            for q in ctx.questions],
                 "noRubric": ctx.no_rubric, "maxGrade": ctx.max_grade, "solution": (a.dir / grading.SOLUTION).is_file(),
@@ -1240,9 +1365,9 @@ def state(root: Path) -> dict:
                             + [f"עותק כפול של יומן ההעלאה: {c}" for c in upload_log.log_conflicts(a.dir)]
                             + ([f"משיכה בתהליך: {moodle_lock.parse((a.dir / LOCK_FILE).read_text(encoding='utf-8'))[0]}"] if (a.dir / LOCK_FILE).exists() else [])
                             + ([f"העלאה בתהליך: {who}"] if (who := _upload_lock_holder(a)) else []),
-                "subs": subs, "log": _activity(a, results, log), "copying": copying_state(a.dir),
+                "subs": subs, "log": _activity(a, log), "owners": owners, "copying": copying_state(a.dir),
             })
-    return {"root": str(root), "courses": courses, "assignments": out,
+    return {"root": str(root), "courses": courses, "assignments": out, "me": me(),
             "moodle": False, "claude": quick_via() is not None, "claudeVia": quick_via(), "grading": grade_status(), "sending": send_status(), "copyCheck": copying_status()}
 
 

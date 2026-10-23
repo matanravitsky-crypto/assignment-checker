@@ -42,7 +42,9 @@ Exercise Checking System/                  the data folder (ASSIGNMENT_DATA, def
                                   Upload log.csv (what went up, per number), Upload batch.json (the current batch),
                                   Upload batch <id>/ (that batch's ZIPs; `upload` never writes there)
       Assignment details.json     Moodle id, course, name, Hebrew title, due date, questions, rules, max_grade, rubric
-      Grades.csv                  number,grade,feedback  ← grading output
+      Grades.csv                  number,grade,feedback: older grades and approvals typed by hand
+      Grades by <name>.csv        each grader's own grades  ← grading output (readers merge all of them, moodle/grades.py)
+      Who grades what/<name>.json the numbers each grader took (moodle/claims.py)
       Grading notes/              0001.json ...: per question comments, mistakes, "unsure", the marks, why a person should look (numbers only)
       Key - number to student.csv number → Moodle participant id → original folder  ← the one key
       Copying check.json          suspected copying: pairs of numbers and why, per-file hashes (`python -m copying`)
@@ -102,9 +104,31 @@ So `dashboard/actions.py` guards the dashboard's pull:
   When Moodle's grading table listed fewer students than the key has (a filter left on), the pull says so.
 
 Then:
-- Team: grade from `1 - Submissions to grade`, write `Grades.csv` and `2 - Graded with comments` next to it
-  (the dashboard's "Grade" button or `python -m grading <id>`).
+- Team: grade from `1 - Submissions to grade`, write `Grades by <name>.csv` and `2 - Graded with comments` next to it
+  (the dashboard's "Grade" button or `python -m grading <id>`). See "Splitting the grading" below.
 - Whoever returns: `python -m moodle upload <id>` (or "Prepare return" in the dashboard) → upload to Moodle (below).
+
+## Splitting the grading between the team
+
+Each teammate grades on their own computer with their own Claude subscription, so an assignment is split between them:
+- **Claims** (`moodle/claims.py`): in step 2 of the site each grader takes submissions ("קח" on a row, or "take N free ones").
+  Each grader writes only their own file, `Who grades what/<name>.json` (number → when taken), so OneDrive never merges
+  two versions of a file. Two claims of one number made before sync: the earlier one wins (then by name), on every computer.
+- **Pull and return owners** (per assignment, `claims.task_owners`): `<course>/Who does what/<name>.json` holds take and
+  release events keyed `"<slot>:pull"` / `"<slot>:return"`; the latest event in anyone's file decides, so a teammate can
+  take over ("העבר אליי"). Pulling or uploading with no owner makes you the owner. Someone else's task turns that
+  stage's button into "אצל <name>". Each stage page opens with a table of that stage across all the course's assignments
+  (from the folder: counts, who took what, what's left).
+- **Live**: the site polls `GET /api/changes` every 5 seconds (a hash of names, mtimes and sizes of the files the state
+  is built from; folders count by name only, since Windows updates a folder's mtime late) and reloads when it changes.
+  Numbers this computer is grading right now come back from `/api/state` as `"grading"`.
+- **Grading** skips numbers someone else holds and claims what it grades. Once anyone took something, the site's "Grade"
+  button grades only my claimed, ungraded work; with no claims at all it grades everything pending, as before.
+- **Grades never share a file**: grading writes `Grades by <name>.csv` (with `graded_at`, `graded_by`). Every reader
+  (`grading.read_grades`, `moodle upload`/`send`/`status`, the dashboard) merges `Grades.csv` and all those files per number:
+  an approved row wins, then the latest `graded_at`, and a row without it (old `Grades.csv`) loses to one with it.
+- **My name**: `GRADER_NAME` in the repo's `.env`, set from the site (`POST /api/me`); renaming moves my claims. Without it,
+  the Windows user name.
 
 ## The shared folder (lecturer's OneDrive)
 
@@ -159,7 +183,7 @@ There is **no Moodle API**. Claude in Chrome works in the user's own logged-in C
   the tab of an ended run within ~2 minutes (the parts stopped at 14 of 15). Meanwhile the dashboard counts the parts in
   Downloads for the progress bar (`GET /api/pull`, phases claude/parts/check/extract/number, with `eta_s`: the seconds left in
   the phase at its pace so far, shown as "נשארו בערך N דקות"). A pull with new submissions starts the copying check by itself.
-  The site reloads `/api/state` every 20 seconds (when visible and idle), so a pull on another PC shows up through OneDrive without a refresh. `ingest.gather_parts` takes the
+  The site asks `/api/changes` every 5 seconds (when visible and idle) and reloads when the folder changed, so a pull on another PC shows up through OneDrive without a refresh. `ingest.gather_parts` takes the
   list only if every part is there with its exact size, checks each, extracts all into one originals folder and numbers once;
   the parts are kept in `Moodle download <date>/`. Run for real on 3438636 on 2026-10-23: 566 students in 15 parts, every
   earlier number kept. The download shares the "one Chrome job at a time" guard with the connection check and the upload.

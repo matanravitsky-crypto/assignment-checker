@@ -70,7 +70,9 @@ Exercise Checking System/
       2 - Graded with comments/       אותו מספר, עם ההערות (שלב הבדיקה)
       Official solution.pdf           הפתרון הרשמי, אם יש. נשלח ל-Claude עם כל הגשה
       3 - Ready to upload to Moodle/  מה שמוכן להעלאה (שלב ההחזרה)
-      Grades.csv                      number,grade,feedback (מה שהבדיקה מחזירה)
+      Grades.csv                      number,grade,feedback (ציונים ישנים ואישורים ביד)
+      Grades by <שם>.csv              הציונים שכל בודק כתב (מה שהבדיקה מחזירה)
+      Who grades what/<שם>.json       אילו עבודות כל בודק לקח (חלוקה בצוות)
       Moodle download <תאריך>.zip     ה-ZIP בדיוק כפי שמודל נתן
 ```
 

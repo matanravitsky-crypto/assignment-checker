@@ -11,7 +11,8 @@
                                           השאלה והשנייה הניקוד ("| קבוצות 11 | 20 |"), אם אין ניקוד ב-rubric
 
 פלט, בדיוק מה ששלב ההחזרה (moodle/upload.py של אורי) מצפה לו:
-  Grades.csv                              number, grade, feedback, ועוד עמודות של המערכת (ראו GRADE_COLUMNS)
+  Grades by <שם הבודק>.csv                number, grade, feedback, ועוד עמודות של המערכת (ראו moodle/grades.py).
+                                          כל בודק כותב רק לקובץ שלו, וכל מי שקורא ציונים מאחד את כולם עם Grades.csv
   2 - Graded with comments/0001.pdf ...   העבודה עם ההערות באדום, עד 2 MB לקובץ
   Grading notes/0001.json ...             מה Claude אמר על כל שאלה: הערה, סוגי הטעויות, אם הוא לא בטוח, הסימונים,
                                           ולמה העבודה צריכה בדיקה ידנית. מזה האתר בונה את הסטטיסטיקה ואת תור הבדיקה הידנית
@@ -27,7 +28,9 @@
 
 עבודה ש-Claude ביקש שאדם יבדוק (review ב-Grades.csv) מחכה בתור "בדיקה ידנית" באתר עד שמישהו מאשר אותה (save_review).
 
-שורה ב-Grades.csv שאושרה (יש משהו בעמודה approved) לא נבדקת שוב ולא נדרסת.
+שורה שאושרה (יש משהו בעמודה approved) לא נבדקת שוב ולא נדרסת.
+
+חלוקה בצוות (moodle/claims.py): הגשה שבודק אחר לקח לא נבדקת כאן, וכל הגשה שנבדקת כאן נרשמת על שם הבודק במחשב הזה.
 
 פרטיות: ל-Claude נשלחים רק העמודים של ההגשה הממוספרת. טבלת המפתח לא נשלחת לעולם. היא נקראת
 במחשב בלבד, כדי למחוק שם של סטודנט אם Claude העתיק אותו מהדף למשוב.
@@ -36,7 +39,6 @@ from __future__ import annotations
 
 import base64
 import csv
-import io
 import json
 import math
 import os
@@ -50,18 +52,14 @@ from typing import Callable
 
 import pymupdf
 
-from moodle import claude_driver, paths
+from moodle import claims, claude_driver, grades, paths
 
 from .render import PageImage, render_pdf
 
 # ---------- הגדרות ----------
 GRADES = paths.GRADES
 SOLUTION = "Official solution.pdf"
-# number, grade, feedback הן העמודות ששלב ההחזרה קורא. השאר של המערכת:
-#   points    ניקוד לכל שאלה, לפי הסדר, מופרד ב-";"
-#   approved  ריק עד שמישהו מאשר את הציון. שורה מאושרת לא נדרסת
-#   review    למה Claude ביקש שאדם יבדוק את העבודה (ריק אם לא ביקש)
-GRADE_COLUMNS = ["number", "grade", "feedback", "points", "approved", "review"]
+GRADE_COLUMNS = grades.COLUMNS  # מה כל עמודה אומרת: moodle/grades.py
 
 DEFAULT_MODEL = "claude-opus-5-5"
 EFFORT = "high"
@@ -634,37 +632,19 @@ def mark_pdf(pdf: bytes, g: Graded, ctx: Context, max_bytes: int = MAX_BYTES) ->
     return out
 
 
-# ---------- Grades.csv ----------
-def number_key(n: str, width: int = 4) -> str:
-    n = str(n).strip()
-    return n.zfill(width) if n.isdigit() else n
+# ---------- הציונים (moodle/grades.py) ----------
+number_key = grades.number_key
+is_approved = grades.is_approved
 
 
 def read_grades(dir: Path) -> dict[str, dict]:
-    path = dir / GRADES
-    if not path.exists():
-        return {}
-    with path.open(encoding="utf-8-sig", newline="") as fh:
-        return {number_key(r["number"]): r for r in csv.DictReader(fh) if (r.get("number") or "").strip()}
+    """הציונים של המטלה, מאוחדים מ-Grades.csv ומהקבצים של כל הבודקים."""
+    return grades.read(dir)
 
 
 def write_grades(dir: Path, rows: dict[str, dict]) -> None:
-    cols = list(GRADE_COLUMNS)
-    for r in rows.values():
-        cols += [c for c in r if c and c not in cols]
-    buf = io.StringIO()
-    w = csv.DictWriter(buf, fieldnames=cols, lineterminator="\r\n", extrasaction="ignore")
-    w.writeheader()
-    for n in sorted(rows):
-        w.writerow({**rows[n], "number": n})
-    # BOM כדי ש-Excel יציג עברית. כותבים לקובץ זמני ומחליפים, כדי שקובץ חצי כתוב לא יישאר
-    tmp = dir / (GRADES + ".tmp")
-    tmp.write_text(buf.getvalue(), encoding="utf-8-sig", newline="")
-    tmp.replace(dir / GRADES)
-
-
-def is_approved(row: dict | None) -> bool:
-    return bool(row) and (row.get("approved") or "").strip().lower() not in ("", "0", "no", "false", "לא")
+    """כותב את Grades.csv עצמו (ציונים ישנים ואישורים ביד). הבדיקה כותבת לקובץ של הבודק."""
+    grades.write_file(dir / GRADES, rows)
 
 
 def parse_points(raw: str | None) -> list[float] | None:
@@ -790,14 +770,16 @@ class Stopped(Exception):
 def grade_assignment(assignment_dir: Path, numbers: list[str] | None = None, *, ask: Ask | None = None,
                      model: str = DEFAULT_MODEL, parallel: int = DEFAULT_PARALLEL, instructions: str = "",
                      send_solution: bool = True, on_progress: Callable[[str, str], None] | None = None,
-                     stop: threading.Event | None = None) -> GradeReport:
-    """בודק הגשות של מטלה. numbers=None: כל מה שעוד לא נבדק. on_progress(number, "graded"/"failed"/"skipped").
+                     stop: threading.Event | None = None, who: str | None = None) -> GradeReport:
+    """בודק הגשות של מטלה. numbers=None: כל מה שעוד לא נבדק.
+    on_progress(number, "graded"/"failed"/"skipped"/"taken"), כש-"taken" = בודק אחר לקח אותה.
 
     stop: כשהוא מסומן, הגשות שעוד לא נשלחו ל-Claude לא נשלחות (rep.stopped), ואלה שבאמצע מסתיימות ונשמרות.
     כשנגמרת המכסה של Claude הבדיקה נעצרת לבד באותה דרך, ואחרי שמה שבאמצע נשמר זורקת ClaudeLimit."""
     stop = stop or threading.Event()
     if ask is None:
         ask = claude_ask()
+    who = who or claims.me()
     rep = GradeReport()
     todo = pending(assignment_dir) if numbers is None else [number_key(n) for n in numbers]
     existing = set(submission_numbers(assignment_dir))
@@ -806,11 +788,19 @@ def grade_assignment(assignment_dir: Path, numbers: list[str] | None = None, *, 
     for n in [n for n in todo if n not in existing and n not in approved]:
         rep.failed[n] = "אין קובץ כזה בתיקייה \"1 - Submissions to grade\"."
     todo = [n for n in todo if n in existing and n not in approved]
+    # מה שבודק אחר לקח נשאר שלו. את השאר רושמים עליי, כדי שהצוות יראה מיד מי בודק אותן
+    split = claims.take(assignment_dir, todo, who) if todo else {"taken": [], "others": {}}
+    todo, theirs = split["taken"], sorted(split["others"])
+    if theirs:
+        rep.notes.append(f"{len(theirs)} עבודות שמורות לבודקים אחרים ולא נבדקו כאן: {', '.join(theirs[:20])}"
+                         + (" ועוד" if len(theirs) > 20 else ""))
     rep.total = len(todo) + len(rep.skipped)
     for n in rep.skipped:
         on_progress and on_progress(n, "skipped")
+    for n in theirs:
+        on_progress and on_progress(n, "taken")
     if not todo:
-        if not rep.skipped and not rep.failed:
+        if not rep.skipped and not rep.failed and not theirs:
             rep.notes.append("אין הגשות שמחכות לבדיקה.")
         return rep
 
@@ -819,6 +809,7 @@ def grade_assignment(assignment_dir: Path, numbers: list[str] | None = None, *, 
     names = student_names(assignment_dir)  # במחשב בלבד: לא נשלח ל-Claude
     marked = assignment_dir / paths.MARKED
     marked.mkdir(exist_ok=True)
+    mine = grades.own_file(assignment_dir, who)  # רק אני כותב לקובץ הזה, אז OneDrive לא יוצר עותקים מתנגשים
 
     files = submission_files(assignment_dir)
     limit: list[str] = []  # הבדיקה נעצרה כי נגמרה המכסה של Claude: ההודעה
@@ -851,9 +842,11 @@ def grade_assignment(assignment_dir: Path, numbers: list[str] | None = None, *, 
             tmp.write_bytes(out)
             tmp.replace(marked / f"{n}.pdf")
             write_notes(assignment_dir, n, graded_notes(g, model))
-            rows[n] = {**rows.get(n, {}), "number": n, "grade": _pts(g.grade), "feedback": g.feedback,
-                       "points": ";".join(_pts(p) for p in g.points), "approved": "", "review": g.review}
-            write_grades(assignment_dir, rows)
+            own = grades.read_file(mine)
+            own[n] = {**rows.get(n, {}), "number": n, "grade": _pts(g.grade), "feedback": g.feedback,
+                      "points": ";".join(_pts(p) for p in g.points), "approved": "", "review": g.review,
+                      "graded_at": _now(), "graded_by": who}
+            grades.write_file(mine, own)
             return True
 
     def failed(n: str, why: str) -> None:
@@ -913,7 +906,8 @@ def _resummarize(marked_pdf: bytes, g: Graded, ctx: Context) -> bytes:
 def save_review(assignment_dir: Path, number: str, points: list, comments: list, feedback: str, by: str,
                 mistakes: list | None = None) -> dict:
     """מה שאדם החליט בבדיקה הידנית: ניקוד והערה לכל שאלה ומשוב. מחשב את הציון, מעדכן את עמוד הסיכום בעבודה
-    המסומנת וכותב ל-Grades.csv שורה מאושרת (approved = מי ומתי), שהבדיקה האוטומטית לא דורסת. מחזיר את הציון."""
+    המסומנת וכותב שורה מאושרת (approved = מי ומתי), שהבדיקה האוטומטית לא דורסת, לקובץ הציונים של מי שבמחשב הזה
+    (moodle/grades.py: שורה מאושרת גוברת על כל הקבצים). מחזיר את הציון."""
     n = number_key(number)
     files = submission_files(assignment_dir)
     if n not in files:
@@ -950,8 +944,10 @@ def save_review(assignment_dir: Path, number: str, points: list, comments: list,
         note.pop("error", None)
         write_notes(assignment_dir, n, {**note, "comments": g.comments, "mistakes": g.mistakes,
                                         "reviewed": {"by": by, "at": at, "points": pts}})
-        rows = read_grades(assignment_dir)
-        rows[n] = {**rows.get(n, {}), "number": n, "grade": _pts(g.grade), "feedback": g.feedback,
-                   "points": ";".join(_pts(p) for p in pts), "approved": f"{by} {at[:16].replace('T', ' ')}"}
-        write_grades(assignment_dir, rows)
+        mine = grades.own_file(assignment_dir)
+        own = grades.read_file(mine)
+        own[n] = {**read_grades(assignment_dir).get(n, {}), "number": n, "grade": _pts(g.grade), "feedback": g.feedback,
+                  "points": ";".join(_pts(p) for p in pts), "approved": f"{by} {at[:16].replace('T', ' ')}",
+                  "graded_at": at, "graded_by": by}
+        grades.write_file(mine, own)
     return {"number": n, "grade": g.grade}

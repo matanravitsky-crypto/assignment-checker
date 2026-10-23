@@ -151,12 +151,29 @@ class Handler(SimpleHTTPRequestHandler):
         if url.path == "/api/state":
             root = self._root()
             return root and self._json(actions.state(root))
+        if url.path == "/api/changes":
+            # חתימה של התיקייה. האתר שואל כל כמה שניות, וטוען מחדש רק כשהיא משתנה
+            root = self._root()
+            return root and self._json({"sig": actions.changes(root)})
         if url.path == "/api/grade":
             return self._json(actions.grade_status())
         if url.path == "/api/pull":  # כמה התקדמה המשיכה, בזמן שה-POST שלה עוד רץ
             return self._json(actions.pull_status())
         if url.path == "/api/copying":
             return self._json(actions.copying_status())
+        if url.path == "/api/claims":
+            # מי לקח איזו עבודה. האתר שואל כל כמה שניות, כדי לראות מה אחרים בצוות סימנו
+            root = self._root()
+            if not root:
+                return
+            query = parse_qs(url.query)
+            course, assignment = query.get("course", [""])[0], query.get("assignment", [""])[0]
+            if not course or not assignment:
+                return self._json({"error": "חסרים קורס ומטלה"}, HTTPStatus.BAD_REQUEST)
+            try:
+                return self._json(actions.claims_view(root, course, assignment))
+            except FileNotFoundError as e:
+                return self._json({"error": str(e)}, HTTPStatus.NOT_FOUND)
         if url.path in ("/api/pages", "/api/page"):
             # עמודי הגשה כתמונות, לבדיקה הידנית: /api/pages אומר כמה עמודים, /api/page מחזיר עמוד אחד
             root = self._root()
@@ -218,6 +235,11 @@ class Handler(SimpleHTTPRequestHandler):
             return self._json(actions.start_claude_login(restart=body.get("restart") is True))
         if url.path == "/api/claude/install":
             return self._json(actions.start_claude_install())
+        if url.path == "/api/me":  # השם שלי בצוות. נשמר במחשב הזה, גם כשתיקיית OneDrive עוד לא נמצאה
+            try:
+                return self._json(actions.set_my_name(actions.root_info()[0], body.get("name")))
+            except actions.UserError as e:
+                return self._json({"error": str(e)}, HTTPStatus.UNPROCESSABLE_ENTITY)
         root = self._root()
         if not root:
             return
@@ -311,6 +333,34 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json({"error": str(e)}, HTTPStatus.NOT_FOUND)
             except RuntimeError as e:
                 return self._json({"error": str(e)}, HTTPStatus.CONFLICT)
+        if url.path == "/api/tasks":
+            # לוקח או משחרר את המשיכה ("pull") או את ההחזרה ("return") של מטלה
+            course, assignment, stage = body.get("course"), body.get("assignment"), body.get("stage")
+            if not course or not isinstance(assignment, str) or not assignment or "/" in assignment or "\\" in assignment:
+                return self._json({"error": "חסרים קורס ומטלה"}, HTTPStatus.BAD_REQUEST)
+            try:
+                return self._json(actions.set_task(root, course, assignment, stage, body.get("take") is True))
+            except actions.UserError as e:
+                return self._json({"error": str(e)}, HTTPStatus.BAD_REQUEST)
+            except FileNotFoundError as e:
+                return self._json({"error": str(e)}, HTTPStatus.NOT_FOUND)
+            except (OSError, ValueError) as e:
+                return self._json({"error": f"הסימון לא נשמר: {e}"}, HTTPStatus.CONFLICT)
+        if url.path == "/api/claims":
+            # לוקח עבודות ("take": מספרים, או "next": כמה מהפנויות) או מחזיר עבודות שלי ("release")
+            course, assignment = body.get("course"), body.get("assignment")
+            if not course or not assignment:
+                return self._json({"error": "חסרים קורס ומטלה"}, HTTPStatus.BAD_REQUEST)
+            numbers = lambda v: isinstance(v, list) and len(v) <= 5000 and all(isinstance(n, str) and n.isdigit() for n in v)
+            take, release, nxt = body.get("take") or [], body.get("release") or [], body.get("next") or 0
+            if not numbers(take) or not numbers(release) or not isinstance(nxt, int) or not 0 <= nxt <= 5000:
+                return self._json({"error": "רשימת העבודות לא תקינה"}, HTTPStatus.BAD_REQUEST)
+            try:
+                return self._json(actions.change_claims(root, course, assignment, take, release, nxt))
+            except FileNotFoundError as e:
+                return self._json({"error": str(e)}, HTTPStatus.NOT_FOUND)
+            except (OSError, ValueError) as e:  # הקובץ שלי לא נקרא (OneDrive באמצע סנכרון?): לא דורסים אותו
+                return self._json({"error": f"הסימון לא נשמר: {e}"}, HTTPStatus.CONFLICT)
         if url.path == "/api/review":
             # בדיקה ידנית: אדם קבע ניקוד, הערות ומשוב לעבודה אחת. נשמר ב-Grades.csv כמאושר
             course, assignment, number = body.get("course"), body.get("assignment"), body.get("number")
