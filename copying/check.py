@@ -21,6 +21,10 @@
              רצף שמופיע אצל יותר מ-5% מהמספרים (3 עד COMMON_PAGE) לא נחשב: נוסח השאלה, תבנית, או תשובה נכונה סטנדרטית
              (במתמטיקה תשובות נכונות דומות זו לזו). רק מה שמשותף לשניים ונדיר אצל האחרים הוא סימן להעתקה.
 
+חומר הקורס: כל PDF, .tex, .md ו-.txt ב-"<קורס>/Course material/" ובתיקיית "פדגוגי" של המטלה (דפי תרגילים, חוברות,
+פתרונות). עמוד מוקלד שרובו (MATERIAL_SHARE) טקסט מהחומר הזה הוא עמוד שהסטודנט צירף מהחוברת, ולא נחשב בכלל. בשאר
+העמודים המוקלדים מורידים את הרצפים שמופיעים בחומר (נוסח השאלה), כך ששני פתרונות מושווים רק במה שהסטודנטים כתבו.
+
 ערך מטא-דאטה שמשותף להרבה הגשות הוא ברירת מחדל של תוכנה ("Microsoft Office User"), לא סימן להעתקה,
 ולכן הוא נחשב רק אם הוא אצל COMMON_META מספרים לכל היותר. עמוד סרוק אחד משותף לא מספיק (MIN_PAGES): זה בדרך
 כלל כריכה או תבנית, ועבודה שהועתקה חולקת כמה עמודים. עמוד מוקלד שזהה אצל יותר משני מספרים (TEXT_COMMON) הוא
@@ -71,6 +75,8 @@ TEXT_SIMILAR = 0.7    # ואיזה חלק מהרצפים הנדירים של ה�
 COMMON_PAGE = 10      # עמוד שדומה לעמודים אצל יותר מספרים מזה לא נכנס לזוגות, אלא לרשימת העמודים שחוזרים
 MIN_PAGES = 2         # כמה עמודים סרוקים זהים (עם כתיבה) זוג צריך לחלוק. עבודה שהועתקה חולקת כמה עמודים
 TEXT_COMMON = 2       # עמוד מוקלד שזהה אצל יותר מספרים מזה הוא חומר של הקורס (דף שאלות, חוברת), לא פתרון של סטודנט
+MATERIAL_SHARE = 0.8  # עמוד מוקלד שלפחות חלק כזה מהרצפים שלו נמצא בחומר הקורס הוא עמוד מהחוברת. פתרון רגיל: עד 0.3
+MATERIAL_TYPES = {".pdf", ".tex", ".md", ".txt"}
 COMMON_META = 3       # ערך מטא-דאטה שמשותף ליותר מספרים מזה הוא ברירת מחדל של תוכנה, לא העתקה
 STRONG = {"file", "doc_id", "page", "text"}  # מספיק אחד מאלה כדי שהזוג יהיה "חשד חזק"
 
@@ -190,7 +196,7 @@ class Page:
     number: str
     page: int                  # מ-1, רץ על כל הקבצים של המספר, כמו ב-PDF המאוחד שהאתר מציג
     bits: int | None           # dHash, None לעמוד ריק או בלי כתיבה (MIN_INK)
-    text: frozenset[int] | None  # רצפי הטקסט, None לעמוד לא מוקלד
+    text: frozenset[int] | None  # רצפי הטקסט, None לעמוד לא מוקלד (ריק: מוקלד, אבל כולו נוסח מהחומר)
 
 
 @dataclass
@@ -198,6 +204,7 @@ class Report:
     pairs: list[dict] = field(default_factory=list)
     repeated: list[dict] = field(default_factory=list)  # עמודים שחוזרים אצל הרבה מספרים: דף שאלות, או פתרון שעבר
     checked: int = 0               # כמה מספרים נבדקו
+    material: dict = field(default_factory=dict)  # חומר הקורס: כמה קבצים, ובכמה עמודים של סטודנטים הוא נמצא
     read: int = 0                  # כמה קבצים נקראו הפעם (השאר מהמטמון)
 
     def summary(self) -> str:
@@ -239,7 +246,7 @@ def _image_matches(pages: list[Page]) -> dict[tuple[int, int], tuple[str, int]]:
     for x, y in _candidates(keys, BUCKET_LIMIT):
         i, j = idx[x], idx[y]
         a, b = pages[i], pages[j]
-        if a.number == b.number or a.text or b.text:
+        if a.number == b.number or a.text is not None or b.text is not None:
             continue
         d = (a.bits ^ b.bits).bit_count()
         if d <= MAX_DISTANCE:
@@ -281,9 +288,30 @@ def _text_matches(pages: list[Page]) -> dict[tuple[int, int], tuple[str, int]]:
     return out
 
 
-def compare(prints: dict[str, list[dict]]) -> Report:
-    """מספר → טביעות האצבע של הקבצים שלו, לפי הסדר → הזוגות החשודים."""
+def material_shingles(assignment_dir: Path) -> tuple[frozenset[int], int]:
+    """רצפי הטקסט של חומר הקורס (ראו בראש הקובץ), וכמה קבצים נקראו. קובץ שלא נקרא מדולג."""
+    folders = [assignment_dir.parent / paths.COURSE_MATERIAL] + [assignment_dir / name for name in paths.PEDAGOGY]
+    files = sorted(f for d in folders if d.is_dir() for f in d.rglob("*") if f.is_file() and f.suffix.lower() in MATERIAL_TYPES)
+    out: set[int] = set()
+    for f in files:
+        try:
+            if f.suffix.lower() == ".pdf":
+                with pymupdf.open(f) as doc:
+                    texts = [page.get_text() for page in doc]
+            else:
+                texts = [f.read_text(encoding="utf-8", errors="replace")]
+        except (OSError, RuntimeError, ValueError):
+            continue
+        for text in texts:
+            if sh := text_shingles(text):
+                out |= _shingle_set(sh)
+    return frozenset(out), len(files)
+
+
+def compare(prints: dict[str, list[dict]], material: frozenset[int] = frozenset()) -> Report:
+    """מספר → טביעות האצבע של הקבצים שלו, לפי הסדר → הזוגות החשודים. material: רצפי הטקסט של חומר הקורס."""
     rep = Report(checked=len(prints))
+    from_material = 0
     reasons: dict[tuple[str, str], list[dict]] = {}
 
     def add(a: str, b: str, reason: dict) -> None:
@@ -312,8 +340,14 @@ def compare(prints: dict[str, list[dict]]) -> Report:
                 at += 1
                 # עמוד בלי כתיבה (כריכה, דף ריק) לא מושווה כתמונה: הוא נראה אותו דבר אצל כולם
                 ink = pg.get("h") and pg.get("i", 0) >= MIN_INK
-                pages.append(Page(n, at, int(pg["h"], 16) if ink else None,
-                                  _shingle_set(pg["t"]) if pg.get("t") else None))
+                text = _shingle_set(pg["t"]) if pg.get("t") else None
+                if text and material:
+                    if len(text & material) >= MATERIAL_SHARE * len(text):  # עמוד מהחוברת: לא מושווה בכלל
+                        from_material += 1
+                        continue
+                    text = text - material  # נוסח השאלה לא אומר כלום על העתקה. ריק עדיין "מוקלד": לא מושווה כתמונה
+                pages.append(Page(n, at, int(pg["h"], 16) if ink else None, text))
+    rep.material = {"pages": from_material}
     matches = {**_image_matches(pages), **_text_matches(pages)}
     partners: dict[int, set[str]] = {}
     for i, j in matches:
@@ -415,10 +449,12 @@ def check_assignment(assignment_dir: Path, on_progress: Callable[[int, int], Non
             done += 1
             if on_progress:
                 on_progress(done, total)
-    rep = compare(prints)
+    material, material_files = material_shingles(assignment_dir)
+    rep = compare(prints, material)
+    rep.material["files"] = material_files
     rep.read = read
     out = {"version": VERSION, "checked_at": datetime.now().isoformat(timespec="seconds"), "by": lock.me(),
-           "summary": rep.summary(), "checked": rep.checked, "pairs": rep.pairs, "repeated": rep.repeated,
+           "summary": rep.summary(), "checked": rep.checked, "pairs": rep.pairs, "repeated": rep.repeated, "material": rep.material,
            "files": files}
     tmp = report_path(assignment_dir).with_suffix(".tmp")
     tmp.write_text(json.dumps(out, ensure_ascii=False, indent=1), encoding="utf-8")
