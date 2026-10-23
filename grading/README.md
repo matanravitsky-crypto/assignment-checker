@@ -89,5 +89,6 @@ python -m grading <מזהה מטלה> --ids 0001 0002
 | `grade.py` | הבדיקה: הבקשה ל-Claude, התשובה, הסימון על ה-PDF וקובץ הציונים של הבודק |
 | `claude_cli.py` | הבדיקה דרך Claude Code כשאין מפתח API |
 | `render.py` | הופך כל עמוד בהגשה לתמונה, לשליחה ל-Claude |
+| `sample.py` | מדגם אקראי של הגשות כתמונות קלות, לבניית מחוון (`python -m grading.sample`, הסקיל `.claude/skills/rubric`) |
 | `submission.py` | מבנה של הגשה כפי שמגיעה ממודל |
 | `__main__.py` | `python -m grading` |
