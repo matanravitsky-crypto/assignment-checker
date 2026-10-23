@@ -11,7 +11,9 @@ a folder per assignment, with plain English names that say what each one is
           2 - Graded with comments/   0001.pdf ...   marked by the grader
           3 - Ready to upload to Moodle/             built for the upload to Moodle
           Assignment details.json                    Moodle id, questions, rules, rubric
-          Grades.csv                                 number,grade,feedback (from grading)
+          Grades.csv                                 number,grade,feedback (older grades, approvals by hand)
+          Grades by <name>.csv                       each grader's own grades (see grades.py)
+          Who grades what/<name>.json                the numbers each grader took (see claims.py)
           Key - number to student.csv                the key: number -> Moodle participant
           Moodle download <date>.zip                 the ZIP exactly as Moodle gave it
           README.txt
@@ -31,6 +33,8 @@ MARKED = "2 - Graded with comments"
 UPLOAD = "3 - Ready to upload to Moodle"
 INFO = "Assignment details.json"
 GRADES = "Grades.csv"
+GRADES_BY = "Grades by {}.csv"           # one per grader, so two graders never write the same file (grades.py)
+CLAIMS = "Who grades what"               # folder: one "<name>.json" per grader, the numbers they took (claims.py)
 KEY = "Key - number to student.csv"
 README = "README.txt"
 DOWNLOAD_PREFIX = "Moodle download"

@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Protocol
 
 from moodle import anonymize, lock, paths, upload, upload_log
+from moodle import grades as moodle_grades
 
 UPLOAD_LOCK = paths.UPLOAD_LOCK
 STALE_MESSAGE = "הקבצים השתנו מאז ההכנה. צריך להכין שוב."
@@ -167,7 +168,7 @@ def prepare_batch(assignment_dir: Path, max_bytes: int = upload.CLAUDE_MAX_ZIP_B
     upload_log.write_batch(assignment_dir, batch)
     upload_log.remove_old_batch_folders(assignment_dir, keep=zip_dir.name)
 
-    grades = upload.read_results(assignment_dir) if (assignment_dir / paths.GRADES).exists() else {}
+    grades = upload.read_results(assignment_dir) if moodle_grades.files(assignment_dir) else {}
     in_batch = {f["number"] for z in batch["zips"] for f in z["files"]}
     upload.write_instructions(upload_dir / upload.INSTRUCTIONS_FILE, {
         "assignment_id": batch["assignment_id"],

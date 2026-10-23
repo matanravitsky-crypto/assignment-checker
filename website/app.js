@@ -24,6 +24,7 @@
     polling: false, starting: false, stopping: false,
     rd: null,          // מוכנות המחשב להעלאה (Claude Code, התחברות, כרום ומודל), למטלה הנוכחית
     probing: false,    // מנסים עכשיו להתחבר למערכת במחשב
+    me: null,          // השם שלי בצוות: {name, set}. set=false עד שבחרו שם באתר (אז זה שם המשתמש של Windows)
   };
   const $ = (sel, root = document) => root.querySelector(sel);
   const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -54,6 +55,9 @@
     instr: { grade: store.get("instr.grade", DEFAULT_GRADE_INSTR) },  // נשלחות ל-Claude עם כל בדיקה
     claude: store.get("claude", { model: "claude-opus-5-5", parallel: 5, sendSolution: true }),
     loading: false,
+    teamCount: store.get("teamCount", 20),  // כמה עבודות פנויות לוקחים בלחיצה אחת
+    nameDraft: null,  // מה שהוקלד בשדה "השם שלך"
+    renaming: false,
   };
 
   // מה כל שלב עושה באמת (moodle/ingest.py, grading/grade.py, moodle/send.py)
@@ -66,8 +70,8 @@
     },
     grade: {
       no: 2, route: "/grade", name: "בדיקה וציון",
-      desc: "כל הגשה ממוספרת נשלחת ל-Claude כתמונות של העמודים, עם השאלות, המחוון, ההנחיות והפתרון הרשמי. Claude נותן ניקוד ומשפט לכל שאלה, כותב משוב ומסמן כל טעות במקום שלה. המערכת מחשבת את הציון, מציירת את ההערות על ה-PDF ושומרת אותו ב-\"2 - Graded with comments\", ואת הציון ב-Grades.csv. עבודה ש-Claude לא בטוח בה מסומנת לבדיקה ידנית.",
-      steps: ["קריאת השאלות, המחוון וההנחיות", "שליחת ההגשות ל-Claude", "סימון ההערות על ה-PDF", "שמירת הציונים ב-Grades.csv"],
+      desc: "כל הגשה ממוספרת נשלחת ל-Claude כתמונות של העמודים, עם השאלות, המחוון, ההנחיות והפתרון הרשמי. Claude נותן ניקוד ומשפט לכל שאלה, כותב משוב ומסמן כל טעות במקום שלה. המערכת מחשבת את הציון, מציירת את ההערות על ה-PDF ושומרת אותו ב-\"2 - Graded with comments\", ואת הציון בקובץ הציונים של הבודק. אפשר לחלק את העבודות בין חברי הצוות: כל אחד לוקח עבודות, וכולם רואים מי בודק מה. עבודה ש-Claude לא בטוח בה מסומנת לבדיקה ידנית.",
+      steps: ["קריאת השאלות, המחוון וההנחיות", "שליחת ההגשות ל-Claude", "סימון ההערות על ה-PDF", "שמירת הציונים"],
       tabs: [["list", "העבודות"], ["instr", "מחוון והנחיות לבדיקה"], ["conn", "חיבור ל-Claude"]],
     },
     ret: {
@@ -130,17 +134,25 @@
   const avg = (arr) => (arr.length ? Math.round(arr.reduce((a, b) => a + b, 0) / arr.length) : null);
   const plural = (n, one, many) => (n === 1 ? one : `${n} ${many}`);
 
+  // חלוקה בצוות (moodle/claims.py): s.claim = {who, at} של מי שלקח את העבודה, או null
+  const myName = () => LOCAL.me?.name || "";
+  const isMine = (s) => !!s.claim && s.claim.who === myName();
+
   function info(A = cur()) {
     const subs = A.subs;
     const ok = subs.filter((s) => s.status !== "error");
     const graded = ok.filter((s) => s.status === "graded" || s.status === "returned");
     const returned = ok.filter((s) => s.status === "returned");
+    const toGrade = ok.filter((s) => s.status === "pulled");
+    // ברגע שמישהו לקח עבודה, "בדוק" בודק רק את מה שלי. בלי חלוקה: את כל מה שמחכה, כמו קודם
+    const teamMode = subs.some((s) => s.claim);
     return {
-      subs, ok, graded, returned,
+      subs, ok, graded, returned, teamMode,
+      gradeIds: (teamMode ? toGrade.filter(isMine) : toGrade).map((s) => s.id),
       issues: subs.length - ok.length,
       files: subs.reduce((a, s) => a + s.files.length, 0),
       late: subs.filter((s) => s.late).length,
-      toGrade: ok.filter((s) => s.status === "pulled"),
+      toGrade,
       toReturn: ok.filter((s) => s.status === "graded"),
       done: {
         pull: !!A.pulledAt,
@@ -174,7 +186,7 @@
   function runStage(stage) {
     if (!LOCAL.on || !cur()) return;
     if (stage === "pull") runLocalPull();
-    if (stage === "grade") runLocalGrade(info().toGrade.map((s) => s.id));
+    if (stage === "grade") runLocalGrade(info().gradeIds);
     if (stage === "ret") startSendFlow();
   }
 
@@ -184,7 +196,11 @@
     const busy = !!run, mine = run?.stage === stage;
     let label, n = 0, primary = false;
     if (stage === "pull") { label = "משוך הגשות"; primary = !I.subs.length; }
-    if (stage === "grade") { n = I.toGrade.length; label = n ? `בדוק ${n} עבודות` : "הכל נבדק"; primary = n > 0; }
+    if (stage === "grade") {
+      n = I.gradeIds.length;
+      label = n ? (I.teamMode ? `בדוק ${n} שלי` : `בדוק ${n} עבודות`) : I.toGrade.length ? "אין עבודות שלך לבדיקה" : "הכל נבדק";
+      primary = n > 0;
+    }
     if (stage === "ret") { n = I.toReturn.length; label = n ? `החזר ${n} עבודות` : I.done.ret ? "הכל הוחזר" : "אין מה להחזיר"; primary = n > 0 && !I.toGrade.length; }
     let disabled = busy || (stage !== "pull" && !n);
     if (LOCAL.on && stage === "grade" && !LOCAL.health?.claude) {
@@ -394,7 +410,7 @@
     }
     if (b && b.assignmentId === A.id) {
       const notes = [];
-      if (b.not_approved?.length) notes.push(`לידיעה: ${b.not_approved.length} מהן עוד לא סומנו כמאושרות ב-Grades.csv.`);
+      if (b.not_approved?.length) notes.push(`לידיעה: ${b.not_approved.length} מהן עוד לא סומנו כמאושרות בקובצי הציונים.`);
       if (b.too_big?.length) notes.push(`גדולות מדי ולא ייכללו: ${numList(b.too_big)}`);
       if (b.resubmitted?.length) notes.push(`הוגשו מחדש אחרי הבדיקה ולא ייכללו: ${numList(b.resubmitted)}`);
       const noteList = notes.length ? `<ul class="report-lines send-notes">${notes.map((n) => `<li>${esc(n)}</li>`).join("")}</ul>` : "";
@@ -730,14 +746,79 @@
       </section>`;
   }
 
+  // ---------- חלוקת העבודה בצוות ----------
+  function nameFormHTML() {
+    const value = state.nameDraft ?? (state.renaming ? myName() : "");
+    return `<section class="panel team">
+      <div class="panel-head"><h3>חלוקת העבודה בצוות</h3>${state.renaming ? `<button class="btn ghost small end" data-act="rename-cancel">ביטול</button>` : ""}</div>
+      <div class="panel-body">
+        <p class="team-lead">כדי לחלק את העבודות בין חברי הצוות, המערכת צריכה לדעת מי בודק במחשב הזה. השם יופיע אצל כולם ליד העבודות שלוקחים.</p>
+        <div class="team-act">
+          <div class="field"><label for="my-name">השם שלך</label><input id="my-name" data-name-draft maxlength="40" autocomplete="name" value="${esc(value)}" placeholder="למשל: מתן"></div>
+          <button class="btn primary small" data-act="save-name">שמור</button>
+        </div>
+      </div>
+    </section>`;
+  }
+
+  function teamHTML() {
+    const A = cur(), I = info(A);
+    if (!LOCAL.on || !LOCAL.me) return "";
+    if (!LOCAL.me.set || state.renaming) return nameFormHTML();
+    const people = {};
+    I.subs.forEach((s) => {
+      if (!s.claim) return;
+      const p = (people[s.claim.who] ||= { all: 0, left: 0 });
+      p.all++;
+      if (s.status === "pulled") p.left++;
+    });
+    const mine = people[myName()] || { all: 0, left: 0 };
+    const others = Object.entries(people).filter(([who]) => who !== myName()).sort((x, y) => y[1].all - x[1].all);
+    const free = I.toGrade.filter((s) => !s.claim).length;
+    const count = Math.max(1, Math.min(state.teamCount || 1, free || 1));
+    return `<section class="panel team" aria-live="polite">
+      <div class="panel-head">
+        <h3>חלוקת העבודה בצוות</h3>
+        <span class="meta">בודק/ת במחשב הזה: <b>${esc(myName())}</b></span>
+        <button class="btn ghost small end" data-act="rename">שינוי שם</button>
+      </div>
+      <div class="panel-body">
+        <div class="team-people">
+          <span class="person mine"><b class="num">${mine.all}</b> שלך${mine.left ? ` · ${mine.left} עוד לא נבדקו` : ""}</span>
+          <span class="person free"><b class="num">${free}</b> פנויות</span>
+          ${others.map(([who, p]) => `<span class="person"><b class="num">${p.all}</b> ${esc(who)}${p.left ? ` · ${p.left} עוד לא נבדקו` : ""}</span>`).join("")}
+        </div>
+        <div class="team-act">
+          <label class="team-count">קח <input type="number" id="team-count" data-team-count min="1" max="${free || 1}" value="${count}" ${free ? "" : "disabled"}> עבודות פנויות</label>
+          <button class="btn primary small" data-act="claim-next" ${free ? "" : "disabled"}>סמן אותן עליי</button>
+          ${mine.left ? `<button class="btn secondary small" data-act="release-mine">שחרר ${plural(mine.left, "עבודה אחת שלי", "עבודות שלי")} שלא נבדקו</button>` : ""}
+        </div>
+        <p class="team-note">אפשר גם ללחוץ "קח" ליד עבודה בטבלה. הסימון נשמר בתיקיית OneDrive ומגיע לשאר הצוות תוך כמה שניות עד דקה. ${I.teamMode ? `"בדוק" בודק רק את העבודות שלך.` : `כל עוד אף אחד לא לקח עבודות, "בדוק" בודק את כולן.`}</p>
+      </div>
+    </section>`;
+  }
+
+  function claimCell(s) {
+    if (s.claim) {
+      const mine = isMine(s);
+      const release = mine && s.status === "pulled" ? `<button class="btn ghost small" data-act="release" data-id="${esc(s.id)}" title="להחזיר את העבודה לפנויות">שחרר</button>` : "";
+      return `<span class="claim ${mine ? "mine" : ""}" title="${esc(`לקח/ה ${when(s.claim.at)}`)}">${mine ? "שלך" : esc(s.claim.who)}</span>${release}`;
+    }
+    if (s.status === "pulled" && LOCAL.me?.set) return `<button class="btn secondary small" data-act="claim" data-id="${esc(s.id)}">קח</button>`;
+    return `<span class="muted">—</span>`;
+  }
+
   function gradeList() {
     const A = cur(), I = info(A);
     if (!I.subs.length) return `<section class="panel">${emptyPulled()}</section>`;
     const qs = rubric().questions;
-    const opts = [["all", "הכל", I.subs.length], ...Object.keys(STATUS).map((k) => [k, STATUS[k], I.subs.filter((s) => s.status === k).length])].filter(([k, , c]) => k === "all" || c);
+    const team = [["mine", "שלי", I.subs.filter(isMine).length], ["free", "פנויות", I.toGrade.filter((s) => !s.claim).length]];
+    const opts = [["all", "הכל", I.subs.length], ...(LOCAL.me?.set ? team : []), ...Object.keys(STATUS).map((k) => [k, STATUS[k], I.subs.filter((s) => s.status === k).length])]
+      .filter(([k, , c]) => k === "all" || c);
     if (!opts.some(([k]) => k === state.filter)) state.filter = "all";
-    const rows = I.subs.filter((s) => (state.filter === "all" || s.status === state.filter) && matches(s, state.query.grade));
-    return `
+    const shown = (s) => state.filter === "all" || (state.filter === "mine" ? isMine(s) : state.filter === "free" ? !s.claim && s.status === "pulled" : s.status === state.filter);
+    const rows = I.subs.filter((s) => shown(s) && matches(s, state.query.grade));
+    return `${teamHTML()}
       <section class="panel">
         <div class="panel-head">
           <div class="chips" role="group" aria-label="סינון לפי מצב">
@@ -746,17 +827,18 @@
           <div class="end">${searchBox("grade")}</div>
         </div>
         <div class="table-wrap"><table>
-          <thead><tr><th>הגשה</th><th>מצב</th><th>ציון</th>${qs.map((q) => `<th class="col-hide qcol">ש${q.n}</th>`).join("")}<th class="col-hide-sm">הערות</th></tr></thead>
+          <thead><tr><th>הגשה</th><th>מצב</th><th>בודק/ת</th><th>ציון</th>${qs.map((q) => `<th class="col-hide qcol">ש${q.n}</th>`).join("")}<th class="col-hide-sm">הערות</th></tr></thead>
           <tbody>${rows.map((s) => {
             const lost = s.q ? s.q.filter((v, i) => v < qs[i].pts).length : 0;
-            return `<tr data-open="${s.id}" tabindex="0" class="clickable ${s.fresh ? "flash" : ""}" aria-label="פתח את העבודה של ${esc(s.name)}">
+            return `<tr data-open="${s.id}" tabindex="0" class="clickable ${s.fresh ? "flash" : ""} ${isMine(s) ? "mine" : ""}" aria-label="פתח את העבודה של ${esc(s.name)}">
               <td>${who(s)}</td>
               <td>${statusPill(s)}</td>
+              <td class="claim-cell">${claimCell(s)}</td>
               <td>${scoreHTML(s)}</td>
               ${qs.map((q, i) => `<td class="col-hide qcol num">${s.q ? `<span class="qv ${s.q[i] < q.pts ? "lost" : ""}">${s.q[i]}</span>` : `<span class="muted">·</span>`}</td>`).join("")}
               <td class="col-hide-sm">${s.issue ? `<span class="flag">${esc(s.issue)}</span>` : s.review ? `<span class="flag" title="${esc(s.review)}">לבדיקה ידנית</span>` : s.q ? (lost ? `<span class="pen-count">${ICON.pen}${plural(lost, "הערה אחת", "הערות")}</span>` : `<span class="muted">ללא הערות</span>`) : `<span class="muted">—</span>`}</td>
             </tr>`;
-          }).join("") || `<tr><td colspan="${4 + qs.length}"><div class="empty slim">אין עבודות שמתאימות לסינון.</div></td></tr>`}
+          }).join("") || `<tr><td colspan="${5 + qs.length}"><div class="empty slim">אין עבודות שמתאימות לסינון.</div></td></tr>`}
           </tbody>
         </table></div>
       </section>`;
@@ -940,7 +1022,7 @@
       <section class="panel">
         <div class="panel-head"><h2>חיבור ל-Claude</h2>${LOCAL.health?.claude ? `<span class="end tag ok">מחובר</span>` : `<span class="end tag warn">עוד לא מחובר</span>`}</div>
         <div class="panel-body">
-          ${LOCAL.health?.claude ? `<div class="notice">${ICON.lock}<div><b>הבדיקה עובדת</b> (${LOCAL.health?.claudeVia === "api" ? "דרך מפתח ה-API" : "דרך Claude Code במחשב, במנוי של הצוות"}). ל-Claude נשלחים רק העמודים של ההגשה הממוספרת, בלי שמות. העבודה המסומנת נשמרת ב-"2 - Graded with comments" והציון ב-Grades.csv.</div></div>`
+          ${LOCAL.health?.claude ? `<div class="notice">${ICON.lock}<div><b>הבדיקה עובדת</b> (${LOCAL.health?.claudeVia === "api" ? "דרך מפתח ה-API" : "דרך Claude Code במחשב, במנוי של הצוות"}). ל-Claude נשלחים רק העמודים של ההגשה הממוספרת, בלי שמות. העבודה המסומנת נשמרת ב-"2 - Graded with comments" והציון בקובץ הציונים של הבודק ("Grades by <שם>.csv").</div></div>`
             : `<div class="notice">${ICON.lock}<div><b>הבדיקה עם Claude עוד לא מחוברת.</b> ${esc(NO_KEY)}</div></div>`}
           <div class="form-grid">
             <div class="field"><label for="c-model">מודל</label>
@@ -1046,7 +1128,7 @@
 
   function perQuestionHTML(I) {
     const qs = rubric().questions;
-    // רק עבודות עם ניקוד לכל שאלה (ב-Grades.csv יש רק ציון סופי)
+    // רק עבודות עם ניקוד לכל שאלה (בשורות ישנות יש רק ציון סופי)
     const withQ = I.graded.filter((s) => Array.isArray(s.q) && s.q.length === qs.length);
     if (!withQ.length) return `<p class="muted empty-line">יופיע אחרי שיהיה ניקוד לכל שאלה.</p>`;
     const rates = qs.map((q, i) => avg(withQ.map((s) => Math.round((s.q[i] / q.pts) * 100))));
@@ -1199,7 +1281,7 @@
                 ${s.q && s.q.length === qs.length ? `<ul class="breakdown">${qs.map((q, i) => `<li><label>${esc(q.req || `שאלה ${q.n}`)}</label><span class="num">${s.q[i]} / ${q.pts}</span><span class="track"><i class="${s.q[i] < q.pts ? "short" : ""}" style="width:${(s.q[i] / q.pts) * 100}%"></i></span></li>`).join("")}</ul>` : ""}
                 ${s.review ? `<p class="hint"><span class="flag" style="white-space: normal">לבדיקה ידנית: ${esc(s.review)}</span></p>` : ""}`
               : `<p class="muted" style="margin:0">עוד לא נבדקה.</p>`}
-            <p class="hint">אחרי הבדיקה, העבודה עם ההערות נשמרת ב-"2 - Graded with comments" באותו מספר, והציון ב-Grades.csv.</p>
+            <p class="hint">אחרי הבדיקה, העבודה עם ההערות נשמרת ב-"2 - Graded with comments" באותו מספר, והציון בקובץ הציונים של הבודק.</p>
           </div>
           ${s.feedback ? `<div class="grade-card"><h3 class="gc-title">משוב לסטודנט</h3><p style="margin:0; white-space: pre-line">${esc(s.feedback)}</p></div>` : ""}
         </aside>
@@ -1241,7 +1323,7 @@
     "/return": () => stageView("ret"),
     "/runs"() {
       return `
-        <div class="page-head"><div><h1>יומן פעילות</h1><p>מה שבאמת קרה בתיקיות של כל הקורסים: כל ZIP שנמשך ממודל, כל עדכון של Grades.csv וכל העלאה למודל שאומתה.</p></div></div>
+        <div class="page-head"><div><h1>יומן פעילות</h1><p>מה שבאמת קרה בתיקיות של כל הקורסים: כל ZIP שנמשך ממודל, כל עדכון של קובץ ציונים וכל העלאה למודל שאומתה.</p></div></div>
         <section class="panel"><div class="panel-body tight">${logHTML(80, false)}</div></section>`;
     },
     "/settings"() {
@@ -1428,6 +1510,13 @@
       if (a === "ready-install-yes" && LOCAL.rd) startReadyInstall(LOCAL.rd);
       if (a === "ready-login-retry" && LOCAL.rd) startReadyLogin(LOCAL.rd, true);
       if (a === "ready-check" && LOCAL.rd) checkReady(LOCAL.rd);
+      if (a === "save-name") saveName();
+      if (a === "rename") { state.renaming = true; state.nameDraft = null; render(); $("#my-name")?.focus(); }
+      if (a === "rename-cancel") { state.renaming = false; state.nameDraft = null; render(); }
+      if (a === "claim") changeClaims({ take: [id] });
+      if (a === "release") changeClaims({ release: [id] });
+      if (a === "claim-next") changeClaims({ next: Math.max(1, state.teamCount || 1) });
+      if (a === "release-mine") changeClaims({ release: info().toGrade.filter(isMine).map((s) => s.id) });
       return;
     }
 
@@ -1462,6 +1551,7 @@
     if (e.key === "Escape") { closeDrawer(); $("#sidebar").classList.remove("open"); }
     if (e.key === "Enter" && e.target.matches("[data-open]")) openDrawer(e.target.dataset.open);
     if (e.key === "Enter" && e.target.matches("[data-assign]")) e.target.click();
+    if (e.key === "Enter" && e.target.matches("[data-name-draft]")) saveName();
   });
 
   let savedTimer;
@@ -1477,6 +1567,8 @@
     const t = e.target;
     if (t.dataset.query) { state.query[t.dataset.query] = t.value; render(); return; }
     if (t.dataset.moodleId) { state.moodleDraft[t.dataset.moodleId] = t.value; return; }
+    if (t.matches("[data-name-draft]")) { state.nameDraft = t.value; return; }
+    if (t.matches("[data-team-count]")) { state.teamCount = Math.max(1, parseInt(t.value, 10) || 1); store.set("teamCount", state.teamCount); return; }
     if (t.dataset.instr) {
       const st = t.dataset.instr;
       state.instr[st] = t.value;
@@ -1570,6 +1662,7 @@
         .sort((x, y) => (y.at || "").localeCompare(x.at || "")));
       // מודל מחובר = Claude Code מחובר במחשב (דרכו Claude in Chrome עובד במודל)
       LOCAL.health = { ...LOCAL.health, ...(health || {}), root: data.root, claude: data.claude, claudeVia: data.claudeVia };
+      LOCAL.me = data.me || null;
       if (!LOCAL.polling) LOCAL.sending = data.sending || null;
       if (!D.assignments.some((a) => a.id === state.assignmentId)) {
         const first = D.assignments.find((a) => a.subs.length) || D.assignments[0];
@@ -1667,6 +1760,70 @@
     }
   }
 
+  // ---------- חלוקה בצוות: לקיחה, החזרה, ומה שאחרים סימנו ----------
+  async function saveName() {
+    const name = (state.nameDraft ?? "").trim();
+    if (!name) { toast("צריך לכתוב שם", ICON.warn); $("#my-name")?.focus(); return; }
+    try {
+      LOCAL.me = await api("api/me", { method: "POST", body: JSON.stringify({ name }) });
+      state.renaming = false;
+      state.nameDraft = null;
+      await loadLocal();
+      toast(`נשמר: ${LOCAL.me.name}. מעכשיו אפשר לקחת עבודות.`);
+    } catch (e) {
+      toast(e.message, ICON.warn);
+    }
+  }
+
+  // מעדכן את s.claim לפי מה שהשרת קרא מהתיקייה. מחזיר אם משהו השתנה, ואם יש עבודות שנבדקו בינתיים
+  function applyClaims(A, view) {
+    const graded = new Set(view.graded || []);
+    let changed = false, newlyGraded = false;
+    A.subs.forEach((s) => {
+      const c = view.claims?.[s.id] || null;
+      if (JSON.stringify(c) !== JSON.stringify(s.claim || null)) { s.claim = c; changed = true; }
+      if (s.status === "pulled" && graded.has(s.id)) newlyGraded = true;
+    });
+    return { changed, newlyGraded };
+  }
+
+  async function changeClaims(body) {
+    const A = cur();
+    if (!A || !LOCAL.on) return;
+    try {
+      const rep = await api("api/claims", { method: "POST", body: JSON.stringify({ course: A.courseFolder, assignment: A.folder, ...body }) });
+      applyClaims(A, rep);
+      render();
+      const others = Object.keys(rep.others || {}).length;
+      const done = rep.released?.length ? `${plural(rep.released.length, "עבודה אחת חזרה", "עבודות חזרו")} לפנויות`
+        : rep.taken?.length ? `${plural(rep.taken.length, "עבודה אחת סומנה", "עבודות סומנו")} עליך` : "לא נמצאו עבודות פנויות";
+      toast(others ? `${done}. ${plural(others, "עבודה אחת כבר נלקחה", "עבודות כבר נלקחו")} על ידי מישהו אחר.` : done,
+        others || !(rep.taken?.length || rep.released?.length) ? ICON.warn : ICON.check);
+    } catch (e) {
+      toast(e.message, ICON.warn);
+    }
+  }
+
+  // מה שאחרים בצוות לקחו ובדקו מגיע דרך OneDrive. שואלים כל כמה שניות, רק כשהדף גלוי ושום בדיקה לא רצה כאן
+  let claimsBusy = false;
+  async function pollClaims() {
+    const A = cur();
+    if (claimsBusy || !LOCAL.on || !A || A.empty || !A.subs.length || document.hidden || state.run[A.id]) return;
+    claimsBusy = true;
+    try {
+      const view = await api(`api/claims?course=${encodeURIComponent(A.courseFolder)}&assignment=${encodeURIComponent(A.folder)}`);
+      if (cur() !== A || state.run[A.id]) return;
+      const { changed, newlyGraded } = applyClaims(A, view);
+      if (newlyGraded) { await loadLocal(); refreshDrawer(); }  // ציונים חדשים: טוענים הכל, כדי לראות אותם
+      else if (changed) { render(); refreshDrawer(); }
+    } catch {
+      // המערכת לא ענתה הפעם. מנסים שוב בסיבוב הבא
+    } finally {
+      claimsBusy = false;
+    }
+  }
+  const CLAIMS_POLL_MS = 6000;
+
   function openFolder(which) {
     const A = cur();
     if (!LOCAL.on || !A) return;
@@ -1721,5 +1878,6 @@
     renderPickers();
     render();
     if (!ON_LOCAL_HOST) setInterval(() => { if (!LOCAL.on) connect(); }, 5000);
+    setInterval(pollClaims, CLAIMS_POLL_MS);
   })();
 })();

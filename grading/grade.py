@@ -8,7 +8,8 @@
   Official solution.pdf                   הפתרון הרשמי, אם יש (לא חובה)
 
 פלט, בדיוק מה ששלב ההחזרה (moodle/upload.py של אורי) מצפה לו:
-  Grades.csv                              number, grade, feedback, ועוד עמודות של המערכת (ראו GRADE_COLUMNS)
+  Grades by <שם הבודק>.csv                number, grade, feedback, ועוד עמודות של המערכת (ראו moodle/grades.py).
+                                          כל בודק כותב רק לקובץ שלו, וכל מי שקורא ציונים מאחד את כולם עם Grades.csv
   2 - Graded with comments/0001.pdf ...   העבודה עם ההערות באדום, עד 2 MB לקובץ
 
 המחוון ("rubric" ב-Assignment details.json) יכול להיות:
@@ -16,7 +17,9 @@
   טקסט חופשי                              נשלח כמו שהוא, עם השאלות
   {"questions": [{"label": "דף קבוצות 11", "points": 20, "criteria": "מה צריך להופיע"}], "notes": "..."}
 
-שורה ב-Grades.csv שאושרה (יש משהו בעמודה approved) לא נבדקת שוב ולא נדרסת.
+שורה שאושרה (יש משהו בעמודה approved) לא נבדקת שוב ולא נדרסת.
+
+חלוקה בצוות (moodle/claims.py): הגשה שבודק אחר לקח לא נבדקת כאן, וכל הגשה שנבדקת כאן נרשמת על שם הבודק במחשב הזה.
 
 פרטיות: ל-Claude נשלחים רק העמודים של ההגשה הממוספרת. טבלת המפתח לא נשלחת לעולם. היא נקראת
 במחשב בלבד, כדי למחוק שם של סטודנט אם Claude העתיק אותו מהדף למשוב.
@@ -25,7 +28,6 @@ from __future__ import annotations
 
 import base64
 import csv
-import io
 import json
 import math
 import os
@@ -33,23 +35,20 @@ import re
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
 import pymupdf
 
-from moodle import claude_driver, paths
+from moodle import claims, claude_driver, grades, paths
 
 from .render import PageImage, render_pdf
 
 # ---------- הגדרות ----------
 GRADES = paths.GRADES
 SOLUTION = "Official solution.pdf"
-# number, grade, feedback הן העמודות ששלב ההחזרה קורא. השאר של המערכת:
-#   points    ניקוד לכל שאלה, לפי הסדר, מופרד ב-";"
-#   approved  ריק עד שמישהו מאשר את הציון. שורה מאושרת לא נדרסת
-#   review    למה Claude ביקש שאדם יבדוק את העבודה (ריק אם לא ביקש)
-GRADE_COLUMNS = ["number", "grade", "feedback", "points", "approved", "review"]
+GRADE_COLUMNS = grades.COLUMNS  # מה כל עמודה אומרת: moodle/grades.py
 
 DEFAULT_MODEL = "claude-opus-5-5"
 EFFORT = "high"
@@ -498,37 +497,19 @@ def mark_pdf(pdf: bytes, g: Graded, ctx: Context, max_bytes: int = MAX_BYTES) ->
     return out
 
 
-# ---------- Grades.csv ----------
-def number_key(n: str, width: int = 4) -> str:
-    n = str(n).strip()
-    return n.zfill(width) if n.isdigit() else n
+# ---------- הציונים (moodle/grades.py) ----------
+number_key = grades.number_key
+is_approved = grades.is_approved
 
 
 def read_grades(dir: Path) -> dict[str, dict]:
-    path = dir / GRADES
-    if not path.exists():
-        return {}
-    with path.open(encoding="utf-8-sig", newline="") as fh:
-        return {number_key(r["number"]): r for r in csv.DictReader(fh) if (r.get("number") or "").strip()}
+    """הציונים של המטלה, מאוחדים מ-Grades.csv ומהקבצים של כל הבודקים."""
+    return grades.read(dir)
 
 
 def write_grades(dir: Path, rows: dict[str, dict]) -> None:
-    cols = list(GRADE_COLUMNS)
-    for r in rows.values():
-        cols += [c for c in r if c and c not in cols]
-    buf = io.StringIO()
-    w = csv.DictWriter(buf, fieldnames=cols, lineterminator="\r\n", extrasaction="ignore")
-    w.writeheader()
-    for n in sorted(rows):
-        w.writerow({**rows[n], "number": n})
-    # BOM כדי ש-Excel יציג עברית. כותבים לקובץ זמני ומחליפים, כדי שקובץ חצי כתוב לא יישאר
-    tmp = dir / (GRADES + ".tmp")
-    tmp.write_text(buf.getvalue(), encoding="utf-8-sig", newline="")
-    tmp.replace(dir / GRADES)
-
-
-def is_approved(row: dict | None) -> bool:
-    return bool(row) and (row.get("approved") or "").strip().lower() not in ("", "0", "no", "false", "לא")
+    """כותב את Grades.csv עצמו (ציונים ישנים ואישורים ביד). הבדיקה כותבת לקובץ של הבודק."""
+    grades.write_file(dir / GRADES, rows)
 
 
 def parse_points(raw: str | None) -> list[float] | None:
@@ -608,10 +589,13 @@ def grade_one(pdf: bytes, ctx: Context, ask: Ask, model: str = DEFAULT_MODEL, na
 
 def grade_assignment(assignment_dir: Path, numbers: list[str] | None = None, *, ask: Ask | None = None,
                      model: str = DEFAULT_MODEL, parallel: int = DEFAULT_PARALLEL, instructions: str = "",
-                     send_solution: bool = True, on_progress: Callable[[str, str], None] | None = None) -> GradeReport:
-    """בודק הגשות של מטלה. numbers=None: כל מה שעוד לא נבדק. on_progress(number, "graded"/"failed"/"skipped")."""
+                     send_solution: bool = True, on_progress: Callable[[str, str], None] | None = None,
+                     who: str | None = None) -> GradeReport:
+    """בודק הגשות של מטלה. numbers=None: כל מה שעוד לא נבדק.
+    on_progress(number, "graded"/"failed"/"skipped"/"taken"), כש-"taken" = בודק אחר לקח אותה."""
     if ask is None:
         ask = claude_ask()
+    who = who or claims.me()
     rep = GradeReport()
     todo = pending(assignment_dir) if numbers is None else [number_key(n) for n in numbers]
     existing = set(submission_numbers(assignment_dir))
@@ -620,11 +604,19 @@ def grade_assignment(assignment_dir: Path, numbers: list[str] | None = None, *, 
     for n in [n for n in todo if n not in existing and n not in approved]:
         rep.failed[n] = "אין קובץ כזה בתיקייה \"1 - Submissions to grade\"."
     todo = [n for n in todo if n in existing and n not in approved]
+    # מה שבודק אחר לקח נשאר שלו. את השאר רושמים עליי, כדי שהצוות יראה מיד מי בודק אותן
+    split = claims.take(assignment_dir, todo, who) if todo else {"taken": [], "others": {}}
+    todo, theirs = split["taken"], sorted(split["others"])
+    if theirs:
+        rep.notes.append(f"{len(theirs)} עבודות שמורות לבודקים אחרים ולא נבדקו כאן: {', '.join(theirs[:20])}"
+                         + (" ועוד" if len(theirs) > 20 else ""))
     rep.total = len(todo) + len(rep.skipped)
     for n in rep.skipped:
         on_progress and on_progress(n, "skipped")
+    for n in theirs:
+        on_progress and on_progress(n, "taken")
     if not todo:
-        if not rep.skipped and not rep.failed:
+        if not rep.skipped and not rep.failed and not theirs:
             rep.notes.append("אין הגשות שמחכות לבדיקה.")
         return rep
 
@@ -632,6 +624,7 @@ def grade_assignment(assignment_dir: Path, numbers: list[str] | None = None, *, 
     names = student_names(assignment_dir)  # במחשב בלבד: לא נשלח ל-Claude
     marked = assignment_dir / paths.MARKED
     marked.mkdir(exist_ok=True)
+    mine = grades.own_file(assignment_dir, who)  # רק אני כותב לקובץ הזה, אז OneDrive לא יוצר עותקים מתנגשים
     lock = threading.Lock()
 
     files = submission_files(assignment_dir)
@@ -653,9 +646,11 @@ def grade_assignment(assignment_dir: Path, numbers: list[str] | None = None, *, 
             tmp = marked / f"{n}.pdf.tmp"
             tmp.write_bytes(out)
             tmp.replace(marked / f"{n}.pdf")
-            rows[n] = {**rows.get(n, {}), "number": n, "grade": _pts(g.grade), "feedback": g.feedback,
-                       "points": ";".join(_pts(p) for p in g.points), "approved": "", "review": g.review}
-            write_grades(assignment_dir, rows)
+            own = grades.read_file(mine)
+            own[n] = {**rows.get(n, {}), "number": n, "grade": _pts(g.grade), "feedback": g.feedback,
+                      "points": ";".join(_pts(p) for p in g.points), "approved": "", "review": g.review,
+                      "graded_at": datetime.now().isoformat(timespec="seconds"), "graded_by": who}
+            grades.write_file(mine, own)
             return True
 
     with ThreadPoolExecutor(max_workers=max(1, min(parallel, 20))) as pool:

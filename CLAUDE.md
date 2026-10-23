@@ -41,7 +41,9 @@ Exercise Checking System/                  the data folder (ASSIGNMENT_DATA, def
                                   Upload log.csv (what went up, per number), Upload batch.json (the current batch),
                                   Upload batch <id>/ (that batch's ZIPs; `upload` never writes there)
       Assignment details.json     Moodle id, course, name, Hebrew title, due date, questions, rules, max_grade, rubric
-      Grades.csv                  number,grade,feedback  ← grading output
+      Grades.csv                  number,grade,feedback: older grades and approvals typed by hand
+      Grades by <name>.csv        each grader's own grades  ← grading output (readers merge all of them, moodle/grades.py)
+      Who grades what/<name>.json the numbers each grader took (moodle/claims.py)
       Key - number to student.csv number → Moodle participant id → original folder  ← the one key
       Upload in progress.txt      exists only while an upload runs ("<user> (<PC>) pid=<pid>", since when; 30 minutes without an update = stuck)
       Pull in progress.txt        the same while a pull runs
@@ -87,9 +89,24 @@ So `dashboard/actions.py` guards the dashboard's pull:
 - Let OneDrive finish syncing (the cloud icon) before pulling on another computer.
 
 Then:
-- Team: grade from `1 - Submissions to grade`, write `Grades.csv` and `2 - Graded with comments` next to it
-  (the dashboard's "Grade" button or `python -m grading <id>`).
+- Team: grade from `1 - Submissions to grade`, write `Grades by <name>.csv` and `2 - Graded with comments` next to it
+  (the dashboard's "Grade" button or `python -m grading <id>`). See "Splitting the grading" below.
 - Whoever returns: `python -m moodle upload <id>` (or "Prepare return" in the dashboard) → upload to Moodle (below).
+
+## Splitting the grading between the team
+
+Each teammate grades on their own computer with their own Claude subscription, so an assignment is split between them:
+- **Claims** (`moodle/claims.py`): in step 2 of the site each grader takes submissions ("קח" on a row, or "take N free ones").
+  Each grader writes only their own file, `Who grades what/<name>.json` (number → when taken), so OneDrive never merges
+  two versions of a file. The site polls `GET /api/claims` every 6 seconds and shows who took what. Two claims of one
+  number made before sync: the earlier one wins (then by name), on every computer.
+- **Grading** skips numbers someone else holds and claims what it grades. Once anyone took something, the site's "Grade"
+  button grades only my claimed, ungraded work; with no claims at all it grades everything pending, as before.
+- **Grades never share a file**: grading writes `Grades by <name>.csv` (with `graded_at`, `graded_by`). Every reader
+  (`grading.read_grades`, `moodle upload`/`send`/`status`, the dashboard) merges `Grades.csv` and all those files per number:
+  an approved row wins, then the latest `graded_at`, and a row without it (old `Grades.csv`) loses to one with it.
+- **My name**: `GRADER_NAME` in the repo's `.env`, set from the site (`POST /api/me`); renaming moves my claims. Without it,
+  the Windows user name.
 
 ## The shared folder (lecturer's OneDrive)
 
