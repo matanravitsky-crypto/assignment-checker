@@ -16,6 +16,8 @@
     "אם כתב היד לא קריא או שהביטחון בציון נמוך, לסמן את העבודה לבדיקה ידנית.",
     "משוב בעברית, ענייני ומעודד. לפתוח במה שנעשה טוב.",
   ].join("\n");
+  // הכלל, כמו RUBRIC_RULE ב-grading/grade.py: ניקוד רק לפי המחוון. האתר אף פעם לא מחלק ניקוד בעצמו
+  const RUBRIC_RULE = "הניקוד ניתן אך ורק לפי המחוון של המטלה: לכל שאלה הניקוד שלה במחוון, ולא יותר. המערכת לא מחלקת ניקוד בעצמה, ובלי מחוון אין ציונים.";
   // המערכת במחשב: האם היא עונה, ומה היא יודעת
   const LOCAL = {
     on: false, health: null, report: null,
@@ -33,6 +35,13 @@
     set(k, v) { try { localStorage.setItem("ac:" + k, JSON.stringify(v)); } catch {} },
   };
 
+  // כרום חוסם לאתר הציבורי גישה למחשב (הרשאת "גישה למכשיר", loopback-network), אבל מעבר לכתובת המקומית מותר תמיד.
+  // מי שפתח פעם את המערכת מכאן ("פתח את המערכת") מועבר אליה לבד בכל כניסה. ?stay משאיר באתר הציבורי ומבטל את המעבר
+  if (!ON_LOCAL_HOST) {
+    if (new URLSearchParams(location.search).has("stay")) store.set("openLocal", false);
+    else if (store.get("openLocal", false)) { location.replace(LOCAL_SITE + location.hash); return; }
+  }
+
   // ---------- State ----------
   const state = {
     courseId: null,
@@ -40,6 +49,7 @@
     tab: { pull: "list", grade: "list", ret: "list" },
     filter: "all",
     query: { pull: "", grade: "", ret: "" },
+    moodleDraft: {},  // assignmentId -> מה שהוקלד בשדה "מזהה המטלה במודל" של הגשה שעוד לא נמשכה
     run: {},          // assignmentId -> { stage, steps[] }
     seenDone: {},     // assignmentId:stage -> true, כדי להנפיש את ה-V רק ברגע ההשלמה
     openId: null,
@@ -79,6 +89,10 @@
   const RET_LOCAL_STEPS = STAGES.ret.steps;
   const stepsOf = (stage) => STAGES[stage].steps;
   const moodleGradingUrl = (A) => `https://moodle.bgu.ac.il/moodle/mod/assign/view.php?id=${encodeURIComponent(A.moodleId || "")}&action=grading`;
+  // הגשה שעוד לא נמשכה אין לה מזהה מודל, אז אין לאן לקשר
+  const moodleLink = (A, cls = "") => A.moodleId ? `<a class="btn secondary ${cls}" href="${moodleGradingUrl(A)}" target="_blank" rel="noopener">פתח את ההגשות במודל</a>` : "";
+  // "https://moodle.bgu.ac.il/moodle/mod/assign/view.php?id=3438636&action=grading" או "3438636" → "3438636"
+  const parseMoodleId = (text) => ((text || "").match(/[?&]id=(\d+)/) || (text || "").trim().match(/^(\d+)$/) || [])[1] || null;
 
   const NO_KEY = "אין חיבור ל-Claude, ולכן אי אפשר לבדוק. הדרך הפשוטה: מחברים את Claude Code במחשב (כמו להעלאה למודל, ברשימת המוכנות של שלב 3, או claude auth login). אפשר גם מפתח API: שורה ANTHROPIC_API_KEY=... בקובץ .env שבתיקיית הריפו, ומפעילים מחדש את start.bat.";
   const STATUS = { pulled: "ממתינה לבדיקה", grading: "בבדיקה", graded: "נבדקה", returned: "הוחזרה", error: "דורשת טיפול" };
@@ -113,6 +127,12 @@
   const course = () => D.courses.find((c) => c.id === state.courseId);
   const cur = () => D.assignments.find((a) => a.id === state.assignmentId);
   const rubric = () => (LOCAL.on && cur()?.rubricQ) || D.rubrics[state.courseId];
+  // למה אין ציונים במטלה (אין מחוון עם ניקוד לכל שאלה). ריק = יש מחוון
+  const noRubric = () => rubric().missing || "";
+  // שאלות שהניקוד בהן עובר את המחוון: נבדקו לפי חלוקה אחרת, ואסור לאשר אותן ככה
+  const overRubric = (points) => rubric().questions.map((q, i) => ({ q, i, p: points?.[i] })).filter((x) => x.p > x.q.pts);
+  const rubricNoticeHTML = () => `<div class="notice rule-notice">${ICON.warn}<div><b>אין ציונים בלי מחוון.</b> ${esc(noRubric())}
+    <span class="muted" style="display:block">כדי לתת ציונים, המרצה מוסיף מחוון עם ניקוד לכל שאלה (rubric) ל-Assignment details.json שבתיקיית המטלה.</span></div></div>`;
   const pad = (n) => String(n).padStart(2, "0");
   const hhmm = (d) => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
   function when(iso) {
@@ -138,13 +158,18 @@
   // עבודה בתור הבדיקה הידנית: Claude ביקש שאדם יבדוק, או שהבדיקה האוטומטית נכשלה. יוצאת מהתור כשמישהו מאשר
   const needsReview = (s) => !s.approved && (!!s.review || (!!s.failed && s.score == null));
   const wasReviewed = (s) => s.approved && (!!s.review || !!s.reviewedBy);
+  // מקרים מיוחדים: רק הם מגיעים לאדם (grading.SPECIAL_CASES, הסקיל "קשיחות והחלטות"), ועוד סוגים מבדיקות ישנות
   const REVIEW_KIND = {
+    missing_question: ["חסר תרגיל או סעיף", "שאלה שלמה או סעיף שלם לא נמצאו בהגשה"],
+    missing_page: ["חסר עמוד", "המספור קופץ, תשובה נקטעת, או עמוד חתוך"],
+    other_assignment: ["הגשה של מטלה אחרת", "ההגשה עונה על שאלות של מטלה אחרת"],
+    unreadable_file: ["עמוד שאי אפשר לקרוא", "עמוד ריק, שחור או מטושטש, או קובץ שאי אפשר לבדוק"],
     unreadable: ["כתב יד לא קריא", "Claude לא הצליח לקרוא חלק מהעבודה"],
     missing: ["חסרים עמודים או שאלות", "שאלה או עמוד לא נמצאו בהגשה"],
     uncertain: ["ניקוד לא ודאי", "Claude לא בטוח בניקוד של שאלה"],
     format: ["לא לפי כללי ההגשה", "ההגשה לא בפורמט שנדרש"],
     failed: ["הבדיקה האוטומטית נכשלה", "צריך לבדוק ידנית או לנסות שוב"],
-    other: ["אחר", "Claude ביקש שאדם יסתכל"],
+    other: ["מקרה מיוחד אחר", "משהו שלא קשור לבדיקה עצמה"],
   };
   const kindOf = (s) => s.reviewKind || (s.failed ? "failed" : "other");
 
@@ -410,8 +435,14 @@
 
   function emptyPulled() {
     const A = cur();
-    return `<div class="empty"><strong>עוד אין הגשות במטלה הזו</strong>לוחצים "משוך הגשות": Claude בכרום מוריד ממודל את ה-ZIP של כל ההגשות, והמערכת קולטת אותו. צריך כרום פתוח עם התוסף Claude in Chrome והתחברות למודל.
-      <div class="empty-act">${stageButton("pull")}<a class="btn secondary" href="${moodleGradingUrl(A)}" target="_blank" rel="noopener">פתח את ההגשות במודל</a><button class="btn secondary" data-act="open-inbox">${ICON.folder}פתח את תיקיית ההורדות</button></div></div>`;
+    const idField = A.empty ? `
+      <div class="field moodle-id"><label for="moodle-id">הקישור למטלה במודל, או רק המספר שאחרי <span dir="ltr">id=</span></label>
+        <input id="moodle-id" dir="ltr" inputmode="url" autocomplete="off" data-moodle-id="${A.id}" value="${esc(state.moodleDraft[A.id] || "")}" placeholder="https://moodle.bgu.ac.il/moodle/mod/assign/view.php?id=…"></div>` : "";
+    const lead = A.empty
+      ? `${esc(A.title)} עוד לא נמשכה. בפעם הראשונה המערכת צריכה לדעת איזו מטלה במודל זו: מדביקים כאן את הקישור לעמוד המטלה ולוחצים "משוך הגשות". מהפעם הבאה הוא כבר שמור.`
+      : `לוחצים "משוך הגשות": Claude בכרום מוריד ממודל את ה-ZIP של כל ההגשות, והמערכת קולטת אותו. צריך כרום פתוח עם התוסף Claude in Chrome והתחברות למודל.`;
+    return `<div class="empty"><strong>עוד אין הגשות במטלה הזו</strong>${lead}${idField}
+      <div class="empty-act">${stageButton("pull")}${moodleLink(A)}<button class="btn secondary" data-act="open-inbox">${ICON.folder}פתח את תיקיית ההורדות</button></div></div>`;
   }
 
   // מה קרה במשיכה האחרונה (בגרסה המחוברת)
@@ -901,7 +932,7 @@
             <li><b>מעדכנת את טבלת המפתח</b> (מספר ← מזהה המשתתף במודל). זה המקום היחיד שמקשר מספר לסטודנט, והוא נשאר בתיקיית המטלה.</li>
           </ol>
           <div class="row-start">
-            <a class="btn secondary small" href="${moodleGradingUrl(A)}" target="_blank" rel="noopener">פתח את ההגשות במודל</a>
+            ${moodleLink(A, "small")}
             <button class="btn secondary small" data-act="open-inbox">${ICON.folder}פתח את תיקיית ההורדות</button>
           </div>
         </div>
@@ -929,7 +960,7 @@
         <p class="lead">למודל של האוניברסיטה אין API, ולכן המערכת לא מתחברת אליו עם מפתח. מודל נפתח בכרום שלך, עם החשבון שלך, ו-Claude in Chrome עובד בו. אף סיסמה לא נכנסת למערכת.</p>
         <p class="lead">במשיכה Claude בכרום מוריד את ה-ZIP של כל ההגשות, והמערכת קולטת אותו מתיקיית ההורדות. בהחזרה Claude בכרום מעלה את העבודות המסומנות. בשני המקרים צריך את אותה רשימת מוכנות שלמטה.</p>
         <div class="row-start" style="margin:0 0 16px">
-          <a class="btn secondary small" href="${moodleGradingUrl(A)}" target="_blank" rel="noopener">פתח את ההגשות במודל</a>
+          ${moodleLink(A, "small")}
         </div>
         ${readyChecklistHTML(rd)}
       </div>
@@ -975,6 +1006,7 @@
         <section class="panel">
           <div class="panel-head"><h2>מחוון</h2><span class="meta">${esc(course().name)}, ${esc(A.title)}</span></div>
           <div class="panel-body">
+            ${R.missing ? rubricNoticeHTML() : ""}
             ${R.questions.map((q) => `
               <div class="rubric-row">
                 <span class="rq">שאלה ${q.n}</span>
@@ -982,7 +1014,7 @@
                 <span>${esc(q.req)}${q.criteria ? `<small class="muted" style="display:block">${esc(q.criteria)}</small>` : ""}</span>
               </div>`).join("")}
             <div class="total-line"><span>סך הכל</span><span class="num">${total} נק׳</span></div>
-            <p class="hint">כך הבדיקה קוראת את המחוון מהקובץ Assignment details.json שבתיקיית המטלה. כל עוד אין בו מחוון (rubric), הניקוד מתחלק שווה בין השאלות. כדי לשנות, עורכים את הקובץ.</p>
+            <p class="hint">כך הבדיקה קוראת את המחוון מהקובץ Assignment details.json שבתיקיית המטלה. ${esc(RUBRIC_RULE)} כדי לשנות, עורכים את הקובץ.</p>
             <div class="row-start"><button class="btn secondary small" data-act="open-folder">${ICON.folder}פתח את תיקיית המטלה</button></div>
           </div>
         </section>
@@ -1141,7 +1173,7 @@
     return `<section class="review-callout">
       <span class="rc-icon">${ICON.hand}</span>
       <div class="rc-text">
-        <b>${plural(queue.length, "עבודה אחת מחכה", "עבודות מחכות")} לבדיקה ידנית</b>
+        <b>${plural(queue.length, "מקרה מיוחד אחד מחכה", "מקרים מיוחדים מחכים")} לבדיקה ידנית</b>
         <div class="rc-kinds">${kinds.map(([k, c]) => `<span class="chip">${REVIEW_KIND[k][0]}<span class="c num">${c}</span></span>`).join("")}</div>
       </div>
       <a class="btn primary" href="#/review">${ICON.pen}התחל לבדוק</a>
@@ -1171,11 +1203,18 @@
     const qs = rubric().questions;
     // רק עבודות עם ניקוד לכל שאלה (ב-Grades.csv יש רק ציון סופי)
     const withQ = I.graded.filter((s) => Array.isArray(s.q) && s.q.length === qs.length);
+    if (noRubric()) return `<p class="muted empty-line">אין מחוון, אז אין ניקוד לפי שאלה.</p>`;
     if (!withQ.length) return `<p class="muted empty-line">יופיע אחרי שיהיה ניקוד לכל שאלה.</p>`;
-    const rates = qs.map((q, i) => avg(withQ.map((s) => Math.round((s.q[i] / q.pts) * 100))));
+    // עבודה שהניקוד בה עובר את המחוון נבדקה לפי חלוקה אחרת: לא נספרת, אחרת יוצאים אחוזים מעל 100
+    const fits = withQ.filter((s) => !overRubric(s.q).length), off = withQ.length - fits.length;
+    const offNote = off ? `<p class="hint">${off === 1
+      ? "עבודה אחת לא נספרת כאן: הניקוד בה עובר את המחוון (היא נבדקה לפי חלוקה אחרת), וצריך לבדוק אותה מחדש."
+      : `${off} עבודות לא נספרות כאן: הניקוד בהן עובר את המחוון (הן נבדקו לפי חלוקה אחרת), וצריך לבדוק אותן מחדש.`}</p>` : "";
+    if (!fits.length) return `<p class="muted empty-line">אין עדיין עבודות שנבדקו לפי המחוון.</p>${offNote}`;
+    const rates = qs.map((q, i) => Math.min(100, avg(fits.map((s) => Math.round((s.q[i] / q.pts) * 100)))));
     const worst = rates.indexOf(Math.min(...rates));
     return `<ul class="qbars">${qs.map((q, i) => `
-      <li class="${i === worst ? "worst" : ""}"><span>שאלה ${q.n}</span><span class="track"><i style="width:${rates[i]}%"></i></span><b class="num">${rates[i]}%</b></li>`).join("")}</ul>`;
+      <li class="${i === worst ? "worst" : ""}"><span>שאלה ${q.n}</span><span class="track"><i style="width:${rates[i]}%"></i></span><b class="num">${rates[i]}%</b></li>`).join("")}</ul>${offNote}`;
   }
 
   function logHTML(limit, onlyHere) {
@@ -1236,11 +1275,11 @@
         <div class="panel-head"><h2>איך מתחברים</h2><span class="end tag warn">${LOCAL.probing ? "מנסה להתחבר…" : "לא מחובר"}</span></div>
         <div class="panel-body">
           <ol class="todo">
-            <li>לוחצים פעמיים על <code dir="ltr">start.bat</code> בתיקיית הריפו (assignment-checker). חלון שחור נפתח, והוא צריך להישאר פתוח כל זמן שעובדים.</li>
-            <li>לוחצים "פתח את המערכת". אותו אתר נפתח בכתובת <code dir="ltr">http://localhost:8765</code>, עם הנתונים האמיתיים ובלי שום הרשאה.</li>
+            <li>המערכת צריכה לרוץ במחשב. אחרי לחיצה אחת על <code dir="ltr">install-autostart.bat</code> בתיקייה assignment-checker היא עולה לבד, בלי חלון, בכל הדלקה של המחשב. (בלי זה: לחיצה כפולה על <code dir="ltr">start.bat</code>, והחלון השחור נשאר פתוח.)</li>
+            <li>לוחצים "פתח את המערכת". אותו אתר נפתח בכתובת <code dir="ltr">http://localhost:8765</code>, עם הנתונים האמיתיים ובלי שום הרשאה. <b>מהפעם הבאה הקישור הזה מעביר לשם לבד.</b></li>
           </ol>
           <div class="row-start">
-            <a class="btn primary lg" href="${LOCAL_SITE}${esc(location.hash)}">${ICON.chev}פתח את המערכת</a>
+            <a class="btn primary lg" data-open-local href="${LOCAL_SITE}${esc(location.hash)}">${ICON.chev}פתח את המערכת</a>
             <button class="btn secondary small" data-act="recheck">${ICON.redo}נסה להתחבר מכאן</button>
           </div>
           <p class="hint">אפשר גם לעבוד מהכתובת הזו: אם כרום שואל אם לאפשר לאתר לגשת לאפליקציות ולשירותים במכשיר, לוחצים "אפשר", והאתר מתחבר לבד תוך כמה שניות.</p>
@@ -1253,7 +1292,7 @@
             <li><b>גישה לתיקייה:</b> מבקשים מהמרצה גישה לתיקייה YallaLinearit. בדפדפן, על התיקייה: Add shortcut to My files. באפליקציית OneDrive במחשב מתחברים עם חשבון האוניברסיטה.</li>
             <li><b>התוכנות</b>, בחלון PowerShell: <code dir="ltr">winget install Python.Python.3.12</code>, <code dir="ltr">winget install 7zip.7zip</code>, <code dir="ltr">winget install Git.Git</code></li>
             <li><b>המערכת:</b> בחלון חדש, בתיקייה שבה רוצים לשמור אותה: <code dir="ltr">git clone ${REPO_URL}</code></li>
-            <li><b>מפעילים:</b> לחיצה כפולה על <code dir="ltr">start.bat</code> בתיקייה assignment-checker. בכל הפעלה הוא מעדכן את המערכת מ-GitHub, כך שכולם עובדים על אותה גרסה.</li>
+            <li><b>מפעילים, פעם אחת:</b> לחיצה כפולה על <code dir="ltr">install-autostart.bat</code> בתיקייה assignment-checker. מעכשיו המערכת עולה לבד, בלי חלון, בכל פעם שהמחשב נדלק, והקישור הזה פשוט עובד. בכל הפעלה היא מתעדכנת מ-GitHub, כך שכולם עובדים על אותה גרסה. (בלי הפעלה אוטומטית: לחיצה כפולה על <code dir="ltr">start.bat</code>, והחלון השחור נשאר פתוח.)</li>
           </ol>
           <div class="row-start"><a class="btn secondary small" href="${REPO_URL}#readme" target="_blank" rel="noopener">ההסבר המלא ב-GitHub</a></div>
         </div>
@@ -1290,8 +1329,8 @@
         <p class="lead">האתר קורא את תיקיית OneDrive של הקורס דרך המערכת שרצה במחשב שמסנכרן אותה:</p>
         <ol class="todo">
           <li>באפליקציית OneDrive מחברים את חשבון האוניברסיטה. בדפדפן, על התיקייה YallaLinearit, לוחצים Add shortcut to My files.</li>
-          <li>מורידים את הריפו מ-GitHub ולוחצים פעמיים על <code dir="ltr">start.bat</code>.</li>
-          <li>האתר הזה מתחבר אליה לבד (כרום שואל פעם אחת אם לאפשר). אפשר גם לעבוד בכתובת <code dir="ltr">http://localhost:8765</code>.</li>
+          <li>מורידים את הריפו מ-GitHub ולוחצים פעם אחת על <code dir="ltr">install-autostart.bat</code> (או בכל פעם על <code dir="ltr">start.bat</code>).</li>
+          <li>עובדים בכתובת <code dir="ltr">http://localhost:8765</code>. מי שפתח אותה פעם אחת מהאתר הציבורי מועבר אליה לבד.</li>
         </ol>
       </div>
     </section>`;
@@ -1320,7 +1359,7 @@
             <h3 class="gc-title">ציון</h3>
             ${busy ? `<p class="muted" style="margin:0">Claude בודק את העבודה עכשיו.</p>`
               : s.score != null ? `<div class="grade-top"><span class="big num">${s.score}</span><span class="lbl"><b>${s.approved ? "מאושר" : "עוד לא אושר"}</b>מתוך ${cur().maxGrade || 100}</span></div>
-                ${s.q && s.q.length === qs.length ? `<ul class="breakdown">${qs.map((q, i) => `<li><label>${esc(q.req || `שאלה ${q.n}`)}</label><span class="num">${s.q[i]} / ${q.pts}</span><span class="track"><i class="${s.q[i] < q.pts ? "short" : ""}" style="width:${(s.q[i] / q.pts) * 100}%"></i></span></li>`).join("")}</ul>` : ""}
+                ${s.q && s.q.length === qs.length && !noRubric() ? `<ul class="breakdown">${qs.map((q, i) => `<li><label>${esc(q.req || `שאלה ${q.n}`)}</label><span class="num ${s.q[i] > q.pts ? "over" : ""}" ${s.q[i] > q.pts ? `title="יותר מהניקוד של השאלה במחוון: צריך לבדוק מחדש"` : ""}>${s.q[i]} / ${q.pts}</span><span class="track"><i class="${s.q[i] < q.pts ? "short" : ""}" style="width:${Math.min(100, (s.q[i] / q.pts) * 100)}%"></i></span></li>`).join("")}</ul>` : ""}
                 ${s.review ? `<p class="hint"><span class="flag" style="white-space: normal">${s.approved ? "נבדקה ידנית" : "לבדיקה ידנית"}: ${esc(s.review)}</span></p>` : ""}`
               : `<p class="muted" style="margin:0">עוד לא נבדקה.</p>`}
             <p class="hint">אחרי הבדיקה, העבודה עם ההערות נשמרת ב-"2 - Graded with comments" באותו מספר, והציון ב-Grades.csv.</p>
@@ -1440,7 +1479,7 @@
     const head = `<button type="button" class="rq-head" data-rq-toggle="${qi}" aria-expanded="${open}">
       <span class="rq-n num">${qi + 1}</span>
       <span class="rq-label">${esc(q.req || `שאלה ${qi + 1}`)}${unsure ? `<em class="rq-flag">לבדוק</em>` : ""}</span>
-      <span class="rq-pts num ${pts < q.pts ? "lost" : ""}">${fmt(pts)}<small>/${q.pts}</small></span>
+      <span class="rq-pts num ${pts > q.pts ? "over" : pts < q.pts ? "lost" : ""}" ${pts > q.pts ? `title="יותר מהניקוד של השאלה במחוון"` : ""}>${fmt(pts)}<small>/${q.pts}</small></span>
       <span class="rq-chev" aria-hidden="true">${ICON.chev}</span>
     </button>`;
     if (!open) {
@@ -1483,7 +1522,7 @@
     const total = queue.length + done.length;
     const top = `<header class="rv-top">
       <div><h1>בדיקה ידנית</h1>
-        <p>${queue.length ? `${plural(queue.length, "עבודה אחת מחכה", "עבודות מחכות")} לך` : "אין עבודות שמחכות"}${done.length ? ` · ${done.length} כבר נבדקו` : ""}</p></div>
+        <p>${queue.length ? `${plural(queue.length, "מקרה מיוחד אחד מחכה", "מקרים מיוחדים מחכים")} לך: חסר תרגיל, חסר עמוד, מטלה אחרת או עמוד שאי אפשר לקרוא` : "אין מקרים מיוחדים שמחכים"}${done.length ? ` · ${done.length} כבר נבדקו` : ""}</p></div>
       ${total ? `<div class="rv-meter" role="progressbar" aria-label="כמה נבדקו" aria-valuemin="0" aria-valuemax="${total}" aria-valuenow="${done.length}"><i style="width:${(100 * done.length) / total}%"></i></div>` : ""}
     </header>`;
     if (!I.subs.length) return `${top}<section class="panel">${emptyPulled()}</section>`;
@@ -1495,6 +1534,14 @@
     const at = list.indexOf(s), prev = list[at - 1], next = list[at + 1];
     const k = kindOf(s), flagged = needsReview(s) || s.review || s.failed;
     const unsure = (s.unsure || []).map((u, i) => (u ? i : -1)).filter((i) => i >= 0);
+    const over = overRubric(d.points), blocked = !!noRubric() || over.length > 0;
+    // הכלל קודם לכל: בלי מחוון אין טופס ניקוד, וניקוד שעובר את המחוון לא מאושר
+    const rule = noRubric() ? rubricNoticeHTML()
+      : over.length ? `<div class="notice rule-notice">${ICON.warn}<div><b>הניקוד בעבודה הזו לא לפי המחוון.</b>
+          ${over.map((x) => `${esc(x.q.req || `שאלה ${x.i + 1}`)} קיבלה ${fmt(x.p)}, ובמחוון יש לה ${fmt(x.q.pts)}.`).join(" ")}
+          כנראה היא נבדקה לפי חלוקה אחרת של הניקוד, אז צריך לתת ניקוד מחדש לכל השאלות לפי המחוון, או לבדוק אותה שוב עם Claude.
+          ${LOCAL.health?.claude && !s.approved ? `<button type="button" class="btn secondary small" data-act="grade-one" data-id="${s.id}" ${state.run[A.id] ? "disabled" : ""}>${ICON.redo}לבדוק שוב עם Claude</button>` : ""}</div></div>`
+      : `<p class="rv-rule">${ICON.lock}הניקוד לפי המחוון בלבד: לכל שאלה עד הניקוד שלה במחוון.</p>`;
     return `${top}
       <nav class="rv-steps" aria-label="העבודות בתור">
         ${prev ? `<a class="rv-arrow" href="#/review?n=${prev.id}" aria-label="העבודה הקודמת">${ICON.chev}</a>` : `<span class="rv-arrow" aria-hidden="true"></span>`}
@@ -1506,6 +1553,7 @@
           <div class="rv-issue ${flagged ? `k-${k}` : "ok"}">
             <div class="rv-issue-top"><span class="rv-work">עבודה <b class="num">${s.id}</b></span>
               ${flagged ? `<span class="rv-kind">${esc(REVIEW_KIND[k][0])}</span>` : s.approved ? `<span class="rv-kind ok">אושרה${s.reviewedBy ? ` · ${esc(s.reviewedBy)}` : ""}</span>` : ""}</div>
+            ${flagged && s.missing ? `<p class="rv-missing">חסר: <b>${esc(s.missing)}</b></p>` : ""}
             ${flagged ? `<p>${esc(s.failed || s.review || "Claude ביקש שאדם יבדוק את העבודה.")}</p>` : ""}
             ${s.failed && LOCAL.health?.claude ? `<button class="btn secondary small" data-act="grade-one" data-id="${s.id}" ${state.run[A.id] ? "disabled" : ""}>${ICON.redo}לבדוק שוב עם Claude</button>` : ""}
           </div>
@@ -1513,12 +1561,13 @@
         </section>
         <form class="rv-panel" data-rv-form="${s.id}" autocomplete="off">
           <div class="rv-panel-head"><h2>ציון</h2>${unsure.length ? `<span>Claude לא בטוח ב${unsure.map((i) => `<button type="button" class="link-btn" data-rv-jump="${i}">שאלה ${i + 1}</button>`).join(", ")}</span>` : ""}</div>
-          <ol class="rq-list">${qs.map((q, qi) => questionHTML(s, d, qi, open.has(qi))).join("")}</ol>
+          ${rule}
+          ${noRubric() ? "" : `<ol class="rq-list">${qs.map((q, qi) => questionHTML(s, d, qi, open.has(qi))).join("")}</ol>
           <details class="rv-fb" ${state.review.fbOpen ? "open" : ""}><summary>משוב לסטודנט</summary>
-            <textarea id="rv-fb" data-rv-feedback rows="4" aria-label="משוב לסטודנט">${esc(d.feedback)}</textarea></details>
+            <textarea id="rv-fb" data-rv-feedback rows="4" aria-label="משוב לסטודנט">${esc(d.feedback)}</textarea></details>`}
           <div class="rv-bar">
-            <div class="rv-total"><b class="num" id="rv-total">${draftTotal(d)}</b><span>/ ${max}</span></div>
-            <button type="submit" class="btn primary" ${state.review.saving ? "disabled" : ""} title="Ctrl+Enter">${state.review.saving ? ICON.spin : ICON.check}${needsReview(s) ? (next ? "אשר ועבור לבאה" : "אשר") : "שמור"}</button>
+            <div class="rv-total"><b class="num" id="rv-total">${noRubric() ? "—" : draftTotal(d)}</b><span>/ ${max}</span></div>
+            <button type="submit" class="btn primary" ${state.review.saving || blocked ? "disabled" : ""} title="${blocked ? "אפשר לאשר רק ניקוד לפי המחוון" : "Ctrl+Enter"}">${state.review.saving ? ICON.spin : ICON.check}${needsReview(s) ? (next ? "אשר ועבור לבאה" : "אשר") : "שמור"}</button>
           </div>
         </form>
       </div>`;
@@ -1528,6 +1577,7 @@
     const A = cur(), s = A?.subs.find((x) => x.id === id);
     if (!s || state.review.saving) return;
     const d = draft(s), wasQueued = needsReview(s);
+    if (noRubric() || overRubric(d.points).length) { toast(noRubric() || `אפשר לאשר רק ניקוד לפי המחוון. ${RUBRIC_RULE}`, ICON.warn); return; }
     const { queue } = reviewList(A);
     const at = queue.findIndex((x) => x.id === id);
     const next = wasQueued ? (queue[at + 1] || queue.find((x) => x.id !== id)) : null;
@@ -1689,6 +1739,7 @@
             ${A.notes ? `<p class="muted">${esc(A.notes)}</p>` : ""}
           </div>
         </div>
+        ${noRubric() ? rubricNoticeHTML() : ""}
         ${pipelineHTML()}
         ${statsRowHTML(A, I)}
         ${reviewCalloutHTML(A)}
@@ -1883,6 +1934,7 @@
   // ---------- Events ----------
   document.addEventListener("click", (e) => {
     const t = e.target;
+    if (t.closest("a[data-open-local]")) store.set("openLocal", true);  // מהפעם הבאה הקישור הציבורי מעביר לכאן לבד
     const runBtn = t.closest("[data-run]");
     if (runBtn) { runStage(runBtn.dataset.run); return; }
     if (t.closest("[data-copy-run]")) { runCopying(); return; }
@@ -2022,6 +2074,7 @@
       return;
     }
     if (t.dataset.query) { state.query[t.dataset.query] = t.value; render(); return; }
+    if (t.dataset.moodleId) { state.moodleDraft[t.dataset.moodleId] = t.value; return; }
     if (t.dataset.instr) {
       const st = t.dataset.instr;
       state.instr[st] = t.value;
@@ -2082,7 +2135,7 @@
         const data = await r.json().catch(() => ({}));
         if (!r.ok) throw new Error(data.error || `המערכת במחשב החזירה שגיאה ${r.status}`);
         return data;
-      }, () => { throw new Error("אין חיבור למערכת במחשב. האם start.bat עדיין פתוח?"); });
+      }, () => { throw new Error("אין חיבור למערכת במחשב. אם המחשב נדלק עכשיו, מחכים דקה; אחרת מפעילים את start.bat."); });
   }
 
   // המערכת עונה ב-api/health. באתר הציבורי כרום שואל פעם אחת אם לאפשר גישה למכשיר, ועד התשובה הבקשה מחכה
@@ -2101,8 +2154,8 @@
     }
   }
 
-  // בלי מחוון: הניקוד מתחלק שווה בין השאלות, כמו בבדיקה עצמה (grading/grade.py)
-  const equalRubric = (labels) => ({ questions: labels.map((l, i) => ({ n: i + 1, pts: Math.round(100 / labels.length), req: l })) });
+  // בלי מחוון יש רק את שמות השאלות. ניקוד 0 לכל אחת: לא מחלקים את הציון בעצמנו, ואין ציונים
+  const noRubricQ = (labels, why) => ({ questions: labels.map((l, i) => ({ n: i + 1, pts: 0, req: l })), missing: why || `למטלה אין מחוון. ${RUBRIC_RULE}` });
 
   async function loadLocal() {
     try {
@@ -2110,12 +2163,12 @@
       D.courses.splice(0, D.courses.length, ...data.courses);
       D.assignments.splice(0, D.assignments.length, ...data.assignments.map((a) => ({
         ...a, phase: a.subs.length ? "current" : "new", gradedAt: a.gradedAt || null, returnedAt: a.returnedAt || null, lastFresh: null,
-        rubricQ: a.rubric?.length ? { questions: a.rubric.map((q, i) => ({ n: i + 1, pts: q.points, req: q.label, criteria: q.criteria || "", deductions: q.deductions || [] })) } : null,
+        rubricQ: a.rubric?.length ? { questions: a.rubric.map((q, i) => ({ n: i + 1, pts: q.points, req: q.label, criteria: q.criteria || "", deductions: q.deductions || [] })), missing: a.noRubric || "" } : null,
       })));
       Object.keys(D.rubrics).forEach((k) => delete D.rubrics[k]);
       data.courses.forEach((c) => {
         const labels = data.assignments.find((a) => a.courseId === c.id && a.questionLabels?.length)?.questionLabels;
-        D.rubrics[c.id] = equalRubric(labels || ["שאלה 1"]);
+        D.rubrics[c.id] = noRubricQ(labels || ["שאלה 1"]);
       });
       D.runs.splice(0, D.runs.length, ...data.assignments
         .flatMap((a) => (a.log || []).map((l) => ({ ...l, where: `${a.course}, ${a.title}` })))
@@ -2140,6 +2193,14 @@
   async function runLocalPull() {
     const A = cur();
     if (!A || state.run[A.id] || !LOCAL.health?.root) return;
+    // הגשה שעוד לא נמשכה: המשיכה הראשונה שומרת את מזהה המטלה במודל (dashboard/actions.py new_assignment)
+    const moodleId = A.empty ? parseMoodleId(state.moodleDraft[A.id]) : null;
+    if (A.empty && !moodleId) {
+      toast("קודם מדביקים את הקישור למטלה במודל (או את המספר שאחרי id=), ואז מושכים.", ICON.warn);
+      if (route() !== "/pull") location.hash = "#/pull";  // השדה נמצא בעמוד המשיכה
+      setTimeout(() => $("#moodle-id")?.focus(), 50);
+      return;
+    }
     const run = (state.run[A.id] = { stage: "pull", steps: STAGES.pull.steps.map(() => "pending") });
     // ההורדה ממודל לוקחת כמה דקות (ZIP גדול), והשרת עונה רק בסוף, אז השלב הראשון נשאר "רץ" עד התשובה
     run.steps[0] = "running";
@@ -2147,7 +2208,7 @@
     render();
     toast("Claude בכרום מוריד את ה-ZIP ממודל. זה יכול לקחת כמה דקות: לא סוגרים את כרום.");
     try {
-      const rep = await api("api/pull", { method: "POST", body: JSON.stringify({ course: A.courseFolder, assignment: A.folder }) });
+      const rep = await api("api/pull", { method: "POST", body: JSON.stringify({ course: A.courseFolder, assignment: A.folder, ...(moodleId && { moodleId }) }) });
       LOCAL.report = { ...rep, assignmentId: A.id };
       delete state.run[A.id];
       await loadLocal();
@@ -2166,7 +2227,8 @@
       }
     } catch (e) {
       delete state.run[A.id];
-      render();
+      // גם כשההורדה נכשלה, מזהה המודל כבר נשמר בתיקייה: טוענים מחדש כדי שהשדה יתחלף בקישור למודל
+      if (moodleId) await loadLocal(); else render();
       toast(e.message, ICON.warn);
     }
   }
@@ -2176,6 +2238,7 @@
     const A = cur();
     if (!A || state.run[A.id] || !ids.length) return;
     if (!LOCAL.health?.claude) { toast(NO_KEY, ICON.warn); return; }
+    if (noRubric()) { toast(noRubric(), ICON.warn); return; }
     const run = (state.run[A.id] = { stage: "grade", steps: STAGES.grade.steps.map(() => "pending") });
     run.steps[0] = "running";
     A.subs.filter((s) => ids.includes(s.id)).forEach((s) => { s.status = "grading"; });
