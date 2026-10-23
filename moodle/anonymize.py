@@ -9,6 +9,7 @@ submissions" gives them) and writes into the assignment folder:
 """
 
 import csv
+import os
 import re
 import shutil
 from pathlib import Path
@@ -43,17 +44,11 @@ def prepare(original: Path, assignment_dir: Path, on_folder=None) -> list[dict]:
         (f for f in original.iterdir() if f.is_dir()),
         key=lambda f: int(parse_folder(f.name)),
     )
+    check_key(assignment_dir)
     old_rows = existing_rows(assignment_dir)
-
-    # The files of this download replace the old ones; the old folder is set aside first, so the files of a student
-    # who is not in this download can be put back
     anon = assignment_dir / paths.TO_GRADE
-    previous = assignment_dir / f"{paths.TO_GRADE} (previous)"
-    if previous.exists():
-        shutil.rmtree(previous)
-    if anon.exists():
-        anon.rename(previous)
-    anon.mkdir()
+    anon.mkdir(exist_ok=True)
+    _restore_previous(assignment_dir, anon)
 
     # A student keeps their number across downloads, even after grading started;
     # students who submitted since the last download get the next free numbers
@@ -68,7 +63,10 @@ def prepare(original: Path, assignment_dir: Path, on_folder=None) -> list[dict]:
             numbers[folder] = next_number
             next_number += 1
 
-    rows = []
+    # "1 - Submissions to grade" is updated in place, file by file, and only where something changed: a pull that
+    # fails halfway leaves every file either as it was or as it is now (never half written), nothing of a student who
+    # is not in this download is touched, and OneDrive uploads only what changed
+    rows, wanted = [], {}
     for done, folder in enumerate(sorted(folders, key=numbers.get)):
         if on_folder:
             on_folder(done, len(folders))
@@ -78,7 +76,7 @@ def prepare(original: Path, assignment_dir: Path, on_folder=None) -> list[dict]:
             # A second file from the same student becomes 0001-2.pdf
             suffix = "" if index == 0 else f"-{index + 1}"
             anon_name = f"{number:04d}{suffix}{file.suffix.lower()}"
-            shutil.copy2(file, anon / anon_name)
+            wanted[anon_name] = file
             rows.append({
                 "number": f"{number:04d}",
                 "anon_file": anon_name,
@@ -86,25 +84,85 @@ def prepare(original: Path, assignment_dir: Path, on_folder=None) -> list[dict]:
                 "original_folder": folder.name,
                 "original_file": str(file.relative_to(folder)),
             })
+    for anon_name, file in wanted.items():
+        _put(file, anon / anon_name)
+    # a file of a student in this download that the download no longer has (they submitted fewer files)
+    here_numbers = {f"{n:04d}" for n in numbers.values()}
+    for old in anon.iterdir():
+        if old.is_file() and old.name not in wanted and _number_of(old.name) in here_numbers:
+            old.unlink()
 
     # Students of the key who are not in this download: their rows stay, and so do their files
     here = {parse_folder(f.name) for f in folders}
-    for row in old_rows:
-        if row["participant_id"] in here:
-            continue
-        rows.append({k: row.get(k, "") for k in MAPPING_FIELDS})
-        old_file = previous / row["anon_file"]
-        if old_file.is_file() and not (anon / row["anon_file"]).exists():
-            old_file.rename(anon / row["anon_file"])
+    rows += [{k: row.get(k, "") for k in MAPPING_FIELDS} for row in old_rows if row["participant_id"] not in here]
     rows.sort(key=lambda r: r["number"])  # stable: a student's files stay in their order (0001.pdf, then 0001-2.pdf)
 
-    with open(assignment_dir / paths.KEY, "w", newline="", encoding="utf-8-sig") as f:
+    # The key last, and whole or not at all: written next to it, then put in its place in one step
+    key = assignment_dir / paths.KEY
+    tmp = key.with_name(key.name + ".tmp")
+    with open(tmp, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.DictWriter(f, fieldnames=MAPPING_FIELDS)
         writer.writeheader()
         writer.writerows(rows)
-    if previous.exists():
-        shutil.rmtree(previous)
+    os.replace(tmp, key)
     return rows
+
+
+KEY_EMPTY = "the key table is empty or unreadable"
+
+
+def check_key(assignment_dir: Path) -> None:
+    """Refuse to number when the key is empty or unreadable while the assignment already has submissions: numbering
+    from it would give every student a new number, and grades would reach the wrong student. Changes nothing."""
+    anon = assignment_dir / paths.TO_GRADE
+    has_submissions = anon.is_dir() and any(f.is_file() and not f.name.endswith(".tmp") for f in anon.iterdir())
+    try:
+        rows = existing_rows(assignment_dir)
+        ok = all(row.get("participant_id", "").isdigit() and row.get("number", "").isdigit() for row in rows)
+    except (OSError, UnicodeDecodeError, csv.Error):
+        rows, ok = [], False
+    if (has_submissions and not rows) or not ok:
+        raise ValueError(f"{KEY_EMPTY}: {paths.KEY} has {len(rows)} usable rows"
+                         f"{f' but {paths.TO_GRADE} has submissions' if has_submissions else ''}. Nothing was changed")
+PREVIOUS = " (previous)"  # left by the old code when a pull failed halfway
+
+
+def _number_of(anon_name: str) -> str:
+    """"0012-2.pdf" -> "0012"."""
+    return anon_name.split(".")[0].split("-")[0]
+
+
+def _put(source: Path, dest: Path) -> None:
+    """Copy source to dest unless dest already has exactly these bytes; the copy goes next to it first (.tmp, which
+    the OneDrive sync skips), then replaces it in one step."""
+    if dest.is_file() and dest.stat().st_size == source.stat().st_size and _same_bytes(source, dest):
+        return
+    tmp = dest.with_name(dest.name + ".tmp")
+    shutil.copy2(source, tmp)
+    os.replace(tmp, dest)
+
+
+def _same_bytes(a: Path, b: Path) -> bool:
+    """Byte by byte (filecmp remembers earlier answers by size and time, and a resubmission can match both)."""
+    with open(a, "rb") as fa, open(b, "rb") as fb:
+        while True:
+            x, y = fa.read(1 << 20), fb.read(1 << 20)
+            if x != y:
+                return False
+            if not x:
+                return True
+
+
+def _restore_previous(assignment_dir: Path, anon: Path) -> None:
+    """The old code renamed the folder to "... (previous)" during a pull; one left by a pull that failed halfway has the
+    files that were there before it. Put back what is missing, then remove it."""
+    previous = assignment_dir / f"{paths.TO_GRADE}{PREVIOUS}"
+    if not previous.is_dir():
+        return
+    for old in previous.iterdir():
+        if old.is_file() and not (anon / old.name).exists():
+            old.replace(anon / old.name)
+    shutil.rmtree(previous)
 
 
 def existing_rows(assignment_dir: Path) -> list[dict]:

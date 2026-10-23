@@ -360,6 +360,17 @@ def test_pull_takes_a_zip_that_was_downloaded_by_hand(root, monkeypatch):
     assert seen == [by_hand] and fake.calls == []  # לא מורידים שוב
 
 
+def test_pull_refuses_an_empty_key_before_opening_chrome(root, monkeypatch):
+    """טבלת מפתח ריקה כשכבר יש הגשות: משיכה הייתה נותנת לכולם מספרים חדשים. עוצרים לפני כרום, בלי לגעת בתיקייה."""
+    from moodle import ingest
+    (root / COURSE / HW / paths.KEY).write_text("", encoding="utf-8")
+    fake = FakeDownloader(ingest.downloads_dir())
+    monkeypatch.setattr(actions, "_make_downloader", lambda: fake)
+    with pytest.raises(actions.UserError, match="טבלת המפתח של המטלה הזו ריקה או פגומה"):
+        actions.pull(root, COURSE, HW)
+    assert fake.calls == [] and not (root / COURSE / HW / actions.LOCK_FILE).exists()
+
+
 def test_pull_explains_a_download_that_did_not_start(root, monkeypatch):
     from moodle import ingest
     fake = FakeDownloader(ingest.downloads_dir(), {"status": "needs_login", "message": "Moodle מבקש התחברות."})

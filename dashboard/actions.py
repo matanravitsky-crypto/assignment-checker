@@ -69,6 +69,10 @@ def _hebrew_error(e: Exception, mid: str) -> str:
     if moodle_ingest.NO_FOLDERS in text or "not in a folder per student" in text:  # before "incomplete" and "7-Zip"
         return ("ההגשות הגיעו ממודל בלי תיקייה לכל סטודנט, ולכן לא נקלטו: שום הגשה ושום מספר לא השתנו. "
                 "בדף ההגשות במודל מסמנים \"הורדת הגשות המאורגנות לתיקיות לפי סטודנט\" (ליד \"פעולות\") ומושכים שוב.")
+    if moodle_anonymize.KEY_EMPTY in text:
+        return ("טבלת המפתח של המטלה הזו ריקה או פגומה, אבל כבר יש בה הגשות ממוספרות. משיכה עכשיו הייתה נותנת לכל "
+                "סטודנט מספר חדש, וציונים היו מגיעים לסטודנט הלא נכון, ולכן שום דבר לא השתנה. צריך לשחזר את "
+                f"\"{paths.KEY}\" (למשל מהגרסאות הקודמות של הקובץ ב-OneDrive) לפני שמושכים.")
     if moodle_ingest.INCOMPLETE in text:  # before "7-Zip": this message names 7-Zip too
         return ("ה-ZIP שהגיע ממודל לא שלם: מודל עצר את ההורדה באמצע. שום הגשה ושום מספר לא השתנו. "
                 "לוחצים שוב \"משוך הגשות\" כדי להוריד מחדש.")
@@ -230,6 +234,10 @@ def _do_pull(root: Path, course: str, assignment: str, moodle_id: str | None) ->
         raise UserError(f"ב-OneDrive נוצר עותק כפול של טבלת המפתח ({', '.join(conflicts)}). "
                         "לפני משיכה נוספת צריך לאחד אותו עם הטבלה הראשית ולמחוק את העותק, כדי ששני סטודנטים לא יקבלו אותו מספר.")
     _use_root(root)
+    try:
+        moodle_anonymize.check_key(a.dir)  # before downloading anything: a broken key would renumber everyone
+    except ValueError as e:
+        raise UserError(_hebrew_error(e, mid)) from e
     before = {r["number"] for r in a.key_rows()}
     lock = _take_lock(a)
     try:
