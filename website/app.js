@@ -154,7 +154,9 @@
   const origFiles = (s) => s.files.filter((f) => !f.marked);
   const markedFiles = (s) => s.files.filter((f) => f.marked);
   // עבודה בתור הבדיקה הידנית: Claude ביקש שאדם יבדוק, או שהבדיקה האוטומטית נכשלה. יוצאת מהתור כשמישהו מאשר
-  const needsReview = (s) => !s.approved && (!!s.review || (!!s.failed && s.score == null));
+  // בדיקה שנכשלה (למשל נגמרו הטוקנים) היא לא מקרה לאדם: היא עדיין "ממתינה לבדיקה", ו"בדוק" ינסה אותה שוב
+  const needsReview = (s) => !s.approved && !!s.review;
+  const gradingFailed = (s) => !!s.failed && s.score == null;
   const wasReviewed = (s) => s.approved && (!!s.review || !!s.reviewedBy);
   // מקרים מיוחדים: רק הם מגיעים לאדם (grading.SPECIAL_CASES, הסקיל "קשיחות והחלטות"), ועוד סוגים מבדיקות ישנות
   const REVIEW_KIND = {
@@ -324,7 +326,10 @@
     const A = cur(), I = info(A);
     const nums = {
       pull: [I.subs.length, "הגשות נמשכו", I.issues ? `${I.issues} דורשות טיפול` : ""],
-      grade: [I.graded.length, `מתוך ${I.ok.length} נבדקו`, ""],
+      grade: [I.graded.length, `מתוך ${I.ok.length} נבדקו`, (() => {
+        const n = I.subs.filter(gradingFailed).length;
+        return n ? `${plural(n, "בדיקה אחת נכשלה", "בדיקות נכשלו")}. "בדוק" ינסה שוב` : "";
+      })()],
       ret: [I.returned.length, `מתוך ${I.ok.length} הוחזרו`, ""],
     };
     return `
