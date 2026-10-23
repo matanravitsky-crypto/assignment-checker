@@ -71,9 +71,6 @@ MAX_BYTES = 2_000_000
 MAX_IMAGE_BYTES = 1_500_000
 
 RED = (0.85, 0, 0)
-# גודל הכתב של ההערות על הדף, ורוחב ההערה בנקודות
-NOTE_FONT = 14
-NOTE_WIDTH = 210
 _FONTS = Path("C:/Windows/Fonts")
 _CSS = "@font-face {font-family: heb; src: url(arial.ttf);} * {font-family: heb, sans-serif;}"
 
@@ -524,32 +521,13 @@ def mark_pdf(pdf: bytes, g: Graded, ctx: Context, max_bytes: int = MAX_BYTES) ->
     with pymupdf.open(stream=pdf, filetype="pdf") as doc:
         by_page: dict[int, list[tuple[pymupdf.Rect, str]]] = {}
         for mark in g.marks:
-            shown = doc[mark.page - 1].rect  # העמוד כפי שהוא מוצג, אחרי סיבוב
-            box = pymupdf.Rect(mark.x0 / 1000 * shown.width, mark.y0 / 1000 * shown.height,
-                               mark.x1 / 1000 * shown.width, mark.y1 / 1000 * shown.height)
-            by_page.setdefault(mark.page - 1, []).append((box, mark.text))
+            page = doc[mark.page - 1]
+            by_page.setdefault(mark.page - 1, []).append(
+                (placement.from_thousandths(page, mark.x0, mark.y0, mark.x1, mark.y1), mark.text))
+        write = lambda page, rect, text: _write(page, rect, _html(text, placement.FONT), archive)
         for n, marks in by_page.items():
-            page = doc[n]
-            # המקום הפנוי נמדד לפני שמציירים משהו; המלבנים של כל הסימונים בעמוד תפוסים מראש
-            free = placement.FreeSpace(page) if any(text for _, text in marks) else None
-            if free:
-                # מיושר למשבצות, כדי שהקו יגיע לשפה של המלבן רק דרך משבצת נקייה
-                marks = [(free.snap(box), text) for box, text in marks]
-            for box, _ in marks:
-                page.draw_rect(box * page.derotation_matrix, color=RED, width=1.4, overlay=True)
-                if free:
-                    free.occupy(box)
-            for box, text in marks:
-                if not text:
-                    continue
-                note, line = free.place(box, *placement.note_size(text, NOTE_WIDTH, NOTE_FONT))
-                free.occupy(note)
-                _write(page, note, _html(text, NOTE_FONT), archive)
-                if line:
-                    # הקו עובר רק במשבצות בלי דיו, ומתכופף כמה שצריך
-                    page.draw_polyline([p * page.derotation_matrix for p in line], color=RED, width=1, overlay=True)
-                    page.draw_circle(line[-1] * page.derotation_matrix, 1.8, color=RED, fill=RED, overlay=True)
-                    free.occupy_line(line)
+            # הערות במקום ריק, וקו שלא עובר על דיו (grading/placement.py)
+            placement.draw(doc[n], marks, write)
         _summary_page(doc, g, ctx, archive)
         doc.subset_fonts()
         out = doc.tobytes(garbage=4, deflate=True)

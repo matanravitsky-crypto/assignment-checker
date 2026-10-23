@@ -255,6 +255,9 @@ and a line in a spreadsheet. So per submission the grader writes:
   at the scans' own size (avg 4.7 MB, up to 56 MB) one assignment of 285 needs 45 ZIPs and 6 files don't fit
   at all; at ~1.5 MB it's about 15 ZIPs. Compress in the grading code: on Ori's computer, Windows Smart App
   Control blocks PyMuPDF's DLLs, so check what runs on the grading machine.
+- Comments go in empty space, with a line to the box that never crosses ink: `grading/placement.py` (no tokens).
+  Any chat that marks a page uses it (`python -m grading.placement in.pdf marks.json out.pdf`, skill `place-comments`)
+  instead of placing comments by hand.
 - a row in `Grades.csv`: `number,grade,feedback`, where `feedback` is a short summary.
 - `Grading notes/0001.json`: what Claude said per question (comment, mistakes, unsure), the marks, and why it needs a person.
 

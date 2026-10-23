@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 from collections import deque
+from typing import Callable
 
 import pymupdf
 
@@ -216,3 +217,104 @@ def note_size(text: str, width: float = 160, font: float = 10) -> tuple[float, f
     per_line = max(1, int(width / (font * 0.5)))
     lines = sum(max(1, -(-len(part) // per_line)) for part in text.split("\n"))
     return width, lines * font * 1.3 + 4
+
+
+# ---------- ציור ----------
+RED = (0.85, 0, 0)
+FONT = 14    # גודל הכתב של ההערות
+WIDTH = 210  # רוחב ההערה בנקודות
+
+
+def draw(page: pymupdf.Page, marks: list[tuple[pymupdf.Rect, str]],
+         write: Callable[[pymupdf.Page, pymupdf.Rect, str], None]) -> list[bool | None]:
+    """מצייר על עמוד אחד: מלבן אדום סביב כל סימון, ההערה במקום ריק, וקו עם ראש חץ שלא עובר על דיו.
+    marks: (מלבן בנקודות של העמוד כפי שהוא מוצג, הערה). write(page, rect, text) כותב את ההערה.
+    מחזיר לכל סימון: True = הערה עם קו, False = הערה צמודה בלי קו, None = בלי הערה או בלי דרך נקייה."""
+    free = FreeSpace(page) if any(text for _, text in marks) else None
+    if free:
+        # מיושר למשבצות, כדי שהקו יגיע לשפה של המלבן רק דרך משבצת נקייה
+        marks = [(free.snap(box), text) for box, text in marks]
+    m = page.derotation_matrix
+    for box, _ in marks:
+        page.draw_rect(box * m, color=RED, width=1.4, overlay=True)
+        if free:
+            free.occupy(box)
+    result: list[bool | None] = []
+    for box, text in marks:
+        if not text:
+            result.append(None)
+            continue
+        note, line = free.place(box, *note_size(text, WIDTH, FONT))
+        free.occupy(note)
+        write(page, note, text)
+        if line:
+            page.draw_polyline([p * m for p in line], color=RED, width=1, overlay=True)
+            page.draw_polyline([p * m for p in _head(line[-2], line[-1])], color=RED, fill=RED, closePath=True, overlay=True)
+            free.occupy_line(line)
+            result.append(True)
+        else:
+            result.append(False if free.snap(note + (-CELL, -CELL, CELL, CELL)).intersects(box) else None)
+    return result
+
+
+def _head(a: pymupdf.Point, b: pymupdf.Point, size: float = 5) -> list[pymupdf.Point]:
+    """ראש חץ קטן בקצה b, בכיוון a->b."""
+    d = b - a
+    n = abs(d) or 1
+    u = pymupdf.Point(d.x / n, d.y / n)
+    side = pymupdf.Point(-u.y, u.x) * (size * 0.45)
+    base = b - u * size
+    return [b, base + side, base - side]
+
+
+def from_thousandths(page: pymupdf.Page, x0: float, y0: float, x1: float, y1: float) -> pymupdf.Rect:
+    """מלבן באלפיות של העמוד (כמו ש-Claude מחזיר) -> נקודות של העמוד כפי שהוא מוצג."""
+    r = page.rect
+    return pymupdf.Rect(x0 / 1000 * r.width, y0 / 1000 * r.height, x1 / 1000 * r.width, y1 / 1000 * r.height)
+
+
+# ---------- שורת פקודה, לכל צ'אט או סקריפט ----------
+def main(argv: list[str] | None = None) -> int:
+    """python -m grading.placement in.pdf marks.json out.pdf
+
+    marks.json: רשימה של {"page": 1, "x0": .., "y0": .., "x1": .., "y1": .., "text": ".."} באלפיות של העמוד,
+    או קובץ Grading notes/0001.json (משתמשים ב-"marks" שבו). מדפיס שורה אחת, כדי לחסוך טוקנים למי שקורא."""
+    import argparse
+    import json
+    import sys
+
+    from .grade import _archive, _html, _write
+
+    ap = argparse.ArgumentParser(prog="python -m grading.placement", description=main.__doc__.splitlines()[0])
+    ap.add_argument("pdf")
+    ap.add_argument("marks")
+    ap.add_argument("out")
+    a = ap.parse_args(argv)
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")  # בחלון של Windows העברית אחרת יוצאת משובשת
+    with open(a.marks, encoding="utf-8-sig") as f:
+        data = json.load(f)
+    marks = data.get("marks", []) if isinstance(data, dict) else data
+    archive = _archive()
+    write = lambda page, rect, text: _write(page, rect, _html(text, FONT), archive)
+    counts = {True: 0, False: 0, None: 0}
+    with pymupdf.open(a.pdf) as doc:
+        by_page: dict[int, list] = {}
+        for mk in marks:
+            n = int(mk["page"]) - 1
+            if not 0 <= n < doc.page_count:
+                print(f"סימון בעמוד {mk['page']}, אבל ב-PDF יש {doc.page_count} עמודים", file=sys.stderr)
+                return 2
+            box = from_thousandths(doc[n], *(float(mk[k]) for k in ("x0", "y0", "x1", "y1")))
+            by_page.setdefault(n, []).append((box, str(mk.get("text") or "").strip()))
+        for n, page_marks in by_page.items():
+            for r in draw(doc[n], page_marks, write):
+                counts[r] += 1
+        doc.save(a.out, garbage=4, deflate=True)
+    print(f"{len(marks)} סימונים ב-{len(by_page)} עמודים: {counts[True]} עם קו נקי, {counts[False]} צמודים, "
+          f"{counts[None]} בלי קו (בלי הערה או בלי דרך נקייה) -> {a.out}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -100,3 +100,37 @@ def test_no_clean_way_out_gives_note_without_line():
 
 def test_note_size_grows_with_text():
     assert placement.note_size("קצר")[1] < placement.note_size("ארוך " * 40)[1]
+
+
+def test_draw_returns_what_happened_to_each_mark():
+    doc = pymupdf.open()
+    page = _page_with_ink(doc, [pymupdf.Rect(0, 0, 600, 300)])
+    written = []
+    result = placement.draw(page, [(pymupdf.Rect(100, 320, 300, 360), "טעות"), (pymupdf.Rect(100, 500, 300, 540), "")],
+                            lambda p, r, t: written.append((r, t)))
+    assert result[1] is None and len(written) == 1
+    assert result[0] in (True, False)
+    assert any(d["color"] and d["color"][0] > 0.8 for d in page.get_drawings())
+
+
+def test_command_line_marks_a_pdf_and_prints_one_line(tmp_path, capsys):
+    import json
+    doc = pymupdf.open()
+    _page_with_ink(doc, [pymupdf.Rect(20, 20, 420, 400)])
+    doc.save(tmp_path / "in.pdf")
+    (tmp_path / "marks.json").write_text(json.dumps(
+        {"marks": [{"page": 1, "x0": 200, "y0": 150, "x1": 500, "y1": 200, "text": "חסר נימוק"}]}), encoding="utf-8")
+    assert placement.main([str(tmp_path / "in.pdf"), str(tmp_path / "marks.json"), str(tmp_path / "out.pdf")]) == 0
+    out = capsys.readouterr().out
+    assert len(out.strip().splitlines()) == 1 and out.startswith("1 סימונים")
+    with pymupdf.open(tmp_path / "out.pdf") as marked:
+        assert "חסר נימוק" in marked[0].get_text().replace(" ", " ")
+
+
+def test_command_line_refuses_a_page_that_does_not_exist(tmp_path):
+    import json
+    doc = pymupdf.open()
+    doc.new_page()
+    doc.save(tmp_path / "in.pdf")
+    (tmp_path / "m.json").write_text(json.dumps([{"page": 3, "x0": 0, "y0": 0, "x1": 10, "y1": 10, "text": "x"}]))
+    assert placement.main([str(tmp_path / "in.pdf"), str(tmp_path / "m.json"), str(tmp_path / "o.pdf")]) == 2
