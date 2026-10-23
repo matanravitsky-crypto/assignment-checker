@@ -4,6 +4,9 @@ University project (BGU) that grades student assignments with Claude:
 pull submissions from Moodle → grade by rubric → TA approves → return grades and marked files to Moodle.
 Courses are large (up to ~1,000 students per assignment). The team works in Hebrew.
 
+`PROTOCOL.md` (Hebrew) is the team's agreed procedure for downloading from Moodle and returning to it: who does it,
+when, and what to check. When it and this file disagree about who downloads or when, follow `PROTOCOL.md`.
+
 ## Repo layout
 
 Each folder has a README.md that explains it.
@@ -73,8 +76,9 @@ Never delete or rebuild the key table of an assignment that is being graded.
 
 ## Anyone can pull, one key
 
-Anyone on the team can download from Moodle and pull: the dashboard's "Pull submissions" button or
-`python -m moodle ingest <id>` on their own computer. There is still **one** key table per assignment, in the
+By the team's protocol (`PROTOCOL.md`), Ori downloads and uploads; someone else pulls only with his written OK, and
+then through the dashboard's guarded pull. Technically anyone on the team can download from Moodle and pull: the
+dashboard's "Pull submissions" button or `python -m moodle ingest <id>` on their own computer. There is still **one** key table per assignment, in the
 shared folder, and `anonymize.prepare` reads it before numbering, so every student keeps their number no matter
 who pulls. What can break it is two pulls of the same assignment at once, before OneDrive synced the key between them.
 So `dashboard/actions.py` guards the dashboard's pull:
@@ -99,16 +103,33 @@ Then:
 https://bgu365-my.sharepoint.com/personal/mein_bgu_ac_il/_layouts/15/onedrive.aspx?id=%2Fpersonal%2Fmein%5Fbgu%5Fac%5Fil%2FDocuments%2FYallaLinearit%2FExercise%20Checking%20System
 Next to it, `YallaLinearit/Course Material (tex)/exercises and solutions/` has the linear algebra questions and solutions as .tex.
 
-The folder is **synced** on Matan's PC (`C:\Users\PC\BGU\<owner> - YallaLinearit`). Syncing works through
-"Add shortcut to My files" on the shared folder (the older note that the button fails is out of date), and the dashboard
-finds the synced folder by itself (`dashboard/shared_folder.py`). To point at another path, set `ASSIGNMENT_CHECKER_ROOT`
-(the dashboard) or `ASSIGNMENT_DATA` (the `moodle` commands) to the synced path of `Exercise Checking System`, and check
-with `python -m moodle status <id>`.
+The folder is **synced** on Matan's PC (`C:\Users\PC\BGU\<owner> - YallaLinearit`) through "Add shortcut to My files"
+on the shared folder, and the dashboard finds the synced folder by itself (`dashboard/shared_folder.py`). To point at
+another path, set `ASSIGNMENT_CHECKER_ROOT` (the dashboard) or `ASSIGNMENT_DATA` (the `moodle` commands) to the synced
+path of `Exercise Checking System`, and check with `python -m moodle status <id>`.
+
+Whether the shortcut works depends on the account (checked 22/10 for Ori; don't retry): Ori's university account is a
+guest in the staff tenant. His own OneDrive is in the students' tenant (`postbguacil-my.sharepoint.com`), the lecturer's
+folder is in the staff tenant (`bgu365-my.sharepoint.com`), so "Sync" and "Add shortcut to My files" both fail for him,
+and Microsoft Graph upload needs admin consent ("נדרש אישור"). The fix for him is a TA account in `bgu365`.
+
+**Without sync, Ori drags the data in, in the browser.** `PROTOCOL.md` ("בבוקר: העלאה לוואן דרייב") has the steps:
+- After an ingest, tell Ori which course folder to drag (from `~/Exercise Checking System`) into
+  `YallaLinearit/Exercise Checking System` in the browser, choosing "Replace", and to keep that tab open until
+  "Uploaded ... items". Then compare the counts in OneDrive with `python -m moodle status <id>`, from a new tab.
+- **Same names every time**, so the upload is always "drag the course folder, Replace": every download goes through
+  `python -m moodle ingest <id> --parts` into the assignment's existing folder (found by its Moodle id), every student
+  keeps their number from the key, and nobody renames folders or files by hand or extracts a ZIP into the folder.
+  Check with `python -m moodle status <id>` (counts, and that every name is safe for OneDrive).
+- "Replace" overwrites every file of the same name in OneDrive, grades too. Before Ori drags, make sure the local
+  course folder has no `Grades.csv`, `Grades - part N.csv` or `2 - Graded with comments` files that must not go up
+  (say, test runs); move them out of `Exercise Checking System` first.
+- Drag only a course folder. Never delete or replace `Exercise Checking System` itself in OneDrive: the team's
+  `Grades.csv` and `2 - Graded with comments` live there and nowhere else.
+- Never upload `Moodle originals` (students' names, and the Moodle ZIPs under `Backup - Moodle downloads`).
+- While an upload runs, don't navigate or close that OneDrive tab: it stops the upload.
 - A teammate without the shortcut can still open the link above (the lecturer shares it) and view or download what
   they need, e.g. `Linear Algebra/Assignment 0 - Sets and Complex Numbers/1 - Submissions to grade/0023.pdf`.
-- Without sync, Ori works locally and uploads from the web: Create or upload → Folder upload → the course folder.
-  Re-uploading replaces files with the same name. The folder picker is a native Windows dialog Claude can't see,
-  so Ori picks the folder himself.
 
 When working with this data:
 - Grade from `1 - Submissions to grade` only. Don't open the extracted originals or print names, ת"ז or emails into chat, commits or logs.
@@ -120,8 +141,9 @@ When working with this data:
 
 There is **no Moodle API**. Claude in Chrome works in the user's own logged-in Chrome.
 - The user logs in themselves. Claude never types Moodle passwords.
-- Download only when someone on the team asks. No scheduled downloads: Moodle sessions expire, and
-  downloading per schedule wastes runs. Every **upload** to Moodle (grades or feedback) needs a person's yes.
+- Download when Ori asks, or in the one scheduled run right after an assignment closes (00:05), which `PROTOCOL.md`
+  sets up with a 22:00 reminder and a 23:30 check that Ori is logged in. No recurring downloads: Moodle sessions
+  expire, and downloading per schedule wastes runs. Every **upload** to Moodle (grades or feedback) needs a person's yes.
 - Submissions page: `https://moodle.bgu.ac.il/moodle/mod/assign/view.php?id=<assignment id>&action=grading`.
   The assignment id is the `id=` in that URL (the number at the end of the ZIP name too).
 - Download: Actions (פעולות) → "הורדת כל ההגשות (השתמש ב 7ZIP לפתיחה)", or straight `view.php?id=<id>&action=downloadall`.
