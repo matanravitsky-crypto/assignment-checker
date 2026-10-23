@@ -14,7 +14,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from moodle import anonymize, guide, paths
+from moodle import anonymize, guide, lock, paths
 
 SEVEN_ZIP_PATHS = [r"C:\Program Files\7-Zip\7z.exe", r"C:\Program Files (x86)\7-Zip\7z.exe"]
 
@@ -125,6 +125,7 @@ def assignment_folder(assignment_id: str, zip_path: Path, course: str | None, na
 
 def ingest(assignment_id: str, zip_path: Path | None = None,
            course: str | None = None, name: str | None = None) -> list[dict]:
+    lock.check_puller(paths.data_dir())  # one computer pulls, so there is one key table (paths.PULL_FROM)
     zip_path = zip_path or find_download(assignment_id)
     target = assignment_folder(assignment_id, zip_path, course, name)
 

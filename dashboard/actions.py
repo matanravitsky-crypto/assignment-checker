@@ -143,6 +143,12 @@ def pull(root: Path, course: str, assignment: str, moodle_id: str | None = None)
         raise UserError(f"ב-OneDrive נוצר עותק כפול של טבלת המפתח ({', '.join(conflicts)}). "
                         "לפני משיכה נוספת צריך לאחד אותו עם הטבלה הראשית ולמחוק את העותק, כדי ששני סטודנטים לא יקבלו אותו מספר.")
     _use_root(root)
+    try:
+        moodle_lock.check_puller(root)
+    except moodle_lock.NotThePuller as e:
+        raise UserError(f"משיכה ממודל נעשית רק במחשב של {e.who}, כדי שתהיה טבלת מפתח אחת לכל מטלה "
+                        f"(הקובץ \"{paths.PULL_FROM}\" בתיקייה הראשית). אם צריך למשוך מהמחשב הזה, מבקשים מ-{e.who} "
+                        "לעשות את זה, או לשנות את הקובץ אחרי שהוא סיים, ומחכים ש-OneDrive יסנכרן.") from e
     before = {r["number"] for r in a.key_rows()}
     lock = _take_lock(a)
     try:

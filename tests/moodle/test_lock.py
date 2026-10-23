@@ -107,3 +107,20 @@ def test_pid_alive_knows_this_process():
     assert pid_alive(os.getpid()) is True
     assert pid_alive(0) is False
     assert pid_alive(OTHER_PID) is False
+
+
+# ---------- מחשב אחד מושך ----------
+def test_any_computer_may_pull_when_no_file_names_one(tmp_path):
+    lock.check_puller(tmp_path)
+    (tmp_path / "Pull only on this computer.txt").write_text("  \n", encoding="utf-8")
+    lock.check_puller(tmp_path)  # קובץ ריק: לא מגביל
+
+
+def test_only_the_named_computer_may_pull(tmp_path):
+    from moodle import paths
+    (tmp_path / paths.PULL_FROM).write_text(me() + "\n", encoding="utf-8-sig")
+    lock.check_puller(tmp_path)  # אני
+    (tmp_path / paths.PULL_FROM).write_text("noa (OTHER-PC)", encoding="utf-8")
+    with pytest.raises(lock.NotThePuller) as e:
+        lock.check_puller(tmp_path)
+    assert e.value.who == "noa (OTHER-PC)"

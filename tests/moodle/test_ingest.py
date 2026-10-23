@@ -121,3 +121,15 @@ if __name__ == "__main__":
     test_new_assignment_gets_a_named_folder_and_is_found_again()
     test_new_assignment_needs_english_names()
     print("All tests passed.")
+
+
+def test_ingest_refuses_on_another_computer_than_the_named_one(tmp_path, monkeypatch):
+    from moodle import ingest as ingest_module, lock
+    monkeypatch.setenv("ASSIGNMENT_DATA", str(tmp_path))
+    (tmp_path / paths.PULL_FROM).write_text("ori34 (OriLaptop)", encoding="utf-8")
+    monkeypatch.setattr(lock, "me", lambda: "noa (OTHER-PC)")
+    zip_path = tmp_path / "x-3438636.zip"
+    zip_path.write_bytes(b"PK")
+    with pytest.raises(lock.NotThePuller):
+        ingest_module.ingest("3438636", zip_path)
+    assert zip_path.exists()  # לא נגעו בכלום

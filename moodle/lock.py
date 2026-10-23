@@ -114,6 +114,31 @@ def take(folder: Path, name: str, minutes: int = LOCK_MINUTES) -> Path:
     return lock
 
 
+class NotThePuller(Exception):
+    """This computer is not the one that pulls from Moodle (paths.PULL_FROM names another). `who` is that one."""
+
+    def __init__(self, who: str):
+        super().__init__(f"Pulls from Moodle happen only on {who}")
+        self.who = who
+
+
+def puller(data_dir: Path) -> str | None:
+    """The computer that pulls, from the PULL_FROM file at the top of the data folder, or None if no file says so."""
+    from moodle import paths
+    try:
+        who = (data_dir / paths.PULL_FROM).read_text(encoding="utf-8-sig").strip()
+    except OSError:
+        return None
+    return who or None
+
+
+def check_puller(data_dir: Path) -> None:
+    """Raises NotThePuller unless this computer may pull: no PULL_FROM file, or it names me()."""
+    who = puller(data_dir)
+    if who and who != me():
+        raise NotThePuller(who)
+
+
 def refresh(lock: Path) -> None:
     """Write my lock text again so the lock's modification time moves (a long run keeps its lock alive)."""
     lock.write_text(my_text(), encoding="utf-8")

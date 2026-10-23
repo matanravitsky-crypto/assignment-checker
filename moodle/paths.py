@@ -43,6 +43,10 @@ PEDAGOGY = ("Pedagogy", "פדגוגי")
 DOWNLOAD_PREFIX = "Moodle download"
 PULL_LOCK = "Pull in progress.txt"      # in the assignment folder while a pull runs (see lock.py)
 UPLOAD_LOCK = "Upload in progress.txt"  # in the assignment folder while an upload to Moodle runs
+# At the top of the data folder: "<user> (<PC>)" of the one computer that pulls from Moodle (see lock.check_puller).
+# One computer pulls, so there is one key table: a guest account's local folder and a teammate's synced folder
+# don't see each other's pull lock or newest key, and two pulls would number new students differently.
+PULL_FROM = "Pull only on this computer.txt"
 
 
 def data_dir() -> Path:

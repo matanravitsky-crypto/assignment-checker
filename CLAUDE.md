@@ -71,10 +71,18 @@ The **key** that links a number back to a student is the Moodle *participant id*
 `anonymize.prepare` reads the existing key, and students who submitted since then get the next free numbers.
 Never delete or rebuild the key table of an assignment that is being graded.
 
-## Anyone can pull, one key
+## One computer pulls, one key
 
-Anyone on the team can download from Moodle and pull: the dashboard's "Pull submissions" button or
-`python -m moodle ingest <id>` on their own computer. There is still **one** key table per assignment, in the
+**Pulls from Moodle happen on one computer only: Ori's** (decided 2026-10-23). The file `Pull only on this computer.txt`
+at the top of the data folder (`paths.PULL_FROM`) names it, "ori34 (OriLaptop)"; the OneDrive sync carries it to every
+teammate's copy. `lock.check_puller` refuses a pull on any other computer, in `moodle ingest` and in the dashboard's
+pull, before anything is touched. Why: Ori's account is a guest in the lecturer's tenant, so his data folder is local
+and reaches OneDrive only through the sync. A teammate pulling from a synced folder would not see his pull lock or his
+newest key table, and new students would get different numbers in the two places. To move pulls to another computer,
+change that file once (after the last pull on the old one) and let OneDrive sync it.
+
+The rest of this section describes the pull itself: the dashboard's "Pull submissions" button or
+`python -m moodle ingest <id>` on that computer. There is still **one** key table per assignment, in the
 shared folder, and `anonymize.prepare` reads it before numbering, so every student keeps their number no matter
 who pulls. What can break it is two pulls of the same assignment at once, before OneDrive synced the key between them.
 So `dashboard/actions.py` guards the dashboard's pull:

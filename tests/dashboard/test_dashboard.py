@@ -144,6 +144,18 @@ def test_pull_runs_ingest_with_the_assignment_id(root, monkeypatch):
     assert "1 חדשות" in rep["summary"]
 
 
+def test_pull_on_another_computer_than_the_named_one_is_refused(root, monkeypatch):
+    """מחשב אחד מושך (paths.PULL_FROM), כדי שתהיה טבלת מפתח אחת. במחשב אחר: לא נוגעים בכלום ומסבירים."""
+    (root / paths.PULL_FROM).write_text("ori34 (OriLaptop)", encoding="utf-8")
+    monkeypatch.setattr("moodle.lock.me", lambda: "noa (OTHER-PC)")
+    called = []
+    monkeypatch.setattr("moodle.ingest.ingest", lambda *a, **k: called.append(1))
+    with pytest.raises(actions.UserError) as e:
+        actions.pull(root, COURSE, HW)
+    assert "ori34 (OriLaptop)" in str(e.value) and "טבלת מפתח אחת" in str(e.value)
+    assert not called and not (root / COURSE / HW / paths.PULL_LOCK).exists()
+
+
 @pytest.mark.parametrize("error, expect", [
     (FileNotFoundError("7-Zip is not installed (winget install 7zip.7zip)"), "7-Zip לא מותקן"),
     (FileNotFoundError(f"No ZIP ending in -{MID}.zip in Downloads"), "תיקיית ההורדות"),
