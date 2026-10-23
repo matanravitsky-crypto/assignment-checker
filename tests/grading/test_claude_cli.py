@@ -21,7 +21,7 @@ def request() -> dict:
     solution = {"type": "document", "title": "Official solution.pdf",
                 "source": {"type": "base64", "media_type": "application/pdf", "data": base64.b64encode(b"%PDF sol").decode()}}
     return {"model": "claude-opus-5-5", "system": "אתה מתרגל", "max_tokens": 10,
-            "messages": [{"role": "user", "content": [solution, {"type": "text", "text": "השאלות"},
+            "messages": [{"role": "user", "content": [solution, {"type": "text", "text": "השאלות", "cache_control": {"type": "ephemeral"}},
                                                       {"type": "text", "text": "עמוד 1:"}, image]}]}
 
 
@@ -49,20 +49,37 @@ def ask(run):
                               not_logged_in=grading.NoApiKey)
 
 
-def test_pages_go_to_a_temp_folder_and_only_read_is_allowed():
+def test_pages_go_in_one_message_and_no_tool_is_allowed():
     run = FakeRun(output())
     assert json.loads(ask(run)(request())) == ANSWER
     (cmd, kwargs), = run.calls
     folder = Path(kwargs["cwd"])
-    assert cmd[cmd.index("--tools") + 1] == "Read" and "--no-chrome" in cmd and "--strict-mcp-config" in cmd
-    assert cmd[cmd.index("--add-dir") + 1] == str(folder) and cmd[cmd.index("--model") + 1] == "claude-opus-5-5"
+    assert cmd[cmd.index("--tools") + 1] == "" and "--no-chrome" in cmd and "--strict-mcp-config" in cmd
+    assert "--add-dir" not in cmd and cmd[cmd.index("--model") + 1] == "claude-opus-5-5"
+    assert cmd[cmd.index("--input-format") + 1] == "stream-json"
     assert json.loads(cmd[cmd.index("--json-schema") + 1]) == grading.SCHEMA
     assert cmd[cmd.index("--effort") + 1] == "high"
-    files = run.seen[0]
-    assert files["002.png"] == PNG and files["001.pdf"] == b"%PDF sol" and files["system.txt"] == "אתה מתרגל".encode()
-    prompt = kwargs["input"]  # הבקשה ב-stdin, לא בשורת הפקודה
-    assert str(folder / "002.png") in prompt and "עמוד 1:" in prompt and claude_cli.READ_ALL in prompt
+    assert run.seen[0] == {"system.txt": "אתה מתרגל".encode()}  # בתיקייה רק ההנחיות, לא העמודים
+    message = json.loads(kwargs["input"])  # הבקשה ב-stdin, כהודעה אחת עם כל הבלוקים
+    blocks = message["message"]["content"]
+    assert [b["type"] for b in blocks] == ["document", "text", "text", "image"]
+    assert base64.b64decode(blocks[3]["source"]["data"]) == PNG
+    # מה שמשותף לכל ההגשות נשאר מסומן למטמון, לשעה כמו הסימון של Claude Code עצמו
+    assert blocks[1]["cache_control"] == {"type": "ephemeral", "ttl": "1h"} and "cache_control" not in blocks[3]
     assert not folder.exists()  # התיקייה נמחקת בסוף
+
+
+def test_the_schema_of_the_request_wins():
+    run = FakeRun(output())
+    req = {**request(), "output_config": {"format": {"type": "json_schema", "schema": {"type": "object"}}}}
+    ask(run)(req)
+    cmd = run.calls[0][0]
+    assert json.loads(cmd[cmd.index("--json-schema") + 1]) == {"type": "object"}
+
+
+def test_the_answer_is_read_from_the_stream():
+    stream = "\n".join([json.dumps({"type": "system"}), json.dumps({"type": "assistant"}), output()])
+    assert json.loads(ask(FakeRun(stream))(request())) == ANSWER
 
 
 def test_failures_become_grading_errors():
