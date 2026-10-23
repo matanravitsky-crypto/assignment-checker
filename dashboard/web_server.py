@@ -72,6 +72,9 @@ class Handler(SimpleHTTPRequestHandler):
         if origin in SITE_ORIGINS:
             self.send_header("Access-Control-Allow-Origin", origin)
             self.send_header("Vary", "Origin")
+        if not urlparse(getattr(self, "path", "") or "").path.startswith("/api/"):
+            # קובצי האתר: הדפדפן בודק בכל טעינה אם יש גרסה חדשה (אחרי עדכון מ-GitHub), אחרת נשארת גרסה ישנה
+            self.send_header("Cache-Control", "no-cache")
         super().end_headers()
 
     def do_OPTIONS(self):
