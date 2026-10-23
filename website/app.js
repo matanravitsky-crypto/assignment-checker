@@ -167,6 +167,18 @@
   const needsReview = (s) => !s.approved && !!s.review;
   const gradingFailed = (s) => !!s.failed && s.score == null;
   const wasReviewed = (s) => s.approved && (!!s.review || !!s.reviewedBy);
+
+  // מה בדק את העבודה (Grading notes): "opus-5-5 · Claude Code · מאמץ high · מתן · היום ב-14:02"
+  const EFFORT_HE = { low: "נמוך", medium: "בינוני", high: "גבוה", xhigh: "גבוה מאוד", max: "מקסימלי" };
+  function gradedWithHTML(s) {
+    const w = s.gradedWith;
+    if (!w) return "";
+    const parts = [`<b dir="ltr">${esc(w.model.replace(/^claude-/, ""))}</b>`,
+      w.via ? (w.via === "api" ? "מפתח API" : "Claude Code") : "",
+      w.effort ? `מאמץ ${esc(EFFORT_HE[w.effort] || w.effort)}` : "",
+      s.gradedBy ? esc(s.gradedBy) : "", w.at ? esc(when(w.at)) : ""].filter(Boolean);
+    return `<p class="graded-with" title="המודל, הדרך והמאמץ שבהם Claude בדק את העבודה, מי הריץ ומתי">${ICON.grade}<span>נבדקה ב: ${parts.join(" · ")}</span></p>`;
+  }
   // מקרים מיוחדים: רק הם מגיעים לאדם (grading.SPECIAL_CASES, הסקיל "קשיחות והחלטות"), ועוד סוגים מבדיקות ישנות
   const REVIEW_KIND = {
     missing_question: ["חסר תרגיל או סעיף", "שאלה שלמה או סעיף שלם לא נמצאו בהגשה"],
@@ -1681,6 +1693,7 @@
                 ${s.q && s.q.length === qs.length && !noRubric() ? `<ul class="breakdown">${qs.map((q, i) => `<li><label>${esc(q.req || `שאלה ${q.n}`)}</label><span class="num ${s.q[i] > q.pts ? "over" : ""}" ${s.q[i] > q.pts ? `title="יותר מהניקוד של השאלה במחוון: צריך לבדוק מחדש"` : ""}>${s.q[i]} / ${q.pts}</span><span class="track"><i class="${s.q[i] < q.pts ? "short" : ""}" style="width:${Math.min(100, (s.q[i] / q.pts) * 100)}%"></i></span></li>`).join("")}</ul>` : ""}
                 ${s.review ? `<p class="hint"><span class="flag" style="white-space: normal">${s.approved ? "נבדקה ידנית" : "לבדיקה ידנית"}: ${esc(s.review)}</span></p>` : ""}`
               : `<p class="muted" style="margin:0">עוד לא נבדקה.</p>`}
+            ${busy ? "" : gradedWithHTML(s)}
             <p class="hint">אחרי הבדיקה, העבודה עם ההערות נשמרת ב-"2 - Graded with comments" באותו מספר, והציון בקובץ הציונים של הבודק.</p>
           </div>
           ${s.feedback ? `<div class="grade-card"><h3 class="gc-title">משוב לסטודנט</h3><p style="margin:0; white-space: pre-line">${esc(s.feedback)}</p></div>` : ""}
@@ -1874,6 +1887,7 @@
               ${flagged ? `<span class="rv-kind">${esc(REVIEW_KIND[k][0])}</span>` : s.approved ? `<span class="rv-kind ok">אושרה${s.reviewedBy ? ` · ${esc(s.reviewedBy)}` : ""}</span>` : ""}</div>
             ${flagged && s.missing ? `<p class="rv-missing">חסר: <b>${esc(s.missing)}</b></p>` : ""}
             ${flagged ? `<p>${esc(s.failed || s.review || "Claude ביקש שאדם יבדוק את העבודה.")}</p>` : ""}
+            ${gradedWithHTML(s)}
             ${s.failed && LOCAL.health?.claude ? `<button class="btn secondary small" data-act="grade-one" data-id="${s.id}" ${state.run[A.id] ? "disabled" : ""}>${ICON.redo}לבדוק שוב עם Claude</button>` : ""}
           </div>
           ${docHTML(A, s)}

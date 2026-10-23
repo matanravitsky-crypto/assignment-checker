@@ -953,3 +953,8 @@ span.rv-arrow { visibility: hidden; }
 /* "מה עושים" בעמוד המשיכה: שלוש שורות ממוספרות */
 .how-to { margin: 10px auto 4px; padding-inline-start: 22px; text-align: start; max-width: 520px; line-height: 1.7; }
 .how-to li::marker { font-weight: 700; color: var(--blue); }
+
+/* מה בדק את העבודה: מודל, דרך, מאמץ, מי ומתי */
+.graded-with { display: flex; align-items: center; gap: 6px; margin: 10px 0 0; font-size: 12.5px; color: var(--ink-3); line-height: 1.5; }
+.graded-with svg { width: 14px; height: 14px; flex: none; }
+.graded-with b { color: var(--ink-2); font-weight: 600; }
