@@ -115,8 +115,9 @@ def backup_dir(assignment_dir: Path) -> Path:
 def in_shared_folder(path: Path) -> bool:
     """Is this folder inside the course's synced OneDrive folder, where the one key of every assignment lives?"""
     name = SHARED_COURSE_FOLDER
-    return any(p.name == name or p.name.endswith(f" - {name}") or p.name.startswith(f"{name} - ")
-               for p in Path(path).resolve().parents)
+    # Split on both separators so a Windows path is read the same way on any OS (CI runs on Linux)
+    parts = [p for p in re.split(r"[\\/]", str(Path(path).resolve())) if p][:-1]  # the folder itself is not its own parent
+    return any(p == name or p.endswith(f" - {name}") or p.startswith(f"{name} - ") for p in parts)
 
 
 def original_dir(assignment_dir: Path) -> Path:
