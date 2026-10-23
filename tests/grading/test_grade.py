@@ -511,6 +511,7 @@ def test_save_review_approves_with_who_and_rewrites_the_summary_page(root):
     assert row["approved"].startswith("dana (PC) ") and row["review"] == "לא בטוח" and grading.is_approved(row)
     note = grading.read_notes(a.dir, "0001")
     assert note["reviewed"]["by"] == "dana (PC)" and note["mistakes"][4] == [] and note["marks"]  # הסימונים של Claude נשארים
+    assert note["model"] == grading.DEFAULT_MODEL and note["effort"] == "high" and note["via"] == ""  # ask מבחוץ: לא ידוע איך רץ
     with pymupdf.open(a.dir / paths.MARKED / "0001.pdf") as doc, pymupdf.open(a.submissions / "0001.pdf") as src:
         assert doc.page_count == src.page_count + 1 and "ציון: 75 מתוך 100" in text(doc[0])
         assert "השאלה לא נמצאה" in text(doc[0]) and "נועה" not in text(doc[0])

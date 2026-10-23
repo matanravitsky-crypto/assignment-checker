@@ -846,8 +846,8 @@ def write_notes(assignment_dir: Path, number: str, data: dict) -> None:
     tmp.replace(path)
 
 
-def graded_notes(g: Graded, model: str) -> dict:
-    return {"points": g.points, "comments": g.comments, "mistakes": g.mistakes, "unsure": g.unsure,
+def graded_notes(g: Graded, model: str, via: str = "") -> dict:
+    return {"via": via, "effort": EFFORT,"points": g.points, "comments": g.comments, "mistakes": g.mistakes, "unsure": g.unsure,
             "review": g.review, "review_kind": g.review_kind,
             "marks": [{"page": m.page, "x0": m.x0, "y0": m.y0, "x1": m.x1, "y1": m.y1, "text": m.text} for m in g.marks],
             "model": model, "graded_at": _now()}
@@ -945,8 +945,10 @@ def grade_assignment(assignment_dir: Path, numbers: list[str] | None = None, *, 
     stop: כשהוא מסומן, הגשות שעוד לא נשלחו ל-Claude לא נשלחות (rep.stopped), ואלה שבאמצע מסתיימות ונשמרות.
     כשנגמרת המכסה של Claude הבדיקה נעצרת לבד באותה דרך, ואחרי שמה שבאמצע נשמר זורקת ClaudeLimit."""
     stop = stop or threading.Event()
+    via = ""  # נרשם ב-Grading notes: איך רצה הבדיקה, כדי שיהיה אפשר לראות באתר מה בדק כל עבודה
     if ask is None:
         ask = claude_ask()
+        via = "api" if os.environ.get("ANTHROPIC_API_KEY") else "code"
     who = who or claims.me()
     rep = GradeReport()
     todo = pending(assignment_dir) if numbers is None else [number_key(n) for n in numbers]
@@ -1015,7 +1017,7 @@ def grade_assignment(assignment_dir: Path, numbers: list[str] | None = None, *, 
             tmp = marked / f"{n}.pdf.tmp"
             tmp.write_bytes(out)
             tmp.replace(marked / f"{n}.pdf")
-            write_notes(assignment_dir, n, graded_notes(g, model))
+            write_notes(assignment_dir, n, graded_notes(g, model, via))
             own = grades.read_file(mine)
             own[n] = {**rows.get(n, {}), "number": n, "grade": _pts(g.grade), "feedback": g.feedback,
                       "points": ";".join(_pts(p) for p in g.points), "approved": "", "review": g.review,
