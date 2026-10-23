@@ -697,9 +697,10 @@ def _clamp(r: pymupdf.Rect, inside: pymupdf.Rect) -> pymupdf.Rect:
 
 
 def _note_rect(box: pymupdf.Rect, page: pymupdf.Rect, text: str = "", size: float = 10, ink: Ink | None = None,
-               taken: list[pymupdf.Rect] | None = None) -> pymupdf.Rect:
+               taken: list[pymupdf.Rect] | None = None) -> pymupdf.Rect | None:
     """איפה לכתוב את ההערה: ליד המלבן, במקום הכי פנוי מכתב יד (מתחת, מעל, או בצדדים), בלי לכסות הערה אחרת.
-    מיושר לצד ימין, כמו עברית. בלי מסכה: מתחת למלבן, ואם אין מקום אז מעליו."""
+    מיושר לצד ימין, כמו עברית. בלי מסכה: מתחת למלבן, ואם אין מקום אז מעליו.
+    מחזיר None כשגם המקום הטוב ביותר מכוסה בכתב יד (צפיפות > 0.20): ההערה תופיע בעמוד הסיכום."""
     margin, gap = 4, 3
     w, h = _note_size(text, size, page, box)
 
@@ -729,7 +730,13 @@ def _note_rect(box: pymupdf.Rect, page: pymupdf.Rect, text: str = "", size: floa
         return 8 * ink.density(*norm) + 5 * clash + 0.5 * near  # כתב יד ותיבות אחרות יקרים, מרחק זול
 
     pool = fits or [_clamp(r, inside) for r in cands]
-    return min(pool, key=cost)  # בשוויון נשארת הראשונה: מתחת למלבן
+    best = min(pool, key=cost)
+    # גם המקום הטוב ביותר מכוסה בכתב יד: ההערה תופיע בעמוד הסיכום במקום לכסות תוכן
+    best_norm = (best.x0 / page.width * 1000, best.y0 / page.height * 1000,
+                 best.x1 / page.width * 1000, best.y1 / page.height * 1000)
+    if ink.density(*best_norm) > 0.20:
+        return None
+    return best
 
 
 def _write(page: pymupdf.Page, rect: pymupdf.Rect, html: str, archive, backdrop: bool = True) -> None:
@@ -823,9 +830,17 @@ def _place_marks(doc: pymupdf.Document, g: Graded, archive) -> list[str]:
             continue
         page, ink = doc[mark.page - 1], inks[mark.page]
         size = 12 * scale
-        note = _note_rect(box, page.rect, mark.text, size, ink, taken[mark.page])
-        taken[mark.page].append(note)
         dark = bool(ink and getattr(ink, "dark", False))
+        # עמוד שחור לגמרי (טאבלט במצב כהה): המלבן כבר מסומן, ההערה עוברת לסיכום ולא נכתבת על הדף
+        if dark and ink and not ink.usable:
+            unplaced.append(f"עמוד {mark.page}: {mark.text}")
+            continue
+        note = _note_rect(box, page.rect, mark.text, size, ink, taken[mark.page])
+        # אין מקום פנוי מכתב יד: ההערה עוברת לסיכום במקום לכסות תוכן
+        if note is None:
+            unplaced.append(f"עמוד {mark.page}: {mark.text}")
+            continue
+        taken[mark.page].append(note)
         _write(page, note, _html(mark.text, size, "#ff7b7b" if dark else "#d90000"), archive, backdrop=not dark)
     g.marks = placed
     return unplaced
