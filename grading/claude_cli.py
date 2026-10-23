@@ -3,20 +3,23 @@
 Claude Code מחובר במחשב עם החשבון של הצוות (כמו בהעלאה למודל), ולכן אפשר לבדוק בלי מפתח API:
 הבדיקה נספרת במנוי של Claude ולא מחויבת בנפרד. לכל הגשה רצה ריצה אחת נעולה של
 
-    claude -p --tools Read --json-schema <SCHEMA> ...
+    claude -p --tools "" --input-format stream-json --json-schema <SCHEMA> ...
 
 מה הריצה מקבלת:
-- תיקייה זמנית חדשה מחוץ ל-OneDrive, ובה רק תמונות העמודים של ההגשה הזו (והפתרון הרשמי, אם נשלח).
-  זו תיקיית העבודה שלה וה---add-dir היחיד שלה, והיא נמחקת בסוף. טבלת המפתח והשמות לא מגיעים לשם לעולם.
-- כלים: Read בלבד (כדי לקרוא את התמונות). בלי Bash, Edit, Write, בלי כרום ובלי שרתי MCP.
-- ההנחיות (SYSTEM של grade.py) כ---system-prompt-file, והבקשה עצמה ב-stdin (שורת פקודה ארוכה נשברת ב-Windows).
+- הבקשה כמו שהיא נשלחת ל-API: הטקסט, תמונות העמודים (והפתרון הרשמי, אם נשלח) כבלוקים בהודעה אחת ב-stdin
+  (stream-json). כך Claude רואה את כל העמודים בתור אחד, ולא קורא אותם אחד-אחד עם כלי: כשקרא כל עמוד בתור משלו
+  (2026-10-23), הגשה לקחה 17–23 תורות, וכל תור קרא שוב את כל ההקשר (כ-170 אלף טוקנים), ובערך 1.5$ להגשה.
+  מה שמשותף לכל ההגשות (המחוון) מסומן למטמון, ונקרא ממנו בהגשה הבאה (ראו stream_message).
+- בלי כלים בכלל (--tools ""): בלי Read, Bash, Edit, Write, בלי כרום ובלי שרתי MCP.
+- תיקייה זמנית חדשה וריקה מחוץ ל-OneDrive כתיקיית העבודה (רק קובץ ההנחיות), שנמחקת בסוף.
+  טבלת המפתח והשמות לא מגיעים לשם לעולם.
+- ההנחיות (SYSTEM של grade.py) כ---system-prompt-file.
 - --setting-sources project בתיקייה ריקה: בלי ההגדרות, ה-hooks והתוספים של המשתמש.
 
-החוזה זהה ל-claude_ask של grade.py: מקבלים את הבקשה שבנה build_request ומחזירים טקסט JSON בסכמה SCHEMA.
+החוזה זהה ל-claude_ask של grade.py: מקבלים את הבקשה שבנה build_request ומחזירים טקסט JSON בסכמה שלה.
 """
 from __future__ import annotations
 
-import base64
 import json
 import shutil
 import subprocess
@@ -27,10 +30,7 @@ from moodle import claude_driver
 
 BUDGET_USD = 5.0
 TIMEOUT_S = 900
-EXT = {"image/png": ".png", "image/jpeg": ".jpg", "image/gif": ".gif", "image/webp": ".webp", "application/pdf": ".pdf"}
-
-READ_ALL = ("לפני שאתה עונה, קרא עם הכלי Read את כל הקבצים שברשימה, לפי הסדר: הם העמודים של ההגשה "
-            "(והפתרון הרשמי, אם הוא ברשימה). אל תקרא שום קובץ אחר. בסוף החזר רק את התוצאה המובנית.")
+CACHE_TTL = "1h"
 
 
 def available() -> bool:
@@ -38,47 +38,60 @@ def available() -> bool:
     return claude_driver.find_claude() is not None and claude_driver.auth_status()["logged_in"] is True
 
 
-def write_request(req: dict, folder: Path) -> str:
-    """כותב לתיקייה את התמונות ואת הפתרון שבבקשה, ומחזיר את הטקסט שנשלח ל-Claude Code במקומם."""
-    lines: list[str] = []
-    files = 0
+def stream_message(req: dict) -> str:
+    """ההודעה של הבקשה כשורת stream-json: אותם בלוקים כמו ב-API (טקסט, תמונה, מסמך).
+
+    סימון המטמון שאחרי מה שמשותף לכל ההגשות נשאר, עם ttl של שעה: בלי הסימון Claude Code שומר במטמון רק את ההודעה
+    כולה, ושום הגשה לא קוראת את המחוון מהמטמון של קודמתה. ובסימון של 5 דקות ה-API מסרב, כי הסימון של Claude Code
+    עצמו (על ההנחיות, לפני ההודעה) הוא של שעה (נבדק 2026-10-23)."""
+    content = []
     for message in req["messages"]:
         for block in message["content"]:
-            kind = block.get("type")
-            if kind == "text":
-                lines.append(block["text"])
-                continue
-            source = block.get("source") or {}
-            if kind not in ("image", "document") or source.get("type") != "base64":
-                continue
-            files += 1
-            path = folder / f"{files:03d}{EXT.get(source.get('media_type'), '.bin')}"
-            path.write_bytes(base64.b64decode(source["data"]))
-            what = (block.get("title") or "קובץ") if kind == "document" else "תמונת העמוד"
-            lines.append(f"{what}: {path}")
-    lines += ["", READ_ALL]
-    return "\n".join(lines)
+            if block.get("type") in ("text", "image", "document"):
+                block = dict(block)
+                if "cache_control" in block:
+                    block["cache_control"] = {"type": "ephemeral", "ttl": CACHE_TTL}
+                content.append(block)
+    return json.dumps({"type": "user", "message": {"role": "user", "content": content}}, ensure_ascii=False) + "\n"
 
 
-def build_command(claude: str, folder: Path, system_file: Path, schema: dict, model: str,
-                  effort: str | None) -> list[str]:
+def request_schema(req: dict, default: dict) -> dict:
+    """הסכמה שהבקשה עצמה מבקשת (היא תלויה במטלה: לפי שאלות או לפי סעיפים)."""
+    return ((req.get("output_config") or {}).get("format") or {}).get("schema") or default
+
+
+def build_command(claude: str, system_file: Path, schema: dict, model: str, effort: str | None) -> list[str]:
     cmd = [
         claude, "-p",
         "--no-chrome",
         "--no-session-persistence",
         "--setting-sources", "project",       # התיקייה הזמנית ריקה: בלי ההגדרות וה-hooks של המשתמש
         "--strict-mcp-config",                # בלי שרתי MCP
-        "--tools", "Read",                    # רק קריאה של התמונות. --allowedTools לבד לא מגביל
+        "--tools", "",                        # בלי כלים: העמודים כבר בהודעה
         "--system-prompt-file", str(system_file),
-        "--output-format", "json",
+        "--input-format", "stream-json",
+        "--output-format", "stream-json", "--verbose",  # stream-json בקלט מחייב אותו גם בפלט
         "--max-budget-usd", str(BUDGET_USD),
         "--json-schema", json.dumps(schema, separators=(",", ":")),
-        "--add-dir", str(folder),
         "--model", model,
     ]
     if effort:
         cmd += ["--effort", effort]
     return cmd
+
+
+def read_stream(proc) -> tuple[dict | None, str]:
+    """התשובה מתוך הפלט (שורת JSON לכל הודעה, והאחרונה מסוג result). יציאה בקוד שגיאה אף פעם לא נחשבת תשובה."""
+    lines = []
+    for line in (proc.stdout or "").splitlines():
+        try:
+            lines.append(json.loads(line))
+        except ValueError:
+            continue
+    answer, problem = claude_driver.read_answer(json.dumps(lines) if lines else proc.stdout)
+    if getattr(proc, "returncode", 0) and (answer is not None or problem == claude_driver.UNEXPECTED):
+        return None, f"Claude Code נכשל (קוד יציאה {proc.returncode})."
+    return answer, problem
 
 
 def cli_ask(claude: str, schema: dict, effort: str | None = None, run=subprocess.run,
@@ -88,18 +101,17 @@ def cli_ask(claude: str, schema: dict, effort: str | None = None, run=subprocess
     def ask(req: dict) -> str:
         folder = Path(tempfile.mkdtemp(prefix="grading-")).absolute()
         try:
-            prompt = write_request(req, folder)
             system_file = folder / "system.txt"
             system_file.write_text(req.get("system") or "", encoding="utf-8")
-            cmd = build_command(claude, folder, system_file, schema, req["model"], effort)
+            cmd = build_command(claude, system_file, request_schema(req, schema), req["model"], effort)
             try:
-                proc = run(cmd, input=prompt, capture_output=True, text=True, encoding="utf-8",
+                proc = run(cmd, input=stream_message(req), capture_output=True, text=True, encoding="utf-8",
                            timeout=TIMEOUT_S, cwd=folder)
             except Exception as e:
                 raise error(claude_driver.failure_message(e, TIMEOUT_S)) from e
         finally:
             shutil.rmtree(folder, ignore_errors=True)
-        answer, problem = claude_driver.read_run(proc)
+        answer, problem = read_stream(proc)
         if answer is None:
             if problem == claude_driver.NOT_LOGGED_IN:
                 raise not_logged_in()

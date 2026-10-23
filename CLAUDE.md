@@ -285,10 +285,13 @@ in the assignment.
 
 Without `ANTHROPIC_API_KEY`, `grading.claude_ask()` grades through the Claude Code that is logged in on the computer
 (the team's subscription, like the upload), in `grading/claude_cli.py`: one `claude -p` per submission with
-`--tools Read` only, `--no-chrome`, `--strict-mcp-config`, `--setting-sources project`, `--no-session-persistence`,
-the same SYSTEM prompt (`--system-prompt-file`), `--json-schema SCHEMA`, `--effort high` and the chosen model, in a
-fresh temp folder outside OneDrive that holds only that submission's page images (and the official solution). The
-request goes in on stdin. The answer is the same JSON as through the API, so everything after it is shared.
+no tools (`--tools ""`), `--no-chrome`, `--strict-mcp-config`, `--setting-sources project`, `--no-session-persistence`,
+the same SYSTEM prompt (`--system-prompt-file`), the request's JSON schema, `--effort high` and the chosen model, in a
+fresh empty temp folder outside OneDrive. The request goes in on stdin as one stream-json message with the page images
+(and the official solution) as content blocks, like the API. Measured 2026-10-23: when it read each page with `Read`
+instead, one submission took 17-23 turns, each re-reading the whole ~170K-token context, about $1.5 at list price, with
+no cache shared between submissions; one message takes 2 turns and the rubric comes from the cache on the next submission.
+The answer is the same JSON as through the API, so everything after it is shared.
 The dashboard reports `claudeVia: "api" | "code" | null`. Checked on 2026-10-22 on a synthetic submission: graded,
 flagged for review, marked PDF written, ~20 seconds with Opus. Claude Code 2.1.247 refused `claude-opus-5-5`
 ("version 2.1.280 or newer is required"); `start.bat` now runs `claude update`.
@@ -319,6 +322,13 @@ and a line in a spreadsheet. So per submission the grader writes:
   Control blocks PyMuPDF's DLLs, so check what runs on the grading machine.
 - a row in `Grades.csv`: `number,grade,feedback`, where `feedback` is a short summary.
 - `Grading notes/0001.json`: what Claude said per question (comment, mistakes, unsure), the marks, and why it needs a person.
+
+**Scored by subpart: Claude classifies, code scores** (`grading/parts.py`). When the pedagogy folder's rubric splits each
+question into subparts (`| קבוצות 11 | 20 | א 3 · ב 3 · ג 8 · ד 3 · ה 3 |`) with a table per subpart, Claude returns per subpart
+the matching row (`row_id`), the row value, adjusters and global tags, and the code takes the value from the table, drops
+what the rules forbid and applies the caps (§6 of the rubric). `Rubric.md` holds only the final instructions; its history
+(council debates, field test, v2.3) is in `פדגוגי/Working notes/`, which is never sent. Assignment 0's open ⚠ decisions were
+settled on 2026-10-23 with the values the rubric already used (no rubric is coming from the lecturer).
 
 **Manual review.** Claude sends every work it is not sure of (`needs_review`, with `review_reason` saying which question and page,
 and `review_kind`) and every work whose grading failed to the site's "בדיקה ידנית" queue (`#/review`). There a TA picks ready-made

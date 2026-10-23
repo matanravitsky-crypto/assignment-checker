@@ -17,6 +17,8 @@
   Grading notes/0001.json ...             מה Claude אמר על כל שאלה: הערה, סוגי הטעויות, אם הוא לא בטוח, הסימונים,
                                           ולמה העבודה צריכה בדיקה ידנית. מזה האתר בונה את הסטטיסטיקה ואת תור הבדיקה הידנית
 
+כשהמחוון מחולק לסעיפים עם טבלה לכל סעיף, Claude מסווג והקוד מנקד (parts.py).
+
 הניקוד ניתן אך ורק לפי המחוון (RUBRIC_RULE). המחוון הוא "rubric" ב-Assignment details.json, או טבלת הניקוד
 שבתיקייה "פדגוגי" (Rubric.md). ב-Assignment details.json הוא נראה כך:
   {"questions": [{"label": "דף קבוצות 11", "points": 20, "criteria": "מה צריך להופיע",
@@ -54,6 +56,7 @@ import pymupdf
 
 from moodle import claims, claude_driver, grades, paths
 
+from . import parts as rubric_parts
 from .render import PageImage, render_pdf
 
 # ---------- הגדרות ----------
@@ -119,6 +122,7 @@ class Question:
     points: float
     criteria: str = ""
     deductions: list[dict] = field(default_factory=list)  # [{"text": "חסר נימוק", "points": 2}]
+    parts: list[rubric_parts.Part] = field(default_factory=list)  # הסעיפים, כשהמחוון מנקד לפי סעיפים (parts.py)
 
 
 @dataclass
@@ -133,6 +137,12 @@ class Context:
     instructions: str = ""
     solution: bytes | None = None
     no_rubric: str = ""  # למה אי אפשר לתת ציונים (אין מחוון עם ניקוד לכל שאלה). ריק = יש מחוון
+    rows: dict[str, rubric_parts.Row] = field(default_factory=dict)  # השורות בטבלאות הסעיפים: "12ד-3" → ערך, תגיות
+
+    @property
+    def by_parts(self) -> bool:
+        """הניקוד לפי סעיפים: Claude מסווג, והקוד מנקד (parts.py)."""
+        return any(q.parts for q in self.questions)
 
 
 def require_rubric(ctx: Context) -> None:
@@ -250,6 +260,8 @@ def load_context(assignment_dir: Path, instructions: str = "", send_solution: bo
         qs = [Question(label, found.get(label, 0)) for label in labels]
         if isinstance(rubric, str):
             rubric_text = rubric
+        for q, split in zip(qs, rubric_parts.parse_parts(pedagogy, labels, [q.points for q in qs])):
+            q.parts = split
         unset = [q.label for q in qs if not q.points]
         if len(unset) == len(qs):
             no_rubric = f"למטלה אין מחוון (rubric ב-{paths.INFO}, או טבלת ניקוד בתיקייה \"{paths.PEDAGOGY[1]}\"). {RUBRIC_RULE}"
@@ -264,6 +276,7 @@ def load_context(assignment_dir: Path, instructions: str = "", send_solution: bo
         rules=[str(r) for r in d.get("submission_rules") or []], rubric_text=rubric_text,
         instructions="\n".join(t.strip() for t in (str(d.get("grading_instructions") or ""), instructions) if t and t.strip()),
         solution=solution.read_bytes() if send_solution and solution.is_file() else None, no_rubric=no_rubric,
+        rows=rubric_parts.parse_rows(pedagogy) if any(q.parts for q in qs) else {},
     )
 
 
@@ -327,6 +340,38 @@ SCHEMA = {
 }
 
 
+PART_ITEM = {
+    "type": "object",
+    "properties": {"part": {"type": "string"}, "status": {"type": "string", "enum": ["graded", "missing"]},
+                   "row_id": {"type": "string"}, "base": {"type": "number"},
+                   "adjusters": {"type": "array", "items": {"type": "string", "enum": rubric_parts.ADJUSTERS}},
+                   "tags": {"type": "array", "items": {"type": "string", "enum": rubric_parts.TAGS}},
+                   "final_answer": {"type": "string"}, "unsure": {"type": "boolean"}},
+    "required": ["part", "status", "row_id", "base", "adjusters", "tags", "final_answer", "unsure"],
+    "additionalProperties": False,
+}
+
+
+def schema_for(ctx: Context) -> dict:
+    """SCHEMA, ובמטלה שמנוקדת לפי סעיפים: בלי ניקוד לשאלות, ועם רשומה לכל סעיף (parts)."""
+    if not ctx.by_parts:
+        return SCHEMA
+    question = json.loads(json.dumps(SCHEMA["properties"]["questions"]["items"]))
+    del question["properties"]["points"]
+    question["required"].remove("points")
+    return {**SCHEMA, "properties": {**SCHEMA["properties"], "questions": {"type": "array", "items": question},
+                                     "parts": {"type": "array", "items": PART_ITEM}},
+            "required": [*SCHEMA["required"], "parts"]}
+
+
+PARTS_RULE = """הניקוד במטלה הזו לפי סעיפים: הבוט מסווג, והקוד מנקד (§6 במחוון).
+- בשאלות (questions) אין ניקוד. יש בהן רק הערה, סוגי הטעויות ו-unsure, כמו בשאר המטלות.
+- לכל סעיף ברשימה למעלה רשומה אחת ב-parts, באותו סדר: part (שם הסעיף בדיוק כמו ברשימה), status, row_id, base,
+  adjusters, tags, final_answer, unsure, לפי §2 ו-§6 במחוון.
+- הקוד לוקח את ערך השורה מהטבלה לפי row_id, מבטל מתאמים ותגיות שהכללים אוסרים, ומחיל את התקרות. לכן מדויקים ב-row_id:
+  השורה הראשונה מלמעלה שמתאימה. אל תחשבו את הציון ואל תחברו."""
+
+
 def _pts(x: float) -> str:
     return f"{x:g}"
 
@@ -335,9 +380,13 @@ def context_text(ctx: Context) -> str:
     lines = [f"מטלה: {ctx.title}", f"קורס: {ctx.course}", f"ציון מרבי: {_pts(ctx.max_grade)}", "", "השאלות, לפי הסדר:"]
     for i, q in enumerate(ctx.questions, start=1):
         lines.append(f"{i}. {q.label} ({_pts(q.points)} נקודות)" + (f": {q.criteria}" if q.criteria else ""))
+        if q.parts:
+            lines.append("   סעיפים: " + " · ".join(f"{p.id} ({_pts(p.points)})" for p in q.parts))
         if q.deductions:
             lines.append("   טעויות מוכרות: " + "; ".join(
                 f'"{d["text"]}"' + (f" (מורידים {_pts(d['points'])})" if d["points"] else "") for d in q.deductions))
+    if ctx.by_parts:
+        lines += ["", PARTS_RULE]
     if ctx.rubric_text:
         lines += ["", "מחוון:", ctx.rubric_text]
     if ctx.rules:
@@ -373,7 +422,7 @@ def build_request(ctx: Context, images: list[PageImage], model: str = DEFAULT_MO
     req = {
         "model": model, "max_tokens": MAX_TOKENS, "system": SYSTEM,
         "messages": [{"role": "user", "content": shared + pages}],
-        "output_config": {"effort": EFFORT, "format": {"type": "json_schema", "schema": SCHEMA}},
+        "output_config": {"effort": EFFORT, "format": {"type": "json_schema", "schema": schema_for(ctx)}},
     }
     # אם Claude מסרב, הבקשה רצה שוב על מודל אחר שמתאים לסוג הסירוב (ל-Haiku אין דבר כזה)
     if not model.startswith("claude-haiku"):
@@ -447,6 +496,8 @@ class Graded:
     mistakes: list[list[str]] = field(default_factory=list)  # לכל שאלה: סוגי הטעויות
     unsure: list[bool] = field(default_factory=list)         # לכל שאלה: Claude לא בטוח בניקוד
     review_kind: str = ""
+    parts: list[dict] = field(default_factory=list)          # במטלה לפי סעיפים: מה Claude סיווג ומה הקוד חישב לכל סעיף
+    fixes: list[str] = field(default_factory=list)           # מה הקוד תיקן בסיווג של Claude (לפי הכללים במחוון)
 
 
 def _round_half_up(x: float) -> float:
@@ -472,9 +523,19 @@ def parse_answer(text: str, ctx: Context, pages: int) -> Graded:
     if len(got) != len(ctx.questions):
         review = (review + " " if review else "") + f"Claude החזיר ניקוד ל-{len(got)} שאלות במקום {len(ctx.questions)}."
     kind = (kind if kind in REVIEW_KINDS else "other") if review else ""
+    scored, fixes = [], []
+    if ctx.by_parts:  # הקוד מנקד: הניקוד של שאלה הוא סכום הסעיפים שלה
+        scored, fixes, absent = rubric_parts.score(data.get("parts") or [], [q.parts for q in ctx.questions], ctx.rows)
+        if absent:
+            review = (review + " " if review else "") + f"Claude לא החזיר את הסעיפים {', '.join(absent)}, והם קיבלו 0."
+            kind = kind or "other"
     points, comments, mistakes, unsure, over = [], [], [], [], []
     for i, q in enumerate(ctx.questions):
         answer = got[i] if i < len(got) else {}
+        if q.parts:
+            mine = [s for s in scored if s.question == i]
+            answer = {**answer, "points": sum(s.points for s in mine),
+                      "unsure": answer.get("unsure") is True or any(s.unsure for s in mine)}
         p = _round_half_up(_num(answer.get("points")))
         if p > q.points:  # יותר ממה שהמחוון נותן לשאלה: נחתך, ואדם מסתכל
             over.append(f"{q.label}: {_pts(p)} מתוך {_pts(q.points)}")
@@ -498,8 +559,11 @@ def parse_answer(text: str, ctx: Context, pages: int) -> Graded:
         if x1 - x0 < 1 or y1 - y0 < 1:
             continue
         marks.append(Mark(page, x0, y0, x1, y1, str(a.get("text") or "").strip()))
+    parts = [{"part": s.part, "status": s.status, "row_id": s.row_id, "base": s.base, "adjusters": s.adjusters,
+              "tags": s.tags, "final_answer": s.final_answer, "unsure": s.unsure, "points": s.points, "max": s.max}
+             for s in scored]
     return Graded(points, comments, compute_grade(points, ctx), str(data.get("feedback") or "").strip(), marks, review.strip(),
-                  mistakes, unsure, kind)
+                  mistakes, unsure, kind, parts, fixes)
 
 
 def _mistakes(raw) -> list[str]:
@@ -549,6 +613,8 @@ def scrub_graded(g: Graded, names: list[str]) -> Graded:
         g.mistakes = [[scrub(m, names) for m in ms] for ms in g.mistakes]
         for m in g.marks:
             m.text = scrub(m.text, names)
+        for part in g.parts:
+            part["final_answer"] = scrub(part["final_answer"], names)
     return g
 
 
@@ -685,6 +751,7 @@ def write_notes(assignment_dir: Path, number: str, data: dict) -> None:
 def graded_notes(g: Graded, model: str) -> dict:
     return {"points": g.points, "comments": g.comments, "mistakes": g.mistakes, "unsure": g.unsure,
             "review": g.review, "review_kind": g.review_kind,
+            **({"parts": g.parts, "fixes": g.fixes} if g.parts else {}),
             "marks": [{"page": m.page, "x0": m.x0, "y0": m.y0, "x1": m.x1, "y1": m.y1, "text": m.text} for m in g.marks],
             "model": model, "graded_at": _now()}
 
