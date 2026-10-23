@@ -109,6 +109,18 @@ with `python -m moodle status <id>`.
   Re-uploading replaces files with the same name. The folder picker is a native Windows dialog Claude can't see,
   so Ori picks the folder himself.
 
+**Automatic upload to the lecturer's OneDrive (`onedrive/`).** Instead of dragging the course folder and pressing
+"Replace", `onedrive/sync.js` runs in the lecturer's OneDrive tab (Claude in Chrome, `javascript_tool`) and uploads only
+what is new or changed, through SharePoint REST with the signed-in user's own rights (no app, no admin consent):
+`eval(await (await fetch("http://127.0.0.1:8765/api/sync/script.js")).text()); await window.__ecsSyncAll({dryRun: true})`,
+then without `dryRun`. The files come from the dashboard (`/api/sync/`, `dashboard/sync.py`: course list, file list
+with size and mtime, file bytes; only from inside a course folder of `ASSIGNMENT_DATA`, CORS only for
+`https://bgu365-my.sharepoint.com`), so they go computer → browser → OneDrive and not through Claude (few tokens, no
+10 MB limit). It never deletes, never overwrites a OneDrive file newer than the local one (a team's `Grades.csv`),
+skips locks and temp files, and checks sizes after uploading. Don't sync while `Grading part N in progress.txt` exists.
+Once per computer Chrome asks to allow the site to reach the local network: the user clicks "Allow".
+Checked 2026-10-23: 12 MB from the computer in 10 s, byte-identical; a dry run found Discrete Mathematics identical.
+
 When working with this data:
 - Grade from `1 - Submissions to grade` only. Don't open the extracted originals or print names, ת"ז or emails into chat, commits or logs.
 - The key table sits in the shared folder, so everyone with access to it can link numbers to students. Don't open it while grading.
