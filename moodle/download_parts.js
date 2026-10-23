@@ -87,14 +87,15 @@
   }
   if (!users.length) return { error: "no students in the grading table" };
 
-  // The due date, from the assignment's page ("תאריך הגשה: ..." / "Due: ..."); null when it is not there
+  // The due date, from the assignment's page: BGU's Hebrew Moodle says "מסתיים: יום רביעי, 28 אוקטובר 2026, 11:59 PM"
+  // (seen 2026-10-23, next to "נפתח: ..."), English "Due: ..."; null when it is not there
   let due = null;
   try {
     const v = await fetch(BASE + "?id=" + ID, { credentials: "same-origin" });
     const page = new DOMParser().parseFromString(await v.text(), "text/html");
     for (const el of page.querySelectorAll('[data-region="activity-dates"] div, .activity-dates div, table tr')) {
       const text = el.textContent.replace(/\s+/g, " ");
-      if (/תאריך הגשה|מועד הגשה|\bDue\b/i.test(text) && !/סגיר|cut-off|נפתח|opened|הארכה|extension/i.test(text)) {
+      if (/מסתיים|תאריך הגשה|מועד הגשה|\bDue\b/i.test(text) && !/סגיר|cut-off|נפתח|opened|הארכה|extension/i.test(text)) {
         const d = when(text);
         if (d) { due = local(d); break; }
       }
