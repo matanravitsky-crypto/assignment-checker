@@ -51,10 +51,14 @@ Exercise Checking System/                  the data folder (ASSIGNMENT_DATA, def
       Copying check.json          suspected copying: pairs of numbers and why, per-file hashes (`python -m copying`)
       Upload in progress.txt      exists only while an upload runs ("<user> (<PC>) pid=<pid>", since when; 30 minutes without an update = stuck)
       Pull in progress.txt        the same while a pull runs
-      Moodle download <date>.zip  the ZIP exactly as Moodle gave it (every download is kept)
+      Pull log.csv                pulled_at,by,students,new,files,parts: one row per pull (numbers only), so every
+                                  computer sees when it was pulled
+      (older pulls left "Moodle download <date>.zip" here; new ones keep it on the puller's computer only)
 
 Moodle originals/                          on the downloader's computer only (ASSIGNMENT_WORK)
   <course>/<assignment>/   the extracted ZIP: one folder per student, "<full name>_<participant id>_assignsubmission_file"
+  Backup - Moodle downloads/<course>/<assignment>/   every download exactly as Moodle gave it ("Moodle download <date>.zip",
+                           or a "Moodle download <date>/" folder of parts). Never in OneDrive: names, and 2-3 GB a pull
 ```
 
 The extracted ZIP never goes to OneDrive: students' file names break its sync (see below). It can be rebuilt
@@ -76,12 +80,18 @@ The **key** that links a number back to a student is the Moodle *participant id*
 `anonymize.prepare` reads the existing key, and students who submitted since then get the next free numbers.
 Never delete or rebuild the key table of an assignment that is being graded.
 
-## Anyone can pull, one key
+## Pull only where the shared folder is synced, one key
 
-Anyone on the team can download from Moodle and pull: the dashboard's "Pull submissions" button or
-`python -m moodle ingest <id>` on their own computer. There is still **one** key table per assignment, in the
-shared folder, and `anonymize.prepare` reads it before numbering, so every student keeps their number no matter
-who pulls. What can break it is two pulls of the same assignment at once, before OneDrive synced the key between them.
+Ori's decision (2026-10-23): pulls happen only on a computer where the course's OneDrive folder ("YallaLinearit", synced
+through "Add shortcut to My files") is the data folder, like Yossi's or Matan's. There, anyone on the team can press
+"Pull submissions" (or run `python -m moodle ingest <id>`). A local copy (Ori's laptop: `~/Exercise Checking System`,
+uploaded to OneDrive by the browser sync) does not pull: its key would not see the numbers another computer gave, and
+its newer key would then be uploaded over the shared one, with two students on one number. `paths.in_shared_folder` is
+the rule (a folder named YallaLinearit, or "<owner> - YallaLinearit", above the data folder); `actions.pull` refuses
+before Chrome opens and before anything is created (`NOT_SHARED`), and so does `moodle ingest`. The demo
+(`MOODLE_DRIVER=simulate`) is exempt. There is **one** key table per assignment, in the shared folder, and
+`anonymize.prepare` reads it before numbering, so every student keeps their number no matter who pulls. What can still
+break it is two pulls of the same assignment at once, before OneDrive synced the key between them.
 So `dashboard/actions.py` guards the dashboard's pull:
 - **Lock:** while a pull runs, the assignment folder has `Pull in progress.txt` (who and since when). Another
   pull of that assignment waits until it's gone (a lock older than 30 minutes counts as stuck and is ignored).
@@ -200,7 +210,8 @@ There is **no Moodle API**. Claude in Chrome works in the user's own logged-in C
   the phase at its pace so far, shown as "נשארו בערך N דקות"). A pull with new submissions starts the copying check by itself.
   The site asks `/api/changes` every 5 seconds (when visible and idle) and reloads when the folder changed, so a pull on another PC shows up through OneDrive without a refresh. `ingest.gather_parts` takes the
   list only if every part is there with its exact size, checks each, extracts all into one originals folder and numbers once;
-  the parts are kept in `Moodle download <date>/`. Run for real on 3438636 on 2026-10-23: 566 students in 15 parts, every
+  the parts are kept in `Moodle download <date>/` under `Backup - Moodle downloads` on the puller's computer, and the pull is
+  logged in the assignment's `Pull log.csv`. Run for real on 3438636 on 2026-10-23: 566 students in 15 parts, every
   earlier number kept. The download shares the "one Chrome job at a time" guard with the connection check and the upload.
 - Feedback upload: Actions → "העלאת מספר קובצי משוב כקובץ 7Zip אחד" → the ZIPs in `3 - Ready to upload to Moodle`
   (`Graded - part 01.zip` ...), one at a time. **BGU Moodle imports at once**: clicking "יבוא קבצי משוב" imports
