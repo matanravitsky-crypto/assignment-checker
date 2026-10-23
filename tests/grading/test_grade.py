@@ -187,7 +187,8 @@ def test_names_are_removed_even_if_claude_copies_them(root):
 
 
 # ---------- הפלט ----------
-def test_grading_writes_grades_csv_and_marked_pdfs(root):
+def test_grading_writes_grades_csv_and_marked_pdfs(root, monkeypatch):
+    monkeypatch.setattr(grading, "refine_box", lambda ink, box: box)  # כאן בודקים מיקום, לא הצמדה לכתב
     a = asg(root)
     fake = FakeClaude()
     rep = grading.grade_assignment(a.dir, ask=fake, parallel=3)
@@ -341,7 +342,8 @@ def test_big_scans_are_shrunk_to_the_size_limit():
         assert marked.page_count == 3
 
 
-def test_rotated_page_is_marked_where_it_is_seen():
+def test_rotated_page_is_marked_where_it_is_seen(monkeypatch):
+    monkeypatch.setattr(grading, "refine_box", lambda ink, box: box)
     doc = pymupdf.open(stream=homework_pdf("x", HW, pages=1), filetype="pdf")
     doc[0].set_rotation(90)
     ctx = grading.Context("מטלה", "קורס", [grading.Question("שאלה 1", 100)])
@@ -708,3 +710,76 @@ def test_server_stops_a_running_grading(root, server, monkeypatch):
     assert not job["running"] and len(job["report"]["graded"]) == 1 and len(job["report"]["stopped"]) == 2
     _, again = call(server, "POST", "/api/grade/stop", {})
     assert again["stopping"] is False or again["running"] is False  # nothing running: stopping does nothing
+
+
+def _scan_page(ink_rect=(100, 100, 300, 140)):
+    """עמוד לבן עם פס "כתב יד" כהה אחד, ב-ink_rect (נקודות)."""
+    doc = pymupdf.open()
+    page = doc.new_page()
+    for y in range(int(ink_rect[1]), int(ink_rect[3]), 3):
+        page.draw_line((ink_rect[0], y), (ink_rect[2], y), color=(0, 0, 0.3), width=1.2)
+    return doc, page
+
+
+def test_box_on_empty_paper_snaps_to_the_nearby_writing():
+    doc, page = _scan_page((100, 400, 300, 440))
+    ink = grading.Ink(page)
+    # Claude סימן מקום ריק מעל הכתב: המלבן מוצמד לכתב עצמו
+    x0, y0, x1, y1 = grading.refine_box(ink, (150, 300, 600, 360))
+    assert abs(x0 / 1000 * 595 - 100) < 15 and abs(x1 / 1000 * 595 - 300) < 15
+    assert abs(y0 / 1000 * 842 - 400) < 15 and abs(y1 / 1000 * 842 - 440) < 15
+    # מלבן גדול שמקיף את הכתב מתהדק אליו
+    big = grading.refine_box(ink, (0, 0, 1000, 1000))
+    assert big[2] - big[0] < 400 and big[3] - big[1] < 100
+
+
+def test_mark_with_no_writing_anywhere_is_dropped_and_its_note_goes_to_the_summary():
+    doc, page = _scan_page((100, 20, 400, 60))
+    ink = grading.Ink(page)
+    assert grading.refine_box(ink, (700, 800, 900, 900)) is None
+    ctx = grading.Context("מטלה", "קורס", [grading.Question("שאלה 1", 100)])
+    g = grading.Graded([100], [""], 100, "", [grading.Mark(1, 700, 800, 900, 900, "הערה אבודה")])
+    with pymupdf.open(stream=grading.mark_pdf(doc.tobytes(), g, ctx), filetype="pdf") as out:
+        assert "הערה אבודה" in text(out[0])
+        assert not [d for d in out[1].get_drawings() if d.get("color") and d["color"][0] > 0.8 and d["color"][1] < 0.1]
+    assert g.marks == []
+
+
+def test_note_goes_to_free_paper_not_over_the_writing():
+    doc, page = _scan_page((100, 100, 500, 140))
+    for y in range(160, 200, 3):  # עוד שורה כתובה ישר מתחת
+        page.draw_line((100, y), (500, y), color=(0, 0, 0.3), width=1.2)
+    ink = grading.Ink(page)
+    box = pymupdf.Rect(100, 100, 500, 140)
+    note = grading._note_rect(box, page.rect, "חסר נימוק להכלה", 11, ink)
+    assert note.y1 <= box.y0  # מתחת יש כתב, אז ההערה מעל
+    norm = (note.x0 / 595 * 1000, note.y0 / 842 * 1000, note.x1 / 595 * 1000, note.y1 / 842 * 1000)
+    assert ink.density(*norm) < 0.25
+
+
+def test_shrinking_does_not_blacken_pages_with_several_images():
+    # באג אמיתי: rewrite_images שיבש תמונה שנייה בעמוד (פס שחור במקום השאלה)
+    rnd = random.Random(3)
+    big = pymupdf.Pixmap(pymupdf.csRGB, 1700, 2200, bytes(rnd.getrandbits(8) for _ in range(1700 * 2200 * 3)), False).tobytes("jpeg", jpg_quality=95)
+    strip = pymupdf.Pixmap(pymupdf.csRGB, 600, 100, bytes([240]) * (600 * 100 * 3), False).tobytes("png")
+    doc = pymupdf.open()
+    for _ in range(2):
+        page = doc.new_page()
+        page.insert_image(page.rect, stream=big)
+        page.insert_image(pymupdf.Rect(50, 50, 500, 130), stream=strip)
+    ctx = grading.Context("מטלה", "קורס", [grading.Question("שאלה 1", 100)])
+    g = grading.Graded([100], [""], 100, "", [])
+    out = grading.mark_pdf(doc.tobytes(), g, ctx, max_bytes=300_000)
+    assert len(out) <= 300_000
+    with pymupdf.open(stream=out, filetype="pdf") as marked:
+        assert marked.page_count == 3
+
+
+def test_model_images_carry_a_numbered_grid_but_files_do_not():
+    from grading.render import render_pdf
+    pdf = homework_pdf("x", "t", pages=1)
+    plain, gridded = render_pdf(pdf)[0], render_pdf(pdf, grid=True)[0]
+    assert (plain.width, plain.height) == (gridded.width, gridded.height) and plain.data != gridded.data
+    pix = pymupdf.Pixmap(gridded.data)
+    # קו הרשת ב-x=500 צבוע כתום באמצע העמוד
+    assert any(pix.pixel(pix.width // 2, y)[2] < 200 for y in range(pix.height // 2, pix.height // 2 + 40))
