@@ -23,7 +23,7 @@ import re
 import zipfile
 from pathlib import Path
 
-from moodle import anonymize, paths
+from moodle import anonymize, grades, paths
 
 # The worksheet's headers follow the Moodle language the user downloaded it in
 GRADE_HEADERS = {"Grade", "ציון"}
@@ -48,8 +48,10 @@ def find_worksheet(assignment_id: str, downloads: Path | None = None) -> Path | 
 
 
 def read_results(assignment_dir: Path) -> dict[str, dict]:
-    with open(assignment_dir / paths.GRADES, encoding="utf-8-sig") as f:
-        return {f"{int(row['number']):04d}": row for row in csv.DictReader(f)}
+    """The grades, merged from Grades.csv and every grader's own file (grades.py). No grades file at all raises."""
+    if not grades.files(assignment_dir):
+        raise FileNotFoundError(assignment_dir / paths.GRADES)
+    return grades.read(assignment_dir)
 
 
 def participant_from_identifier(identifier: str) -> str:

@@ -330,6 +330,27 @@ th.qcol { text-align: center; }
 .check.ok { color: var(--ok); }
 .check.bad { color: var(--warn); }
 .flag { display: inline-block; font-size: 12px; font-weight: 500; color: var(--warn); background: var(--warn-soft); padding: 1px 8px; border-radius: var(--r-sm); white-space: nowrap; }
+
+/* חלוקת העבודה בצוות */
+.team { margin-bottom: 16px; }
+.team .panel-body { display: flex; flex-direction: column; gap: 14px; }
+.team-lead, .team-note { margin: 0; font-size: 13.5px; color: var(--ink-2); }
+.team-note { font-size: 12.5px; color: var(--ink-3); }
+.team-people { display: flex; flex-wrap: wrap; gap: 8px; }
+.person { display: inline-flex; align-items: baseline; gap: 5px; padding: 5px 12px; border: 1px solid var(--rule); border-radius: 99px; background: var(--sheet-2); font-size: 13px; color: var(--ink-2); }
+.person b { color: var(--ink); font-size: 14.5px; }
+.person.mine { background: var(--blue-soft); border-color: transparent; color: var(--blue); }
+.person.mine b { color: var(--blue); }
+.team-act { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; }
+.team-act .field { min-width: 220px; }
+.team-count { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; color: var(--ink-2); }
+.team-count input { width: 76px; padding: 6px 8px; border: 1px solid var(--rule-strong); border-radius: var(--r-sm); background: var(--sheet); color: var(--ink); font: inherit; text-align: center; }
+.team-count input:focus { outline: none; border-color: var(--blue); box-shadow: 0 0 0 3px var(--blue-soft); }
+.claim-cell { white-space: nowrap; }
+.claim-cell .btn.small { padding: 3px 10px; font-size: 12.5px; }
+.claim { display: inline-block; font-size: 12.5px; font-weight: 500; padding: 2px 9px; border-radius: var(--r-sm); background: var(--sheet-2); border: 1px solid var(--rule); color: var(--ink-2); max-width: 140px; overflow: hidden; text-overflow: ellipsis; vertical-align: middle; }
+.claim.mine { background: var(--blue-soft); border-color: transparent; color: var(--blue); }
+tr.mine td:first-child { box-shadow: inset -3px 0 0 var(--blue); }
 .files { display: flex; flex-wrap: wrap; gap: 6px; }
 .file { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; padding: 3px 9px; border: 1px solid var(--rule); border-radius: var(--r-sm); background: var(--sheet-2); white-space: nowrap; }
 .file svg { width: 15px; height: 15px; color: var(--ink-3); }

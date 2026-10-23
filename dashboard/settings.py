@@ -26,5 +26,14 @@ def load_env() -> None:
         os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
 
 
+def save_env(key: str, value: str) -> None:
+    """כותב (או מחליף) שורה KEY=value ב-.env, ומעדכן גם את משתנה הסביבה בתהליך הזה."""
+    env = REPO_DIR / ".env"
+    lines = env.read_text(encoding="utf-8").splitlines() if env.exists() else []
+    lines = [ln for ln in lines if ln.split("=", 1)[0].strip() != key] + [f"{key}={value}"]
+    env.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    os.environ[key] = value
+
+
 def claude_key() -> str | None:
     return os.environ.get("ANTHROPIC_API_KEY") or None
