@@ -590,3 +590,79 @@ def test_the_site_dates_pulls_from_the_pull_log_and_old_kept_zips(root):
     assert ingest.pulls(a.dir) == ["2026-10-23T10:55:07"]
     times = actions._downloads(a)
     assert times[-1] == "2026-10-23T10:55" and "2026-10-21T16:28" in times  # the fixture's old ZIP still counts
+
+
+# ---------- משיכה חוזרת: רק מה שהשתנה, ומועד ההגשה ממודל ----------
+class RecordingDownloader(FakeDownloader):
+    def __init__(self, downloads):
+        super().__init__(downloads)
+        self.infos = []
+
+    def download(self, info):
+        self.infos.append(info)
+        return super().download(info)
+
+
+def _log_a_pull(a_dir, when="2026-10-25T00:07:00"):
+    (a_dir / paths.PULL_LOG).write_text("pulled_at,by,students,new,files,parts\n"
+                                        f"{when},מתן (PC),3,3,3,15\n", encoding="utf-8-sig")
+
+
+def test_a_pull_after_a_pull_asks_moodle_only_for_what_changed(root, monkeypatch):
+    from datetime import datetime
+    monkeypatch.setattr("moodle.ingest.ingest", lambda *a, **k: folder_view.Assignment(root / COURSE / HW).key_rows())
+    fake = RecordingDownloader(actions.moodle_ingest.downloads_dir())
+    monkeypatch.setattr(actions, "_make_downloader", lambda: fake)
+    actions.pull(root, COURSE, HW)
+    assert "since" not in fake.infos[-1]                       # no pull logged yet: everyone
+    _log_a_pull(root / COURSE / HW)
+    for p in actions.moodle_ingest.downloads_dir().iterdir():
+        p.unlink()
+    actions.pull(root, COURSE, HW)
+    an_hour_before = int(datetime(2026, 10, 24, 23, 7).timestamp() * 1000)
+    assert fake.infos[-1]["since"] == an_hour_before           # what changed since an hour before the last pull
+    for p in actions.moodle_ingest.downloads_dir().iterdir():
+        p.unlink()
+    actions.pull(root, COURSE, HW, full=True)
+    assert "since" not in fake.infos[-1]                       # "pull everything again"
+
+
+class NothingChanged:
+    """Moodle when nobody submitted since the last pull: no parts, only the list, with the due date it read."""
+
+    def __init__(self, downloads, due="2026-10-26T23:59:00"):
+        self.downloads, self.due = downloads, due
+
+    def download(self, info):
+        listed = {"users": 3, "changed": 0, "since": info.get("since", 0), "due": self.due, "parts": 0, "empty": 0,
+                  "failed": [], "files": []}
+        (self.downloads / f"214193210120271-הגשה 0-{info['id']}.json").write_text(json.dumps(listed), encoding="utf-8")
+        return {"status": "started", "message": "ok", "users": 3, "parts": 0}
+
+
+def test_nothing_changed_touches_nothing_logs_the_pull_and_saves_the_due_date(root, monkeypatch):
+    a_dir = root / COURSE / HW
+    _log_a_pull(a_dir)
+    info = json.loads((a_dir / paths.INFO).read_text(encoding="utf-8"))
+    info["due"] = "2026-10-24T23:59:00+02:00"                  # Moodle moved it two days (an extension for everyone)
+    (a_dir / paths.INFO).write_text(json.dumps(info), encoding="utf-8")
+    before = {p.name: p.read_bytes() for p in (a_dir / paths.TO_GRADE).iterdir()}
+    key_before = (a_dir / paths.KEY).read_bytes()
+    monkeypatch.setattr(actions, "_make_downloader", lambda: NothingChanged(actions.moodle_ingest.downloads_dir()))
+    rep = actions.pull(root, COURSE, HW)
+    assert rep["changed"] == 0 and rep["result"]["new"] == 0 and "שום הגשה לא השתנתה" in rep["notes"][0]
+    assert {p.name: p.read_bytes() for p in (a_dir / paths.TO_GRADE).iterdir()} == before
+    assert (a_dir / paths.KEY).read_bytes() == key_before
+    assert len(actions.moodle_ingest.pulls(a_dir)) == 2         # logged: the next pull asks from here on
+    assert list(actions.moodle_ingest.downloads_dir().iterdir()) == []
+    assert paths.read_info(a_dir)["due"] == "2026-10-26T23:59:00"
+
+
+def test_a_due_date_moodle_did_not_give_changes_nothing(root, monkeypatch):
+    a_dir = root / COURSE / HW
+    _log_a_pull(a_dir)
+    due = paths.read_info(a_dir)["due"]
+    for bad in (None, "next Monday"):
+        monkeypatch.setattr(actions, "_make_downloader", lambda: NothingChanged(actions.moodle_ingest.downloads_dir(), bad))
+        actions.pull(root, COURSE, HW)
+    assert paths.read_info(a_dir)["due"] == due

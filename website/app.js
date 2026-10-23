@@ -1241,6 +1241,8 @@
         <div class="panel-body">
           <ol class="todo">
             <li><b>Claude בכרום מוריד ממודל.</b> בכרום שלך, עם ההתחברות שלך: עמוד ההגשות של המטלה ← "הורדת כל ההגשות", כש"הורדת הגשות בתיקיות" מסומן. הוא לא מקליד כלום ולא משנה שום הגדרה של המטלה. ה-ZIP נשמר בתיקיית ההורדות, והמערכת מחכה עד שההורדה מסתיימת.</li>
+            <li><b>משיכה חוזרת מורידה רק מה שהשתנה.</b> אחרי המשיכה הראשונה, Claude מבקש ממודל רק את מי שהגיש או החליף קובץ מאז המשיכה הקודמת: כמה דקות במקום כמה GB. כל השאר נשארים כמו שהם. "משוך הכול מחדש" מוריד את כולם.</li>
+            <li><b>בלילה זה קורה לבד.</b> מועד ההגשה נקרא ממודל בכל משיכה. בלילה שאחריו (00:05), ובכל לילה בשבוע שאחריו (הגשות מאוחרות והארכות), המחשב של מי שלקח את "משיכה" מושך בעצמו: פותח את כרום אם הוא סגור, ומנסה שוב אחרי חצי שעה אם מודל לא ענה. רק המחשב שלו, כדי ששני מחשבים לא ימשכו יחד.</li>
             <li><b>הורדתם בעצמכם?</b> אם בתיקיית ההורדות כבר מחכה ZIP ששמו נגמר ב-<code dir="ltr">-${esc(A.moodleId || "<מזהה המטלה>")}.zip</code>, המערכת קולטת אותו ולא מורידה שוב.</li>
             <li><b>שומרת אותו רק במחשב הזה</b>, בתיקייה <code dir="ltr">Moodle originals/Backup - Moodle downloads</code>, ולא ב-OneDrive (יש בו שמות, וכמה GB בכל משיכה). כל הורדה נשמרת, כך שהורדה מאוחרת לא מוחקת את הקודמת. בתיקיית המטלה נרשמת שורה ב-<code dir="ltr">Pull log.csv</code>: מתי, מי וכמה.</li>
             <li><b>מושכים רק ממחשב שהתיקייה המשותפת מסונכרנת בו</b> (YallaLinearit ב-OneDrive). ממחשב עם עותק מקומי המשיכה נעצרת, כי טבלת המפתח שלו לא רואה מספרים שמחשב אחר כבר נתן.</li>
@@ -1251,6 +1253,7 @@
           <div class="row-start">
             ${moodleLink(A, "small")}
             <button class="btn secondary small" data-act="open-inbox">${ICON.folder}פתח את תיקיית ההורדות</button>
+            ${LOCAL.on && !A.empty && A.pulledAt ? `<button class="btn secondary small" data-act="pull-full">משוך הכול מחדש</button>` : ""}
           </div>
         </div>
       </section>
@@ -2305,6 +2308,7 @@
       if (a === "grade-stop") stopLocalGrade();
       if (a === "open-folder") openFolder("folder");
       if (a === "open-inbox") openFolder("inbox");
+      if (a === "pull-full") runLocalPull(true);
       if (a === "open-upload") openFolder("upload");
       if (a === "recheck") { if (LOCAL.on) location.reload(); else connect(true); }
       if (a === "send-confirm" && LOCAL.batch?.assignmentId === cur().id) startLocalSend(LOCAL.batch.id);
@@ -2565,7 +2569,8 @@
   // מה שנמשך, נבדק או הועלה במחשב אחר (ההגשות מגיעות דרך OneDrive) מופיע לבד, בלי רענון: כל 20 שניות וכשחוזרים
   // ללשונית. רק כשהלשונית גלויה, שום דבר לא רץ כאן ולא מקלידים, ומציירים מחדש רק אם משהו בתיקייה השתנה
   // "משוך הגשות" אמיתי: השרת מושך ממודל (אם יש טוקן) ומקובצי ZIP בקליטה, ישר לתיקיית OneDrive
-  async function runLocalPull() {
+  // full: את כל ההגשות ממודל. בלי: אחרי משיכה ראשונה, רק מי שההגשה שלו השתנתה מאז המשיכה הקודמת
+  async function runLocalPull(full = false) {
     const A = cur();
     if (!A || state.run[A.id] || !LOCAL.health?.root) return;
     // הגשה שעוד לא נמשכה: המשיכה הראשונה שומרת את מזהה המטלה במודל (dashboard/actions.py new_assignment)
@@ -2581,7 +2586,7 @@
     render();
     // השרת עונה רק בסוף המשיכה (הורדה של ZIP גדול: כמה דקות). בינתיים שואלים אותו כל שנייה כמה התקדמה
     let settled = false;
-    const post = api("api/pull", { method: "POST", body: JSON.stringify({ course: A.courseFolder, assignment: A.folder, ...(moodleId && { moodleId }) }) })
+    const post = api("api/pull", { method: "POST", body: JSON.stringify({ course: A.courseFolder, assignment: A.folder, ...(moodleId && { moodleId }), ...(full && { full: true }) }) })
       .finally(() => { settled = true; });
     followPull(A, run, () => settled);
     try {
