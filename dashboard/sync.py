@@ -27,19 +27,25 @@ def courses() -> list[str]:
 
 
 def course_dir(course: str) -> Path:
-    """תיקיית הקורס, רק אם היא תיקייה ישירה בתוך תיקיית הנתונים."""
+    """תיקיית הקורס, רק אם היא תיקייה ישירה בתוך תיקיית הנתונים. course ריק: התיקייה הראשית עצמה,
+    שממנה עולים רק הקבצים שבה (README, הפרוטוקול, "Pull only on this computer.txt"), בלי תיקיות."""
     root = paths.data_dir().resolve()
+    if course == "":
+        if not root.is_dir():
+            raise FileNotFoundError(str(root))
+        return root
     folder = (root / course).resolve()
-    if not course or folder.parent != root or not folder.is_dir():
+    if folder.parent != root or not folder.is_dir():
         raise FileNotFoundError(course)
     return folder
 
 
 def list_files(course: str) -> list[dict]:
-    """[{path, size, mtime}] של כל הקבצים בקורס. path יחסי לתיקיית הקורס, עם "/", ו-mtime במילישניות."""
+    """[{path, size, mtime}] של כל הקבצים בקורס (course ריק: רק הקבצים שבתיקייה הראשית).
+    path יחסי לתיקיית הקורס, עם "/", ו-mtime במילישניות."""
     folder = course_dir(course)
     out = []
-    for f in sorted(folder.rglob("*")):
+    for f in sorted(folder.iterdir() if course == "" else folder.rglob("*")):
         rel = f.relative_to(folder).as_posix()
         if f.is_file() and not SKIP.search(rel):
             st = f.stat()
@@ -50,6 +56,8 @@ def list_files(course: str) -> list[dict]:
 def read_file(course: str, rel: str) -> bytes:
     folder = course_dir(course)
     target = (folder / rel).resolve()
-    if not rel or not target.is_relative_to(folder) or not target.is_file() or SKIP.search(rel.replace("\\", "/")):
+    top_level_only = course == "" and target.parent != folder
+    if (not rel or top_level_only or not target.is_relative_to(folder) or not target.is_file()
+            or SKIP.search(rel.replace("\\", "/"))):
         raise FileNotFoundError(rel)
     return target.read_bytes()

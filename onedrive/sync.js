@@ -67,8 +67,9 @@
     if (!r.ok) throw new Error(`${r.status} ${url.slice(0, 80)}`);
     return r.status === 204 ? null : r.json();
   }
-  // כל הקבצים מתחת לתיקייה בוואן דרייב: {נתיב יחסי: {size, mtime}}. תיקייה שעוד לא קיימת: ריק
-  async function listRemote(base) {
+  // כל הקבצים מתחת לתיקייה בוואן דרייב: {נתיב יחסי: {size, mtime}}. תיקייה שעוד לא קיימת: ריק.
+  // recursive=false: רק הקבצים שבתיקייה עצמה (לתיקייה הראשית, בלי לעבור על כל הקורסים)
+  async function listRemote(base, recursive = true) {
     const out = {};
     async function walk(folder, rel) {
       let data;
@@ -79,15 +80,16 @@
         throw e;
       }
       for (const f of data.Files || []) out[rel + f.Name] = { size: Number(f.Length), mtime: Date.parse(f.TimeLastModified) };
-      for (const d of data.Folders || []) if (d.Name !== "Forms") await walk(folder + "/" + d.Name, rel + d.Name + "/");
+      if (recursive) for (const d of data.Folders || []) if (d.Name !== "Forms") await walk(folder + "/" + d.Name, rel + d.Name + "/");
     }
     await walk(base, "");
     return out;
   }
   const made = new Set();
   async function ensureFolder(path) {
-    // יוצר את התיקייה ואת כל ההורים שלה, מתחת ל-ROOT. תיקייה שכבר קיימת: SharePoint מחזיר הצלחה
-    const parts = path.slice(ROOT.length + 1).split("/");
+    // יוצר את התיקייה ואת כל ההורים שלה, מתחת ל-ROOT. תיקייה שכבר קיימת: SharePoint מחזיר הצלחה.
+    // ROOT עצמה כבר קיימת, ולכן קובץ בתיקייה הראשית לא יוצר כלום
+    const parts = path.slice(ROOT.length + 1).split("/").filter(Boolean);
     let cur = ROOT;
     for (const p of parts) {
       cur += "/" + p;
@@ -120,7 +122,7 @@
   }
 
   // מעלה רשימה, PARALLEL בכל פעם, ובסוף בודק שהכל בוואן דרייב באותו גודל. מחזיר מה שנכשל ומה שלא הגיע
-  async function runUpload(base, todo, progress) {
+  async function runUpload(base, todo, progress, recursive = true) {
     const queue = [...todo], failed = [];
     let done = 0;
     async function worker() {
@@ -133,7 +135,7 @@
       }
     }
     await Promise.all(Array.from({ length: PARALLEL }, worker));
-    const remote = await listRemote(base);
+    const remote = await listRemote(base, recursive);
     return { failed, missing: todo.filter((f) => !remote[f.path] || remote[f.path].size !== f.size).map((f) => f.path) };
   }
 
@@ -212,17 +214,19 @@
       Object.assign(state, { stage: "error", error: "השרת המקומי לא עונה. צריך להפעיל את start.bat. (" + e.message + ")" });
       say(state.error); return state;
     }
-    for (const c of courses) {
-      const cbase = ROOT + "/" + c;
-      say(`${c}: משווה...`);
+    // "" הוא התיקייה הראשית: רק הקבצים שבה (README, הפרוטוקול, "Pull only on this computer.txt"), בלי הקורסים
+    for (const c of ["", ...courses]) {
+      const cbase = c ? ROOT + "/" + c : ROOT;
+      const label = c || "התיקייה הראשית";
+      say(`${label}: משווה...`);
       const local = (await localJson(`list?course=${encodeURIComponent(c)}`)).files.map((f) => ({ ...f, course: c }));
-      const p = plan(local, await listRemote(cbase));
-      const row = { course: c, local: local.length, new: p.upload.filter((f) => f.why === "new").length,
+      const p = plan(local, await listRemote(cbase, c !== ""));
+      const row = { course: label, local: local.length, new: p.upload.filter((f) => f.why === "new").length,
         changed: p.upload.filter((f) => f.why === "changed").length, same: p.same.length, remoteNewer: p.remoteNewer };
       report.push(row);
       if (dryRun) row.wouldUpload = p.upload.map((f) => [f.path, f.why]);
       else if (p.upload.length) {
-        const r = await runUpload(cbase, p.upload, (done, total) => say(`${c}: מעלה ${done} מתוך ${total}...\nלא לסגור את הלשונית ולא לעבור דף.`));
+        const r = await runUpload(cbase, p.upload, (done, total) => say(`${label}: מעלה ${done} מתוך ${total}...\nלא לסגור את הלשונית ולא לעבור דף.`), c !== "");
         Object.assign(row, { failed: r.failed, missing: r.missing });
       }
     }

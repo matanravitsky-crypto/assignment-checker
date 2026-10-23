@@ -85,3 +85,14 @@ def test_other_sites_and_other_addresses_get_no_access(data, server):
     assert status == 403
     status, _, _ = get(server, "/api/sync/file?course=Linear%20Algebra&path=../outside.txt", SHAREPOINT)
     assert status == 404
+
+
+def test_top_level_files_sync_without_the_courses(data):
+    """הקבצים שבתיקייה הראשית (README, "Pull only on this computer.txt") עולים בלי לעבור על הקורסים."""
+    (data / "Pull only on this computer.txt").write_text("ori34 (OriLaptop)", encoding="utf-8")
+    top = {f["path"] for f in sync.list_files("")}
+    assert "Pull only on this computer.txt" in top and not any("/" in p for p in top) and COURSE not in top
+    assert sync.read_file("", "Pull only on this computer.txt") == b"ori34 (OriLaptop)"
+    for rel in (f"{COURSE}/{HW}/{paths.KEY}", "../outside.txt"):
+        with pytest.raises(FileNotFoundError):
+            sync.read_file("", rel)
