@@ -36,6 +36,7 @@ INFO = "Assignment details.json"
 GRADES = "Grades.csv"
 GRADES_BY = "Grades by {}.csv"           # one per grader, so two graders never write the same file (grades.py)
 CLAIMS = "Who grades what"               # folder: one "<name>.json" per grader, the numbers they took (claims.py)
+TASKS = "Who does what"                  # in the COURSE folder: who took the pull or the return of each assignment (claims.py)
 # What the grader said about each submission, per number (0001.json): per-question comments and mistakes, the marks
 # on the pages, and why it needs a person. Numbers only, never names. The site's manual review reads it
 NOTES = "Grading notes"

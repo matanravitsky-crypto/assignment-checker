@@ -112,8 +112,15 @@ Then:
 Each teammate grades on their own computer with their own Claude subscription, so an assignment is split between them:
 - **Claims** (`moodle/claims.py`): in step 2 of the site each grader takes submissions ("קח" on a row, or "take N free ones").
   Each grader writes only their own file, `Who grades what/<name>.json` (number → when taken), so OneDrive never merges
-  two versions of a file. The site polls `GET /api/claims` every 6 seconds and shows who took what. Two claims of one
-  number made before sync: the earlier one wins (then by name), on every computer.
+  two versions of a file. Two claims of one number made before sync: the earlier one wins (then by name), on every computer.
+- **Pull and return owners** (per assignment, `claims.task_owners`): `<course>/Who does what/<name>.json` holds take and
+  release events keyed `"<slot>:pull"` / `"<slot>:return"`; the latest event in anyone's file decides, so a teammate can
+  take over ("העבר אליי"). Pulling or uploading with no owner makes you the owner. Someone else's task turns that
+  stage's button into "אצל <name>". Each stage page opens with a table of that stage across all the course's assignments
+  (from the folder: counts, who took what, what's left).
+- **Live**: the site polls `GET /api/changes` every 5 seconds (a hash of names, mtimes and sizes of the files the state
+  is built from; folders count by name only, since Windows updates a folder's mtime late) and reloads when it changes.
+  Numbers this computer is grading right now come back from `/api/state` as `"grading"`.
 - **Grading** skips numbers someone else holds and claims what it grades. Once anyone took something, the site's "Grade"
   button grades only my claimed, ungraded work; with no claims at all it grades everything pending, as before.
 - **Grades never share a file**: grading writes `Grades by <name>.csv` (with `graded_at`, `graded_by`). Every reader
@@ -174,8 +181,7 @@ There is **no Moodle API**. Claude in Chrome works in the user's own logged-in C
   stops it all with an error and no list. **Claude waits in its run until the script says "saved"**: Claude in Chrome closes
   the tab of an ended run within ~2 minutes (the parts stopped at 14 of 15). Meanwhile the dashboard counts the parts in
   Downloads for the progress bar (`GET /api/pull`, phases claude/parts/check/extract/number, with `eta_s`: the seconds left in
-  the phase at its pace so far, counting down between parts). The site reloads `/api/state` every 20 seconds (when visible
-  and idle), so a pull on another PC shows up through OneDrive without a refresh. `ingest.gather_parts` takes the
+  the phase at its pace so far, counting down between parts). `ingest.gather_parts` takes the
   list only if every part is there with its exact size, checks each, extracts all into one originals folder and numbers once;
   the parts are kept in `Moodle download <date>/`. Run for real on 3438636 on 2026-10-23: 566 students in 15 parts, every
   earlier number kept. The download shares the "one Chrome job at a time" guard with the connection check and the upload.
