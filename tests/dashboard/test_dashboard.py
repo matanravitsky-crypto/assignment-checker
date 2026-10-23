@@ -36,6 +36,25 @@ def test_find_root_after_sync_button(tmp_path, monkeypatch):
     assert shared_folder.find_root() == system
 
 
+def test_without_a_synced_folder_the_local_data_folder_is_used(tmp_path, monkeypatch):
+    """חשבון אורח לא יכול לסנכרן את התיקייה של המרצה: האתר עובד מתיקיית הנתונים המקומית."""
+    monkeypatch.delenv("ASSIGNMENT_CHECKER_ROOT", raising=False)
+    monkeypatch.setattr(shared_folder, "onedrive_roots", lambda: [])
+    monkeypatch.setattr(shared_folder.Path, "home", staticmethod(lambda: tmp_path))
+    local = tmp_path / "Exercise Checking System"
+    monkeypatch.setenv("ASSIGNMENT_DATA", str(local))
+    (local / COURSE).mkdir(parents=True)
+    with pytest.raises(shared_folder.FolderNotFound):  # תיקייה בלי מטלות: לא נחשבת
+        shared_folder.find_root()
+    (local / COURSE / HW).mkdir()
+    (local / COURSE / HW / paths.INFO).write_text("{}", encoding="utf-8")
+    assert shared_folder.find_root() == local
+    # תיקייה מסונכרנת, אם יש, קודמת לתיקייה המקומית
+    synced = tmp_path / "BGU" / "נדב מאיר - YallaLinearit" / "Exercise Checking System"
+    synced.mkdir(parents=True)
+    assert shared_folder.find_root() == synced
+
+
 def test_course_folder_without_team_folder_is_not_used(tmp_path, monkeypatch):
     monkeypatch.delenv("ASSIGNMENT_CHECKER_ROOT", raising=False)
     monkeypatch.setattr(shared_folder, "onedrive_roots", lambda: [])

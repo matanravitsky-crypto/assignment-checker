@@ -11,6 +11,9 @@
    או לתיקיית הקורס שהיא בתוכה.
 2. חיפוש במחשב: תיקייה בשם YallaLinearit (או "<בעלים> - YallaLinearit", כפי שהכפתור
    Sync קורא לה) בתוך OneDrive, או בתיקייה בשם הארגון (למשל C:\\Users\\<שם>\\BGU).
+3. אם אין תיקייה מסונכרנת: תיקיית הנתונים המקומית (ASSIGNMENT_DATA, ברירת מחדל ~/Exercise Checking System),
+   אם יש בה מטלות. כך עובד מחשב שלא יכול לסנכרן את התיקייה של המרצה (חשבון אורח), ומעלה אליה
+   מתוך הדפדפן (onedrive/sync.js).
 """
 from __future__ import annotations
 
@@ -73,6 +76,16 @@ def _course_folders() -> list[Path]:
     return found
 
 
+def local_data_dir() -> Path | None:
+    """תיקיית הנתונים המקומית, אם יש בה לפחות מטלה אחת (קובץ פרטי מטלה)."""
+    from moodle import paths
+    folder = paths.data_dir()
+    try:
+        return folder if folder.is_dir() and any(folder.glob(f"*/*/{paths.INFO}")) else None
+    except OSError:
+        return None
+
+
 def find_root() -> Path:
     """מחזיר את תיקיית המערכת (Exercise Checking System), או זורק FolderNotFound עם הסבר."""
     explicit = os.environ.get("ASSIGNMENT_CHECKER_ROOT")
@@ -87,6 +100,10 @@ def find_root() -> Path:
         system = _system_dir(folder)
         if system:
             return system
+
+    local = local_data_dir()
+    if local:
+        return local
 
     if courses:
         raise FolderNotFound(
