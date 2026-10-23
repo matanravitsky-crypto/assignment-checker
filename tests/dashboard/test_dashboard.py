@@ -154,6 +154,9 @@ def test_pull_time_left_follows_the_pace_of_the_phase():
     assert actions._eta("extract", 0, 100, 0, 0) is None  # nothing to go by
     assert actions._eta("parts", 3, 0, 20, 2) is None  # total not known
     assert actions._eta("number", 10, 10, 5, 10) == 0
+    # waiting for the next part counts down (on 2026-10-23 it went up from 168 to 288 s between two parts)
+    assert actions._eta("parts", 5, 15, 40, 4, waiting=6) == 94
+    assert actions._eta("parts", 5, 15, 40, 4, waiting=60) == 90  # never below the 9 parts not started yet
 
 
 @pytest.mark.parametrize("error, expect", [

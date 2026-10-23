@@ -251,3 +251,17 @@ def test_check_whole_refuses_a_zip_without_a_folder_per_student(tmp_path):
     with pytest.raises(ValueError, match=ingest.NO_FOLDERS):
         ingest.check_whole(flat)
     assert ingest.files_without_folder(tmp_path / f"x-3438636 ({ingest.INCOMPLETE}).zip") == 1
+
+
+def test_one_moodle_id_in_two_folders_is_refused(tmp_path, monkeypatch):
+    """A copied assignment folder: the pull must not guess which of the two gets the submissions."""
+    monkeypatch.setenv("ASSIGNMENT_DATA", str(tmp_path))
+    for course, name in [("Linear Algebra", "Assignment 0"), ("Discrete Mathematics", "Assignment 1")]:
+        d = tmp_path / course / name
+        d.mkdir(parents=True)
+        (d / paths.INFO).write_text(json.dumps({"id": "3438636"}), encoding="utf-8")
+    with pytest.raises(paths.TwoFolders, match="2 assignment folders"):
+        paths.find_assignment("3438636")
+    (tmp_path / "Discrete Mathematics" / "Assignment 1" / paths.INFO).write_text(json.dumps({"id": "3500001"}), encoding="utf-8")
+    assert paths.find_assignment("3438636") == tmp_path / "Linear Algebra" / "Assignment 0"
+    assert paths.find_assignment("3500001") == tmp_path / "Discrete Mathematics" / "Assignment 1"

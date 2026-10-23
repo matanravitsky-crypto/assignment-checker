@@ -78,6 +78,18 @@ def _hebrew_error(e: Exception, mid: str) -> str:
                 "לוחצים שוב \"משוך הגשות\" כדי להוריד מחדש.")
     if "7-Zip" in text:
         return "7-Zip לא מותקן במחשב הזה. מתקינים פעם אחת: winget install 7zip.7zip, ומנסים שוב."
+    if isinstance(e, paths.TwoFolders):
+        return (f"מזהה המודל {mid} שמור בשתי תיקיות מטלה, ולכן לא משכתי: לא ברור לאיזו מהן ההגשות שייכות. "
+                f"משאירים את המזהה רק בתיקייה הנכונה (ב-{paths.INFO}) ומושכים שוב. ({text})")
+    if isinstance(e, moodle_anonymize.KeyBroken) and "changed during the pull" in text:
+        return ("טבלת המפתח השתנתה באמצע המשיכה: כנראה מחשב אחר משך את אותה מטלה, ו-OneDrive הביא את הטבלה שלו. "
+                "המשיכה החזירה כל קובץ למקומו ולא שינתה כלום. מחכים ש-OneDrive יסיים לסנכרן ומושכים שוב.")
+    if isinstance(e, moodle_anonymize.KeyBroken) and "conflict copies" in text:
+        return ("ב-OneDrive יש עותקים כפולים של הגשות, ולכן לא משכתי: לא ברור של מי כל קובץ. "
+                f"בודקים אותם מול טבלת המפתח ומוחקים את העותק, ואז מושכים שוב. ({text})")
+    if isinstance(e, moodle_anonymize.KeyBroken):
+        return ("המשיכה נעצרה לפני ששינתה משהו: טבלת המפתח החדשה הייתה מזיזה או מאבדת סטודנט, או נותנת מספר אחד לשניים. "
+                f"שום הגשה ושום מספר לא השתנו. צריך לבדוק את \"{paths.KEY}\" לפני משיכה נוספת. ({text})")
     if "No ZIP" in text:
         return (f"לא נמצא ZIP של המטלה בתיקיית ההורדות (Downloads). במודל: \"הצגת כל ההגשות\" ← "
                 f"\"הורדת כל ההגשות\", ושם הקובץ צריך להיגמר ב-\"-{mid}.zip\".")
@@ -168,6 +180,7 @@ class PullProgress:
     eta_s: int | None = None
     phase_at: float = 0.0  # מתי השלב הזה התחיל (time.time()), ו-phase_done: כמה היה גמור אז. מהם הקצב
     phase_done: int = 0
+    moved_at: float = 0.0  # מתי done עלה בפעם האחרונה: מאז הזמן שנשאר יורד, ולא עולה בזמן שמחכים לחלק הבא
 
 
 _pull = PullProgress()
@@ -186,19 +199,27 @@ def _pull_report(phase: str, done: int = 0, total: int = 0) -> None:
     with _pull_lock:
         now = time.time()
         if phase != _pull.phase or done < _pull.phase_done:
-            _pull.phase_at, _pull.phase_done = now, done
+            _pull.phase_at, _pull.phase_done, _pull.moved_at = now, done, now
+        elif done > _pull.done:
+            _pull.moved_at = now
         _pull.phase, _pull.done, _pull.total = phase, done, total
         _pull.downloaded = _pull.downloaded or phase in ("download", "parts")
-        _pull.eta_s = _eta(phase, done, total, now - _pull.phase_at, done - _pull.phase_done)
+        _pull.eta_s = _eta(phase, done, total, _pull.moved_at - _pull.phase_at, done - _pull.phase_done,
+                           waiting=now - _pull.moved_at)
 
 
-def _eta(phase: str, done: int, total: int, elapsed: float, measured: int) -> int | None:
-    """כמה שניות נשארו לשלב, לפי הקצב שלו מאז שהתחיל. None כשאין ממה לדעת."""
+def _eta(phase: str, done: int, total: int, elapsed: float, measured: int, waiting: float = 0) -> int | None:
+    """כמה שניות נשארו לשלב, לפי הקצב שלו מתחילתו ועד ההתקדמות האחרונה, פחות מה שכבר עבר מאז (`waiting`).
+    כך הוא יורד בין חלק לחלק, ולא יורד מתחת לזמן של החלקים שעוד לא התחילו. None כשאין ממה לדעת."""
     if total <= 0 or done >= total:
         return 0 if total > 0 else None
     if measured > 0 and elapsed >= 1:
-        return round(elapsed / measured * (total - done))
-    return PART_S * (total - done) if phase == "parts" else None
+        each = elapsed / measured
+    elif phase == "parts":
+        each = PART_S
+    else:
+        return None
+    return round(max(each * (total - done) - waiting, each * (total - done - 1)))
 
 
 def _expected_zip_size(a: folder_view.Assignment) -> int:
@@ -233,17 +254,26 @@ def _do_pull(root: Path, course: str, assignment: str, moodle_id: str | None) ->
     if conflicts:
         raise UserError(f"ב-OneDrive נוצר עותק כפול של טבלת המפתח ({', '.join(conflicts)}). "
                         "לפני משיכה נוספת צריך לאחד אותו עם הטבלה הראשית ולמחוק את העותק, כדי ששני סטודנטים לא יקבלו אותו מספר.")
+    copies = moodle_anonymize.submission_conflicts(a.dir)
+    if copies:
+        raise UserError(f"ב-OneDrive נוצרו עותקים כפולים של הגשות ({', '.join(copies[:5])}): שני מחשבים כתבו את אותו מספר. "
+                        "לא מושכים עד שמישהו בודק לאיזה סטודנט שייך כל קובץ (לפי טבלת המפתח) ומוחק את העותק.")
     _use_root(root)
     try:
         moodle_anonymize.check_key(a.dir)  # before downloading anything: a broken key would renumber everyone
+        target = paths.find_assignment(mid)  # the ZIP of this id goes to this folder, and only to it
     except ValueError as e:
         raise UserError(_hebrew_error(e, mid)) from e
-    before = {r["number"] for r in a.key_rows()}
+    if target is None or target.resolve() != a.dir.resolve():
+        raise UserError(f"מזהה המודל {mid} לא מוביל לתיקייה של {a.title}, ולכן לא משכתי. כדאי לרענן את הדף.")
+    old_rows = a.key_rows()
+    before = {r["number"] for r in old_rows}
     lock = _take_lock(a)
     try:
         zip_path = _zip_from_moodle(a, mid)
         _title_from_zip(a, zip_path, mid)
         without_file = _without_file(zip_path)
+        listed = _listed_users(zip_path)
         rows = moodle_ingest.ingest(mid, zip_path, on_progress=_pull_report)
     except (FileNotFoundError, ValueError) as e:
         raise UserError(_hebrew_error(e, mid)) from e
@@ -257,7 +287,10 @@ def _do_pull(root: Path, course: str, assignment: str, moodle_id: str | None) ->
         "summary": f"{len(numbers)} הגשות" + (f", {len(new)} חדשות" if new else ", אין חדשות"),
         "notes": [f"הקבצים נשמרו ב-\"{paths.TO_GRADE}\", וה-ZIP נשמר בתיקיית המטלה."]
                  + ([f"{without_file} סטודנטים בטבלת ההגשות במודל הגיעו בלי קובץ (לא הגישו קובץ, או שמודל לא שלח אותו)."]
-                    if without_file else []),
+                    if without_file else [])
+                 + ([f"בטבלת ההגשות במודל הופיעו רק {listed} סטודנטים, ובטבלת המפתח יש {known}. אף אחד לא נמחק ואף מספר לא השתנה, "
+                     "אבל אם בטבלה במודל יש סינון (למשל \"לא נבדקו\" או אות ראשונה של שם), מבטלים אותו ומושכים שוב כדי לא לפספס הגשות."]
+                    if listed and listed < (known := len({r["participant_id"] for r in old_rows})) else []),
         "pulled_at": datetime.now().isoformat(timespec="seconds"),
     }
 
@@ -271,6 +304,16 @@ def _without_file(download: Path) -> int:
         asked = sum(int(f.get("asked") or 0) for f in listed.get("files") or [])
         came = sum(int(f.get("students") or 0) for f in listed.get("files") or [])
         return max(0, asked - came) + int(listed.get("empty") or 0)
+    except (OSError, ValueError, TypeError, AttributeError):
+        return 0
+
+
+def _listed_users(download: Path) -> int:
+    """בהורדה בחלקים: כמה סטודנטים היו בטבלת ההגשות במודל (0 כשלא ידוע)."""
+    if download.suffix.lower() != moodle_ingest.LIST:
+        return 0
+    try:
+        return int(json.loads(download.read_text(encoding="utf-8")).get("users") or 0)
     except (OSError, ValueError, TypeError, AttributeError):
         return 0
 
@@ -1161,6 +1204,7 @@ def state(root: Path) -> dict:
                 "noRubric": ctx.no_rubric, "maxGrade": ctx.max_grade, "solution": (a.dir / grading.SOLUTION).is_file(),
                 "notes": d.get("notes") or "", "rules": d.get("submission_rules") or [],
                 "warnings": [f"עותק כפול של טבלת המפתח: {c}" for c in key_conflicts(a)]
+                            + [f"עותק כפול של הגשה: {c}" for c in moodle_anonymize.submission_conflicts(a.dir)]
                             + [f"עותק כפול של יומן ההעלאה: {c}" for c in upload_log.log_conflicts(a.dir)]
                             + ([f"משיכה בתהליך: {moodle_lock.parse((a.dir / LOCK_FILE).read_text(encoding='utf-8'))[0]}"] if (a.dir / LOCK_FILE).exists() else [])
                             + ([f"העלאה בתהליך: {who}"] if (who := _upload_lock_holder(a)) else []),

@@ -88,6 +88,19 @@ So `dashboard/actions.py` guards the dashboard's pull:
 - **Conflicts:** if OneDrive still made a conflict copy of the key (`Key - number to student-<PC>.csv`), the
   dashboard shows it and refuses to pull until someone merges the copy into the main key and deletes it.
 - Let OneDrive finish syncing (the cloud icon) before pulling on another computer.
+- **A pull deletes nothing and overwrites nothing** (`anonymize.prepare`): files are updated in place through `.tmp`, a file
+  that is byte for byte the same stays untouched, and one a newer download replaces (a resubmission, a second file that
+  is gone) moves to `Earlier versions/<date>/` first. Before any file is touched the key is checked (`check_key`: not
+  empty or broken; `check_new_key`: every old student keeps their number, no number has two students; else `KeyBroken`
+  and nothing changes). The key is written whole through `.tmp`, and the old one is copied to `Key history/` (not next
+  to the key: that would look like an OneDrive conflict copy). If the key changes on disk during the pull (another
+  computer pulled the same assignment and OneDrive brought its key), the pull puts back every file and writes nothing.
+  OneDrive conflict copies of submissions (`0571-DESKTOP-ABC.pdf`, `anonymize.submission_conflicts`) stop the pull and
+  the upload until a person checks them.
+- **The right folder:** a ZIP is taken only by its exact `-<id>` ending, and `paths.find_assignment` refuses an id that
+  two assignment folders carry (`TwoFolders`), so הגשה 0 of Linear Algebra can never land in הגשה 1 of Discrete Mathematics.
+  When Moodle's grading table listed fewer students than the key has (a filter left on), the pull says so.
+- **Checked for real on 2026-10-23** (3438636, 566 → 572): no number changed, no file gone or rewritten, 6 new numbers.
 
 Then:
 - Team: grade from `1 - Submissions to grade`, write `Grades by <name>.csv` and `2 - Graded with comments` next to it
@@ -157,10 +170,12 @@ There is **no Moodle API**. Claude in Chrome works in the user's own logged-in C
   Moodle for ~40 at a time (POST `action=gradingbatchoperation&operation=downloadselected`, ~10 s per part), counts the
   students in each ZIP's central directory, asks again in two halves for a part that is not whole (a single student together
   with one who already came: Moodle sends one file without a ZIP), and saves each part to Downloads at once
-  (`<name>-<id> part 003.zip`); last comes `<name>-<id>.json`, the list of parts with their sizes. A student that fails 3 times
+  (`<name>-<id> part 003 of 015.zip`: "of" is the parts planned so far, so the bar knows the total from the first part); last comes `<name>-<id>.json`, the list of parts with their sizes. A student that fails 3 times
   stops it all with an error and no list. **Claude waits in its run until the script says "saved"**: Claude in Chrome closes
   the tab of an ended run within ~2 minutes (the parts stopped at 14 of 15). Meanwhile the dashboard counts the parts in
-  Downloads for the progress bar (`GET /api/pull`, phases claude/parts/check/extract/number). `ingest.gather_parts` takes the
+  Downloads for the progress bar (`GET /api/pull`, phases claude/parts/check/extract/number, with `eta_s`: the seconds left in
+  the phase at its pace so far, counting down between parts). The site reloads `/api/state` every 20 seconds (when visible
+  and idle), so a pull on another PC shows up through OneDrive without a refresh. `ingest.gather_parts` takes the
   list only if every part is there with its exact size, checks each, extracts all into one originals folder and numbers once;
   the parts are kept in `Moodle download <date>/`. Run for real on 3438636 on 2026-10-23: 566 students in 15 parts, every
   earlier number kept. The download shares the "one Chrome job at a time" guard with the connection check and the upload.
