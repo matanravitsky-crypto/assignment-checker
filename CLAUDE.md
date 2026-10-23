@@ -277,6 +277,7 @@ in the assignment.
 | Students name files anything ("Untitled (7).pdf", their own name, ...) | Ignore filenames. Only the folder's participant id matters |
 | Chrome left the ZIP as "Unconfirmed *.crdownload" | Chrome was asking where to save. Turn off "Ask where to save each file" in Chrome settings |
 | Re-running ingest failed deleting folders 7-Zip extracted as read-only | `ingest.remove_tree` clears read-only and retries |
+| A pull that failed halfway could leave an empty key (the next pull renumbered everyone) or lose the files of students not in the next download; two pulls in one minute overwrote the kept download | `anonymize.prepare` updates "1 - Submissions to grade" in place, only what changed, each file and the key via `.tmp` + `os.replace`; `check_key` refuses to pull (before Chrome opens) when the key is empty or broken but submissions exist; kept downloads are named to the second, with " (2)" when taken. `tests/moodle/test_repeated_pulls.py` pulls 8 times in a row with changing submissions |
 | Moodle skips a feedback file identical in name/content to the submission | Feedback files are named `feedback.pdf` inside each student's folder |
 | Folders the web upload never saw (empty ones) | `guide` puts a `README.txt` in "2 - Graded with comments" and "3 - Ready to upload to Moodle" so they exist from day one |
 

@@ -253,18 +253,6 @@ def test_check_whole_refuses_a_zip_without_a_folder_per_student(tmp_path):
     assert ingest.files_without_folder(tmp_path / f"x-3438636 ({ingest.INCOMPLETE}).zip") == 1
 
 
-def test_a_kept_download_is_never_written_over(tmp_path):
-    taken = tmp_path / "Moodle download 2026-10-23 11-33.zip"
-    taken.write_bytes(b"first")
-    assert ingest._free(taken).name == "Moodle download 2026-10-23 11-33 (2).zip"
-    (tmp_path / "Moodle download 2026-10-23 11-33 (2).zip").write_bytes(b"second")
-    assert ingest._free(taken).name == "Moodle download 2026-10-23 11-33 (3).zip"
-    folder = tmp_path / "Moodle download 2026-10-23 11-34"
-    assert ingest._free(folder) == folder
-    folder.mkdir()
-    assert ingest._free(folder).name == "Moodle download 2026-10-23 11-34 (2)"
-
-
 def test_one_moodle_id_in_two_folders_is_refused(tmp_path, monkeypatch):
     """A copied assignment folder: the pull must not guess which of the two gets the submissions."""
     monkeypatch.setenv("ASSIGNMENT_DATA", str(tmp_path))
