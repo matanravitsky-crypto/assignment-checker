@@ -12,6 +12,8 @@ Don't pick positions for comments, and don't draw lines or text on a submission 
 - a line with an arrowhead from the comment to the box that **never crosses ink**: it bends around the writing as much as it needs to.
   With no clean way out, the comment goes in the least written spot, with no line.
 
+The rules, how it works and what it costs: `grading/COMMENTS_PROTOCOL.md`.
+
 ## How
 
 1. Write the marks as JSON: a box per mistake, in **thousandths** of the page as it is shown (0,0 top left, 1000,1000 bottom right),

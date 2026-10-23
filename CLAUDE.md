@@ -257,7 +257,7 @@ and a line in a spreadsheet. So per submission the grader writes:
   Control blocks PyMuPDF's DLLs, so check what runs on the grading machine.
 - Comments go in empty space, with a line to the box that never crosses ink: `grading/placement.py` (no tokens).
   Any chat that marks a page uses it (`python -m grading.placement in.pdf marks.json out.pdf`, skill `place-comments`)
-  instead of placing comments by hand.
+  instead of placing comments by hand. The rules, how it works and the token cost: `grading/COMMENTS_PROTOCOL.md`.
 - a row in `Grades.csv`: `number,grade,feedback`, where `feedback` is a short summary.
 - `Grading notes/0001.json`: what Claude said per question (comment, mistakes, unsure), the marks, and why it needs a person.
 
