@@ -1066,13 +1066,20 @@ def _note_fields(note: dict, res: dict) -> dict:
 
 # ---------- מצב לאתר ----------
 # "Moodle download <date>.zip", או תיקייה "Moodle download <date>" של הורדה בחלקים
-_DOWNLOAD = re.compile(re.escape(paths.DOWNLOAD_PREFIX) + r" (\d{4}-\d{2}-\d{2} \d{2}-\d{2})(?:\.zip)?$")
+# "Moodle download 2026-10-23 11-15" (old), "... 11-15-07", "... 11-15-07 (2)", a ZIP or a folder of parts
+_DOWNLOAD = re.compile(re.escape(paths.DOWNLOAD_PREFIX)
+                       + r" (\d{4}-\d{2}-\d{2} \d{2}-\d{2}(?:-\d{2})?)(?: \(\d+\))?(?:\.zip)?$")
+
+
+def _download_time(stamp: str) -> datetime:
+    return datetime.strptime(stamp, "%Y-%m-%d %H-%M-%S" if len(stamp) > 16 else "%Y-%m-%d %H-%M")
 
 
 def _downloads(a: folder_view.Assignment) -> list[str]:
     """מתי נמשכו ה-ZIP-ים של המטלה (כל הורדה נשמרת בתיקיית המטלה), מהישן לחדש."""
-    stamps = sorted(m.group(1) for p in a.dir.glob(f"{paths.DOWNLOAD_PREFIX} *") if (m := _DOWNLOAD.match(p.name)))
-    return [datetime.strptime(s, "%Y-%m-%d %H-%M").isoformat(timespec="minutes") for s in stamps]
+    times = sorted(_download_time(m.group(1)) for p in a.dir.glob(f"{paths.DOWNLOAD_PREFIX} *")
+                   if (m := _DOWNLOAD.match(p.name)))
+    return [t.isoformat(timespec="minutes") for t in times]
 
 
 def _last_download(a: folder_view.Assignment) -> str | None:

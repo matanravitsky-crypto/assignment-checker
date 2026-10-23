@@ -124,6 +124,8 @@ def check_key(assignment_dir: Path) -> None:
     if (has_submissions and not rows) or not ok:
         raise ValueError(f"{KEY_EMPTY}: {paths.KEY} has {len(rows)} usable rows"
                          f"{f' but {paths.TO_GRADE} has submissions' if has_submissions else ''}. Nothing was changed")
+
+
 PREVIOUS = " (previous)"  # left by the old code when a pull failed halfway
 
 
