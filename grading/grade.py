@@ -63,6 +63,10 @@ GRADE_COLUMNS = grades.COLUMNS  # מה כל עמודה אומרת: moodle/grades
 
 DEFAULT_MODEL = "claude-opus-5-5"
 EFFORT = "high"
+# דרך Claude Code (המנוי): מודל וחשיבה זולים יותר, כי כל הגשה עולה הרבה שם (ראו claude_cli.py)
+# ברירת המחדל: Sonnet בחשיבה בינונית (כ-0.04 עד 0.16 דולר להגשה במקום 1.1 ב-Opus), לפי החלטת אורי ב-2026-10-23. אין עדיין מדגם עם ציוני מתרגלים שמשווה את האיכות; GRADING_CLI_MODEL / GRADING_CLI_EFFORT מחזירים ל-Opus
+CLI_MODEL = os.environ.get("GRADING_CLI_MODEL") or "claude-sonnet-5-5"
+CLI_EFFORT = os.environ.get("GRADING_CLI_EFFORT") or "medium"
 MAX_TOKENS = 32000
 # כמה עבודות נשלחות ל-Claude במקביל
 DEFAULT_PARALLEL = 4
@@ -291,9 +295,9 @@ questions: אחד לכל שאלה במטלה, באותו סדר ועם אותה 
 
 annotations, סימונים על גבי העבודה:
 - בכל תמונה מצוירת רשת עזר כתומה: קו כל 100 אלפיות, ומספריו כתובים בארבעת הקצוות. המספרים האלה הם הקואורדינטות. קודם מוצאים את הכתב עצמו בין קווי הרשת, ואז קוראים את הקואורדינטות שלו מהמספרים. לא מנחשים לפי הרגשה.
-- כל סימון מקיף מקום מדויק בעבודה של הסטודנט: הכתב היד של הטעות, של הצעד החסר או של הנימוק הלא מספיק. מלבן שמקיף שטח ריק, או את נוסח השאלה המודפס, שגוי. דברים נכונים לא מסמנים.
+- כל סימון מקיף מקום מדויק בעבודה של הסטודנט: הכתב היד של הטעות, של הצעד החסר או של הנימוק הלא מספיק. מלבן שמקיף שטח ריק, או את נוסח השאלה המודפס (אותיות דפוס של השאלות), שגוי: מסמנים רק כתב יד של הסטודנט. דברים נכונים לא מסמנים.
 - page: מספר העמוד, מ-1, לפי סדר התמונות.
-- x0, y0, x1, y1: המלבן שמקיף את המקום, באלפיות של רוחב העמוד ושל גובהו. (0, 0) היא הפינה השמאלית העליונה ו-(1000, 1000) הימנית התחתונה. המלבן צמוד לשורה או לשורות הרלוונטיות בכתב היד (בדרך כלל פחות מ-15% מגובה העמוד), לא לחצי עמוד.
+- x0, y0, x1, y1: המלבן שמקיף את המקום, באלפיות של רוחב העמוד ושל גובהו. (0, 0) היא הפינה השמאלית העליונה ו-(1000, 1000) הימנית התחתונה. המלבן צמוד לשורה או לשורות הרלוונטיות בכתב היד: עד שלוש שורות, בדרך כלל פחות מ-12% מגובה העמוד, לא חצי עמוד. מלבנים שונים לא חופפים זה לזה: טעות אחת, מלבן אחד.
 - text: הערה קצרה בעברית, עד 12 מילים, שאומרת מה לא נכון. מתמטיקה בטקסט פשוט (A^-1, det(A)), בלי LaTeX.
 
 feedback, המשוב לסטודנט:
@@ -396,8 +400,14 @@ def claude_ask() -> Ask:
         from . import claude_cli
         if not claude_cli.available():
             raise NoApiKey()
-        return claude_cli.cli_ask(claude_driver.find_claude(), SCHEMA, EFFORT, error=GradingError,
-                                  not_logged_in=NoApiKey)
+        cli = claude_cli.cli_ask(claude_driver.find_claude(), SCHEMA, CLI_EFFORT, error=GradingError,
+                                 not_logged_in=NoApiKey)
+
+        def ask_cli(req: dict) -> str:
+            # דרך המנוי הבדיקה רצה ב-Sonnet (כ-0.04 דולר להגשה, לעומת 1.1 ב-Opus). מודל אחר שנבחר במפורש נשאר
+            return cli({**req, "model": CLI_MODEL if req["model"] == DEFAULT_MODEL else req["model"]})
+
+        return ask_cli
     import anthropic
 
     client = anthropic.Anthropic(api_key=key, max_retries=4)
@@ -567,6 +577,26 @@ def _esc(s: str) -> str:
     return escape(str(s)).replace("\n", "<br>")
 
 
+def _drop_long_lines(ink):
+    """מוחק מהמסכה קווים ישרים ארוכים (קצה הנייר בצילום, קו שמפריד בין שאלות): רצף דיו אנכי של יותר מ-30% מגובה העמוד
+    או אופקי של יותר מ-45% מרוחבו. כתב יד לא יוצר רצף כזה."""
+    import numpy as np
+    out = ink.copy()
+    for axis, frac in ((0, 0.30), (1, 0.45)):
+        a = ink if axis == 0 else ink.T
+        o = out if axis == 0 else out.T
+        limit = int(a.shape[0] * frac)
+        for j in range(a.shape[1]):
+            col = a[:, j]
+            if col.sum() < limit:
+                continue
+            edges = np.flatnonzero(np.diff(np.concatenate(([0], col.view(np.uint8), [0]))))
+            for start, end in zip(edges[::2], edges[1::2]):
+                if end - start >= limit:
+                    o[max(start - 1, 0):end + 1, j] = False
+    return out
+
+
 class Ink:
     """איפה הסטודנט כתב על עמוד: מסכת "דיו" בגודל קטן, בקואורדינטות של אלפיות העמוד (כמו הסימונים).
     משמשת להצמיד מלבן שנפל על מקום ריק לכתב היד שלידו, ולמצוא מקום פנוי להערה."""
@@ -590,6 +620,7 @@ class Ink:
         area = np.outer(ys1 - ys0, xs1 - xs0)
         local = (c[np.ix_(ys1, xs1)] - c[np.ix_(ys0, xs1)] - c[np.ix_(ys1, xs0)] + c[np.ix_(ys0, xs0)]) / area
         self.ink = (g < local * 0.72) & (g < 170)
+        self.ink = _drop_long_lines(self.ink)  # קצה הדף בצילום וקווי הפרדה ארוכים הם לא כתב יד
         self.h, self.w = self.ink.shape
         total = int(self.ink.sum())
         # עמוד ריק, או צל/רקע כהה שמכסה הכול: אין מה ללמוד ממנו
@@ -638,6 +669,8 @@ def refine_box(ink: Ink | None, box: tuple[float, float, float, float]):
     x0, y0, x1, y1 = box
     for grow in (0, 30, 60, 100, 150):
         found = ink.bbox(max(x0 - grow, 0), max(y0 - grow, 0), min(x1 + grow, 1000), min(y1 + grow, 1000))
+        if found and (found[3] - found[1]) > 4 * (found[2] - found[0]) and (found[2] - found[0]) < 60:
+            found = None  # פס אנכי צר: קצה הנייר או קו, לא כתב יד
         if found and grow:  # תפסנו רק את קצה הכתב שבגבול החיפוש: ממשיכים עד שהכתב הצמוד נגמר
             for _ in range(4):
                 more = ink.bbox(max(found[0] - 25, 0), max(found[1] - 25, 0), min(found[2] + 25, 1000), min(found[3] + 25, 1000))
@@ -664,21 +697,27 @@ def _clamp(r: pymupdf.Rect, inside: pymupdf.Rect) -> pymupdf.Rect:
 
 
 def _note_rect(box: pymupdf.Rect, page: pymupdf.Rect, text: str = "", size: float = 10, ink: Ink | None = None,
-               taken: list[pymupdf.Rect] | None = None) -> pymupdf.Rect:
+               taken: list[pymupdf.Rect] | None = None) -> pymupdf.Rect | None:
     """איפה לכתוב את ההערה: ליד המלבן, במקום הכי פנוי מכתב יד (מתחת, מעל, או בצדדים), בלי לכסות הערה אחרת.
-    מיושר לצד ימין, כמו עברית. בלי מסכה: מתחת למלבן, ואם אין מקום אז מעליו."""
+    מיושר לצד ימין, כמו עברית. בלי מסכה: מתחת למלבן, ואם אין מקום אז מעליו.
+    מחזיר None כשגם המקום הטוב ביותר מכוסה בכתב יד (צפיפות > 0.20): ההערה תופיע בעמוד הסיכום."""
     margin, gap = 4, 3
     w, h = _note_size(text, size, page, box)
 
     def right(edge: float) -> float:
         return max(min(edge, page.width - margin) - w, margin)
 
-    cands = [
-        pymupdf.Rect(right(box.x1), box.y1 + gap, right(box.x1) + w, box.y1 + gap + h),   # מתחת
-        pymupdf.Rect(right(box.x1), box.y0 - gap - h, right(box.x1) + w, box.y0 - gap),   # מעל
-        pymupdf.Rect(box.x0 - gap - w, box.y0, box.x0 - gap, box.y0 + h),                # משמאל
-        pymupdf.Rect(box.x1 + gap, box.y0, box.x1 + gap + w, box.y0 + h),                # מימין
-    ]
+    def left_aligned(edge: float) -> float:
+        return min(max(edge, margin), page.width - margin - w)
+
+    cx = min(max((box.x0 + box.x1) / 2 - w / 2, margin), page.width - margin - w)
+    cands = []
+    for x in (right(box.x1), left_aligned(box.x0), cx):          # מתחת / מעל, בשלוש יישורים
+        cands.append(pymupdf.Rect(x, box.y1 + gap, x + w, box.y1 + gap + h))
+        cands.append(pymupdf.Rect(x, box.y0 - gap - h, x + w, box.y0 - gap))
+    for y in (box.y0, box.y1 - h):                               # משמאל / מימין, בשני יישורים
+        cands.append(pymupdf.Rect(box.x0 - gap - w, y, box.x0 - gap, y + h))
+        cands.append(pymupdf.Rect(box.x1 + gap, y, box.x1 + gap + w, y + h))
     inside = pymupdf.Rect(margin, margin, page.width - margin, page.height - margin)
     fits = [r for r in cands if r in inside]
     if ink is None or not ink.usable:
@@ -686,11 +725,18 @@ def _note_rect(box: pymupdf.Rect, page: pymupdf.Rect, text: str = "", size: floa
 
     def cost(r: pymupdf.Rect) -> float:
         norm = (r.x0 / page.width * 1000, r.y0 / page.height * 1000, r.x1 / page.width * 1000, r.y1 / page.height * 1000)
-        clash = sum(max(r.intersect(t).get_area(), 0) for t in taken or []) / max(r.get_area(), 1)
-        return ink.density(*norm) + 5 * clash
+        clash = sum(max((r & t).get_area(), 0) for t in taken or []) / max(r.get_area(), 1)
+        near = math.hypot(r.x0 - box.x0, r.y0 - box.y0) / math.hypot(page.width, page.height)
+        return 8 * ink.density(*norm) + 5 * clash + 0.5 * near  # כתב יד ותיבות אחרות יקרים, מרחק זול
 
     pool = fits or [_clamp(r, inside) for r in cands]
-    return min(pool, key=cost)  # בשוויון נשארת הראשונה: מתחת למלבן
+    best = min(pool, key=cost)
+    # גם המקום הטוב ביותר מכוסה בכתב יד: ההערה תופיע בעמוד הסיכום במקום לכסות תוכן
+    best_norm = (best.x0 / page.width * 1000, best.y0 / page.height * 1000,
+                 best.x1 / page.width * 1000, best.y1 / page.height * 1000)
+    if ink.density(*best_norm) > 0.20:
+        return None
+    return best
 
 
 def _write(page: pymupdf.Page, rect: pymupdf.Rect, html: str, archive, backdrop: bool = True) -> None:
@@ -726,12 +772,33 @@ def _summary_page(doc: pymupdf.Document, g: Graded, ctx: Context, archive, extra
     page.insert_htmlbox(pymupdf.Rect(m, m, first.width - m, first.height - m), html, css=_CSS, archive=archive, scale_low=0)
 
 
+def merge_marks(marks: list[Mark]) -> list[Mark]:
+    """מאחד סימונים באותו עמוד שהמלבנים שלהם חופפים (אחד מכסה את רוב השני): מלבן אחד, וההערות ביחד.
+    שני מלבנים זה על זה מסתירים זה את זה ואת ההערות."""
+    out: list[Mark] = []
+    for m in marks:
+        for o in out:
+            if o.page != m.page:
+                continue
+            w = min(o.x1, m.x1) - max(o.x0, m.x0)
+            h = min(o.y1, m.y1) - max(o.y0, m.y0)
+            if w <= 0 or h <= 0:
+                continue
+            small = min((o.x1 - o.x0) * (o.y1 - o.y0), (m.x1 - m.x0) * (m.y1 - m.y0))
+            if w * h >= 0.5 * small:
+                o.x0, o.y0, o.x1, o.y1 = min(o.x0, m.x0), min(o.y0, m.y0), max(o.x1, m.x1), max(o.y1, m.y1)
+                o.text = " | ".join(t for t in (o.text, m.text) if t and t not in o.text) if m.text else o.text
+                break
+        else:
+            out.append(Mark(m.page, m.x0, m.y0, m.x1, m.y1, m.text))
+    return out
+
+
 def _place_marks(doc: pymupdf.Document, g: Graded, archive) -> list[str]:
     """מצייר את הסימונים: מצמיד כל מלבן לכתב היד, וכותב את ההערה במקום פנוי. משנה את g.marks למה שצויר באמת
     (מלבנים מוצמדים, בלי סימונים שאין להם כתב בסביבה). מחזיר את ההערות שלא היה להן איפה להיצמד."""
     inks: dict[int, Ink | None] = {}
-    taken: dict[int, list[pymupdf.Rect]] = {}
-    placed: list[Mark] = []
+    refined_marks: list[Mark] = []
     unplaced: list[str] = []
     for mark in g.marks:
         page = doc[mark.page - 1]
@@ -740,25 +807,41 @@ def _place_marks(doc: pymupdf.Document, g: Graded, archive) -> list[str]:
                 inks[mark.page] = Ink(page)
             except Exception:  # המסכה היא רק שיפור: בלעדיה מציירים איפה ש-Claude ביקש
                 inks[mark.page] = None
-        ink = inks[mark.page]
-        refined = refine_box(ink, (mark.x0, mark.y0, mark.x1, mark.y1))
+        refined = refine_box(inks[mark.page], (mark.x0, mark.y0, mark.x1, mark.y1))
         if refined is None:
             if mark.text:
                 unplaced.append(f"עמוד {mark.page}: {mark.text}")
             continue
-        mark = Mark(mark.page, *refined, mark.text)
-        placed.append(mark)
+        refined_marks.append(Mark(mark.page, *refined, mark.text))
+    placed = merge_marks(refined_marks)
+    taken: dict[int, list[pymupdf.Rect]] = {}
+    boxes: list[tuple[Mark, pymupdf.Rect, float]] = []
+    for mark in placed:  # קודם כל המלבנים, כדי שההערות ידעו לא לכסות אותם
+        page = doc[mark.page - 1]
         shown = page.rect  # העמוד כפי שהוא מוצג, אחרי סיבוב
         scale = min(max(shown.width / 612, 0.8), 1.6)
         box = pymupdf.Rect(mark.x0 / 1000 * shown.width, mark.y0 / 1000 * shown.height,
                            mark.x1 / 1000 * shown.width, mark.y1 / 1000 * shown.height)
         page.draw_rect(box * page.derotation_matrix, color=RED, width=1.6 * scale, overlay=True)
-        if mark.text:
-            size = 12 * scale
-            note = _note_rect(box, shown, mark.text, size, ink, taken.setdefault(mark.page, []))
-            taken[mark.page].append(note)
-            dark = bool(ink and getattr(ink, "dark", False))
-            _write(page, note, _html(mark.text, size, "#ff7b7b" if dark else "#d90000"), archive, backdrop=not dark)
+        taken.setdefault(mark.page, []).append(box)
+        boxes.append((mark, box, scale))
+    for mark, box, scale in boxes:
+        if not mark.text:
+            continue
+        page, ink = doc[mark.page - 1], inks[mark.page]
+        size = 12 * scale
+        dark = bool(ink and getattr(ink, "dark", False))
+        # עמוד שחור לגמרי (טאבלט במצב כהה): המלבן כבר מסומן, ההערה עוברת לסיכום ולא נכתבת על הדף
+        if dark and ink and not ink.usable:
+            unplaced.append(f"עמוד {mark.page}: {mark.text}")
+            continue
+        note = _note_rect(box, page.rect, mark.text, size, ink, taken[mark.page])
+        # אין מקום פנוי מכתב יד: ההערה עוברת לסיכום במקום לכסות תוכן
+        if note is None:
+            unplaced.append(f"עמוד {mark.page}: {mark.text}")
+            continue
+        taken[mark.page].append(note)
+        _write(page, note, _html(mark.text, size, "#ff7b7b" if dark else "#d90000"), archive, backdrop=not dark)
     g.marks = placed
     return unplaced
 
