@@ -2575,7 +2575,6 @@
     renderPickers();
     render();
     if (!ON_LOCAL_HOST) setInterval(() => { if (!LOCAL.on) connect(); }, 5000);
-    setInterval(pollClaims, CLAIMS_POLL_MS);
     setInterval(pollChanges, CHANGES_POLL_MS);
   })();
 })();
