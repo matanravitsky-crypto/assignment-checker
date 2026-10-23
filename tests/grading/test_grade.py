@@ -249,6 +249,21 @@ def test_approved_rows_are_kept_and_not_regraded(root):
     assert not (a.dir / paths.MARKED / "0002.pdf").exists()
 
 
+def test_a_claim_that_syncs_in_mid_run_stops_that_submission(root):
+    """שניים לקחו את 0003 לפני ש-OneDrive סנכרן. הסימון שלה (מוקדם יותר) מגיע באמצע הבדיקה שלי: אני מוותר עליה."""
+    a = asg(root)
+
+    def first(req):
+        claims._write(a.dir, "בודקת ב", {"0003": "2000-01-01T00:00:00"})  # OneDrive הביא את הקובץ שלה
+        return answer()
+    fake = FakeClaude(first)
+    progress = {}
+    rep = grading.grade_assignment(a.dir, ["0001", "0002", "0003"], ask=fake, parallel=1, on_progress=progress.__setitem__)
+    assert rep.graded == ["0001", "0002"] and len(fake.requests) == 2 and progress["0003"] == "taken"
+    assert claims.read_all(a.dir)["0003"]["who"] == "בודקת ב"
+    assert rep.summary() == "נבדקו 2 מתוך 2" and any("0003" in note for note in rep.notes)
+
+
 def test_two_graders_split_the_work_without_sharing_a_file(root):
     """שני בודקים בשני מחשבים: כל אחד כותב רק לקבצים שלו, ומה שהשני לקח לא נבדק."""
     a = asg(root)

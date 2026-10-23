@@ -22,6 +22,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import random
 import re
 import subprocess
 import threading
@@ -738,8 +739,11 @@ def change_claims(root: Path, course: str, assignment: str, take: list[str] | No
     out: dict = {"taken": [], "others": {}, "released": []}
     with _claims_lock:
         if next_count:
+            # פנויות באקראי ולא הראשונות ברשימה: שניים שלוחצים באותו רגע, לפני ש-OneDrive סנכרן, כמעט לא יקחו
+            # את אותן עבודות. מה שבכל זאת נלקח פעמיים נשאר אצל מי שלקח ראשון, והבדיקה של השני מוותרת עליו
             held = claims.read_all(a.dir)
-            take += [n for n in grading.pending(a.dir) if n not in held and n not in take][:next_count]
+            free = [n for n in grading.pending(a.dir) if n not in held and n not in take]
+            take += sorted(random.sample(free, min(next_count, len(free))))
         if take:
             out.update(claims.take(a.dir, take))
         if release:

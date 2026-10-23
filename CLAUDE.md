@@ -158,8 +158,10 @@ When working with this data:
 
 There is **no Moodle API**. Claude in Chrome works in the user's own logged-in Chrome.
 - The user logs in themselves. Claude never types Moodle passwords.
-- Download only when someone on the team asks. No scheduled downloads: Moodle sessions expire, and
-  downloading per schedule wastes runs. Every **upload** to Moodle (grades or feedback) needs a person's yes.
+- Download when someone on the team asks, and once right after an assignment closes: `dashboard/scheduler.py` (a thread of
+  the dashboard server) warns 30 minutes before `SCHEDULE_PULL_TIME` (default 00:05 on the day after `due`, so a 23:59 deadline is in; `.env`), keeps the PC awake, and runs the
+  same `actions.pull` as the button. The day is the assignment's `due` date in `Assignment details.json`; it needs the PC on,
+  Chrome open and logged in to Moodle (sessions expire). `SCHEDULE_PULL=off` turns it off. No other scheduled downloads. Every **upload** to Moodle (grades or feedback) needs a person's yes.
 - Submissions page: `https://moodle.bgu.ac.il/moodle/mod/assign/view.php?id=<assignment id>&action=grading`.
   The assignment id is the `id=` in that URL (the number at the end of the ZIP name too).
 - Download by hand: Actions (פעולות) → "הורדת כל ההגשות (השתמש ב 7ZIP לפתיחה)", or straight `view.php?id=<id>&action=downloadall`.

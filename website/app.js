@@ -58,6 +58,8 @@
     claude: store.get("claude", { model: "claude-opus-5-5", parallel: 5, sendSolution: true }),
     loading: false,
     teamCount: store.get("teamCount", 20),  // כמה עבודות פנויות לוקחים בלחיצה אחת
+    gradePick: null,  // assignmentId שהחלונית "כמה לבדוק" של כפתור הבדיקה פתוחה בו
+    gradeCount: store.get("gradeCount", 100),  // כמה עבודות בודקים בלחיצה אחת
     nameDraft: null,  // מה שהוקלד בשדה "השם שלך"
     renaming: false,
     // לוח הבקרה: טעות נפוצה שנפתחה
@@ -211,9 +213,11 @@
     const toGrade = ok.filter((s) => s.status === "pulled");
     // ברגע שמישהו לקח עבודה, "בדוק" בודק רק את מה שלי. בלי חלוקה: את כל מה שמחכה, כמו קודם
     const teamMode = subs.some((s) => s.claim);
+    const myLeft = toGrade.filter(isMine).map((s) => s.id), free = toGrade.filter((s) => !s.claim).length;
     return {
-      subs, ok, graded, returned, teamMode,
+      subs, ok, graded, returned, teamMode, myLeft, free,
       gradeIds: (teamMode ? toGrade.filter(isMine) : toGrade).map((s) => s.id),
+      canTake: myLeft.length + free,  // מה שאני יכול לבדוק: מה שכבר שלי ועוד לא נבדק, ועוד הפנויות
       issues: subs.length - ok.length,
       files: subs.reduce((a, s) => a + s.files.length, 0),
       late: subs.filter((s) => s.late).length,
@@ -251,8 +255,51 @@
   function runStage(stage) {
     if (!LOCAL.on || !cur()) return;
     if (stage === "pull") runLocalPull();
-    if (stage === "grade") runLocalGrade(info().gradeIds);
+    if (stage === "grade") { state.gradePick = state.gradePick === cur().id ? null : cur().id; render(); $("#grade-count")?.select(); }
     if (stage === "ret") startSendFlow();
+  }
+
+  // החלונית שנפתחת מתחת ל"בדוק": כמה עבודות לבדוק עכשיו. קודם משלימים מהפנויות (באקראי, בשרת) ומסמנים אותן עליי,
+  // ורק אז בודקים, ורק את מה שעליי. כך אף אחד לא צריך לבדוק הכל, ושני בודקים לא בודקים את אותה עבודה
+  function gradePickHTML() {
+    const A = cur(), I = info(A);
+    if (state.gradePick !== A.id || state.run[A.id] || !I.canTake) return "";
+    const max = I.canTake, n = Math.max(1, Math.min(state.gradeCount || 1, max)), mine = I.myLeft.length;
+    const more = Math.max(0, n - mine), others = I.toGrade.length - max;
+    const chips = [...new Set([25, 50, 100, max].filter((c) => c <= max))];
+    const plan = more
+      ? `${mine ? `${plural(mine, "עבודה אחת כבר שלך", "עבודות כבר שלך")}, ו-` : ""}${plural(more, "עבודה פנויה אחת תסומן", "עבודות פנויות ייבחרו באקראי ויסומנו")} עליך לפני שהבדיקה מתחילה.`
+      : `ייבדקו ${n === 1 ? "עבודה אחת" : `${n} עבודות`} מתוך ${mine} שכבר שלך. לא נלקחות עבודות חדשות.`;
+    return `<div class="grade-pick" role="dialog" aria-label="כמה עבודות לבדוק">
+      <label class="team-count">כמה לבדוק עכשיו? <input type="number" id="grade-count" data-grade-count min="1" max="${max}" value="${n}"></label>
+      <div class="chips">${chips.map((c) => `<button class="chip" data-grade-chip="${c}" aria-pressed="${c === n}">${c === max ? `הכל (${c})` : c}</button>`).join("")}</div>
+      <p class="hint">${plan} ${others > 0 ? `${others} עבודות שמישהו אחר לקח לא ייבדקו כאן.` : ""} מי שבודק במחשב אחר רואה את הסימון תוך כמה שניות, ולא יבדוק אותן.</p>
+      <div class="gp-act">
+        <button class="btn primary small" data-act="grade-pick-go">${ICON.grade}בדוק ${n}</button>
+        <button class="btn ghost small" data-act="grade-pick-close">ביטול</button>
+      </div>
+    </div>`;
+  }
+
+  async function gradePicked() {
+    const A = cur(), I = info(A);
+    const n = Math.max(1, Math.min(state.gradeCount || 1, I.canTake));
+    state.gradePick = null;
+    try {
+      let ids = I.myLeft;
+      if (n > ids.length) {
+        // השרת קורא את הסימונים מהתיקייה עכשיו, ולוקח רק פנויות. מה שמישהו לקח בינתיים לא נלקח
+        const rep = await api("api/claims", { method: "POST", body: JSON.stringify({ course: A.courseFolder, assignment: A.folder, next: n - ids.length }) });
+        applyClaims(A, rep);
+        ids = info(A).myLeft;
+      }
+      ids = ids.slice(0, n);
+      if (ids.length < n) toast(`רק ${ids.length} עבודות היו פנויות. בודק אותן.`, ICON.warn);
+      await runLocalGrade(ids);
+    } catch (e) {
+      render();
+      toast(e.message, ICON.warn);
+    }
   }
 
   // ---------- Stage pieces ----------
@@ -262,8 +309,8 @@
     let label, n = 0, primary = false;
     if (stage === "pull") { label = "משוך הגשות"; primary = !I.subs.length; }
     if (stage === "grade") {
-      n = I.gradeIds.length;
-      label = n ? (I.teamMode ? `בדוק ${n} שלי` : `בדוק ${n} עבודות`) : I.toGrade.length ? "אין עבודות שלך לבדיקה" : "הכל נבדק";
+      n = I.canTake;
+      label = n ? `בדוק עבודות (${n} זמינות) ▾` : I.toGrade.length ? "כל העבודות שנשארו נלקחו" : "הכל נבדק";
       primary = n > 0;
     }
     if (stage === "ret") { n = I.toReturn.length; label = n ? `החזר ${n} עבודות` : I.done.ret ? "הכל הוחזר" : "אין מה להחזיר"; primary = n > 0 && !I.toGrade.length; }
@@ -289,7 +336,9 @@
     // בזמן בדיקה: כפתור עצירה. מה שכבר נשלח ל-Claude מסתיים ונשמר, והשאר נשאר "ממתינה לבדיקה"
     const stopBtn = mine && stage === "grade" ? `<button class="btn danger ${big ? "lg" : ""}" data-act="grade-stop" ${run.stopping ? "disabled" : ""}
       title="העבודות שכבר נשלחו ל-Claude יסתיימו ויישמרו. השאר יחכו ללחיצה הבאה על 'בדוק'">${run.stopping ? ICON.spin : ICON.stop}${run.stopping ? "עוצר…" : "עצור בדיקה"}</button>` : "";
-    return `<button class="btn ${primary ? "primary" : "secondary"} ${big ? "lg" : ""}" data-run="${stage}" ${disabled ? "disabled" : ""}${why}>${icon}${text}</button>${stopBtn}`;
+    const btn = `<button class="btn ${primary ? "primary" : "secondary"} ${big ? "lg" : ""}" data-run="${stage}" ${disabled ? "disabled" : ""}${why}
+      ${stage === "grade" ? `aria-expanded="${state.gradePick === A.id}"` : ""}>${icon}${text}</button>${stopBtn}`;
+    return stage === "grade" ? `<span class="pick-wrap">${btn}${disabled ? "" : gradePickHTML()}</span>` : btn;
   }
 
   function stageState(stage) {
@@ -1069,7 +1118,7 @@
           <button class="btn primary small" data-act="claim-next" ${free ? "" : "disabled"}>סמן אותן עליי</button>
           ${mine.left ? `<button class="btn secondary small" data-act="release-mine">שחרר ${plural(mine.left, "עבודה אחת שלי", "עבודות שלי")} שלא נבדקו</button>` : ""}
         </div>
-        <p class="team-note">אפשר גם ללחוץ "קח" ליד עבודה בטבלה. הסימון נשמר בתיקיית OneDrive ומגיע לשאר הצוות תוך כמה שניות עד דקה. ${I.teamMode ? `"בדוק" בודק רק את העבודות שלך.` : `כל עוד אף אחד לא לקח עבודות, "בדוק" בודק את כולן.`}</p>
+        <p class="team-note">אפשר גם ללחוץ "קח" ליד עבודה בטבלה. הסימון נשמר בתיקיית OneDrive ומגיע לשאר הצוות תוך כמה שניות עד דקה. "בדוק" שואל כמה עבודות לבדוק, משלים מהפנויות ומסמן אותן עליך, ובודק רק את מה שעליך.</p>
       </div>
     </section>`;
   }
@@ -1077,13 +1126,14 @@
   function claimCell(s) {
     if (s.claim) {
       const mine = isMine(s);
-      const release = mine && s.status === "pulled" ? `<button class="btn ghost small" data-act="release" data-id="${esc(s.id)}" title="להחזיר את העבודה לפנויות">שחרר</button>` : "";
+      const release = mine ? `<button class="btn ghost small" data-act="release" data-id="${esc(s.id)}" title="להחזיר את העבודה לפנויות">שחרר</button>` : "";
       return `<span class="claim ${mine ? "mine" : ""}" title="${esc(`לקח/ה ${when(s.claim.at)}`)}">${mine ? "שלך" : esc(s.claim.who)}</span>${release}`;
     }
     if (s.status === "pulled" && LOCAL.me?.set) return `<button class="btn secondary small" data-act="claim" data-id="${esc(s.id)}">קח</button>`;
     return `<span class="muted">—</span>`;
   }
 
+  const GRADE_PAGE = 50;
   function gradeList() {
     const A = cur(), I = info(A);
     if (!I.subs.length) return `<section class="panel">${emptyPulled()}</section>`;
@@ -1093,7 +1143,12 @@
       .filter(([k, , c]) => k === "all" || c);
     if (!opts.some(([k]) => k === state.filter)) state.filter = "all";
     const shown = (s) => state.filter === "all" || (state.filter === "mine" ? isMine(s) : state.filter === "free" ? !s.claim && s.status === "pulled" : s.status === state.filter);
-    const rows = I.subs.filter((s) => shown(s) && matches(s, state.query.grade));
+    const found = I.subs.filter((s) => shown(s) && matches(s, state.query.grade));
+    // עד 1,000 שורות בטבלה מכבידות על הדף: מציגים חמישים, ו"עוד" מוסיף. משנים סינון, חיפוש או מטלה: חוזרים לחמישים
+    const key = `${A.id}|${state.filter}|${state.query.grade}`;
+    if (state.gradeKey !== key) { state.gradeKey = key; state.gradeShown = GRADE_PAGE; }
+    const rows = found.slice(0, state.gradeShown);
+    const more = found.length - rows.length;
     return `${teamHTML()}
       <section class="panel">
         <div class="panel-head">
@@ -1117,6 +1172,8 @@
           }).join("") || `<tr><td colspan="${5 + qs.length}"><div class="empty slim">אין עבודות שמתאימות לסינון.</div></td></tr>`}
           </tbody>
         </table></div>
+        ${more > 0 ? `<div class="panel-body more-row"><span class="muted">מוצגות <b class="num">${rows.length}</b> מתוך <b class="num">${found.length}</b></span>
+          <button class="btn secondary small" data-act="grade-more">הצג עוד ${Math.min(more, GRADE_PAGE)}</button></div>` : ""}
       </section>`;
   }
 
@@ -2198,6 +2255,9 @@
     if (t.closest("a[data-open-local]")) store.set("openLocal", true);  // מהפעם הבאה הקישור הציבורי מעביר לכאן לבד
     const runBtn = t.closest("[data-run]");
     if (runBtn) { runStage(runBtn.dataset.run); return; }
+    const gChip = t.closest("[data-grade-chip]");
+    if (gChip) { state.gradeCount = Number(gChip.dataset.gradeChip); store.set("gradeCount", state.gradeCount); render(); return; }
+    if (state.gradePick && !t.closest(".grade-pick")) { state.gradePick = null; render(); }  // לחיצה מחוץ לחלונית סוגרת אותה
     if (t.closest("[data-copy-run]")) { runCopying(); return; }
     const cpFilter = t.closest("[data-copy-filter]");
     if (cpFilter) { state.copy.filter = cpFilter.dataset.copyFilter; state.copy.open = null; render(); return; }
@@ -2260,9 +2320,12 @@
       if (a === "rename") { state.renaming = true; state.nameDraft = null; render(); $("#my-name")?.focus(); }
       if (a === "rename-cancel") { state.renaming = false; state.nameDraft = null; render(); }
       if (a === "claim") changeClaims({ take: [id] });
+      if (a === "grade-more") { state.gradeShown += GRADE_PAGE * 2; render(); return; }
       if (a === "release") changeClaims({ release: [id] });
       if (a === "claim-next") changeClaims({ next: Math.max(1, state.teamCount || 1) });
       if (a === "release-mine") changeClaims({ release: info().toGrade.filter(isMine).map((s) => s.id) });
+      if (a === "grade-pick-go") gradePicked();
+      if (a === "grade-pick-close") { state.gradePick = null; render(); }
       if (a === "task-take" || a === "task-release") changeTask(id, act.dataset.stage, a === "task-take");
       return;
     }
@@ -2313,6 +2376,8 @@
 
   document.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && reviewSub()) { e.preventDefault(); saveReview(state.review.id); return; }
+    if (e.key === "Enter" && e.target.matches?.("[data-grade-count]")) { gradePicked(); return; }
+    if (e.key === "Escape" && state.gradePick) { state.gradePick = null; render(); return; }
     if (e.key === "Escape") { closeDrawer(); $("#sidebar").classList.remove("open"); }
     if (e.key === "Enter" && e.target.matches("[data-open]")) openDrawer(e.target.dataset.open);
     if (e.key === "Enter" && e.target.matches("[data-assign]")) e.target.click();
@@ -2347,6 +2412,14 @@
     if (t.dataset.query) { state.query[t.dataset.query] = t.value; render(); return; }
     if (t.dataset.moodleId) { state.moodleDraft[t.dataset.moodleId] = t.value; return; }
     if (t.matches("[data-name-draft]")) { state.nameDraft = t.value; return; }
+    if (t.matches("[data-grade-count]")) {
+      state.gradeCount = Math.max(1, parseInt(t.value, 10) || 1);
+      store.set("gradeCount", state.gradeCount);
+      // רק התווית של הכפתור משתנה, בלי לצייר מחדש: הסמן נשאר בשדה
+      const go = $("[data-act=grade-pick-go]");
+      if (go) go.innerHTML = `${ICON.grade}בדוק ${Math.min(state.gradeCount, Number(t.max) || state.gradeCount)}`;
+      return;
+    }
     if (t.matches("[data-team-count]")) { state.teamCount = Math.max(1, parseInt(t.value, 10) || 1); store.set("teamCount", state.teamCount); return; }
     if (t.dataset.instr) {
       const st = t.dataset.instr;

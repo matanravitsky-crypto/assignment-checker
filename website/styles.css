@@ -225,9 +225,11 @@ main {
 .stage-hero {
   display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 20px; align-items: center;
   background: var(--sheet); border: 1px solid var(--rule); border-radius: var(--r-lg); box-shadow: var(--lift);
-  padding: 24px 28px; position: relative; overflow: hidden;
+  padding: 24px 28px; position: relative; z-index: 2;  /* בלי overflow: hidden, אחרת חלונית "כמה לבדוק" נחתכת */
 }
-.stage-hero::before { content: ""; position: absolute; top: 0; bottom: 0; inset-inline-start: 0; width: 4px; background: var(--rule-strong); }
+.stage-hero::before { content: ""; position: absolute; top: 0; bottom: 0; inset-inline-start: 0; width: 4px; background: var(--rule-strong);
+  border-start-start-radius: var(--r-lg); border-end-start-radius: var(--r-lg); }
+.more-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-top: 1px solid var(--rule); }
 .stage-hero[data-state="done"]::before { background: var(--ok); }
 .stage-hero[data-state="todo"]::before, .stage-hero[data-state="running"]::before { background: var(--blue); }
 .sh-kicker { margin: 0; font-size: 13px; color: var(--ink-3); font-weight: 500; }
@@ -348,6 +350,14 @@ th.qcol { text-align: center; }
 .team-count { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; color: var(--ink-2); }
 .team-count input { width: 76px; padding: 6px 8px; border: 1px solid var(--rule-strong); border-radius: var(--r-sm); background: var(--sheet); color: var(--ink); font: inherit; text-align: center; }
 .team-count input:focus { outline: none; border-color: var(--blue); box-shadow: 0 0 0 3px var(--blue-soft); }
+/* "כמה לבדוק": חלונית קטנה שנפתחת מתחת לכפתור הבדיקה */
+.pick-wrap { position: relative; display: inline-flex; }
+.grade-pick { position: absolute; top: calc(100% + 8px); inset-inline-end: 0; z-index: 30; width: min(340px, calc(100vw - 32px));
+  background: var(--sheet); border: 1px solid var(--rule-strong); border-radius: var(--r-md); box-shadow: var(--lift);
+  padding: 14px; display: grid; gap: 10px; text-align: start; white-space: normal; }
+.grade-pick .hint { margin: 0; line-height: 1.5; }
+.grade-pick .gp-act { display: flex; gap: 8px; }
+.grade-pick .gp-act .btn { flex: 0 0 auto; }
 .claim-cell { white-space: nowrap; }
 .claim-cell .btn.small { padding: 3px 10px; font-size: 12.5px; }
 .claim { display: inline-block; font-size: 12.5px; font-weight: 500; padding: 2px 9px; border-radius: var(--r-sm); background: var(--sheet-2); border: 1px solid var(--rule); color: var(--ink-2); max-width: 140px; overflow: hidden; text-overflow: ellipsis; vertical-align: middle; }

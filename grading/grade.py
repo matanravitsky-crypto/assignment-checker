@@ -767,6 +767,10 @@ class Stopped(Exception):
     """הבדיקה נעצרה לפני שההגשה הזו נשלחה ל-Claude."""
 
 
+class TakenByOther(Exception):
+    """בודק אחר לקח את ההגשה לפניי (הסימון שלו הגיע דרך OneDrive אחרי שהבדיקה התחילה), אז היא שלו."""
+
+
 def grade_assignment(assignment_dir: Path, numbers: list[str] | None = None, *, ask: Ask | None = None,
                      model: str = DEFAULT_MODEL, parallel: int = DEFAULT_PARALLEL, instructions: str = "",
                      send_solution: bool = True, on_progress: Callable[[str, str], None] | None = None,
@@ -813,10 +817,16 @@ def grade_assignment(assignment_dir: Path, numbers: list[str] | None = None, *, 
 
     files = submission_files(assignment_dir)
     limit: list[str] = []  # הבדיקה נעצרה כי נגמרה המכסה של Claude: ההודעה
+    late: list[str] = []   # בודק אחר לקח אותן לפניי, וזה התברר רק באמצע הבדיקה
 
     def work(n: str) -> tuple[str, Graded, bytes]:
         if stop.is_set():
             raise Stopped()
+        # שני בודקים שלקחו את אותה הגשה לפני ש-OneDrive סנכרן: מי שלקח ראשון שומר אותה (claims.read_all).
+        # בודקים שוב רגע לפני השליחה ל-Claude, כדי שהשני יוותר ברגע שהסימון הגיע, ולא רק בתחילת הבדיקה
+        holder = claims.read_all(assignment_dir).get(n)
+        if holder and holder["who"] != who:
+            raise TakenByOther(holder["who"])
         pdf, skipped = submission_pdf(files[n])
         if not pdf:
             raise GradingError(f"אין בהגשה קובץ שאפשר לבדוק ({', '.join(skipped)}).")
@@ -867,6 +877,10 @@ def grade_assignment(assignment_dir: Path, numbers: list[str] | None = None, *, 
             except Stopped:
                 rep.stopped.append(n)
                 continue
+            except TakenByOther:
+                late.append(n)
+                on_progress and on_progress(n, "taken")
+                continue
             except Exception as e:  # עבודה אחת שנכשלה לא עוצרת את השאר
                 rep.failed[n] = str(e)
                 failed(n, str(e))
@@ -884,6 +898,10 @@ def grade_assignment(assignment_dir: Path, numbers: list[str] | None = None, *, 
     rep.graded.sort()
     rep.review.sort()
     rep.stopped.sort()
+    if late:
+        rep.total -= len(late)
+        rep.notes.append(f"{len(late)} עבודות נלקחו בינתיים על ידי בודק אחר ולא נבדקו כאן: {', '.join(sorted(late)[:20])}"
+                         + (" ועוד" if len(late) > 20 else ""))
     if limit:  # מה שכבר היה אצל Claude נשמר; את השאר אפשר להמשיך כשהמכסה מתחדשת
         raise ClaudeLimit(f"Claude הגיע למגבלת השימוש, אז הבדיקה נעצרה אחרי {len(rep.graded)} עבודות. "
                           f"העבודות שלא נבדקו לא סומנו כנכשלות: אפשר להמשיך כשהמכסה מתחדשת. ({limit[0]})")
