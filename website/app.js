@@ -1,7 +1,7 @@
 (() => {
   // כל מה שהאתר מציג אמיתי: הנתונים מגיעים מהמערכת שרצה במחשב (start.bat, dashboard/web_server.py),
   // שקוראת את תיקיית OneDrive של הקורס. בלי המערכת אין מספרים במסך
-  const D = { courses: [], assignments: [], rubrics: {}, runs: [] };
+  const D = { courses: [], assignments: [], rubrics: {}, runs: [], usage: null };
   // באתר הציבורי (Vercel) פונים למערכת שבמחשב. כשהאתר נפתח מהמערכת עצמה, לאותה כתובת
   const ON_LOCAL_HOST = ["localhost", "127.0.0.1"].includes(location.hostname);
   const BASE = ON_LOCAL_HOST ? "" : "http://127.0.0.1:8765/";
@@ -1536,6 +1536,20 @@
       <li class="${i === worst ? "worst" : ""}"><span>שאלה ${q.n}</span><span class="track"><i style="width:${rates[i]}%"></i></span><b class="num">${rates[i]}%</b></li>`).join("")}</ul>${offNote}`;
   }
 
+  // עלות הבדיקה עד עכשיו, מתוך יומן השימוש של Claude Code. שווה ערך ל-API: הבדיקה רצה במנוי של הצוות, לא מחויבת
+  function usageHTML() {
+    const u = D.usage;
+    if (!u) return "";
+    const share = u.cacheReadShare == null ? "—" : `${Math.round(u.cacheReadShare * 100)}%`;
+    const models = Object.entries(u.models || {}).map(([m, v]) => `<bdi>${esc(m)}</bdi> · ${v.runs} ריצות · <bdi>$${v.costUsd}</bdi>`).join("<br>");
+    return `<section class="panel"><div class="panel-head"><h3>עלות הבדיקה</h3><span class="meta">שווה ערך ל-API, לא חיוב</span></div>
+      <div class="panel-body"><div class="stat-row" style="grid-template-columns:repeat(3,minmax(0,1fr));margin-top:0">
+        <div class="stat"><span class="stat-l">סך הכל</span><b class="stat-v num">$${u.costUsd}</b><span class="stat-s">${u.runs} ריצות</span></div>
+        <div class="stat"><span class="stat-l">לעבודה</span><b class="stat-v num">$${u.avgUsd}</b><span class="stat-s">ממוצע לריצה</span></div>
+        <div class="stat"><span class="stat-l">מהמטמון</span><b class="stat-v num">${share}</b><span class="stat-s">מהקלט נקרא ולא נכתב מחדש</span></div>
+      </div><p class="muted" style="margin:12px 0 0">${models}</p></div></section>`;
+  }
+
   function logHTML(limit, onlyHere) {
     const icon = { pull: ICON.pull, grade: ICON.grade, return: ICON.ret, error: ICON.warn };
     const list = D.runs.filter((r) => !onlyHere || (r.where || "").startsWith(course()?.name || "")).slice(0, limit);
@@ -2070,6 +2084,7 @@
           </div>
           <div class="stack">
             <section class="panel"><div class="panel-head"><h3>מחוון</h3><a class="end link" href="#/grade" data-goto-tab="grade:instr">פרטים</a></div><div class="panel-body">${rubricSummaryHTML()}</div></section>
+            ${usageHTML()}
             <section class="panel"><div class="panel-head"><h3>פעילות אחרונה</h3><a class="end link" href="#/runs">ליומן המלא</a></div><div class="panel-body tight">${logHTML(4, true)}</div></section>
           </div>
         </div>
@@ -2539,6 +2554,7 @@
       // מודל מחובר = Claude Code מחובר במחשב (דרכו Claude in Chrome עובד במודל)
       LOCAL.health = { ...LOCAL.health, ...(health || {}), root: data.root, claude: data.claude, claudeVia: data.claudeVia };
       LOCAL.me = data.me || null;
+      D.usage = data.usage || null;
       if (health?.checking) followHealth();
       if (!LOCAL.polling) LOCAL.sending = data.sending || null;
       // בדיקה שרצה כשהדף נטען: מציגים את ההתקדמות ואת כפתור העצירה

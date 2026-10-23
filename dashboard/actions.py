@@ -40,7 +40,7 @@ from moodle import (anonymize as moodle_anonymize, claims, claude_driver, grades
                     ingest as moodle_ingest, lock as moodle_lock, paths, send as moodle_send, upload as moodle_upload,
                     upload_log)
 
-from . import folder_view, settings as cfg, shared_folder
+from . import folder_view, settings as cfg, shared_folder, usage as grading_usage
 
 
 def root_info() -> tuple[Path | None, str | None]:
@@ -1408,7 +1408,8 @@ def state(root: Path) -> dict:
                 "subs": subs, "log": _activity(a, log), "owners": owners, "copying": copying_state(a.dir),
             })
     return {"root": str(root), "courses": courses, "assignments": out, "me": me(),
-            "moodle": False, "claude": quick_via() is not None, "claudeVia": quick_via(), "grading": grade_status(), "sending": send_status(), "copyCheck": copying_status()}
+            "moodle": False, "claude": quick_via() is not None, "claudeVia": quick_via(), "grading": grade_status(), "sending": send_status(), "copyCheck": copying_status(),
+            "usage": grading_usage.summary(root)}
 
 
 def _slots(course_dir: Path) -> list[folder_view.Assignment | int]:
