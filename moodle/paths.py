@@ -14,7 +14,10 @@ a folder per assignment, with plain English names that say what each one is
           Grades.csv                                 number,grade,feedback (from grading)
           Grading notes/              0001.json ...  per-question comments, mistakes, marks, why a person should look
           Key - number to student.csv                the key: number -> Moodle participant
+          Copying check.json                         suspected copying between numbers (python -m copying)
           Moodle download <date>.zip                 the ZIP exactly as Moodle gave it
+          Earlier versions/<date>/    0001.pdf ...   files a newer download replaced (nothing is deleted)
+          Key history/                               the key as it was before each pull changed it
           README.txt
 
 The extracted ZIP stays on the downloader's computer only, in the same
@@ -36,10 +39,18 @@ GRADES = "Grades.csv"
 # on the pages, and why it needs a person. Numbers only, never names. The site's manual review reads it
 NOTES = "Grading notes"
 KEY = "Key - number to student.csv"
+# Suspected copying: pairs of numbers whose files, PDF metadata or page images match, and what each file looked like
+# (hashes only: no names, no metadata values). Written by copying/check.py, read by the site's "העתקות" page
+COPYING = "Copying check.json"
 README = "README.txt"
 # The lecturer's or TA's grading material, in the assignment folder: rubric, solutions, accepted methods (.md/.txt).
 # Grading sends all of it to Claude. "פדגוגי" is the name the team gave it; "Pedagogy" works too.
 PEDAGOGY = ("Pedagogy", "פדגוגי")
+# A pull never deletes or overwrites a submission: a file that a newer download replaces (a resubmission, or a
+# second file that is gone) moves here first, "Earlier versions/<date>/0001.pdf". The key before every change goes
+# to "Key history" (not next to the key: a "Key - number to student*.csv" there counts as an OneDrive conflict copy)
+EARLIER = "Earlier versions"
+KEY_HISTORY = "Key history"
 DOWNLOAD_PREFIX = "Moodle download"
 PULL_LOCK = "Pull in progress.txt"      # in the assignment folder while a pull runs (see lock.py)
 UPLOAD_LOCK = "Upload in progress.txt"  # in the assignment folder while an upload to Moodle runs
@@ -63,11 +74,16 @@ def read_info(assignment_dir: Path) -> dict:
         return json.load(f)
 
 
+class TwoFolders(ValueError):
+    """Two assignment folders carry the same Moodle id (a copied folder): a pull or upload could go to the wrong one."""
+
+
 def find_assignment(assignment_id: str) -> Path | None:
-    for folder in assignment_dirs():
-        if str(read_info(folder).get("id")) == str(assignment_id):
-            return folder
-    return None
+    found = [f for f in assignment_dirs() if str(read_info(f).get("id")) == str(assignment_id)]
+    if len(found) > 1:
+        raise TwoFolders(f"Moodle id {assignment_id} is in {len(found)} assignment folders: "
+                         + ", ".join(str(f.relative_to(data_dir())) for f in found))
+    return found[0] if found else None
 
 
 def assignment_dir(assignment_id: str) -> Path:

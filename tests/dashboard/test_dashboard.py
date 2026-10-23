@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import zipfile
 from urllib.parse import quote
 
@@ -17,6 +18,8 @@ from tests.sample_files import homework_pdf
 
 from tests.dashboard.conftest import FakeDownloader
 from tests.dashboard.helpers import COURSE, HDR, HW, MID, NAMES, call, hw, write_key
+
+_REAL_POPEN = subprocess.Popen  # before the fixture blocks every process
 
 
 # ---------- איתור התיקייה ----------
@@ -79,7 +82,7 @@ def test_every_course_has_ten_assignments(root):
 def test_first_pull_of_an_empty_slot_saves_the_moodle_id(root, monkeypatch):
     seen = {}
 
-    def fake_ingest(assignment_id, zip_path=None, course=None, name=None):
+    def fake_ingest(assignment_id, zip_path=None, course=None, name=None, **_):
         seen["id"], seen["dir"] = assignment_id, paths.find_assignment(assignment_id)
         return []
 
@@ -127,7 +130,7 @@ def test_server_passes_the_moodle_id_of_a_new_slot(root, server, monkeypatch):
 def test_pull_runs_ingest_with_the_assignment_id(root, monkeypatch):
     seen = {}
 
-    def fake_ingest(assignment_id, zip_path=None, course=None, name=None):
+    def fake_ingest(assignment_id, zip_path=None, course=None, name=None, **_):
         seen["id"], seen["data"] = assignment_id, paths.data_dir()
         a_dir = paths.find_assignment(assignment_id)
         rows = folder_view.Assignment(a_dir).key_rows()
@@ -138,10 +141,25 @@ def test_pull_runs_ingest_with_the_assignment_id(root, monkeypatch):
         return rows
 
     monkeypatch.setattr("moodle.ingest.ingest", fake_ingest)
+    copied = []
+    monkeypatch.setattr(actions, "start_copying", lambda *a, **k: copied.append(a))
     rep = actions.pull(root, COURSE, HW)
     assert seen == {"id": MID, "data": root}
     assert rep["result"] == {"total": 4, "new": 1, "files": 5}
     assert "1 חדשות" in rep["summary"]
+    assert copied == [(root, COURSE, HW)] and any("העתקות" in n for n in rep["notes"])  # starts by itself
+
+
+def test_pull_time_left_follows_the_pace_of_the_phase():
+    assert actions._eta("parts", 1, 15, 0, 0) == 14 * actions.PART_S  # no pace yet: about PART_S a part
+    assert actions._eta("parts", 5, 15, 40, 4) == 100  # 4 parts in 40 s → 10 more in 100 s
+    assert actions._eta("extract", 50, 100, 30, 50) == 30
+    assert actions._eta("extract", 0, 100, 0, 0) is None  # nothing to go by
+    assert actions._eta("parts", 3, 0, 20, 2) is None  # total not known
+    assert actions._eta("number", 10, 10, 5, 10) == 0
+    # waiting for the next part counts down (on 2026-10-23 it went up from 168 to 288 s between two parts)
+    assert actions._eta("parts", 5, 15, 40, 4, waiting=6) == 94
+    assert actions._eta("parts", 5, 15, 40, 4, waiting=60) == 90  # never below the 9 parts not started yet
 
 
 @pytest.mark.parametrize("error, expect", [
@@ -306,6 +324,37 @@ def test_pull_downloads_from_moodle_when_no_zip_is_waiting(root, monkeypatch):
     assert [p.name for p in seen] == [f"214193210120271-x-{MID}.zip"]
 
 
+def test_pull_progress_for_the_site(root, server, monkeypatch):
+    """GET /api/pull: how far the pull got, while the POST still runs. The ZIP's size is guessed from the last download."""
+    from moodle import ingest
+    seen = []
+
+    def ingest_with_progress(assignment_id, zip_path=None, *a, on_progress=None, **k):
+        on_progress("check", 40, 100)
+        seen.append(call(server, "GET", "/api/pull")[1])
+        on_progress("number", 1, 3)
+        seen.append(call(server, "GET", "/api/pull")[1])
+        return _ok_ingest(assignment_id)
+
+    monkeypatch.setattr(actions, "_make_downloader", lambda: FakeDownloader(ingest.downloads_dir()))
+    monkeypatch.setattr("moodle.ingest.ingest", ingest_with_progress)
+    st, rep = call(server, "POST", "/api/pull", {"course": COURSE, "assignment": HW}, HDR)
+    assert st == 200, rep
+    assert [(x["running"], x["phase"], x["done"], x["total"], x["downloaded"]) for x in seen] == [
+        (True, "check", 40, 100, True), (True, "number", 1, 3, True)]
+    end = call(server, "GET", "/api/pull")[1]
+    assert end["running"] is False and end["summary"] == rep["summary"] and not end["error"]
+    assert actions._expected_zip_size(folder_view.Assignment(root / COURSE / HW)) > 0  # ה-ZIP הקודם שבתיקייה
+
+
+def test_pull_progress_keeps_the_error(root, monkeypatch):
+    monkeypatch.setattr("moodle.ingest.ingest", lambda *a, **k: (_ for _ in ()).throw(ValueError("The ZIP is incomplete")))
+    with pytest.raises(actions.UserError):
+        actions.pull(root, COURSE, HW)
+    status = actions.pull_status()
+    assert status["running"] is False and "לא שלם" in status["error"] and "7-Zip לא מותקן" not in status["error"]
+
+
 def test_pull_takes_a_zip_that_was_downloaded_by_hand(root, monkeypatch):
     from moodle import ingest
     by_hand = ingest.downloads_dir() / f"קורס-הגשה 0-{MID}.zip"
@@ -372,3 +421,79 @@ def test_health_answers_at_once_while_claude_is_checked_in_the_background(root, 
             break
         time.sleep(0.05)
     assert h["checking"] is False and h["claude"] is True and h["moodle"] is True and h["claudeVia"] == "code"
+
+
+class PartsDownloader:
+    """Moodle in parts (moodle/download_parts.js): a ZIP per part in Downloads, and the list of the parts last."""
+
+    def __init__(self, downloads, students_per_part):
+        self.downloads, self.students_per_part = downloads, students_per_part
+
+    def download(self, info):
+        stem, n = f"214193210120271-הגשה 0-{info['id']}", len(self.students_per_part)
+        files = []
+        for i, students in enumerate(self.students_per_part, 1):
+            name = f"{stem} part {i:03} of {n:03}.zip"
+            with zipfile.ZipFile(self.downloads / name, "w") as z:
+                for pid in students:
+                    z.writestr(f"{NAMES[pid]}_{pid}_assignsubmission_file/hw.pdf", homework_pdf(NAMES[pid], HW))
+            files.append({"name": name, "size": (self.downloads / name).stat().st_size})
+        listed = {"users": sum(map(len, self.students_per_part)), "parts": n, "empty": [], "failed": [], "files": files}
+        (self.downloads / f"{stem}.json").write_text(json.dumps(listed), encoding="utf-8")
+        return {"status": "started", "message": "ok", "users": listed["users"], "parts": n}
+
+
+def test_pull_in_parts_keeps_every_number_and_adds_the_new_student(root, monkeypatch, tmp_path):
+    """Moodle cuts one big ZIP (2026-10-23), so the pull downloads in parts: all of them land in one originals folder."""
+    from moodle import ingest
+    monkeypatch.setenv("ASSIGNMENT_WORK", str(tmp_path / "Moodle originals"))  # never the real extracted folder
+    try:
+        ingest.seven_zip()
+    except FileNotFoundError:
+        pytest.skip("7-Zip is not installed")
+    seven = ingest.seven_zip()
+    monkeypatch.setattr(subprocess, "Popen", lambda cmd, *a, **k: _REAL_POPEN(cmd, *a, **k) if cmd[0] == seven
+                        else pytest.fail("a test started a real process"))
+    monkeypatch.setattr(actions, "_make_downloader",
+                        lambda: PartsDownloader(ingest.downloads_dir(), [["1001", "2000"], ["1002", "1003"]]))
+    rep = actions.pull(root, COURSE, HW)
+    assert rep["result"]["total"] == 4 and rep["result"]["new"] == 1
+    key = {r["participant_id"]: r["number"] for r in folder_view.Assignment(root / COURSE / HW).key_rows()}
+    assert key["1001"] == "0001" and key["1002"] == "0002" and key["1003"] == "0003" and key["2000"] == "0004"
+    kept = [p for p in (root / COURSE / HW).iterdir() if p.is_dir() and p.name.startswith(paths.DOWNLOAD_PREFIX)]
+    assert len(kept) == 1 and sorted(p.name for p in kept[0].iterdir()) == ["part 001.zip", "part 002.zip", "parts.json"]
+    assert list(ingest.downloads_dir().iterdir()) == []  # every part was taken
+    assert actions.pull_status()["phase"] == "number"
+    assert len(list((tmp_path / "Moodle originals" / COURSE / HW).iterdir())) == 4
+
+
+def test_a_pull_in_parts_tells_how_many_came_without_a_file(tmp_path):
+    listed = tmp_path / f"x-{MID}.json"
+    listed.write_text(json.dumps({"empty": 2, "files": [{"asked": 38, "students": 36}, {"asked": 38, "students": 38}]}),
+                      encoding="utf-8")
+    assert actions._without_file(listed) == 4
+    assert actions._without_file(tmp_path / f"x-{MID}.zip") == 0  # one ZIP of all: nothing to compare with
+
+
+def test_only_one_download_from_moodle_at_a_time_on_this_computer(root, monkeypatch):
+    """Two pulls at once in one Chrome each clicked Moodle's folders option on 2026-10-23."""
+    import os
+    from moodle import lock as moodle_lock
+    held = actions._work_dir() / actions.CHROME_PULL_LOCK  # another dashboard on this computer is downloading
+    held.write_text(moodle_lock.my_text().replace(f"pid={os.getpid()}", "pid=1"), encoding="utf-8")
+    monkeypatch.setattr(moodle_lock, "pid_alive", lambda pid: True)
+    fake = FakeDownloader(actions.moodle_ingest.downloads_dir())
+    monkeypatch.setattr(actions, "_make_downloader", lambda: fake)
+    with pytest.raises(actions.UserError, match="משיכה אחת בכל פעם"):
+        actions.pull(root, COURSE, HW)
+    assert fake.calls == []  # Chrome was never asked
+    held.unlink()
+    assert "tmp" in str(actions._work_dir()).lower() or "pytest" in str(actions._work_dir()).lower()
+
+
+def test_a_pull_without_folders_is_explained_in_hebrew(root, monkeypatch):
+    def flat(*a, **k):
+        raise ValueError("The download is incomplete or broken (not in a folder per student: 76 files)")
+    monkeypatch.setattr("moodle.ingest.ingest", flat)
+    with pytest.raises(actions.UserError, match="בלי תיקייה לכל סטודנט"):
+        actions.pull(root, COURSE, HW)

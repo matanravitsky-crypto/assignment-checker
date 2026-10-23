@@ -109,6 +109,10 @@ def check_can_prepare(assignment_dir: Path) -> None:
         raise BatchBlocked(
             f"ב-OneDrive נוצר עותק כפול של טבלת המפתח ({', '.join(conflicts)}). "
             f"צריך לאחד אותו עם `{paths.KEY}` ולמחוק את העותק לפני העלאה, כדי ששום סטודנט לא יקבל עבודה של סטודנט אחר.")
+    copies = anonymize.submission_conflicts(assignment_dir)
+    if copies:
+        raise BatchBlocked(f"ב-OneDrive נוצרו עותקים כפולים של הגשות ({', '.join(copies[:5])}): לא ברור של מי כל קובץ. "
+                           "צריך לבדוק ולמחוק את העותק לפני העלאה, כדי ששום סטודנט לא יקבל עבודה של סטודנט אחר.")
     conflicts = upload_log.log_conflicts(assignment_dir)
     if conflicts:
         raise BatchBlocked(

@@ -1,8 +1,8 @@
 You upload one feedback ZIP to Moodle for a university course. Follow these steps exactly, using only the Chrome tools.
 
 Rules (never break them):
-- Go only to this address: {upload_url}. Never open assignment settings or any other page.
-- If a login page appears, do not type anything anywhere. Stop and return status "needs_login".
+- Go only to this address: {upload_url} (and {home_url}, as the next rule says). Never open assignment settings or any other page.
+- If a page shows "404 Not Found" or a login page, Moodle's session has expired. Open {home_url} once, wait a few seconds (Moodle signs in again by itself), and open the address you wanted again. {give_up}
 - In a dry run never click יבוא קבצי משוב: it imports immediately and cannot be undone.
 - Click יבוא קבצי משוב at most once. Never click it twice and never retry an import.
 - Never take a screenshot of the grading page that Moodle shows after the import. Never write any person's name in your answer.
