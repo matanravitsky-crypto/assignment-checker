@@ -360,6 +360,17 @@ def test_pull_takes_a_zip_that_was_downloaded_by_hand(root, monkeypatch):
     assert seen == [by_hand] and fake.calls == []  # לא מורידים שוב
 
 
+def test_pull_refuses_an_empty_key_before_opening_chrome(root, monkeypatch):
+    """טבלת מפתח ריקה כשכבר יש הגשות: משיכה הייתה נותנת לכולם מספרים חדשים. עוצרים לפני כרום, בלי לגעת בתיקייה."""
+    from moodle import ingest
+    (root / COURSE / HW / paths.KEY).write_text("", encoding="utf-8")
+    fake = FakeDownloader(ingest.downloads_dir())
+    monkeypatch.setattr(actions, "_make_downloader", lambda: fake)
+    with pytest.raises(actions.UserError, match="טבלת המפתח של המטלה הזו ריקה או פגומה"):
+        actions.pull(root, COURSE, HW)
+    assert fake.calls == [] and not (root / COURSE / HW / actions.LOCK_FILE).exists()
+
+
 def test_pull_explains_a_download_that_did_not_start(root, monkeypatch):
     from moodle import ingest
     fake = FakeDownloader(ingest.downloads_dir(), {"status": "needs_login", "message": "Moodle מבקש התחברות."})
@@ -491,3 +502,22 @@ def test_a_pull_without_folders_is_explained_in_hebrew(root, monkeypatch):
     monkeypatch.setattr("moodle.ingest.ingest", flat)
     with pytest.raises(actions.UserError, match="בלי תיקייה לכל סטודנט"):
         actions.pull(root, COURSE, HW)
+
+
+def test_the_site_dates_every_kind_of_kept_download(root):
+    """ingest keeps every download as "Moodle download <stamp>" (a ZIP, or a folder of parts); the site shows when."""
+    from moodle import ingest, status
+    a = actions.find_assignment(root, COURSE, HW)
+    for p in a.dir.glob(f"{paths.DOWNLOAD_PREFIX} *"):
+        p.unlink()
+    (a.dir / f"{paths.DOWNLOAD_PREFIX} 2026-10-22 09-30.zip").write_bytes(b"old name, to the minute")
+    stamp = ingest._free_stamp(a.dir)  # what ingest names the next one
+    (a.dir / f"{paths.DOWNLOAD_PREFIX} {stamp}").mkdir()  # in parts
+    again = ingest._free_stamp(a.dir)
+    assert again == f"{stamp} (2)"
+    (a.dir / f"{paths.DOWNLOAD_PREFIX} {again}.zip").write_bytes(b"same second")
+    (a.dir / f"{paths.DOWNLOAD_PREFIX} 2026-10-23 08-00-00 (incomplete).zip").write_bytes(b"not a kept download")
+    times = actions._downloads(a)
+    assert len(times) == 3 and times[0] == "2026-10-22T09:30" and times == sorted(times)
+    assert actions._last_download(a) == times[-1] != "2026-10-22T09:30"
+    assert len(status.status(a.dir)["downloads"]) == 4  # moodle status lists the folder of parts too

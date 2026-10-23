@@ -252,6 +252,17 @@ def files_without_folder(zip_path: Path) -> int:
         return 0  # 7-Zip already tested it: a ZIP that zipfile cannot read is left to the extraction
 
 
+def _free_stamp(target: Path) -> str:
+    """"2026-10-23 11-15-07" for the kept download, with " (2)" ... when a download of that second is already kept."""
+    stamp = datetime.now().strftime("%Y-%m-%d %H-%M-%S")
+    taken = lambda s: any((target / f"{paths.DOWNLOAD_PREFIX} {s}{ext}").exists() for ext in ("", ".zip"))
+    n, free = 1, stamp
+    while taken(free):
+        n += 1
+        free = f"{stamp} ({n})"
+    return free
+
+
 def _in_steps(report, phase: str, i: int, n: int):
     """A percent of one of n parts → a percent of all of them."""
     return lambda pct: report(phase, (i * 100 + pct) // n, 100)
@@ -272,12 +283,14 @@ def ingest(assignment_id: str, zip_path: Path | None = None,
     for i, z in enumerate(zips):
         check_whole(z, on_percent=on_progress and _in_steps(report, "check", i, len(zips)), download=zip_path)
     target = assignment_folder(assignment_id, zip_path, course, name)
+    anonymize.check_key(target)  # before anything moves: a broken key must leave the folder as it is
 
-    # Keep every download: a later one (after the due date) must not erase the first. Parts go together in a folder
-    stamp = datetime.now().strftime("%Y-%m-%d %H-%M")
+    # Keep every download: a later one (after the due date) must not erase the first, even a minute later. Parts go
+    # together in a folder
+    stamp = _free_stamp(target)
     if in_parts:
         kept_dir = target / f"{paths.DOWNLOAD_PREFIX} {stamp}"
-        kept_dir.mkdir(exist_ok=True)
+        kept_dir.mkdir()
         moved = []
         for i, z in enumerate(zips, 1):
             moved.append(kept_dir / f"part {i:03}.zip")
