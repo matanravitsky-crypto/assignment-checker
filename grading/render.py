@@ -35,19 +35,48 @@ class PageImage:
         return f"image/{IMAGE_FORMAT}"
 
 
-def render_page(page: pymupdf.Page) -> PageImage:
-    """מקבלת עמוד אחד מתוך PDF ומחזירה תמונה שלו."""
+# רשת עזר שמצוירת על התמונה ש-Claude רואה (לא על הקובץ של הסטודנט): קו כל 100 אלפיות, ומספרים בארבעת הקצוות.
+# בלי הרשת Claude טועה במיקום של המלבנים, והסימונים נופלים על מקום ריק
+GRID_STEP = 100
+GRID_COLOR = (1, 0.45, 0)
+
+
+def _with_grid(pix: pymupdf.Pixmap) -> pymupdf.Pixmap:
+    w, h = pix.width, pix.height
+    with pymupdf.open() as tmp:
+        page = tmp.new_page(width=w, height=h)
+        page.insert_image(page.rect, pixmap=pix)
+        size = max(9, w / 80)
+        for v in range(0, 1001, GRID_STEP):
+            x, y = v / 1000 * w, v / 1000 * h
+            if 0 < v < 1000:
+                page.draw_line((x, 0), (x, h), color=GRID_COLOR, width=0.7, stroke_opacity=0.55)
+                page.draw_line((0, y), (w, y), color=GRID_COLOR, width=0.7, stroke_opacity=0.55)
+            label = str(v)
+            dx = min(max(x + 2, 1), w - size * 1.8)
+            dy = min(max(y + size, size), h - 2)
+            page.insert_text((dx, size), label, fontsize=size, color=GRID_COLOR)
+            page.insert_text((dx, h - 3), label, fontsize=size, color=GRID_COLOR)
+            page.insert_text((2, dy), label, fontsize=size, color=GRID_COLOR)
+            page.insert_text((w - size * 1.9, dy), label, fontsize=size, color=GRID_COLOR)
+        return page.get_pixmap(alpha=False)
+
+
+def render_page(page: pymupdf.Page, grid: bool = False) -> PageImage:
+    """מקבלת עמוד אחד מתוך PDF ומחזירה תמונה שלו. grid=True: עם רשת עזר למיקום הסימונים."""
     # כמה להגדיל את העמוד, כדי שהצד הארוך שלו יהיה בדיוק MAX_SIDE
     zoom = MAX_SIDE / max(page.rect.width, page.rect.height)
     # alpha=False: רקע לבן מלא, בלי שקיפות
     pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False)
+    if grid:
+        pix = _with_grid(pix)
     return PageImage(page.number + 1, pix.tobytes(IMAGE_FORMAT), pix.width, pix.height)
 
 
-def render_pdf(data: bytes) -> list[PageImage]:
+def render_pdf(data: bytes, grid: bool = False) -> list[PageImage]:
     """מקבלת את התוכן של קובץ PDF ומחזירה רשימה של תמונות, אחת לכל עמוד, לפי הסדר."""
     with pymupdf.open(stream=data, filetype="pdf") as doc:
-        return [render_page(page) for page in doc]
+        return [render_page(page, grid) for page in doc]
 
 
 def render_submission(sub: Submission) -> list[PageImage]:

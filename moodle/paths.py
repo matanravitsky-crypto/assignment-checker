@@ -16,7 +16,10 @@ a folder per assignment, with plain English names that say what each one is
           Who grades what/<name>.json                the numbers each grader took (see claims.py)
           Grading notes/              0001.json ...  per-question comments, mistakes, marks, why a person should look
           Key - number to student.csv                the key: number -> Moodle participant
+          Copying check.json                         suspected copying between numbers (python -m copying)
           Moodle download <date>.zip                 the ZIP exactly as Moodle gave it
+          Earlier versions/<date>/    0001.pdf ...   files a newer download replaced (nothing is deleted)
+          Key history/                               the key as it was before each pull changed it
           README.txt
 
 The extracted ZIP stays on the downloader's computer only, in the same
@@ -41,6 +44,9 @@ TASKS = "Who does what"                  # in the COURSE folder: who took the pu
 # on the pages, and why it needs a person. Numbers only, never names. The site's manual review reads it
 NOTES = "Grading notes"
 KEY = "Key - number to student.csv"
+# Suspected copying: pairs of numbers whose files, PDF metadata or page images match, and what each file looked like
+# (hashes only: no names, no metadata values). Written by copying/check.py, read by the site's "העתקות" page
+COPYING = "Copying check.json"
 README = "README.txt"
 # The lecturer's or TA's grading material, in the assignment folder: rubric, solutions, accepted methods (.md/.txt).
 # Grading sends all of it to Claude. "פדגוגי" is the name the team gave it; "Pedagogy" works too.
@@ -51,6 +57,15 @@ PEDAGOGY = ("Pedagogy", "פדגוגי")
 EARLIER = "Earlier versions"
 KEY_HISTORY = "Key history"
 DOWNLOAD_PREFIX = "Moodle download"
+# Every Moodle download is kept, as Moodle gave it, on the computer that pulled only (it has the students' names, and
+# 2-3 GB per pull would fill OneDrive): <ASSIGNMENT_WORK>/Backup - Moodle downloads/<course>/<assignment>/
+BACKUP = "Backup - Moodle downloads"
+# In the assignment folder: one row per pull (when, who, how many), so every computer sees when it was pulled
+PULL_LOG = "Pull log.csv"
+# The shared folder is the course's OneDrive folder ("YallaLinearit", or "<owner> - YallaLinearit" as OneDrive names
+# it): pulls write the one key there. A copy outside it (a local folder) must not pull: its key would not see the
+# numbers another computer gave, and two students would get one number
+SHARED_COURSE_FOLDER = "YallaLinearit"
 PULL_LOCK = "Pull in progress.txt"      # in the assignment folder while a pull runs (see lock.py)
 UPLOAD_LOCK = "Upload in progress.txt"  # in the assignment folder while an upload to Moodle runs
 
@@ -90,6 +105,19 @@ def assignment_dir(assignment_id: str) -> Path:
     if found is None:
         raise FileNotFoundError(f"No assignment with Moodle id {assignment_id} under {data_dir()}")
     return found
+
+
+def backup_dir(assignment_dir: Path) -> Path:
+    """Where this computer keeps the assignment's Moodle downloads (never in OneDrive)."""
+    return work_dir() / BACKUP / assignment_dir.relative_to(data_dir())
+
+
+def in_shared_folder(path: Path) -> bool:
+    """Is this folder inside the course's synced OneDrive folder, where the one key of every assignment lives?"""
+    name = SHARED_COURSE_FOLDER
+    # Split on both separators so a Windows path is read the same way on any OS (CI runs on Linux)
+    parts = [p for p in re.split(r"[\\/]", str(Path(path).resolve())) if p][:-1]  # the folder itself is not its own parent
+    return any(p == name or p.endswith(f" - {name}") or p.startswith(f"{name} - ") for p in parts)
 
 
 def original_dir(assignment_dir: Path) -> Path:

@@ -112,7 +112,7 @@ def test_a_broken_key_is_refused_before_anything_changes(tmp_path):
     assert _files(assignment / paths.TO_GRADE) == ["0001.pdf", "0002.pdf"]
 
 
-def test_check_key_catches_a_moved_or_lost_student():
+def test_check_new_key_catches_a_moved_or_lost_student():
     old = [{"participant_id": "11", "number": "0001"}, {"participant_id": "22", "number": "0002"}]
     anonymize.check_new_key(old, old + [{"participant_id": "33", "number": "0003"}])
     with pytest.raises(anonymize.KeyBroken, match="0002"):

@@ -58,19 +58,23 @@
     claude: store.get("claude", { model: "claude-opus-5-5", parallel: 5, sendSolution: true }),
     loading: false,
     teamCount: store.get("teamCount", 20),  // כמה עבודות פנויות לוקחים בלחיצה אחת
+    gradePick: null,  // assignmentId שהחלונית "כמה לבדוק" של כפתור הבדיקה פתוחה בו
+    gradeCount: store.get("gradeCount", 100),  // כמה עבודות בודקים בלחיצה אחת
     nameDraft: null,  // מה שהוקלד בשדה "השם שלך"
     renaming: false,
     // לוח הבקרה: טעות נפוצה שנפתחה
     mistakeOpen: null,
     // הבדיקה הידנית: העבודה שפתוחה, סינון לפי סוג הבעיה, מה מוצג (מסומנת/מקורית) והטיוטה של כל עבודה עד השמירה
     review: { id: null, edits: {}, saving: false, pages: {}, marks: true, open: {}, fbOpen: false },
+    // העתקות: איזו שכבה מוצגת, איזה זוג פתוח, ובדיקה שרצה עכשיו
+    copy: { filter: "all", open: null, running: false, progress: "" },
   };
 
   // מה כל שלב עושה באמת (moodle/ingest.py, grading/grade.py, moodle/send.py)
   const STAGES = {
     pull: {
       no: 1, route: "/pull", name: "משיכת הגשות",
-      desc: "Claude בכרום מוריד ממודל את קובץ ה-ZIP עם כל ההגשות של המטלה, והמערכת קולטת אותו: שומרת אותו בתיקיית המטלה, נותנת לכל סטודנט מספר קבוע ומעתיקה את ההגשות הממוספרות לתיקיית OneDrive, בלי שמות.",
+      desc: "Claude בכרום מוריד ממודל את קובץ ה-ZIP עם כל ההגשות של המטלה, והמערכת קולטת אותו: שומרת אותו רק במחשב שמשך, נותנת לכל סטודנט מספר קבוע ומעתיקה את ההגשות הממוספרות לתיקיית OneDrive, בלי שמות.",
       steps: ["הורדת ה-ZIP ממודל (Claude בכרום)", "בדיקה שה-ZIP שלם", "חילוץ ה-ZIP (במחשב הזה בלבד)", "מספור ההגשות ועדכון טבלת המפתח"],
       tabs: [["list", "ההגשות שנמשכו"], ["instr", "מה קורה במשיכה"], ["conn", "חיבור למודל"]],
     },
@@ -113,6 +117,7 @@
     pen: '<svg viewBox="0 0 24 24"><path d="M4 20l4-1 11-11-3-3L5 16z"/></svg>',
     warn: '<svg viewBox="0 0 24 24"><path d="M12 4l9 16H3z"/><path d="M12 10v4M12 17v.5"/></svg>',
     clock: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7v5l3 2"/></svg>',
+    stop: '<svg viewBox="0 0 24 24"><rect x="6.5" y="6.5" width="11" height="11" rx="2"/></svg>',
     download: '<svg viewBox="0 0 24 24"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>',
     eye: '<svg viewBox="0 0 24 24"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.8"/></svg>',
     hand: '<svg viewBox="0 0 24 24"><path d="M5 19c2-1 3-3 3-5V7a1.5 1.5 0 0 1 3 0v4m0-6a1.5 1.5 0 0 1 3 0v6m0-5a1.5 1.5 0 0 1 3 0v6m0-3a1.5 1.5 0 0 1 3 0v4c0 4-3 7-7 7h-2"/></svg>',
@@ -208,9 +213,11 @@
     const toGrade = ok.filter((s) => s.status === "pulled");
     // ברגע שמישהו לקח עבודה, "בדוק" בודק רק את מה שלי. בלי חלוקה: את כל מה שמחכה, כמו קודם
     const teamMode = subs.some((s) => s.claim);
+    const myLeft = toGrade.filter(isMine).map((s) => s.id), free = toGrade.filter((s) => !s.claim).length;
     return {
-      subs, ok, graded, returned, teamMode,
+      subs, ok, graded, returned, teamMode, myLeft, free,
       gradeIds: (teamMode ? toGrade.filter(isMine) : toGrade).map((s) => s.id),
+      canTake: myLeft.length + free,  // מה שאני יכול לבדוק: מה שכבר שלי ועוד לא נבדק, ועוד הפנויות
       issues: subs.length - ok.length,
       files: subs.reduce((a, s) => a + s.files.length, 0),
       late: subs.filter((s) => s.late).length,
@@ -248,8 +255,51 @@
   function runStage(stage) {
     if (!LOCAL.on || !cur()) return;
     if (stage === "pull") runLocalPull();
-    if (stage === "grade") runLocalGrade(info().gradeIds);
+    if (stage === "grade") { state.gradePick = state.gradePick === cur().id ? null : cur().id; render(); $("#grade-count")?.select(); }
     if (stage === "ret") startSendFlow();
+  }
+
+  // החלונית שנפתחת מתחת ל"בדוק": כמה עבודות לבדוק עכשיו. קודם משלימים מהפנויות (באקראי, בשרת) ומסמנים אותן עליי,
+  // ורק אז בודקים, ורק את מה שעליי. כך אף אחד לא צריך לבדוק הכל, ושני בודקים לא בודקים את אותה עבודה
+  function gradePickHTML() {
+    const A = cur(), I = info(A);
+    if (state.gradePick !== A.id || state.run[A.id] || !I.canTake) return "";
+    const max = I.canTake, n = Math.max(1, Math.min(state.gradeCount || 1, max)), mine = I.myLeft.length;
+    const more = Math.max(0, n - mine), others = I.toGrade.length - max;
+    const chips = [...new Set([25, 50, 100, max].filter((c) => c <= max))];
+    const plan = more
+      ? `${mine ? `${plural(mine, "עבודה אחת כבר שלך", "עבודות כבר שלך")}, ו-` : ""}${plural(more, "עבודה פנויה אחת תסומן", "עבודות פנויות ייבחרו באקראי ויסומנו")} עליך לפני שהבדיקה מתחילה.`
+      : `ייבדקו ${n === 1 ? "עבודה אחת" : `${n} עבודות`} מתוך ${mine} שכבר שלך. לא נלקחות עבודות חדשות.`;
+    return `<div class="grade-pick" role="dialog" aria-label="כמה עבודות לבדוק">
+      <label class="team-count">כמה לבדוק עכשיו? <input type="number" id="grade-count" data-grade-count min="1" max="${max}" value="${n}"></label>
+      <div class="chips">${chips.map((c) => `<button class="chip" data-grade-chip="${c}" aria-pressed="${c === n}">${c === max ? `הכל (${c})` : c}</button>`).join("")}</div>
+      <p class="hint">${plan} ${others > 0 ? `${others} עבודות שמישהו אחר לקח לא ייבדקו כאן.` : ""} מי שבודק במחשב אחר רואה את הסימון תוך כמה שניות, ולא יבדוק אותן.</p>
+      <div class="gp-act">
+        <button class="btn primary small" data-act="grade-pick-go">${ICON.grade}בדוק ${n}</button>
+        <button class="btn ghost small" data-act="grade-pick-close">ביטול</button>
+      </div>
+    </div>`;
+  }
+
+  async function gradePicked() {
+    const A = cur(), I = info(A);
+    const n = Math.max(1, Math.min(state.gradeCount || 1, I.canTake));
+    state.gradePick = null;
+    try {
+      let ids = I.myLeft;
+      if (n > ids.length) {
+        // השרת קורא את הסימונים מהתיקייה עכשיו, ולוקח רק פנויות. מה שמישהו לקח בינתיים לא נלקח
+        const rep = await api("api/claims", { method: "POST", body: JSON.stringify({ course: A.courseFolder, assignment: A.folder, next: n - ids.length }) });
+        applyClaims(A, rep);
+        ids = info(A).myLeft;
+      }
+      ids = ids.slice(0, n);
+      if (ids.length < n) toast(`רק ${ids.length} עבודות היו פנויות. בודק אותן.`, ICON.warn);
+      await runLocalGrade(ids);
+    } catch (e) {
+      render();
+      toast(e.message, ICON.warn);
+    }
   }
 
   // ---------- Stage pieces ----------
@@ -259,8 +309,8 @@
     let label, n = 0, primary = false;
     if (stage === "pull") { label = "משוך הגשות"; primary = !I.subs.length; }
     if (stage === "grade") {
-      n = I.gradeIds.length;
-      label = n ? (I.teamMode ? `בדוק ${n} שלי` : `בדוק ${n} עבודות`) : I.toGrade.length ? "אין עבודות שלך לבדיקה" : "הכל נבדק";
+      n = I.canTake;
+      label = n ? `בדוק עבודות (${n} זמינות) ▾` : I.toGrade.length ? "כל העבודות שנשארו נלקחו" : "הכל נבדק";
       primary = n > 0;
     }
     if (stage === "ret") { n = I.toReturn.length; label = n ? `החזר ${n} עבודות` : I.done.ret ? "הכל הוחזר" : "אין מה להחזיר"; primary = n > 0 && !I.toGrade.length; }
@@ -283,7 +333,12 @@
     if (owner && owner.who !== myName() && !spinning) { text = `אצל ${owner.who}`; disabled = true; primary = false; }
     const icon = spinning ? ICON.spin : ICON[stage === "ret" ? "ret" : stage];
     const why = LOCAL.on && stage === "grade" && !LOCAL.health?.claude ? ` title="${esc(NO_KEY)}"` : "";
-    return `<button class="btn ${primary ? "primary" : "secondary"} ${big ? "lg" : ""}" data-run="${stage}" ${disabled ? "disabled" : ""}${why}>${icon}${text}</button>`;
+    // בזמן בדיקה: כפתור עצירה. מה שכבר נשלח ל-Claude מסתיים ונשמר, והשאר נשאר "ממתינה לבדיקה"
+    const stopBtn = mine && stage === "grade" ? `<button class="btn danger ${big ? "lg" : ""}" data-act="grade-stop" ${run.stopping ? "disabled" : ""}
+      title="העבודות שכבר נשלחו ל-Claude יסתיימו ויישמרו. השאר יחכו ללחיצה הבאה על 'בדוק'">${run.stopping ? ICON.spin : ICON.stop}${run.stopping ? "עוצר…" : "עצור בדיקה"}</button>` : "";
+    const btn = `<button class="btn ${primary ? "primary" : "secondary"} ${big ? "lg" : ""}" data-run="${stage}" ${disabled ? "disabled" : ""}${why}
+      ${stage === "grade" ? `aria-expanded="${state.gradePick === A.id}"` : ""}>${icon}${text}</button>${stopBtn}`;
+    return stage === "grade" ? `<span class="pick-wrap">${btn}${disabled ? "" : gradePickHTML()}</span>` : btn;
   }
 
   function stageState(stage) {
@@ -401,7 +456,7 @@
     const gradedNow = I.graded.length;
     const marks = I.graded.reduce((a, s) => a + (s.q || []).filter((v, i) => v < rubric().questions[i]?.pts).length, 0);
     const results = {
-      pull: [`ZIP מ-${when(A.pulledAt)}`, "ה-ZIP שלם ונשמר בתיקיית המטלה", `${I.files} קבצים`, `${I.subs.length} הגשות, לכל הגשה מספר קבוע`],
+      pull: [`ZIP מ-${when(A.pulledAt)}`, "ה-ZIP שלם ונשמר במחשב שמשך", `${I.files} קבצים`, `${I.subs.length} הגשות, לכל הגשה מספר קבוע`],
       grade: [`${rubric().questions.length} שאלות, ${A.maxGrade || 100} נקודות`, `${gradedNow} עבודות`, `${marks} הורדות ניקוד`, `ממוצע ${avg(I.graded.map((s) => s.score)) ?? "—"}`],
       ret: [`${I.returned.length} עבודות מסומנות`, `${I.returned.length} עבודות עלו`, "מודל קלט את אותו מספר קבצים"],
     }[stage];
@@ -1063,7 +1118,7 @@
           <button class="btn primary small" data-act="claim-next" ${free ? "" : "disabled"}>סמן אותן עליי</button>
           ${mine.left ? `<button class="btn secondary small" data-act="release-mine">שחרר ${plural(mine.left, "עבודה אחת שלי", "עבודות שלי")} שלא נבדקו</button>` : ""}
         </div>
-        <p class="team-note">אפשר גם ללחוץ "קח" ליד עבודה בטבלה. הסימון נשמר בתיקיית OneDrive ומגיע לשאר הצוות תוך כמה שניות עד דקה. ${I.teamMode ? `"בדוק" בודק רק את העבודות שלך.` : `כל עוד אף אחד לא לקח עבודות, "בדוק" בודק את כולן.`}</p>
+        <p class="team-note">אפשר גם ללחוץ "קח" ליד עבודה בטבלה. הסימון נשמר בתיקיית OneDrive ומגיע לשאר הצוות תוך כמה שניות עד דקה. "בדוק" שואל כמה עבודות לבדוק, משלים מהפנויות ומסמן אותן עליך, ובודק רק את מה שעליך.</p>
       </div>
     </section>`;
   }
@@ -1071,13 +1126,14 @@
   function claimCell(s) {
     if (s.claim) {
       const mine = isMine(s);
-      const release = mine && s.status === "pulled" ? `<button class="btn ghost small" data-act="release" data-id="${esc(s.id)}" title="להחזיר את העבודה לפנויות">שחרר</button>` : "";
+      const release = mine ? `<button class="btn ghost small" data-act="release" data-id="${esc(s.id)}" title="להחזיר את העבודה לפנויות">שחרר</button>` : "";
       return `<span class="claim ${mine ? "mine" : ""}" title="${esc(`לקח/ה ${when(s.claim.at)}`)}">${mine ? "שלך" : esc(s.claim.who)}</span>${release}`;
     }
     if (s.status === "pulled" && LOCAL.me?.set) return `<button class="btn secondary small" data-act="claim" data-id="${esc(s.id)}">קח</button>`;
     return `<span class="muted">—</span>`;
   }
 
+  const GRADE_PAGE = 50;
   function gradeList() {
     const A = cur(), I = info(A);
     if (!I.subs.length) return `<section class="panel">${emptyPulled()}</section>`;
@@ -1087,7 +1143,12 @@
       .filter(([k, , c]) => k === "all" || c);
     if (!opts.some(([k]) => k === state.filter)) state.filter = "all";
     const shown = (s) => state.filter === "all" || (state.filter === "mine" ? isMine(s) : state.filter === "free" ? !s.claim && s.status === "pulled" : s.status === state.filter);
-    const rows = I.subs.filter((s) => shown(s) && matches(s, state.query.grade));
+    const found = I.subs.filter((s) => shown(s) && matches(s, state.query.grade));
+    // עד 1,000 שורות בטבלה מכבידות על הדף: מציגים חמישים, ו"עוד" מוסיף. משנים סינון, חיפוש או מטלה: חוזרים לחמישים
+    const key = `${A.id}|${state.filter}|${state.query.grade}`;
+    if (state.gradeKey !== key) { state.gradeKey = key; state.gradeShown = GRADE_PAGE; }
+    const rows = found.slice(0, state.gradeShown);
+    const more = found.length - rows.length;
     return `${teamHTML()}
       <section class="panel">
         <div class="panel-head">
@@ -1111,6 +1172,8 @@
           }).join("") || `<tr><td colspan="${5 + qs.length}"><div class="empty slim">אין עבודות שמתאימות לסינון.</div></td></tr>`}
           </tbody>
         </table></div>
+        ${more > 0 ? `<div class="panel-body more-row"><span class="muted">מוצגות <b class="num">${rows.length}</b> מתוך <b class="num">${found.length}</b></span>
+          <button class="btn secondary small" data-act="grade-more">הצג עוד ${Math.min(more, GRADE_PAGE)}</button></div>` : ""}
       </section>`;
   }
 
@@ -1179,7 +1242,8 @@
           <ol class="todo">
             <li><b>Claude בכרום מוריד ממודל.</b> בכרום שלך, עם ההתחברות שלך: עמוד ההגשות של המטלה ← "הורדת כל ההגשות", כש"הורדת הגשות בתיקיות" מסומן. הוא לא מקליד כלום ולא משנה שום הגדרה של המטלה. ה-ZIP נשמר בתיקיית ההורדות, והמערכת מחכה עד שההורדה מסתיימת.</li>
             <li><b>הורדתם בעצמכם?</b> אם בתיקיית ההורדות כבר מחכה ZIP ששמו נגמר ב-<code dir="ltr">-${esc(A.moodleId || "<מזהה המטלה>")}.zip</code>, המערכת קולטת אותו ולא מורידה שוב.</li>
-            <li><b>שומרת אותו בתיקיית המטלה</b> בשם <code dir="ltr">Moodle download &lt;date&gt;.zip</code>. כל הורדה נשמרת, כך שהורדה מאוחרת לא מוחקת את הקודמת.</li>
+            <li><b>שומרת אותו רק במחשב הזה</b>, בתיקייה <code dir="ltr">Moodle originals/Backup - Moodle downloads</code>, ולא ב-OneDrive (יש בו שמות, וכמה GB בכל משיכה). כל הורדה נשמרת, כך שהורדה מאוחרת לא מוחקת את הקודמת. בתיקיית המטלה נרשמת שורה ב-<code dir="ltr">Pull log.csv</code>: מתי, מי וכמה.</li>
+            <li><b>מושכים רק ממחשב שהתיקייה המשותפת מסונכרנת בו</b> (YallaLinearit ב-OneDrive). ממחשב עם עותק מקומי המשיכה נעצרת, כי טבלת המפתח שלו לא רואה מספרים שמחשב אחר כבר נתן.</li>
             <li><b>מחלצת אותו עם 7-Zip במחשב שלך בלבד.</b> התיקיות עם שמות הסטודנטים לא עולות ל-OneDrive.</li>
             <li><b>נותנת לכל סטודנט מספר קבוע</b> (0001, 0002…) ומעתיקה את הקבצים ל-"1 - Submissions to grade". מי שכבר נמשך שומר על המספר שלו, ומי שהגיש מאז מקבל את המספר הפנוי הבא.</li>
             <li><b>מעדכנת את טבלת המפתח</b> (מספר ← מזהה המשתתף במודל). זה המקום היחיד שמקשר מספר לסטודנט, והוא נשאר בתיקיית המטלה.</li>
@@ -1856,8 +1920,134 @@
     }
   }
 
+  // ---------- העתקות (copying/check.py): זוגות של הגשות שנראות כמו אותה עבודה. בלי Claude ובלי טוקנים ----------
+  // שכבה 0: אותו קובץ או אותו מקור (קובץ, מטא-דאטה). שכבה 1: אותה סריקה בקובץ אחר (עמודים)
+  const COPY_KIND = {
+    file: { layer: 0, text: "אותו קובץ בדיוק" },
+    doc_id: { layer: 0, text: "אותו מזהה מסמך פנימי: הקבצים נוצרו מאותו מסמך" },
+    author: { layer: 0, text: "אותו מחבר במטא-דאטה של ה-PDF" },
+    created: { layer: 0, text: "אותו רגע יצירה במטא-דאטה של ה-PDF" },
+    page: { layer: 1, text: "עמודים זהים: אותה סריקה או תמונה" },
+    text: { layer: 1, text: "עמוד מוקלד עם כמעט אותו טקסט" },
+  };
+  const COPY_LAYERS = [
+    { key: "l0", layer: 0, name: "אותו קובץ או אותו מקור", what: "קובץ זהה אצל שני מספרים, או PDF שנוצר מאותו מסמך (מזהה פנימי, מחבר, רגע יצירה)" },
+    { key: "l1", layer: 1, name: "אותו עמוד", what: "סריקה שנראית כמעט זהה לעמוד בהגשה אחרת (גם אחרי דחיסה או צילום מסך), או עמוד מוקלד עם אותו טקסט נדיר" },
+  ];
+  const inLayer = (p, layer) => p.reasons.some((r) => COPY_KIND[r.kind]?.layer === layer);
+  const pairKey = (p) => `${p.a}-${p.b}`;
+
+  // שתי ההגשות זו לצד זו: העמודים שנמצאו זהים, ובלי עמודים זהים העמוד הראשון של כל אחת
+  function copyCompareHTML(A, p) {
+    const found = p.reasons.find((r) => r.pages), pages = found?.pages || [[1, 1, null]];
+    const score = (d) => (d == null ? "" : found.kind === "text" ? ` · ${d}% מהטקסט הנדיר משותף` : ` · ${d ? `${d} ביטים שונים מתוך 256` : "זהה"}`);
+    const sub = (id) => A.subs.find((s) => s.id === id);
+    const open = (id) => {
+      const f = sub(id) && origFiles(sub(id))[0];
+      return f ? `<a class="link" href="${fileUrl(f)}" target="_blank" rel="noopener">${ICON.file}פתח את ${id}</a>` : "";
+    };
+    return `<div class="cp-compare">
+      <div class="cp-cols cp-cols-head"><div><b class="num">${p.a}</b>${open(p.a)}</div><div><b class="num">${p.b}</b>${open(p.b)}</div></div>
+      ${pages.slice(0, 4).map(([pa, pb, d]) => `<div class="cp-cols">
+        <figure><img loading="lazy" src="${pageUrl(A, p.a, pa)}" alt="עמוד ${pa} בהגשה ${p.a}"><figcaption>עמוד ${pa}</figcaption></figure>
+        <figure><img loading="lazy" src="${pageUrl(A, p.b, pb)}" alt="עמוד ${pb} בהגשה ${p.b}"><figcaption>עמוד ${pb}${score(d)}</figcaption></figure>
+      </div>`).join("")}
+      ${pages.length > 4 ? `<p class="muted">ועוד ${pages.length - 4} זוגות של עמודים זהים</p>` : ""}
+    </div>`;
+  }
+
+  function copyPairHTML(A, p) {
+    const k = pairKey(p), isOpen = state.copy.open === k;
+    const reasons = p.reasons.map((r) => COPY_KIND[r.kind]?.text + (r.pages ? ` (${r.pages.map(([a, b]) => (a === b ? `עמוד ${a}` : `${a}↔${b}`)).join(", ")})` : ""));
+    return `<article class="cp-pair ${isOpen ? "open" : ""}">
+      <button type="button" class="cp-pair-head" data-copy-open="${k}" aria-expanded="${isOpen}">
+        <span class="cp-nums num">${p.a}<i>↔</i>${p.b}</span>
+        <span class="tag ${p.level === "strong" ? "bad" : "warn"}">${p.level === "strong" ? "חשד חזק" : "כדאי להסתכל"}</span>
+        <span class="cp-why">${reasons.map(esc).join(" · ")}</span>
+        <span class="cp-chev" aria-hidden="true">${ICON.chev}</span>
+      </button>
+      ${isOpen ? copyCompareHTML(A, p) : ""}
+    </article>`;
+  }
+
+  function copyingView() {
+    const A = cur();
+    if (!A) return offlineHTML();
+    const C = A.copying, run = state.copy, pairs = C?.pairs || [];
+    const shown = run.filter === "all" ? pairs : pairs.filter((p) => inLayer(p, COPY_LAYERS.find((l) => l.key === run.filter).layer));
+    const strong = pairs.filter((p) => p.level === "strong").length;
+    const button = (cls) => `<button type="button" class="btn ${cls}" data-copy-run ${run.running || !LOCAL.on ? "disabled" : ""}>
+      ${run.running ? ICON.spin : ICON.search}${run.running ? esc(run.progress || "בודק…") : C ? "בדוק שוב" : "בדוק העתקות"}</button>`;
+    const head = `<div class="page-head cp-top">
+        <div><h1>העתקות</h1>
+          <p>משווה את ההגשות זו לזו ומחפש עבודות שהן בעצם אותה עבודה. בלי Claude ובלי טוקנים: רק השוואה של הקבצים במחשב.</p>
+          ${C ? `<p class="muted">נבדק ${when(C.checkedAt)} · ${plural(C.checked, "הגשה אחת", "הגשות")}${C.by ? ` · ${esc(C.by)}` : ""}</p>` : ""}</div>
+        ${C ? button("secondary") : ""}
+      </div>
+      ${C?.stale ? `<div class="notice">${ICON.warn}<div>הגיעו הגשות חדשות או שקבצים השתנו מאז הבדיקה. כדאי לבדוק שוב: רק הקבצים החדשים ייקראו.</div></div>` : ""}`;
+    if (!A.subs.length) return `${head}<section class="panel">${emptyPulled()}</section>`;
+    if (!C) return `${head}<section class="rv-empty cp-empty">${ICON.search}<b>עוד לא נבדק</b>
+      <p>הבדיקה משווה כל הגשה לכל האחרות: קבצים זהים, PDF שנוצר מאותו מסמך, ועמודים שהם אותה סריקה.<br>בפעם הראשונה זה לוקח כמה דקות. אחר כך רק הגשות חדשות נקראות.</p>
+      ${button("primary")}</section>`;
+    const layers = `<div class="cp-layers" role="group" aria-label="סוג החשד">
+      <button type="button" class="cp-layer" data-copy-filter="all" aria-pressed="${run.filter === "all"}">
+        <span class="cp-layer-n num">${pairs.length}</span><span><b>כל החשדות</b><small>${strong ? `${strong} מהם חשד חזק` : "אין חשד חזק"}</small></span></button>
+      ${COPY_LAYERS.map((l) => `<button type="button" class="cp-layer" data-copy-filter="${l.key}" aria-pressed="${run.filter === l.key}">
+        <span class="cp-layer-n num">${pairs.filter((p) => inLayer(p, l.layer)).length}</span>
+        <span><b><span class="cp-layer-no">שכבה ${l.layer}</span>${l.name}</b><small>${l.what}</small></span></button>`).join("")}
+    </div>`;
+    const list = shown.length
+      ? `<div class="cp-list">${shown.map((p) => copyPairHTML(A, p)).join("")}</div>`
+      : `<section class="rv-empty">${ICON.check}<b>לא נמצא חשד להעתקה</b><p>${pairs.length ? "אין זוגות חשודים בשכבה הזו." : `אף הגשה לא זהה לאחרת, מתוך ${plural(C.checked, "הגשה אחת", "הגשות")}.`}</p></section>`;
+    return `${head}${layers}${list}${copyRepeatedHTML(A, C.repeated || [])}
+      <p class="cp-foot muted">זה רק חשד: ההחלטה אם זו העתקה היא של אדם. העתקה בכתב יד אחר (חבר שהעתיק את הפתרון בכתב ידו) לא נתפסת כאן.</p>`;
+  }
+
+  // עמודים שחוזרים אצל הרבה הגשות: בדרך כלל דף שאלות, אבל גם פתרון שעבר בקבוצה. לא זוגות: אדם מחליט
+  function copyRepeatedHTML(A, groups) {
+    if (!groups.length) return "";
+    return `<section class="panel cp-repeated">
+      <div class="panel-head"><h3>עמודים שחוזרים אצל הרבה הגשות</h3><span class="meta">בדרך כלל דף שאלות. אם זה פתרון, זו העתקה של קבוצה</span></div>
+      <div class="panel-body">${groups.slice(0, 10).map((g) => {
+        const [n, pg] = g.pages[0];
+        return `<div class="cp-group">
+          <img loading="lazy" src="${pageUrl(A, n, pg)}" alt="עמוד ${pg} בהגשה ${n}">
+          <div><b>${g.numbers} הגשות</b> <span class="muted">${g.kind === "text" ? "אותו טקסט" : "אותה סריקה"}</span>
+            <p class="num">${g.pages.slice(0, 40).map(([x, y]) => `${x}${y > 1 ? `/${y}` : ""}`).join(" · ")}${g.pages.length > 40 ? " …" : ""}</p></div>
+        </div>`;
+      }).join("")}</div>
+    </section>`;
+  }
+
+  // "בדוק העתקות": השרת משווה את ההגשות ברקע (api/copying), והאתר שואל מה המצב עד שזה נגמר
+  async function runCopying() {
+    const A = cur();
+    if (!A || state.copy.running || !LOCAL.on) return;
+    Object.assign(state.copy, { running: true, progress: "" });
+    render();
+    try {
+      await api("api/copying", { method: "POST", body: JSON.stringify({ course: A.courseFolder, assignment: A.folder }) });
+      let job;
+      for (;;) {
+        await new Promise((r) => setTimeout(r, 1000));
+        job = await api("api/copying");
+        state.copy.progress = job.total ? `קורא קבצים ${job.done} מתוך ${job.total}…` : "בודק…";
+        if (route() === "/copying") render();
+        if (!job.running) break;
+      }
+      state.copy.running = false;
+      await loadLocal();
+      toast(job.error || job.summary, job.error ? ICON.warn : ICON.check);
+    } catch (e) {
+      state.copy.running = false;
+      render();
+      toast(e.message, ICON.warn);
+    }
+  }
+
   const views = {
     "/review": () => reviewView(),
+    "/copying": () => copyingView(),
     "/"() {
       const A = cur(), I = info(A);
       return `
@@ -2003,6 +2193,9 @@
     const rb = $("#nav-review-badge"), waiting = A.subs.filter(needsReview).length;
     rb.textContent = waiting || "";
     rb.title = waiting ? `${waiting} עבודות מחכות לבדיקה ידנית` : "";
+    const cb = $("#nav-copy-badge"), strong = (A.copying?.pairs || []).filter((p) => p.level === "strong").length;
+    cb.textContent = strong || "";
+    cb.title = strong ? `${strong} זוגות עם חשד חזק להעתקה` : "";
     const I = info(A), run = state.run[A.id];
     $$(".nav-stage").forEach((a) => {
       const st = a.dataset.stage, done = I.done[st];
@@ -2063,6 +2256,14 @@
     if (t.closest("a[data-open-local]")) store.set("openLocal", true);  // מהפעם הבאה הקישור הציבורי מעביר לכאן לבד
     const runBtn = t.closest("[data-run]");
     if (runBtn) { runStage(runBtn.dataset.run); return; }
+    const gChip = t.closest("[data-grade-chip]");
+    if (gChip) { state.gradeCount = Number(gChip.dataset.gradeChip); store.set("gradeCount", state.gradeCount); render(); return; }
+    if (state.gradePick && !t.closest(".grade-pick")) { state.gradePick = null; render(); }  // לחיצה מחוץ לחלונית סוגרת אותה
+    if (t.closest("[data-copy-run]")) { runCopying(); return; }
+    const cpFilter = t.closest("[data-copy-filter]");
+    if (cpFilter) { state.copy.filter = cpFilter.dataset.copyFilter; state.copy.open = null; render(); return; }
+    const cpOpen = t.closest("[data-copy-open]");
+    if (cpOpen) { const k = cpOpen.dataset.copyOpen; state.copy.open = state.copy.open === k ? null : k; render(); return; }
 
     // לוח הבקרה: טעות נפוצה שנפתחה
     const mk = t.closest("[data-mistake]");
@@ -2101,6 +2302,7 @@
       const a = act.dataset.act, id = act.dataset.id;
       if (a === "close") closeDrawer();
       if (a === "grade-one") gradeOne(id);
+      if (a === "grade-stop") stopLocalGrade();
       if (a === "open-folder") openFolder("folder");
       if (a === "open-inbox") openFolder("inbox");
       if (a === "open-upload") openFolder("upload");
@@ -2119,9 +2321,12 @@
       if (a === "rename") { state.renaming = true; state.nameDraft = null; render(); $("#my-name")?.focus(); }
       if (a === "rename-cancel") { state.renaming = false; state.nameDraft = null; render(); }
       if (a === "claim") changeClaims({ take: [id] });
+      if (a === "grade-more") { state.gradeShown += GRADE_PAGE * 2; render(); return; }
       if (a === "release") changeClaims({ release: [id] });
       if (a === "claim-next") changeClaims({ next: Math.max(1, state.teamCount || 1) });
       if (a === "release-mine") changeClaims({ release: info().toGrade.filter(isMine).map((s) => s.id) });
+      if (a === "grade-pick-go") gradePicked();
+      if (a === "grade-pick-close") { state.gradePick = null; render(); }
       if (a === "task-take" || a === "task-release") changeTask(id, act.dataset.stage, a === "task-take");
       return;
     }
@@ -2172,6 +2377,8 @@
 
   document.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && reviewSub()) { e.preventDefault(); saveReview(state.review.id); return; }
+    if (e.key === "Enter" && e.target.matches?.("[data-grade-count]")) { gradePicked(); return; }
+    if (e.key === "Escape" && state.gradePick) { state.gradePick = null; render(); return; }
     if (e.key === "Escape") { closeDrawer(); $("#sidebar").classList.remove("open"); }
     if (e.key === "Enter" && e.target.matches("[data-open]")) openDrawer(e.target.dataset.open);
     if (e.key === "Enter" && e.target.matches("[data-assign]")) e.target.click();
@@ -2206,6 +2413,14 @@
     if (t.dataset.query) { state.query[t.dataset.query] = t.value; render(); return; }
     if (t.dataset.moodleId) { state.moodleDraft[t.dataset.moodleId] = t.value; return; }
     if (t.matches("[data-name-draft]")) { state.nameDraft = t.value; return; }
+    if (t.matches("[data-grade-count]")) {
+      state.gradeCount = Math.max(1, parseInt(t.value, 10) || 1);
+      store.set("gradeCount", state.gradeCount);
+      // רק התווית של הכפתור משתנה, בלי לצייר מחדש: הסמן נשאר בשדה
+      const go = $("[data-act=grade-pick-go]");
+      if (go) go.innerHTML = `${ICON.grade}בדוק ${Math.min(state.gradeCount, Number(t.max) || state.gradeCount)}`;
+      return;
+    }
     if (t.matches("[data-team-count]")) { state.teamCount = Math.max(1, parseInt(t.value, 10) || 1); store.set("teamCount", state.teamCount); return; }
     if (t.dataset.instr) {
       const st = t.dataset.instr;
@@ -2307,6 +2522,7 @@
   async function loadLocal() {
     try {
       const [data, health] = await Promise.all([api("api/state"), api("api/health").catch(() => null)]);
+      LOCAL.sig = JSON.stringify(data);
       D.courses.splice(0, D.courses.length, ...data.courses);
       D.assignments.splice(0, D.assignments.length, ...data.assignments.map((a) => ({
         ...a, phase: a.subs.length ? "current" : "new", gradedAt: a.gradedAt || null, returnedAt: a.returnedAt || null, lastFresh: null,
@@ -2325,6 +2541,13 @@
       LOCAL.me = data.me || null;
       if (health?.checking) followHealth();
       if (!LOCAL.polling) LOCAL.sending = data.sending || null;
+      // בדיקה שרצה כשהדף נטען: מציגים את ההתקדמות ואת כפתור העצירה
+      const g = data.grading;
+      const gA = g?.running && D.assignments.find((a) => a.courseFolder === g.course && a.folder === g.assignment);
+      if (gA && !LOCAL.gradeFollow && !state.run[gA.id]) {
+        const run = (state.run[gA.id] = { stage: "grade", steps: STAGES.grade.steps.map((_, i) => (i === 0 ? "done" : i === 1 ? "running" : "pending")) });
+        setTimeout(() => followGrade(gA, run), 0);
+      }
       if (!D.assignments.some((a) => a.id === state.assignmentId)) {
         const first = D.assignments.find((a) => a.subs.length) || D.assignments[0];
         state.assignmentId = first?.id;
@@ -2339,6 +2562,8 @@
     if (!Object.values(state.run).some((r) => r.stage === "pull")) resumePull();
   }
 
+  // מה שנמשך, נבדק או הועלה במחשב אחר (ההגשות מגיעות דרך OneDrive) מופיע לבד, בלי רענון: כל 20 שניות וכשחוזרים
+  // ללשונית. רק כשהלשונית גלויה, שום דבר לא רץ כאן ולא מקלידים, ומציירים מחדש רק אם משהו בתיקייה השתנה
   // "משוך הגשות" אמיתי: השרת מושך ממודל (אם יש טוקן) ומקובצי ZIP בקליטה, ישר לתיקיית OneDrive
   async function runLocalPull() {
     const A = cur();
@@ -2429,25 +2654,53 @@
         model: c.model, parallel: c.parallel, sendSolution: c.sendSolution, instructions: state.instr.grade,
       }) });
       run.steps[0] = "done"; run.steps[1] = "running";
-      let job;
-      for (;;) {
-        await new Promise((r) => setTimeout(r, 1500));
-        job = await api("api/grade");
-        const done = Object.keys(job.done || {}).length;
-        run.progress = `נבדקו ${done} מתוך ${job.total}…`;
-        if (done) { run.steps[1] = "done"; run.steps[2] = "running"; }
-        render();
-        if (!job.running) break;
-      }
-      delete state.run[A.id];
-      await loadLocal();
-      refreshDrawer();
-      const failed = Object.keys(job.report?.failed || {}).length;
-      toast(job.error || `הבדיקה הסתיימה: ${job.summary}`, job.error || failed ? ICON.warn : ICON.check);
+      await followGrade(A, run);
     } catch (e) {
       delete state.run[A.id];
       await loadLocal();
       refreshDrawer();
+      toast(e.message, ICON.warn);
+    }
+  }
+
+  // שואל את השרת על הבדיקה שרצה עד שהיא נגמרת. גם בדיקה שהתחילה לפני שהדף נטען (ואז אפשר לעצור אותה מכאן)
+  async function followGrade(A, run) {
+    if (LOCAL.gradeFollow) return;
+    LOCAL.gradeFollow = true;
+    let job;
+    try {
+      for (;;) {
+        await new Promise((r) => setTimeout(r, 1500));
+        job = await api("api/grade");
+        const done = Object.keys(job.done || {}).length;
+        run.stopping = !!job.stopping;
+        run.progress = job.stopping ? `עוצר… (נבדקו ${done})` : `נבדקו ${done} מתוך ${job.total}…`;
+        if (done) { run.steps[1] = "done"; run.steps[2] = "running"; }
+        render();
+        if (!job.running) break;
+      }
+    } finally {
+      LOCAL.gradeFollow = false;
+      delete state.run[A.id];
+    }
+    await loadLocal();
+    refreshDrawer();
+    const failed = Object.keys(job.report?.failed || {}).length, stopped = (job.report?.stopped || []).length;
+    toast(job.error || `${stopped ? "הבדיקה נעצרה" : "הבדיקה הסתיימה"}: ${job.summary}`, job.error || failed || stopped ? ICON.warn : ICON.check);
+  }
+
+  async function stopLocalGrade() {
+    const A = cur(), run = A && state.run[A.id];
+    if (!run || run.stage !== "grade" || run.stopping) return;
+    run.stopping = true;
+    run.progress = "עוצר…";
+    render();
+    try {
+      await api("api/grade/stop", { method: "POST", body: "{}" });
+      toast("הבדיקה נעצרת: העבודות שכבר נשלחו ל-Claude יסתיימו ויישמרו");
+    } catch (e) {
+      run.stopping = false;
+      render();
       toast(e.message, ICON.warn);
     }
   }
@@ -2508,6 +2761,8 @@
   let changesBusy = false, lastSig = null;
   async function pollChanges() {
     if (changesBusy || !LOCAL.on || !LOCAL.health?.root || document.hidden) return;
+    // לא באמצע ריצה ולא בזמן הקלדה: הסיבוב שאחרי יטען
+    if (LOCAL.polling || Object.keys(state.run).length || document.activeElement?.matches?.("input, textarea, select")) return;
     changesBusy = true;
     try {
       const { sig } = await api("api/changes");
@@ -2576,5 +2831,6 @@
     render();
     if (!ON_LOCAL_HOST) setInterval(() => { if (!LOCAL.on) connect(); }, 5000);
     setInterval(pollChanges, CHANGES_POLL_MS);
+    document.addEventListener("visibilitychange", pollChanges);
   })();
 })();

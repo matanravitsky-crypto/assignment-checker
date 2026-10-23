@@ -26,6 +26,8 @@ def fresh_dashboard_state(monkeypatch, tmp_path):
     actions._sim_login_at = None
     actions._login, actions._install = actions._Background(actions.LOGIN_MINUTES), actions._Background(actions.INSTALL_MINUTES)
     monkeypatch.delenv("MOODLE_READY", raising=False)
+    # the local work folder (extracted originals, the computer's pull lock): never the real one in a test
+    monkeypatch.setenv("ASSIGNMENT_WORK", str(tmp_path / "Moodle originals"))
     monkeypatch.setenv("GRADER_NAME", "מתן")
     # the local work folder (extracted originals, the computer's pull lock): never the real one in a test
     monkeypatch.setenv("ASSIGNMENT_WORK", str(tmp_path / "Moodle originals"))
