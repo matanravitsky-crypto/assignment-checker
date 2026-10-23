@@ -162,6 +162,15 @@ def test_pull_time_left_follows_the_pace_of_the_phase():
     assert actions._eta("parts", 5, 15, 40, 4, waiting=60) == 90  # never below the 9 parts not started yet
 
 
+def test_pull_time_left_follows_the_pace_of_the_phase():
+    assert actions._eta("parts", 1, 15, 0, 0) == 14 * actions.PART_S  # no pace yet: about PART_S a part
+    assert actions._eta("parts", 5, 15, 40, 4) == 100  # 4 parts in 40 s → 10 more in 100 s
+    assert actions._eta("extract", 50, 100, 30, 50) == 30
+    assert actions._eta("extract", 0, 100, 0, 0) is None  # nothing to go by
+    assert actions._eta("parts", 3, 0, 20, 2) is None  # total not known
+    assert actions._eta("number", 10, 10, 5, 10) == 0
+
+
 @pytest.mark.parametrize("error, expect", [
     (FileNotFoundError("7-Zip is not installed (winget install 7zip.7zip)"), "7-Zip לא מותקן"),
     (FileNotFoundError(f"No ZIP ending in -{MID}.zip in Downloads"), "תיקיית ההורדות"),
@@ -366,6 +375,17 @@ def test_pull_takes_a_zip_that_was_downloaded_by_hand(root, monkeypatch):
     assert seen == [by_hand] and fake.calls == []  # לא מורידים שוב
 
 
+def test_pull_refuses_an_empty_key_before_opening_chrome(root, monkeypatch):
+    """טבלת מפתח ריקה כשכבר יש הגשות: משיכה הייתה נותנת לכולם מספרים חדשים. עוצרים לפני כרום, בלי לגעת בתיקייה."""
+    from moodle import ingest
+    (root / COURSE / HW / paths.KEY).write_text("", encoding="utf-8")
+    fake = FakeDownloader(ingest.downloads_dir())
+    monkeypatch.setattr(actions, "_make_downloader", lambda: fake)
+    with pytest.raises(actions.UserError, match="טבלת המפתח של המטלה הזו ריקה או פגומה"):
+        actions.pull(root, COURSE, HW)
+    assert fake.calls == [] and not (root / COURSE / HW / actions.LOCK_FILE).exists()
+
+
 def test_pull_explains_a_download_that_did_not_start(root, monkeypatch):
     from moodle import ingest
     fake = FakeDownloader(ingest.downloads_dir(), {"status": "needs_login", "message": "Moodle מבקש התחברות."})
@@ -497,3 +517,22 @@ def test_a_pull_without_folders_is_explained_in_hebrew(root, monkeypatch):
     monkeypatch.setattr("moodle.ingest.ingest", flat)
     with pytest.raises(actions.UserError, match="בלי תיקייה לכל סטודנט"):
         actions.pull(root, COURSE, HW)
+
+
+def test_the_site_dates_every_kind_of_kept_download(root):
+    """ingest keeps every download as "Moodle download <stamp>" (a ZIP, or a folder of parts); the site shows when."""
+    from moodle import ingest, status
+    a = actions.find_assignment(root, COURSE, HW)
+    for p in a.dir.glob(f"{paths.DOWNLOAD_PREFIX} *"):
+        p.unlink()
+    (a.dir / f"{paths.DOWNLOAD_PREFIX} 2026-10-22 09-30.zip").write_bytes(b"old name, to the minute")
+    stamp = ingest._free_stamp(a.dir)  # what ingest names the next one
+    (a.dir / f"{paths.DOWNLOAD_PREFIX} {stamp}").mkdir()  # in parts
+    again = ingest._free_stamp(a.dir)
+    assert again == f"{stamp} (2)"
+    (a.dir / f"{paths.DOWNLOAD_PREFIX} {again}.zip").write_bytes(b"same second")
+    (a.dir / f"{paths.DOWNLOAD_PREFIX} 2026-10-23 08-00-00 (incomplete).zip").write_bytes(b"not a kept download")
+    times = actions._downloads(a)
+    assert len(times) == 3 and times[0] == "2026-10-22T09:30" and times == sorted(times)
+    assert actions._last_download(a) == times[-1] != "2026-10-22T09:30"
+    assert len(status.status(a.dir)["downloads"]) == 4  # moodle status lists the folder of parts too

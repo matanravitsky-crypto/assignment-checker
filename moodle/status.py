@@ -49,6 +49,8 @@ def status(assignment_dir: Path) -> dict:
         "grades_rows": len(grades.read(assignment_dir)) if grades.files(assignment_dir) else None,
         "marked": count_files(assignment_dir / paths.MARKED),
         "upload_files": count_files(assignment_dir / paths.UPLOAD),
-        "downloads": sorted(p.name for p in assignment_dir.glob(f"{paths.DOWNLOAD_PREFIX} *.zip")),
+        # a download in one ZIP, or in parts (a folder of them)
+        "downloads": sorted(p.name for p in assignment_dir.glob(f"{paths.DOWNLOAD_PREFIX} *")
+                            if p.suffix.lower() == ".zip" or p.is_dir()),
         "unsafe_names": unsafe_names(assignment_dir) if assignment_dir.exists() else [],
     }

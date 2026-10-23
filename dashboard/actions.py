@@ -74,6 +74,10 @@ def _hebrew_error(e: Exception, mid: str) -> str:
     if moodle_ingest.NO_FOLDERS in text or "not in a folder per student" in text:  # before "incomplete" and "7-Zip"
         return ("ההגשות הגיעו ממודל בלי תיקייה לכל סטודנט, ולכן לא נקלטו: שום הגשה ושום מספר לא השתנו. "
                 "בדף ההגשות במודל מסמנים \"הורדת הגשות המאורגנות לתיקיות לפי סטודנט\" (ליד \"פעולות\") ומושכים שוב.")
+    if moodle_anonymize.KEY_EMPTY in text:
+        return ("טבלת המפתח של המטלה הזו ריקה או פגומה, אבל כבר יש בה הגשות ממוספרות. משיכה עכשיו הייתה נותנת לכל "
+                "סטודנט מספר חדש, וציונים היו מגיעים לסטודנט הלא נכון, ולכן שום דבר לא השתנה. צריך לשחזר את "
+                f"\"{paths.KEY}\" (למשל מהגרסאות הקודמות של הקובץ ב-OneDrive) לפני שמושכים.")
     if moodle_ingest.INCOMPLETE in text:  # before "7-Zip": this message names 7-Zip too
         return ("ה-ZIP שהגיע ממודל לא שלם: מודל עצר את ההורדה באמצע. שום הגשה ושום מספר לא השתנו. "
                 "לוחצים שוב \"משוך הגשות\" כדי להוריד מחדש.")
@@ -269,8 +273,9 @@ def _do_pull(root: Path, course: str, assignment: str, moodle_id: str | None) ->
                         "לא מושכים עד שמישהו בודק לאיזה סטודנט שייך כל קובץ (לפי טבלת המפתח) ומוחק את העותק.")
     _use_root(root)
     try:
+        moodle_anonymize.check_key(a.dir)  # before downloading anything: a broken key would renumber everyone
         target = paths.find_assignment(mid)  # the ZIP of this id goes to this folder, and only to it
-    except paths.TwoFolders as e:
+    except ValueError as e:  # paths.TwoFolders is one too
         raise UserError(_hebrew_error(e, mid)) from e
     if target is None or target.resolve() != a.dir.resolve():
         raise UserError(f"מזהה המודל {mid} לא מוביל לתיקייה של {a.title}, ולכן לא משכתי. כדאי לרענן את הדף.")
@@ -1269,13 +1274,20 @@ def _note_fields(note: dict, res: dict) -> dict:
 
 # ---------- מצב לאתר ----------
 # "Moodle download <date>.zip", או תיקייה "Moodle download <date>" של הורדה בחלקים
-_DOWNLOAD = re.compile(re.escape(paths.DOWNLOAD_PREFIX) + r" (\d{4}-\d{2}-\d{2} \d{2}-\d{2})(?:\.zip)?$")
+# "Moodle download 2026-10-23 11-15" (old), "... 11-15-07", "... 11-15-07 (2)", a ZIP or a folder of parts
+_DOWNLOAD = re.compile(re.escape(paths.DOWNLOAD_PREFIX)
+                       + r" (\d{4}-\d{2}-\d{2} \d{2}-\d{2}(?:-\d{2})?)(?: \(\d+\))?(?:\.zip)?$")
+
+
+def _download_time(stamp: str) -> datetime:
+    return datetime.strptime(stamp, "%Y-%m-%d %H-%M-%S" if len(stamp) > 16 else "%Y-%m-%d %H-%M")
 
 
 def _downloads(a: folder_view.Assignment) -> list[str]:
     """מתי נמשכו ה-ZIP-ים של המטלה (כל הורדה נשמרת בתיקיית המטלה), מהישן לחדש."""
-    stamps = sorted(m.group(1) for p in a.dir.glob(f"{paths.DOWNLOAD_PREFIX} *") if (m := _DOWNLOAD.match(p.name)))
-    return [datetime.strptime(s, "%Y-%m-%d %H-%M").isoformat(timespec="minutes") for s in stamps]
+    times = sorted(_download_time(m.group(1)) for p in a.dir.glob(f"{paths.DOWNLOAD_PREFIX} *")
+                   if (m := _DOWNLOAD.match(p.name)))
+    return [t.isoformat(timespec="minutes") for t in times]
 
 
 def _last_download(a: folder_view.Assignment) -> str | None:
