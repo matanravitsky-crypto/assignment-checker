@@ -642,6 +642,7 @@ textarea:focus, .field input:focus, .field select:focus, .rreq:focus, .rpts inpu
 .send-warn { margin: 0; display: flex; align-items: flex-start; gap: 8px; padding: 10px 12px; border-radius: var(--r-md); background: var(--warn-soft); font-size: 14px; font-weight: 600; }
 .send-warn svg { width: 18px; height: 18px; flex: none; margin-top: 2px; color: var(--warn); }
 .send-actions { display: flex; gap: 10px; flex-wrap: wrap; padding-top: 4px; }
+.pull-progress .send-bar i { transition: width .8s ease; }
 .conn-list { list-style: none; margin: 0 0 8px; padding: 0; display: flex; flex-direction: column; gap: 8px; font-size: 14px; }
 .check.muted { color: var(--ink-3); }
 .check.muted::before { content: "\2022"; margin-inline-end: 8px; }

@@ -133,6 +133,8 @@ class Handler(SimpleHTTPRequestHandler):
                                "checking": st is None and via is None})
         if url.path == "/api/upload":
             return self._json(actions.send_status())
+        if url.path == "/api/pull/progress":  # בזמן שהמשיכה רצה (POST /api/pull עונה רק בסוף): השלב, ומספרים בלבד
+            return self._json(actions.pull_progress())
         if url.path == "/api/moodle":
             return self._json(actions.moodle_status())
         if url.path == "/api/ready":

@@ -36,6 +36,36 @@ def summary_name(mid: str, run: str) -> str:
     return f"ECS pull {mid} {run}.json"
 
 
+def plan_name(mid: str, run: str) -> str:
+    """הקובץ שהסקריפט שומר מיד אחרי שאסף מי הגיש: כמה סטודנטים וכמה חלקים, בשביל מד ההתקדמות."""
+    return f"ECS pull {mid} {run} plan.json"
+
+
+def _read_json(path: Path) -> dict | None:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None  # עוד לא שם, או שכרום עוד כותב אותו
+
+
+def count_students(zip_path: Path) -> int:
+    return len(moodle_ingest.participants_in(zip_path))
+
+
+def _students(zips: list[Path], cache: dict) -> int:
+    """כמה סטודנטים יש בחלקים שכבר הגיעו (7-Zip מונה את התיקיות). חלק שכרום עוד כותב לא נספר עדיין."""
+    total = 0
+    for p in zips:
+        try:
+            key = (p.name, p.stat().st_size)
+            if key not in cache:
+                cache[key] = count_students(p)
+            total += cache[key]
+        except Exception:
+            continue
+    return total
+
+
 def _zips(mid: str, downloads: Path, since: float) -> list[Path]:
     pattern = re.compile(rf"-{re.escape(str(mid))}( \(\d+\))?$")
     return [p for p in downloads.glob("*.zip") if pattern.search(p.stem) and moodle_ingest._mtime(p) >= since - 2]
@@ -62,30 +92,34 @@ def match(summary: dict, mid: str, downloads: Path, since: float) -> list[Path] 
 
 
 def wait(mid: str, run: str, since: float, downloads: Path | None = None, keep_alive: Callable[[], None] = lambda: None,
-         sleep: Callable[[float], None] = time.sleep) -> tuple[list[Path], dict]:
-    """מחכה לקובץ הסיכום של הריצה, ומחזיר (ה-ZIPים של החלקים, הסיכום). keep_alive נקרא בכל סיבוב (מחדש את הנעילה)."""
+         sleep: Callable[[float], None] = time.sleep,
+         on_progress: Callable[[int, int | None], None] = lambda done, total: None) -> tuple[list[Path], dict]:
+    """מחכה לקובץ הסיכום של הריצה, ומחזיר (ה-ZIPים של החלקים, הסיכום). keep_alive נקרא בכל סיבוב (מחדש את הנעילה).
+
+    on_progress(כמה סטודנטים כבר הגיעו, מתוך כמה או None כל עוד הסקריפט לא שמר את התוכנית) נקרא בכל סיבוב."""
     mid = str(mid)
     downloads = downloads or moodle_ingest.downloads_dir()
-    path = downloads / summary_name(mid, run)
+    path, plan_path = downloads / summary_name(mid, run), downloads / plan_name(mid, run)
     start = last_change = time.monotonic()
     seen = None
-    summary, summary_at = None, None
+    summary, summary_at, plan, counted = None, None, None, {}
     while True:
         keep_alive()
         now = time.monotonic()
-        if summary is None and path.exists():
-            try:
-                summary = json.loads(path.read_text(encoding="utf-8"))
-                summary_at = now
-            except (OSError, ValueError):
-                pass  # כרום עוד כותב אותו
+        if plan is None:
+            plan = _read_json(plan_path)
+        if summary is None:
+            summary = _read_json(path)
+            summary_at = now if summary is not None else None
+        total = (plan or summary or {}).get("users") or None
+        on_progress(min(_students(_zips(mid, downloads, since), counted), total or 10**9), total)
         if summary is not None:
             if summary.get("stage") != "done":
-                path.unlink(missing_ok=True)
+                _forget(path, plan_path)
                 raise PartsError(_stopped(summary.get("error") or ""))
             zips = match(summary, mid, downloads, since)
             if zips:
-                path.unlink(missing_ok=True)  # שלנו, בלי נתונים של סטודנטים
+                _forget(path, plan_path)  # שלנו, בלי נתונים של סטודנטים
                 return zips, summary
             if now - summary_at > SETTLE_S:
                 raise PartsError("ההורדה בחלקים הסתיימה, אבל לא כל החלקים נמצאו בתיקיית ההורדות. מושכים שוב.")
@@ -97,6 +131,11 @@ def wait(mid: str, run: str, since: float, downloads: Path | None = None, keep_a
                 raise PartsError("ההורדה בחלקים לא הסתיימה בזמן (אולי הלשונית של מודל נסגרה, או שכרום שואל אם "
                                  "לאפשר למודל להוריד כמה קבצים: עונים \"אפשר\"). מושכים שוב.")
         sleep(POLL_S)
+
+
+def _forget(*files: Path) -> None:
+    for f in files:
+        f.unlink(missing_ok=True)
 
 
 def _stopped(error: str) -> str:

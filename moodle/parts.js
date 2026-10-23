@@ -11,6 +11,7 @@
 //      (action=gradingbatchoperation, operation=downloadselected), ומקבל אותו לזיכרון של הדף.
 //   3. בודק שה-ZIP שלם (רשומת הסיום של ZIP והתיקייה המרכזית) וסופר בו את התיקיות של הסטודנטים. ZIP שלם
 //      נשמר בתיקיית ההורדות בשם שמודל נתן לו. חלק שלא הגיע שלם מתבקש שוב בשני חצאים.
+//   אחרי שלב 1 שומר שם "ECS pull <cmid> <run> plan.json" (כמה סטודנטים וכמה חלקים), בשביל מד ההתקדמות באתר.
 //   4. בסוף שומר בתיקיית ההורדות קובץ סיכום קטן, "ECS pull <cmid> <run>.json": מספרים בלבד (כמה הגישו, כמה
 //      חלקים, הגודל וכמה סטודנטים בכל חלק). המשיכה במחשב (dashboard/pull_parts.py) מחכה לקובץ הזה.
 //
@@ -124,6 +125,9 @@
       const queue = [];
       for (let i = 0; i < users.length; i += chunk) queue.push({ ids: users.slice(i, i + chunk), tries: 0 });
       state.parts = queue.length;
+      // התוכנית, כדי שהמחשב ידע מראש מתוך כמה (מד ההתקדמות באתר)
+      save(new Blob([JSON.stringify({ cmid: cmid, run: runId, users: users.length, parts: queue.length })],
+        { type: "application/json" }), "ECS pull " + cmid + " " + runId + " plan.json");
       state.stage = "downloading";
       while (queue.length) {
         const part = queue.shift();

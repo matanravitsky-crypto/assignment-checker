@@ -66,8 +66,8 @@
   const STAGES = {
     pull: {
       no: 1, route: "/pull", name: "משיכת הגשות",
-      desc: "Claude בכרום מוריד ממודל את קובץ ה-ZIP עם כל ההגשות של המטלה, והמערכת קולטת אותו: שומרת אותו בתיקיית המטלה, נותנת לכל סטודנט מספר קבוע ומעתיקה את ההגשות הממוספרות לתיקיית OneDrive, בלי שמות.",
-      steps: ["הורדת ה-ZIP ממודל (Claude בכרום)", "שמירת ה-ZIP בתיקיית המטלה", "חילוץ ומספור ההגשות", "עדכון טבלת המפתח"],
+      desc: "Claude בכרום פותח את דף ההגשות במודל, ומשם ההגשות יורדות בחלקים של 50 סטודנטים (ZIP אחד של כל המטלה מודל קוטע באמצע). כל חלק נבדק שהוא שלם, והמערכת קולטת את כולם: שומרת אותם בתיקיית המטלה, נותנת לכל סטודנט מספר קבוע ומעתיקה את ההגשות הממוספרות לתיקיית OneDrive, בלי שמות.",
+      steps: ["Claude פותח את מודל בכרום", "הורדת ההגשות בחלקים", "בדיקה, חילוץ ומספור", "עדכון טבלת המפתח"],
       tabs: [["list", "ההגשות שנמשכו"], ["instr", "מה קורה במשיכה"], ["conn", "חיבור למודל"]],
     },
     grade: {
@@ -381,7 +381,7 @@
     const gradedNow = I.graded.length;
     const marks = I.graded.reduce((a, s) => a + (s.q || []).filter((v, i) => v < rubric().questions[i]?.pts).length, 0);
     const results = {
-      pull: [`ZIP מ-${when(A.pulledAt)}`, "נשמר בתיקיית המטלה", `${I.subs.length} הגשות, ${I.files} קבצים`, "לכל הגשה מספר קבוע"],
+      pull: [`נמשך ${when(A.pulledAt)}`, "כל חלק נבדק שהוא שלם", `${I.subs.length} הגשות, ${I.files} קבצים`, "לכל הגשה מספר קבוע"],
       grade: [`${rubric().questions.length} שאלות, ${A.maxGrade || 100} נקודות`, `${gradedNow} עבודות`, `${marks} הורדות ניקוד`, `ממוצע ${avg(I.graded.map((s) => s.score)) ?? "—"}`],
       ret: [`${I.returned.length} עבודות מסומנות`, `${I.returned.length} עבודות עלו`, "מודל קלט את אותו מספר קבצים"],
     }[stage];
@@ -443,9 +443,51 @@
         <input id="moodle-id" dir="ltr" inputmode="url" autocomplete="off" data-moodle-id="${A.id}" value="${esc(state.moodleDraft[A.id] || "")}" placeholder="https://moodle.bgu.ac.il/moodle/mod/assign/view.php?id=…"></div>` : "";
     const lead = A.empty
       ? `${esc(A.title)} עוד לא נמשכה. בפעם הראשונה המערכת צריכה לדעת איזו מטלה במודל זו: מדביקים כאן את הקישור לעמוד המטלה ולוחצים "משוך הגשות". מהפעם הבאה הוא כבר שמור.`
-      : `לוחצים "משוך הגשות": Claude בכרום מוריד ממודל את ה-ZIP של כל ההגשות, והמערכת קולטת אותו. צריך כרום פתוח עם התוסף Claude in Chrome והתחברות למודל.`;
+      : `לוחצים "משוך הגשות": Claude בכרום פותח את דף ההגשות במודל, ההגשות יורדות בחלקים, ומד מראה כמה כבר ירדו. צריך כרום פתוח עם התוסף Claude in Chrome והתחברות למודל.`;
     return `<div class="empty"><strong>עוד אין הגשות במטלה הזו</strong>${lead}${idField}
       <div class="empty-act">${stageButton("pull")}${moodleLink(A)}<button class="btn secondary" data-act="open-inbox">${ICON.folder}פתח את תיקיית ההורדות</button></div></div>`;
+  }
+
+  // ---------- התקדמות המשיכה (GET api/pull/progress, dashboard/actions.py pull_progress) ----------
+  // phase: find, claude, download (done מתוך total סטודנטים), ingest, done, error
+  const PULL_STEP = { find: 0, claude: 0, download: 1, ingest: 2 };
+  const SLOW_PART_S = 60;  // בלי אף חלק כל הזמן הזה: כנראה כרום שואל משהו
+  function pullText(p) {
+    if (!p || p.phase === "find") return "מחפש הגשות שכבר הורדו…";
+    if (p.phase === "claude") return "Claude פותח את מודל בכרום…";
+    if (p.phase === "download") return p.total ? `ירדו ${p.done} מתוך ${p.total} הגשות` : "אוסף ממודל את רשימת המגישים…";
+    if (p.phase === "ingest") return "בודק, מחלץ וממספר את ההגשות…";
+    return "";
+  }
+  function applyPullProgress(run, p) {
+    run.pull = p;
+    if (p.phase === "download" && !run.downloadSince) run.downloadSince = Date.now();
+    const i = PULL_STEP[p.phase];
+    if (i === undefined) return;
+    run.steps = run.steps.map((_, k) => (k < i ? "done" : k === i ? "running" : "pending"));
+    run.progress = pullText(p);
+  }
+  function pullProgressHTML() {
+    const A = cur(), run = state.run[A?.id];
+    if (!LOCAL.on || run?.stage !== "pull") return "";
+    const p = run.pull || {};
+    const pct = p.phase === "download" && p.total ? Math.round((100 * p.done) / p.total) : p.phase === "ingest" ? 100 : 0;
+    const slow = p.phase === "download" && !p.done && run.downloadSince && Date.now() - run.downloadSince > SLOW_PART_S * 1000;
+    const hints = [];
+    if (p.phase === "claude" || p.phase === "download") {
+      hints.push("כרום צריך להישאר פתוח, עם הלשונית של מודל. לא סוגרים אותה עד הסוף.");
+    }
+    if (slow) {
+      hints.push("כרום שואל אם לאפשר למודל להוריד כמה קבצים? לוחצים \"אפשר\" (פעם אחת).");
+    }
+    return `<section class="panel pull-progress" aria-live="polite">
+      <div class="panel-head"><h3>המשיכה רצה</h3><span class="meta">${p.started ? `התחילה ${when(new Date(p.started * 1000).toISOString())}` : ""}</span></div>
+      <div class="panel-body">
+        <p class="send-line">${ICON.spin}<span>${esc(pullText(p))}</span></p>
+        <div class="send-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><i style="width:${pct}%"></i></div>
+        ${hints.map((h) => `<p class="send-warn">${ICON.warn}<span>${esc(h)}</span></p>`).join("")}
+      </div>
+    </section>`;
   }
 
   // מה קרה במשיכה האחרונה (בגרסה המחוברת)
@@ -807,9 +849,9 @@
 
   function pullList() {
     const A = cur(), I = info(A);
-    if (!I.subs.length) return `${pullReportHTML()}<section class="panel">${emptyPulled()}</section>`;
+    if (!I.subs.length) return `${pullProgressHTML()}${pullReportHTML()}<section class="panel">${emptyPulled()}</section>`;
     const rows = I.subs.filter((s) => matches(s, state.query.pull)).sort((a, b) => (b.submittedAt || "").localeCompare(a.submittedAt || ""));
-    return `${pullReportHTML()}
+    return `${pullProgressHTML()}${pullReportHTML()}
       <section class="panel">
         <div class="panel-head">
           <div class="stats">
@@ -2087,13 +2129,19 @@
       return;
     }
     const run = (state.run[A.id] = { stage: "pull", steps: STAGES.pull.steps.map(() => "pending") });
-    // ההורדה ממודל לוקחת כמה דקות (ZIP גדול), והשרת עונה רק בסוף, אז השלב הראשון נשאר "רץ" עד התשובה
-    run.steps[0] = "running";
-    run.progress = "מוריד ממודל… (כמה דקות)";
+    // השרת עונה רק בסוף (משיכה גדולה: עשרות דקות), אז בינתיים שואלים אותו מה המצב ומציירים מד
+    applyPullProgress(run, { phase: "find", started: Date.now() / 1000 });
+    if (route() !== "/pull") location.hash = "#/pull";  // שם המד
     render();
-    toast("Claude בכרום מוריד את ה-ZIP ממודל. זה יכול לקחת כמה דקות: לא סוגרים את כרום.");
+    const poll = setInterval(async () => {
+      const p = await api("api/pull/progress").catch(() => null);
+      if (!p || state.run[A.id] !== run || p.course !== A.courseFolder || p.assignment !== A.folder) return;
+      applyPullProgress(run, p);
+      render();
+    }, 1500);
     try {
       const rep = await api("api/pull", { method: "POST", body: JSON.stringify({ course: A.courseFolder, assignment: A.folder, ...(moodleId && { moodleId }) }) });
+      clearInterval(poll);
       LOCAL.report = { ...rep, assignmentId: A.id };
       delete state.run[A.id];
       await loadLocal();
@@ -2111,6 +2159,7 @@
         toast(rep.result.total ? `המשיכה הסתיימה: ${rep.summary}` : "המשיכה הסתיימה: לא נמצאו הגשות חדשות");
       }
     } catch (e) {
+      clearInterval(poll);
       delete state.run[A.id];
       // גם כשההורדה נכשלה, מזהה המודל כבר נשמר בתיקייה: טוענים מחדש כדי שהשדה יתחלף בקישור למודל
       if (moodleId) await loadLocal(); else render();

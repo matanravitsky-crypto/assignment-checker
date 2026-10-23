@@ -34,6 +34,7 @@ def fresh_dashboard_state(monkeypatch, tmp_path):
     downloads.mkdir()
     monkeypatch.setattr(ingest, "downloads_dir", lambda: downloads)
     monkeypatch.setattr(pull_parts, "POLL_S", 0.01)
+    monkeypatch.setattr(pull_parts, "count_students", lambda p: 50)  # 7-Zip would list the student folders
     monkeypatch.setattr(actions, "_make_downloader", lambda: FakeDownloader(downloads))
 
 

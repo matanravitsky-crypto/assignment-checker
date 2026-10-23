@@ -135,7 +135,39 @@ def _title_from_zip(a: folder_view.Assignment, zip_path: Path, mid: str) -> None
         _write_info(a, info)
 
 
+# ---------- התקדמות המשיכה ----------
+# האתר שואל כל שנייה וחצי (GET /api/pull/progress) בזמן שהמשיכה רצה, ומצייר מד. רק מספרים, בלי שמות.
+# phase: find (מחפש בתיקיית ההורדות), claude (Claude פותח את מודל בכרום), download (done מתוך total סטודנטים;
+# total ריק עד שהסקריפט שמר את התוכנית), ingest (בדיקה, חילוץ ומספור), done, error
+_progress_lock = threading.Lock()
+_progress: dict = {}
+
+
+def _set_progress(**fields) -> None:
+    with _progress_lock:
+        _progress.update(fields, updated=time.time())
+
+
+def pull_progress() -> dict:
+    with _progress_lock:
+        return dict(_progress)
+
+
 def pull(root: Path, course: str, assignment: str, moodle_id: str | None = None) -> dict:
+    with _progress_lock:
+        _progress.clear()
+        _progress.update(course=course, assignment=assignment, phase="find", done=0, total=None, message="",
+                         started=time.time(), updated=time.time())
+    try:
+        report = _pull(root, course, assignment, moodle_id)
+    except Exception as e:
+        _set_progress(phase="error", message=str(e)[:300])
+        raise
+    _set_progress(phase="done", message=report["summary"])
+    return report
+
+
+def _pull(root: Path, course: str, assignment: str, moodle_id: str | None) -> dict:
     a = new_assignment(root, course, assignment, moodle_id) if moodle_id else find_assignment(root, course, assignment)
     mid = _moodle_id(a)
     conflicts = key_conflicts(a)
@@ -147,6 +179,7 @@ def pull(root: Path, course: str, assignment: str, moodle_id: str | None = None)
     lock = _take_lock(a)
     try:
         zips = _zips_from_moodle(a, mid, lock)
+        _set_progress(phase="ingest", parts=len(zips))
         _title_from_zip(a, zips[0], mid)
         rows = moodle_ingest.ingest(mid, zips if len(zips) > 1 else zips[0])
     except (FileNotFoundError, ValueError) as e:
@@ -193,6 +226,7 @@ def _zips_from_moodle(a: folder_view.Assignment, mid: str, lock: Path) -> list[P
             raise UserError("בדיקת החיבור למודל רצה עכשיו בכרום. כדאי לנסות שוב בעוד דקה.")
         _checking = True
     run, since = pull_parts.new_run(), time.time()
+    _set_progress(phase="claude")
     try:
         result = _make_downloader().download_parts(paths.read_info(a.dir), run)
     finally:
@@ -203,7 +237,9 @@ def _zips_from_moodle(a: folder_view.Assignment, mid: str, lock: Path) -> list[P
             _drop_status_cache()
         raise UserError(f"ההורדה ממודל לא התחילה: {result.get('message') or 'Claude לא פירט למה.'}")
     try:
-        zips, _summary = pull_parts.wait(mid, run, since, keep_alive=lambda: moodle_lock.refresh(lock))
+        _set_progress(phase="download")
+        zips, _summary = pull_parts.wait(mid, run, since, keep_alive=lambda: moodle_lock.refresh(lock),
+                                         on_progress=lambda done, total: _set_progress(done=done, total=total))
     except pull_parts.PartsError as e:
         raise UserError(str(e)) from e
     return zips

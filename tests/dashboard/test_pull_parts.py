@@ -84,3 +84,22 @@ def test_gives_up_when_nothing_changes_and_keeps_the_lock_alive_meanwhile(downlo
 
 def test_run_ids_are_digits_only():
     assert all(pull_parts.new_run().isdigit() and len(pull_parts.new_run()) == 8 for _ in range(20))
+
+
+def test_progress_counts_the_students_that_arrived_out_of_the_plan(downloads):
+    since = time.time() - 1
+    seen = []
+
+    def step(_):  # the page saves its plan, then one part, then the summary
+        n = len(seen)
+        if n == 1:
+            (downloads / pull_parts.plan_name(MID, RUN)).write_text(json.dumps({"users": 100, "parts": 2}), encoding="utf-8")
+        if n == 2:
+            (downloads / f"x-{MID}.zip").write_bytes(b"1" * 10)
+        if n == 3:
+            (downloads / f"x-{MID} (1).zip").write_bytes(b"2" * 20)
+            summary(downloads, [10, 20])
+    pull_parts.wait(MID, RUN, since, downloads, sleep=step, on_progress=lambda done, total: seen.append((done, total)))
+    assert seen[0] == (0, None)  # before the plan: out of how many is not known yet
+    assert (0, 100) in seen and (50, 100) in seen and seen[-1] == (100, 100)  # count_students: 50 per part (conftest)
+    assert not list(downloads.glob("ECS pull *"))  # the plan and the summary are ours, and they are gone

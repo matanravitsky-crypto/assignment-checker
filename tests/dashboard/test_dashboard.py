@@ -377,6 +377,38 @@ def test_pull_gives_up_when_the_moodle_tab_stops_answering_and_keeps_its_lock_al
     assert refreshed and refreshed[0].name == actions.LOCK_FILE
 
 
+def test_pull_reports_its_progress_for_the_site(root, server, monkeypatch):
+    """בזמן שהמשיכה רצה האתר שואל GET /api/pull/progress: השלב, וכמה הגשות ירדו מתוך כמה (מספרים בלבד)."""
+    from moodle import ingest
+    phases = []
+    fake = FakeDownloader(ingest.downloads_dir(), parts=2)
+    real = fake.download_parts
+
+    def download_parts(info, run):
+        phases.append(actions.pull_progress()["phase"])  # Claude is opening Moodle
+        return real(info, run)
+    fake.download_parts = download_parts
+    monkeypatch.setattr(actions, "_make_downloader", lambda: fake)
+
+    def ingest_(assignment_id, zip_path=None, *a, **k):
+        phases.append(actions.pull_progress()["phase"])
+        return _ok_ingest(assignment_id)
+    monkeypatch.setattr("moodle.ingest.ingest", ingest_)
+    actions.pull(root, COURSE, HW)
+    assert phases == ["claude", "ingest"]
+    st, p = call(server, "GET", "/api/pull/progress")
+    assert st == 200 and p["phase"] == "done" and p["course"] == COURSE and p["assignment"] == HW
+    assert (p["done"], p["total"]) == (100, 100) and "summary" not in p
+    # an error ends as "error" with the message the site shows
+    for p in ingest.downloads_dir().glob("*.zip"):  # the fake ingest doesn't move them
+        p.unlink()
+    monkeypatch.setattr(actions, "_make_downloader", lambda: FakeDownloader(ingest.downloads_dir(), {"status": "error", "message": "boom"}))
+    with pytest.raises(actions.UserError):
+        actions.pull(root, COURSE, HW)
+    p = actions.pull_progress()
+    assert p["phase"] == "error" and "boom" in p["message"]
+
+
 def test_pull_does_not_download_while_an_upload_uses_chrome(root, monkeypatch):
     monkeypatch.setattr(actions._send, "running", True)
     with pytest.raises(actions.UserError, match="העלאה"):

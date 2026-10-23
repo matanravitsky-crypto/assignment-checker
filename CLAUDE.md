@@ -138,7 +138,8 @@ There is **no Moodle API**. Claude in Chrome works in the user's own logged-in C
   about 2 GB, so the script collects the user ids of everyone who submitted (reading only) and asks Moodle for 50 at a time,
   the same POST as the "Download" of selected rows (`operation=downloadselected`), into the page's memory. It checks each
   ZIP is whole (end record and central directory, and counts the student folders) before saving it to Downloads; one that
-  isn't is asked for again in halves. At the end it saves `ECS pull <id> <run>.json` (numbers only) to Downloads.
+  isn't is asked for again in halves. Right after collecting it saves `ECS pull <id> <run> plan.json` (how many
+  students and parts), and at the end `ECS pull <id> <run>.json` (numbers only), both to Downloads.
   **The Moodle page can't talk to this computer**: Moodle's CSP (`connect-src 'self' https: ...`) blocks every call to
   `http://127.0.0.1`, without asking (found 2026-10-23). So everything goes through Downloads: `dashboard/pull_parts.py` waits
   for that summary, matches the parts to it by exact size, and the pull ingests them together (7-Zip tests them again).
@@ -146,7 +147,9 @@ There is **no Moodle API**. Claude in Chrome works in the user's own logged-in C
   (so it must have no backtick or `${`), and the page runs it only if its sha256 matches the repo's file. The pull waits up
   to 90 minutes (20 without any change in Downloads = the tab was closed, or Chrome is asking whether Moodle may download
   several files: answer "Allow") and refreshes its lock every round. The download shares the "one Chrome job at a time"
-  guard with the connection check and the upload.
+  guard with the connection check and the upload. **Progress:** `POST /api/pull` answers only at the end, so while it
+  runs the site asks `GET /api/pull/progress` every 1.5 s (`actions.pull_progress`: phase find/claude/download/ingest/done/error,
+  and in download how many submissions arrived out of the plan's total, counted by 7-Zip) and draws a bar on the pull page.
 - Feedback upload: Actions → "העלאת מספר קובצי משוב כקובץ 7Zip אחד" → the ZIPs in `3 - Ready to upload to Moodle`
   (`Graded - part 01.zip` ...), one at a time. **BGU Moodle imports at once**: clicking "יבוא קבצי משוב" imports
   immediately, with no confirmation list (file → student) before it. Moodle then lands on the grading page with a
