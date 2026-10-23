@@ -50,6 +50,11 @@ One subsection per question, then one per part:
 
 ## §5 לבודק אנושי
 The list of situations where the bot does not grade and flags the submission for a person.
+**At most ~5-6% of submissions may land here** (Ori's target; a field test with half flagged was a failure). Only
+whole-submission situations: three or more questions missing, the work is of another sheet, wrong format, or a
+decisive part unreadable that moves a large share of the grade. Everything else is decided in §4: when two rows fit,
+the row says which one wins; an unclear symbol or sign gets the reading that favours the student. Never write
+"to the checker" in a §4 row or a §3 rule. Check the rate on the field test and tighten until it holds.
 
 ## §6 פלט הבוט
 How points are recorded per part, how tags reduce points (never below 0, never above the part's maximum),

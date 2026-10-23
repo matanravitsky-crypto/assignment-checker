@@ -277,14 +277,15 @@ SYSTEM = """אתה מתרגל שבודק תרגילי בית במתמטיקה (�
 - כל שאלה בנפרד, לפי המחוון. פתרון נכון בדרך אחרת מקבל ניקוד מלא.
 - ניקוד לכל שאלה בין 0 לניקוד שלה במחוון, אף פעם לא יותר, בקפיצות של חצי נקודה לכל היותר.
 - שאלה שלא נמצאה בהגשה מקבלת 0, וכותבים בהערה שלה שהיא לא נמצאה.
-- אם כתב היד לא קריא, חסרים עמודים, או שהניקוד לא ודאי, מסמנים needs_review=true ומסבירים ב-review_reason (ראו "בדיקה ידנית" למטה). אחרת review_reason ריק.
+- אתה מקבל את ההחלטות בעצמך. ספק בניקוד של שאלה, תשובה חלקית, דרך פתרון לא מוכרת, שורה לא ברורה או עמוד חסר: מחליטים לפי המחוון ונותנים את הניקוד הסביר ביותר (בספק, מה שהמחוון מצדיק לפי מה שכן רואים), מסמנים unsure בשאלה, וממשיכים. זה לא סיבה לבדיקה ידנית.
+- needs_review=true רק במקרים קיצוניים, בערך אחת מכל עשרים עבודות או פחות: כמעט כל העבודה לא קריאה, ההגשה ריקה או לא קשורה למטלה, קובץ פגום, או חשד ברור להונאה. אחרת needs_review=false ו-review_reason ריק (ראו "בדיקה ידנית" למטה).
 
 questions: אחד לכל שאלה במטלה, באותו סדר ועם אותה תווית כמו ברשימת השאלות.
 - comment: משפט קצר על התשובה.
 - mistakes: סוגי הטעויות בתשובה, ריק אם היא נכונה. כל טעות בניסוח קצר וכללי, 2 עד 6 מילים, שלא תלוי בעבודה הזו, כך שאותה טעות אצל סטודנטים שונים תקבל בדיוק אותו ניסוח (למשל "חסר נימוק להכלה ההפוכה"). אם במחוון יש לשאלה טעויות מוכרות, משתמשים בניסוח שלהן מילה במילה ומורידים כמו שכתוב שם.
 - unsure: true אם הניקוד בשאלה הזו לא ודאי (לא קריא, תשובה חלקית שקשה להעריך, דרך שלא בטוח שהיא נכונה).
 
-בדיקה ידנית: עבודה עם needs_review=true עוברת לתור "בדיקה ידנית" באתר. שם מתרגל רואה את review_reason, את השאלות שסומנו unsure ואת הסימונים, ומחליט בכמה לחיצות. לכן:
+בדיקה ידנית: עבודה עם needs_review=true עוברת לתור "בדיקה ידנית" באתר, והתור הזה יקר: רק מקרים קיצוניים מגיעים אליו. שם מתרגל רואה את review_reason, את השאלות שסומנו unsure ואת הסימונים, ומחליט בכמה לחיצות. לכן:
 - review_reason אומר בדיוק מה הבעיה ואיפה: איזו שאלה, איזה עמוד, ומה לא ברור. למשל: "שאלה 12, עמוד 3: השורה האחרונה לא קריאה, נתתי 10 מתוך 20 בלי לראות אותה".
 - review_kind: unreadable (כתב יד או סריקה לא קריאים), missing (חסרים עמודים או שאלות), uncertain (הניקוד לא ודאי), format (ההגשה לא לפי כללי ההגשה), other. מחרוזת ריקה כשלא צריך בדיקה ידנית.
 - גם כשמבקשים בדיקה ידנית נותנים את הניקוד הסביר ביותר ואת הסימונים, כדי שלמתרגל יהיה ממה להתחיל.
@@ -302,6 +303,8 @@ feedback, המשוב לסטודנט:
 
 # למה עבודה צריכה בדיקה ידנית. האתר מציג אותן בעברית ומסנן לפיהן (ושם גם failed: הבדיקה האוטומטית נכשלה)
 REVIEW_KINDS = ["unreadable", "missing", "uncertain", "format", "other"]
+# Claude מחליט בעצמו (ניקוד סביר ביותר + unsure בשאלה); רק unreadable, format ו-other הולכים לתור הידני
+AUTO_DECIDED_KINDS = ("uncertain", "missing")
 
 SCHEMA = {
     "type": "object",
@@ -473,6 +476,8 @@ def parse_answer(text: str, ctx: Context, pages: int) -> Graded:
     if len(got) != len(ctx.questions):
         review = (review + " " if review else "") + f"Claude החזיר ניקוד ל-{len(got)} שאלות במקום {len(ctx.questions)}."
     kind = (kind if kind in REVIEW_KINDS else "other") if review else ""
+    if kind in AUTO_DECIDED_KINDS and len(got) == len(ctx.questions):  # ספק בניקוד או עמוד חסר: Claude כבר החליט, אדם לא צריך
+        review, kind = "", ""
     points, comments, mistakes, unsure, over = [], [], [], [], []
     for i, q in enumerate(ctx.questions):
         answer = got[i] if i < len(got) else {}
@@ -483,9 +488,10 @@ def parse_answer(text: str, ctx: Context, pages: int) -> Graded:
         comments.append(str(answer.get("comment") or "").strip())
         mistakes.append(_mistakes(answer.get("mistakes")))
         unsure.append(answer.get("unsure") is True)
-    if over:
-        review = (review + " " if review else "") + f"Claude נתן יותר מהמחוון ({'; '.join(over)}), והניקוד נחתך למחוון."
-        kind = kind or "uncertain"
+    # ניקוד שעלה על המחוון נחתך אוטומטית ואין בו צורך באדם (השאלה כן מסומנת unsure)
+    for i, q in enumerate(ctx.questions):
+        if i < len(got) and _round_half_up(_num(got[i].get("points"))) > q.points:
+            unsure[i] = True
 
     marks = []
     for a in data.get("annotations") or []:
