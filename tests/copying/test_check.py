@@ -66,7 +66,7 @@ def test_same_file_same_scan_and_unrelated(assignment):
     original = pdf_of(scan(1), scan(2))
     put(assignment, "0001.pdf", original)
     put(assignment, "0002.pdf", original)                                   # אותו קובץ בדיוק
-    put(assignment, "0003.pdf", pdf_of(scan(7), scan(2, quality=45, dpi=80)))  # אותה סריקה, דחוסה מחדש, בעמוד 2
+    put(assignment, "0003.pdf", pdf_of(scan(1, quality=50, dpi=90), scan(2, quality=45, dpi=80)))  # אותן סריקות, דחוסות מחדש
     put(assignment, "0004.pdf", pdf_of(scan(3), scan(4)))                   # עבודה אחרת
     rep = check.check_assignment(assignment)
     found = pairs(rep)
@@ -74,7 +74,7 @@ def test_same_file_same_scan_and_unrelated(assignment):
     assert found[("0001", "0003")] == {"page"} and found[("0002", "0003")] == {"page"}
     assert not any("0004" in pair for pair in found)
     pages = next(r["pages"] for p in rep.pairs if (p["a"], p["b"]) == ("0001", "0003") for r in p["reasons"])
-    assert [(a, b) for a, b, _ in pages] == [(2, 2)]
+    assert [(a, b) for a, b, _ in pages] == [(1, 1), (2, 2)]
     assert all(p["level"] == "strong" for p in rep.pairs)
 
 
@@ -87,10 +87,11 @@ def test_many_different_scans_never_match(assignment):
 def test_page_numbers_run_across_files_of_a_number(assignment):
     put(assignment, "0001.pdf", pdf_of(scan(1)))
     put(assignment, "0001-2.jpg", scan(5))       # עמוד 2 של 0001
-    put(assignment, "0002.pdf", pdf_of(scan(5, quality=60)))
+    put(assignment, "0001-3.jpg", scan(6))       # עמוד 3 של 0001
+    put(assignment, "0002.pdf", pdf_of(scan(5, quality=60), scan(6, quality=60)))
     rep = check.check_assignment(assignment)
     (pair,) = rep.pairs
-    assert [(a, b) for a, b, _ in pair["reasons"][0]["pages"]] == [(2, 1)]
+    assert [(a, b) for a, b, _ in pair["reasons"][0]["pages"]] == [(2, 1), (3, 2)]
 
 
 def test_a_page_many_have_is_listed_apart_and_blank_pages_ignored(assignment):
@@ -109,6 +110,9 @@ def test_a_page_many_have_is_listed_apart_and_blank_pages_ignored(assignment):
 ANSWER = ("Let x be in A and in B union C. Then x is in A, and x is in B or in C. If x is in B then x is in "
           "A intersect B, otherwise x is in A intersect C. So x is in the union of both intersections, and "
           "the other inclusion is similar: every element of the union is in A and in B or C.")
+THIRD = ("Complex numbers: write each number in the form a plus bi, find the modulus and the argument, "
+         "solve the equations below over the complex numbers, and draw the set of points in the plane "
+         "that satisfy each condition. Show every step of the computation and explain each answer.")
 OTHER = ("We use a truth table. Every element has eight options for membership in the three sets, and in "
          "each one both sides get the same value. For example if the element is in A and C but not in B, "
          "both sides are true. Going over all rows shows the sets are equal for any three sets.")
@@ -172,3 +176,67 @@ def test_unreadable_and_other_files(assignment):
     put(assignment, "0004.docx", b"same bytes")
     found = pairs(check.check_assignment(assignment))
     assert found == {("0001", "0002"): {"file"}, ("0003", "0004"): {"file"}}
+
+
+def cover(seed: int = 0) -> bytes:
+    """כריכה של אפליקציית מחברות: צבע אחיד, מלבנים בהירים וקו לשם. בלי כתב יד."""
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.draw_rect(page.rect, color=None, fill=(0.68, 0.62, 0.53))
+    page.draw_rect(pymupdf.Rect(0, 0, 25, page.rect.height), color=None, fill=(0.78, 0.74, 0.67))
+    page.draw_line((60, 300), (540, 300), color=(0.58, 0.54, 0.47), width=1)
+    for y in (700, 720, 740):
+        page.draw_line((400, y), (520, y), color=(0.58, 0.54, 0.47), width=1)
+    data = page.get_pixmap(dpi=90 + seed).tobytes("jpeg", jpg_quality=80)
+    doc.close()
+    return data
+
+
+def grid() -> bytes:
+    """דף משבצות כמעט ריק."""
+    doc = pymupdf.open()
+    page = doc.new_page()
+    for x in range(40, 560, 14):
+        page.draw_line((x, 40), (x, 800), color=(0.85, 0.87, 0.92), width=0.4)
+    for y in range(40, 800, 14):
+        page.draw_line((40, y), (560, y), color=(0.85, 0.87, 0.92), width=0.4)
+    data = page.get_pixmap(dpi=90).tobytes("jpeg", jpg_quality=80)
+    doc.close()
+    return data
+
+
+def test_covers_and_empty_pages_are_not_copying(assignment):
+    # אותה כריכה ואותו דף משבצות ריק אצל שלושה, עם עבודה שונה: לא העתקה
+    for i in range(3):
+        put(assignment, f"{i + 1:04d}.pdf", pdf_of(cover(i), scan(300 + i), grid()))
+    assert check.check_assignment(assignment).pairs == []
+    pages = json.loads(check.report_path(assignment).read_text(encoding="utf-8"))["files"]["0001.pdf"]["pages"]
+    assert pages[0]["i"] < check.MIN_INK <= pages[1]["i"] and pages[2]["i"] < check.MIN_INK
+
+
+def test_two_photos_of_the_same_kind_of_page_are_not_the_same_photo(assignment):
+    # עבודות שונות שנראות דומה מרחוק (אותו מבנה של שורות) רחוקות יותר מ-MAX_DISTANCE
+    for i in range(12):
+        put(assignment, f"{i + 1:04d}.pdf", pdf_of(scan(500 + i, quality=60)))
+    assert check.check_assignment(assignment).pairs == []
+
+
+def test_one_shared_scanned_page_is_not_enough(assignment):
+    # עמוד אחד זהה עם כתיבה (נניח שאלה שצולמה מחבר) לא מספיק: כך גם כריכה עם כותרת. צריך שניים
+    put(assignment, "0001.pdf", pdf_of(scan(1), scan(2)))
+    put(assignment, "0002.pdf", pdf_of(scan(1, quality=55), scan(3)))
+    assert check.check_assignment(assignment).pairs == []
+
+
+def test_a_typed_page_three_submissions_share_is_course_material(assignment):
+    # עמוד מחוברת השאלות ששלושה צירפו: לא זוגות, אלא עמוד שחוזר. שניים עם אותו פתרון מוקלד: כן זוג
+    for n, name in (("0001", "One"), ("0002", "Two"), ("0003", "Three")):
+        put(assignment, f"{n}.pdf", typed(name, ANSWER))
+    put(assignment, "0004.pdf", typed("Four", OTHER))
+    put(assignment, "0005.pdf", typed("Five", OTHER))
+    put(assignment, "0003-2.pdf", typed("Three", THIRD))  # עמוד אחר מאותה חוברת, ששניים מהשלושה צירפו
+    put(assignment, "0002-2.pdf", typed("Two", THIRD))
+    rep = check.check_assignment(assignment)
+    assert pairs(rep) == {("0004", "0005"): {"text"}}
+    (group,) = rep.repeated
+    assert group["kind"] == "text" and group["numbers"] == 3
