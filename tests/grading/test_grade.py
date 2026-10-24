@@ -207,12 +207,66 @@ def test_grading_writes_grades_csv_and_marked_pdfs(root):
     with pymupdf.open(a.submissions / "0001.pdf") as src, pymupdf.open(out) as doc:
         assert doc.page_count == src.page_count + 1  # עמוד סיכום בהתחלה
         assert "ציון: 85 מתוך 100" in text(doc[0])
-        red = [d for d in doc[1].get_drawings() if d.get("color") and d["color"][0] > 0.8 and d["color"][1] < 0.1]
-        assert red, "לא צויר מלבן אדום"
-        r = red[0]["rect"]
-        w, h = doc[1].rect.width, doc[1].rect.height
-        assert abs(r.x0 - 0.1 * w) < 2 and abs(r.y0 - 0.1 * h) < 2 and abs(r.x1 - 0.9 * w) < 2 and abs(r.y1 - 0.16 * h) < 2
+        w, h = src[0].rect.width, src[0].rect.height
+        red = [d["rect"] for d in doc[1].get_drawings() if d.get("color") and d["color"][0] > 0.8 and d["color"][1] < 0.1]
+        assert red, "לא צויר סוגר אדום"
+        # סוגר בשוליים הימניים, לאורך הגובה של הסימון (0.1 עד 0.16 מהעמוד), ולא מלבן על מה שהסטודנט כתב
+        bracket = next(r for r in red if abs(r.y0 - 0.1 * h) < 2 and abs(r.y1 - 0.16 * h) < 2)
+        assert bracket.x0 > 0.9 * w and bracket.x1 > 0.95 * w
+        assert doc[1].rect.height > h  # ההערה בפס לבן שמתחת לעמוד, לא על מה שהסטודנט כתב
     assert rep.summary() == "נבדקו 3 מתוך 3"
+
+
+def test_summary_titles_and_scores_are_written_as_sheet_question_and_fraction():
+    assert grading.question_title("דף קבוצות 11") == "דף קבוצות, שאלה 11"
+    assert grading.question_title("דף מספרים מרוכבים 8") == "דף מספרים מרוכבים, שאלה 8"
+    assert grading.question_title("כל המטלה") == "כל המטלה"
+    pdf = homework_pdf("x", HW, pages=1)
+    ctx = grading.Context("מטלה", "קורס", [grading.Question("דף קבוצות 11", 20)])
+    g = grading.Graded([20], ["הכל נכון"], 20, "יפה", [])
+    with pymupdf.open(stream=grading.mark_pdf(pdf, g, ctx), filetype="pdf") as doc:
+        # קודם הציון, ואז השאלה, ובשורה נפרדת ההסבר. PyMuPDF קורא מקף כ-\xad
+        assert "20/20 - דף קבוצות, שאלה 11 הכל נכון" in text(doc[0]).replace("\xad", "-")
+
+
+def test_math_inside_hebrew_is_wrapped_so_it_is_drawn_left_to_right():
+    lrm = grading.LRM
+    assert grading.ltr_runs("יש איבר: (-1,1)∈A ו-(-1,1)∉B.") == \
+        f"יש איבר: {lrm}(-1,1)∈A{lrm} ו-{lrm}(-1,1)∉B{lrm}."
+    assert grading.ltr_runs("הקבוצה היא x = 2 + t, ולכן") == f"הקבוצה היא {lrm}x = 2 + t{lrm}, ולכן"
+    assert grading.ltr_runs("בלי מתמטיקה בכלל.") == "בלי מתמטיקה בכלל."
+    rlm = grading.RLM
+    assert grading.rtl_parens("חסר נימוק (למשל x = 2) בשלב") == f"חסר נימוק ({rlm}למשל x = 2{rlm}) בשלב"
+    assert grading.rtl_parens("הנקודה (-1,1) שייכת") == "הנקודה (-1,1) שייכת"  # סוגריים של מתמטיקה לא משתנים
+
+
+def test_notes_go_in_a_white_band_under_the_page_and_a_tall_box_is_cut():
+    doc = pymupdf.open(stream=homework_pdf("x", HW, pages=1), filetype="pdf")
+    src_h, src_w = doc[0].rect.height, doc[0].rect.width
+    ctx = grading.Context("מטלה", "קורס", [grading.Question("שאלה 1", 100)])
+    g = grading.Graded([90], [""], 90, "", [grading.Mark(1, 100, 100, 900, 900, "חסר נימוק לשלב הזה"),
+                                            grading.Mark(1, 100, 950, 300, 990, "")])
+    with pymupdf.open(stream=grading.mark_pdf(doc.tobytes(), g, ctx), filetype="pdf") as out:
+        page = out[1]
+        assert page.rect.width == src_w and page.rect.height > src_h
+        assert "חסר נימוק לשלב הזה" in text(page)
+        brackets = [d["rect"] for d in page.get_drawings() if d.get("color") and d["color"][0] > 0.8 and d["color"][1] < 0.1
+                    and d["rect"].x0 > 0.9 * src_w]
+        tall = max(brackets, key=lambda r: r.height)
+        assert tall.height <= grading.MAX_MARK_HEIGHT / 1000 * src_h + 2  # 900 נחתך ל-100+250
+
+
+def test_a_correct_question_gets_a_check_in_the_margin_and_no_note():
+    doc = pymupdf.open(stream=homework_pdf("x", HW, pages=1), filetype="pdf")
+    src_h, src_w = doc[0].rect.height, doc[0].rect.width
+    ctx = grading.Context("מטלה", "קורס", [grading.Question("שאלה 1", 100)])
+    g = grading.Graded([100], ["תשובה נכונה"], 100, "", [grading.Mark(1, 100, 300, 900, 330, grading.CHECK)])
+    with pymupdf.open(stream=grading.mark_pdf(doc.tobytes(), g, ctx), filetype="pdf") as out:
+        page = out[1]
+        assert page.rect.height == src_h  # וי לא מוסיף פס הערות
+        ticks = [d["rect"] for d in page.get_drawings() if d.get("color") and d["color"][0] > 0.8 and d["color"][1] < 0.1]
+        assert ticks and all(r.x0 > 0.9 * src_w for r in ticks)
+        assert abs(ticks[0].y0 + ticks[0].height / 2 - 0.3 * src_h) < 15  # בגובה השורה שבה התשובה מתחילה
 
 
 def test_several_files_of_one_student_are_graded_together(root):
@@ -334,11 +388,11 @@ def test_rotated_page_is_marked_where_it_is_seen():
     with pymupdf.open(stream=grading.mark_pdf(doc.tobytes(), g, ctx), filetype="pdf") as out:
         page = out[1]
         pix = page.get_pixmap(dpi=36)
-        # מלבן אדום ליד הפינה השמאלית העליונה של העמוד כפי שהוא מוצג
-        x, y = int(0.1 * pix.width), int(0.15 * pix.height)
+        # סוגר אדום בשוליים הימניים של העמוד כפי שהוא מוצג, בגובה 0.1 עד 0.2 ממנו
         reds = [(i, j) for i in range(pix.width) for j in range(pix.height)
                 if (lambda c: c[0] > 150 and c[1] < 90 and c[2] < 90)(pix.pixel(i, j))]
-        assert reds and min(abs(i - x) for i, _ in reds) <= 3
+        edge = [j for i, j in reds if i > 0.9 * pix.width]
+        assert edge and min(edge) >= 0.08 * pix.height and max(edge) <= 0.22 * pix.height
 
 
 # ---------- בלי מפתח ----------

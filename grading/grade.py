@@ -280,7 +280,7 @@ SYSTEM = """אתה מתרגל שבודק תרגילי בית במתמטיקה (�
 - אם כתב היד לא קריא, חסרים עמודים, או שהניקוד לא ודאי, מסמנים needs_review=true ומסבירים ב-review_reason (ראו "בדיקה ידנית" למטה). אחרת review_reason ריק.
 
 questions: אחד לכל שאלה במטלה, באותו סדר ועם אותה תווית כמו ברשימת השאלות.
-- comment: משפט קצר על התשובה.
+- comment: שאלה שקיבלה את כל הניקוד ואין בה מה לתקן: בדיוק "תשובה נכונה", בלי שום דבר נוסף (לא מה נעשה טוב ולא התשובות). אחרת: קודם מה חסר או שגוי בעבודה שלו, כעובדה ("לא הראיתם ש...", "חסר נימוק ל...", "טעות בסימן בשורה..."), ורק אחר כך, אם צריך, מה לעשות כדי לתקן ("כדי לתקן: ..."). לא מתחילים בציווי כמו "הראו ש...", כי לא ברור אם זה מה שנעשה או מה שחסר. בקצרה, בלי חיזוקים על דברים שהסטודנט יודע שנעשו נכון. לא כותבים בו את התשובות הסופיות (לא "התשובה היא 3-i" ולא רשימת ערכים), כי הסטודנט רואה אותן בעבודה שלו וההסבר נהיה לא ברור. בלי סימני קבוצות כמו ∈ ו-∉: כותבים במילים ("שייך", "לא שייך"). בלי קודים פנימיים של המחוון (כמו "8ג-T3" או "S0"), הסטודנט לא מכיר אותם.
 - mistakes: סוגי הטעויות בתשובה, ריק אם היא נכונה. כל טעות בניסוח קצר וכללי, 2 עד 6 מילים, שלא תלוי בעבודה הזו, כך שאותה טעות אצל סטודנטים שונים תקבל בדיוק אותו ניסוח (למשל "חסר נימוק להכלה ההפוכה"). אם במחוון יש לשאלה טעויות מוכרות, משתמשים בניסוח שלהן מילה במילה ומורידים כמו שכתוב שם.
 - unsure: true אם הניקוד בשאלה הזו לא ודאי (לא קריא, תשובה חלקית שקשה להעריך, דרך שלא בטוח שהיא נכונה).
 
@@ -290,13 +290,13 @@ questions: אחד לכל שאלה במטלה, באותו סדר ועם אותה 
 - גם כשמבקשים בדיקה ידנית נותנים את הניקוד הסביר ביותר ואת הסימונים, כדי שלמתרגל יהיה ממה להתחיל.
 
 annotations, סימונים על גבי העבודה:
-- כל סימון מקיף מקום מדויק בעבודה: טעות, צעד חסר או נימוק לא מספיק. דברים נכונים לא מסמנים.
+- יש שני סוגי סימון. סימון טעות: מקום מדויק בעבודה של טעות, צעד חסר או נימוק לא מספיק. סימון נכון: לכל שאלה שקיבלה את כל הניקוד, סימון אחד שהטקסט שלו בדיוק "✓" (תו אחד, בלי מילים), במקום שבו התשובה לשאלה מתחילה, בגובה שורה אחת (y1 גדול מ-y0 בעד 40). שאלה שירדו בה נקודות לא מקבלת ✓.
 - page: מספר העמוד, מ-1, לפי סדר התמונות.
-- x0, y0, x1, y1: המלבן שמקיף את המקום, באלפיות של רוחב העמוד ושל גובהו. (0, 0) היא הפינה השמאלית העליונה ו-(1000, 1000) הימנית התחתונה. המלבן צמוד לשורות הרלוונטיות, לא לחצי עמוד.
-- text: הערה קצרה בעברית, עד 12 מילים, שאומרת מה לא נכון. מתמטיקה בטקסט פשוט (A^-1, det(A)), בלי LaTeX.
+- x0, y0, x1, y1: המקום של הטעות, באלפיות של רוחב העמוד ושל גובהו. (0, 0) היא הפינה השמאלית העליונה ו-(1000, 1000) הימנית התחתונה. המערכת מציירת סוגר אדום בשוליים הימניים של העמוד, לאורך הגובה בין y0 ל-y1, ולכן הדיוק בגובה הוא העיקר: y0 ו-y1 צמודים לשורה או לשורות שבהן הטעות, לא לשאלה כולה ולא לחצי עמוד (הפרש עד 150 מתוך 1000). טעות שמתפרשת על כמה שורות מסמנים במקום שבו היא התחילה. x0 ו-x1 הם רוחב השורות הללו.
+- text בסימון טעות: מתחיל בשאלה ובסעיף שהטעות שייכת להם, בצורה "שאלה 8, סעיף ג:" (הסוגר האדום עלול לכסות גם שורות של סעיף סמוך, וזה מה שאומר לסטודנט על איזה סעיף מדובר), ואחריו הערה קצרה, עד 20 מילים, באותו סדר כמו ה-comment: קודם מה חסר או שגוי בעבודה, כעובדה ולא בציווי ("לא הראיתם ש...", לא "הראו ש..."), ואם צריך אחר כך "כדי לתקן: ...". אם אפשר, בציטוט של המילים הראשונות של השורה. מתמטיקה בטקסט פשוט (A^-1, det(A)), בלי LaTeX.
 
 feedback, המשוב לסטודנט:
-- בעברית, בגוף שני רבים, ענייני ומעודד. קודם מה שנעשה טוב, ואז מה צריך לתקן, לפי שאלות. עד 120 מילים, בלי LaTeX.
+- בעברית, בגוף שני רבים, ענייני. עבודה שאין בה מה לתקן: משפט אחד כמו "עבודה טובה". אחרת: משפט אחד על הנקודה המרכזית לתיקון. לא חוזרים על ההערות שכתבת לכל שאלה (הסטודנט רואה אותן), לא מחזקים על דברים צפויים, לא מונים את התשובות הנכונות. עד 30 מילים, בלי LaTeX, בלי לחזור על התשובות הסופיות של הסטודנט, ובלי סימני קבוצות כמו ∈.
 - אף פעם לא כותבים שם, תעודת זהות או פרט מזהה אחר של הסטודנט, גם אם הם מופיעים בעבודה. זה נכון גם להערות."""
 
 # למה עבודה צריכה בדיקה ידנית. האתר מציג אותן בעברית ומסנן לפיהן (ושם גם failed: הבדיקה האוטומטית נכשלה)
@@ -557,52 +557,118 @@ def _archive():
     return pymupdf.Archive(str(_FONTS)) if (_FONTS / "arial.ttf").exists() else None
 
 
-def _html(text: str, size: float = 10) -> str:
-    return f'<div dir="rtl" style="color: #d90000; font-size: {size}px; line-height: 1.25">{_esc(text)}</div>'
+LRM = "\u200e"
+_HEBREW = "\u0590-\u05ff"
+# רצף של תווים שאינם עברית (אותיות לטיניות, מספרים, סימנים), גם עם רווחים ביניהם: "(-1,1)∈A", "x = 2 + t"
+_LTR_RUN = re.compile(rf"[^\s{_HEBREW}]+(?:[ \t]+[^\s{_HEBREW}]+)*")
+_HAS_MATH = re.compile(r"[A-Za-z0-9∈∉⊆⊂⊄∪∩∅ℝℂℕℤ=<>≤≥≠]")
+
+
+def ltr_runs(text: str) -> str:
+    """מקיף כל קטע של מתמטיקה או לטינית ב-LRM, כדי שבשורה בעברית הוא יוצג משמאל לימין ולא הפוך
+    (בלי זה "(-1,1)∈A" מצוייר כ-"A∋(1,1-)"). סימן פיסוק בסוף הקטע ומקף שאחרי אות עברית נשארים בחוץ."""
+    def wrap(m: re.Match) -> str:
+        run = m.group(0)
+        if not _HAS_MATH.search(run):
+            return run
+        head = ""
+        lead = re.match(r"[.,;:!?]+\s*", run)  # \u05e0\u05e7\u05d5\u05d3\u05d5\u05ea\u05d9\u05d9\u05dd \u05d0\u05d7\u05e8\u05d9 \u05de\u05d9\u05dc\u05d4 \u05d1\u05e2\u05d1\u05e8\u05d9\u05ea, \u05d5\u05d0\u05d6 \u05d4\u05e7\u05d8\u05e2: ": (-1,1)\u2208A"
+        if lead:
+            head, run = lead.group(0), run[lead.end():]
+        if run.startswith("-") and m.start() > 0 and "\u05d0" <= text[m.start() - 1] <= "\u05ea":
+            head, run = head + "-", run[1:]
+        tail = re.search(r"[.,;:!?]+$", run)
+        tail = tail.group(0) if tail else ""
+        if tail:
+            run = run[:-len(tail)]
+        return f"{head}{LRM}{run}{LRM}{tail}" if run else m.group(0)
+    return _LTR_RUN.sub(wrap, text)
+
+
+RLM = "\u200f"
+_PAREN_WITH_HEBREW = re.compile(rf"\(([^()]*[{_HEBREW}][^()]*)\)")
+
+
+def rtl_parens(text: str) -> str:
+    """סוגריים שיש בהם עברית נשארים בצד הנכון: "(למשל x = 2)" ולא ")x = 2 למשל(". סוגריים של מתמטיקה לא נוגעים בהם."""
+    return _PAREN_WITH_HEBREW.sub(lambda m: f"({RLM}{m.group(1)}{RLM})", text)
 
 
 def _esc(s: str) -> str:
     from html import escape
-    return escape(str(s)).replace("\n", "<br>")
+    return escape(rtl_parens(ltr_runs(str(s)))).replace("\n", "<br>")
 
 
-def _note_rect(box: pymupdf.Rect, page: pymupdf.Rect, width: float = 180, height: float = 40) -> pymupdf.Rect:
-    """איפה לכתוב את ההערה: מתחת למלבן, ואם אין מקום אז מעליו. מיושר לצד ימין, כמו עברית."""
-    margin = 4
-    w = min(max(box.width, width), page.width - 2 * margin)
-    x1 = min(box.x1, page.width - margin)
-    x0 = max(x1 - w, margin)
-    x1 = x0 + w
-    if box.y1 + 2 + height <= page.height - margin:
-        y0 = box.y1 + 2
-    elif box.y0 - 2 - height >= margin:
-        y0 = box.y0 - 2 - height
-    else:
-        y0 = max(min(box.y0, page.height - margin - height), margin)
-    return pymupdf.Rect(x0, y0, x1, y0 + height)
+def question_title(label: str) -> str:
+    """"דף קבוצות 11" -> "דף קבוצות, שאלה 11". תווית בלי מספר בסוף נשארת כמו שהיא."""
+    m = re.fullmatch(r"(.*\D)\s+(\d+)", label.strip())
+    return f"{m.group(1).strip()}, שאלה {m.group(2)}" if m else label
 
 
-def _write(page: pymupdf.Page, rect: pymupdf.Rect, html: str, archive) -> None:
-    """כותב טקסט במקום שמחושב לפי העמוד כפי שהוא מוצג (גם אם העמוד מסובב).
-    בלי רקע, כמו עט אדום: לא מסתירים שום דבר ממה שהסטודנט כתב."""
-    page.insert_htmlbox(rect * page.derotation_matrix, html, css=_CSS, archive=archive, rotate=page.rotation, scale_low=0)
+# סימון גבוה מזה (באלפיות גובה העמוד) מכסה שאלה שלמה ולא שורות: חותכים אותו מלמטה
+MAX_MARK_HEIGHT = 250
+NOTE_FONT = 11
+BRACKET_INSET = 10  # כמה נקודות מהשוליים הימניים של העמוד
+BRACKET_TICK = 7
+BADGE_RADIUS = 9
+
+
+CHECK = "✓"  # סימון של Claude לשאלה שקיבלה את כל הניקוד: וי בשוליים, בלי סוגר ובלי הערה
+
+
+def _draw_check(page: pymupdf.Page, width: float, y: float) -> None:
+    """וי אדום בשוליים הימניים, בגובה השורה שבה התשובה מתחילה."""
+    x = width - BRACKET_INSET - 6
+    page.draw_polyline([pymupdf.Point(x - 8, y + 2), pymupdf.Point(x - 3, y + 8), pymupdf.Point(x + 9, y - 8)],
+                       color=RED, width=2.6, closePath=False)
+
+
+def _draw_bracket(page: pymupdf.Page, width: float, y0: float, y1: float, number: int | None) -> None:
+    """סוגר אדום בשוליים הימניים לאורך השורות של הטעות, ומספר בעיגול באמצעו. לא מכסה את מה שהסטודנט כתב,
+    ולכן גם כש-Claude מדייק רק בערך, כותבים עליו בלי להסתיר שום שורה."""
+    x = width - BRACKET_INSET
+    page.draw_polyline([pymupdf.Point(x - BRACKET_TICK, y0), pymupdf.Point(x, y0), pymupdf.Point(x, y1),
+                        pymupdf.Point(x - BRACKET_TICK, y1)], color=RED, width=2, closePath=False)
+    if number is not None:
+        centre = pymupdf.Point(x, (y0 + y1) / 2)
+        page.draw_circle(centre, BADGE_RADIUS, color=RED, fill=RED)
+        digits = str(number)
+        size = 11
+        page.insert_text(pymupdf.Point(centre.x - pymupdf.get_text_length(digits, fontname="helv", fontsize=size) / 2,
+                                       centre.y + size * 0.35), digits, fontsize=size, fontname="helv", color=(1, 1, 1))
+
+
+def _band_height(width: float, notes: list[str]) -> float:
+    """הגובה של הפס הלבן שמתחת לעמוד, להערות של העמוד: שורה או שתיים לכל הערה, לפי האורך שלה."""
+    if not notes:
+        return 0
+    per_line = max(20, int((width - 30) / (NOTE_FONT * 0.55)))
+    return 14 + sum(math.ceil((len(t) + 3) / per_line) * (NOTE_FONT + 5) + 4 for t in notes)
+
+
+def _write_band(page: pymupdf.Page, shown: pymupdf.Rect, band: float, notes: list[str], archive) -> None:
+    """הערות העמוד בפס הלבן שמתחתיו, ממוספרות כמו המספרים שליד המלבנים האדומים."""
+    page.draw_line(pymupdf.Point(0, shown.height), pymupdf.Point(shown.width, shown.height), color=RED, width=0.8)
+    rows = "".join(f'<p style="margin: 0 0 4px"><b>{i}.</b> {_esc(t)}</p>' for i, t in enumerate(notes, start=1))
+    html = f'<div dir="rtl" style="color: #d90000; font-size: {NOTE_FONT}px; line-height: 1.3">{rows}</div>'
+    page.insert_htmlbox(pymupdf.Rect(12, shown.height + 6, shown.width - 12, shown.height + band - 2), html,
+                        css=_CSS, archive=archive, scale_low=0)
 
 
 def _summary_page(doc: pymupdf.Document, g: Graded, ctx: Context, archive) -> None:
-    """עמוד ראשון חדש: הציון, הניקוד לכל שאלה והמשוב."""
+    """עמוד ראשון חדש: הציון והניקוד וההערה לכל שאלה. המשוב הכללי (g.feedback) הולך רק לקובץ הציונים."""
     first = doc[0].rect
     page = doc.new_page(0, width=first.width, height=first.height)
     rows = "".join(
-        f'<p style="margin: 0 0 6px"><b>{_esc(q.label)}: {_pts(p)} מתוך {_pts(q.points)}</b>'
-        + (f". {_esc(c)}" if c else "") + "</p>"
+        f'<p style="margin: 0 0 2px"><b>{_pts(p)}/{_pts(q.points)} - {_esc(question_title(q.label))}</b></p>'
+        + (f'<p style="margin: 0 0 10px">{_esc(c)}</p>' if c else '<p style="margin: 0 0 10px"></p>')
         for q, p, c in zip(ctx.questions, g.points, g.comments)
     )
     html = (
         '<div dir="rtl" style="color: #d90000; font-size: 13px; line-height: 1.45">'
         f'<p style="font-size: 16px; margin: 0">{_esc(ctx.title)}</p>'
         f'<p style="font-size: 22px; font-weight: bold; margin: 8px 0 16px">ציון: {_pts(g.grade)} מתוך {_pts(ctx.max_grade)}</p>'
-        f"{rows}"
-        f'<p style="margin-top: 16px">{_esc(g.feedback)}</p></div>'
+        f"{rows}</div>"
     )
     m = 50
     page.insert_htmlbox(pymupdf.Rect(m, m, first.width - m, first.height - m), html, css=_CSS, archive=archive, scale_low=0)
@@ -611,15 +677,27 @@ def _summary_page(doc: pymupdf.Document, g: Graded, ctx: Context, archive) -> No
 def mark_pdf(pdf: bytes, g: Graded, ctx: Context, max_bytes: int = MAX_BYTES) -> bytes:
     """מצייר את הסימונים באדום על העבודה, מוסיף עמוד סיכום בהתחלה, ושומר עד max_bytes אם אפשר."""
     archive = _archive()
-    with pymupdf.open(stream=pdf, filetype="pdf") as doc:
-        for mark in g.marks:
-            page = doc[mark.page - 1]
-            shown = page.rect  # העמוד כפי שהוא מוצג, אחרי סיבוב
-            box = pymupdf.Rect(mark.x0 / 1000 * shown.width, mark.y0 / 1000 * shown.height,
-                               mark.x1 / 1000 * shown.width, mark.y1 / 1000 * shown.height)
-            page.draw_rect(box * page.derotation_matrix, color=RED, width=1.4, overlay=True)
-            if mark.text:
-                _write(page, _note_rect(box, shown), _html(mark.text), archive)
+    with pymupdf.open(stream=pdf, filetype="pdf") as src, pymupdf.open() as doc:
+        for index, source_page in enumerate(src):
+            shown = source_page.rect  # העמוד כפי שהוא מוצג, אחרי סיבוב
+            page_marks = [m for m in g.marks if m.page == index + 1]
+            marks = [m for m in page_marks if m.text != CHECK]
+            notes = [m.text for m in marks if m.text]
+            band = _band_height(shown.width, notes)
+            # עמוד חדש, גבוה יותר: למטה פס לבן להערות, כדי שהן לא יסתירו את מה שהסטודנט כתב
+            page = doc.new_page(width=shown.width, height=shown.height + band)
+            page.show_pdf_page(pymupdf.Rect(0, 0, shown.width, shown.height), src, index)
+            number = 0
+            for mark in marks:
+                y0 = mark.y0 / 1000 * shown.height
+                y1 = min(mark.y1, mark.y0 + MAX_MARK_HEIGHT) / 1000 * shown.height
+                if mark.text:
+                    number += 1
+                _draw_bracket(page, shown.width, y0, y1, number if mark.text else None)
+            for tick in (m for m in page_marks if m.text == CHECK):
+                _draw_check(page, shown.width, tick.y0 / 1000 * shown.height + 8)
+            if notes:
+                _write_band(page, shown, band, notes, archive)
         _summary_page(doc, g, ctx, archive)
         doc.subset_fonts()
         out = doc.tobytes(garbage=4, deflate=True)
