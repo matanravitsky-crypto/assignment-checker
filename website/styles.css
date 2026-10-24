@@ -950,6 +950,25 @@ span.rv-arrow { visibility: hidden; }
 .rq-pts.over { color: var(--warn); }
 .breakdown .num.over { color: var(--warn); font-weight: 700; }
 
+/* ---------- wave 2: מה עכשיו, מי עובד, התראות ---------- */
+.banner.error { background: var(--red-soft); }
+.banner.error > svg { color: var(--red); }
+
+.what-now {
+  display: flex; align-items: center; gap: 8px; margin: 0 0 14px;
+  font-size: 14px; font-weight: 500; color: var(--ink-2);
+}
+.what-now svg { width: 17px; height: 17px; flex: none; color: var(--blue); }
+.what-now.step-done { color: var(--ok); }
+.what-now.step-done svg { color: var(--ok); }
+
+.who-bar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+.who-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 12px; border-radius: 999px;
+  background: var(--blue-soft); color: var(--blue); font-size: 13px; font-weight: 500;
+}
+
 /* "מה עושים" בעמוד המשיכה: שלוש שורות ממוספרות */
 .how-to { margin: 10px auto 4px; padding-inline-start: 22px; text-align: start; max-width: 520px; line-height: 1.7; }
 .how-to li::marker { font-weight: 700; color: var(--blue); }

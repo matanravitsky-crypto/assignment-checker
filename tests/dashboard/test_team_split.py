@@ -60,7 +60,8 @@ def test_pull_and_return_owners_per_assignment(root, server):
     _, state = call(server, "GET", "/api/state")
     by_folder = {a["folder"]: a for a in state["assignments"] if a["courseFolder"] == COURSE}
     assert by_folder["Assignment 4"]["owners"]["pull"]["who"] == "מתן"
-    assert by_folder[HW]["owners"] == {"pull": None, "return": by_folder[HW]["owners"]["return"]}
+    assert by_folder[HW]["owners"]["pull"] is None
+    assert all(by_folder[HW]["owners"][s] is None for s in ("rubric", "review"))
     assert by_folder[HW]["owners"]["return"]["who"] == "מתן"
     st, rep = call(server, "POST", "/api/tasks", {**BODY, "stage": "return", "take": False}, HDR)
     assert st == 200 and rep["owner"] is None

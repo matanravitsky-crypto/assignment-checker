@@ -1,7 +1,7 @@
 (() => {
   // כל מה שהאתר מציג אמיתי: הנתונים מגיעים מהמערכת שרצה במחשב (start.bat, dashboard/web_server.py),
   // שקוראת את תיקיית OneDrive של הקורס. בלי המערכת אין מספרים במסך
-  const D = { courses: [], assignments: [], rubrics: {}, runs: [] };
+  const D = { courses: [], assignments: [], rubrics: {}, runs: [], whoWorking: [], sysAlerts: [] };
   // באתר הציבורי (Vercel) פונים למערכת שבמחשב. כשהאתר נפתח מהמערכת עצמה, לאותה כתובת
   const ON_LOCAL_HOST = ["localhost", "127.0.0.1"].includes(location.hostname);
   const BASE = ON_LOCAL_HOST ? "" : "http://127.0.0.1:8765/";
@@ -1545,7 +1545,7 @@
   }
 
   function overviewHTML() {
-    const list = D.assignments.filter((a) => a.courseId === state.courseId);
+    const list = D.assignments.filter((a) => a.courseId === state.courseId && !a.empty);
     const mark = (done, txt) => `<span class="ov ${done ? "done" : ""}">${done ? ICON.check : ""}${txt}</span>`;
     return `<div class="table-wrap"><table class="overview">
       <thead><tr><th>מטלה</th><th class="col-hide">מועד הגשה</th><th>משיכה</th><th>בדיקה</th><th>החזרה</th><th>ממוצע</th></tr></thead>
@@ -1621,10 +1621,33 @@
 
   // ---------- הגרסה המחוברת: תיקיית OneDrive דרך השרת המקומי ----------
   function bannerHTML() {
+    const alerts = (D.sysAlerts || []).map((a) =>
+      `<div class="banner ${a.kind === "error" ? "error" : "warn"}">${ICON.warn}${esc(a.text)}</div>`
+    ).join("");
     if (LOCAL.on && !LOCAL.health?.root) {
-      return `<div class="banner warn">${ICON.warn}<div><b>המערכת פועלת, אבל תיקיית OneDrive של הקורס עוד לא נמצאה במחשב.</b><pre class="banner-pre">${esc(LOCAL.health?.error || "")}</pre></div><button class="btn secondary small" data-act="recheck">בדוק שוב</button></div>`;
+      return alerts + `<div class="banner warn">${ICON.warn}<div><b>המערכת פועלת, אבל תיקיית OneDrive של הקורס עוד לא נמצאה במחשב.</b><pre class="banner-pre">${esc(LOCAL.health?.error || "")}</pre></div><button class="btn secondary small" data-act="recheck">בדוק שוב</button></div>`;
     }
-    return "";
+    return alerts;
+  }
+
+  function whatNowHTML(A) {
+    const wn = A?.whatNow;
+    if (!wn || !wn.text) return "";
+    const stepIcon = { pull: ICON.pull, grade: ICON.grade, rubric: ICON.pen, review: ICON.pen, ret: ICON.ret, done: ICON.check };
+    const ownerSpan = wn.owner ? ` <span class="muted"> — אצל ${esc(wn.owner)}</span>` : "";
+    return `<p class="what-now step-${esc(wn.step)}">${stepIcon[wn.step] || ""}${esc(wn.text)}${ownerSpan}</p>`;
+  }
+
+  function whoWorkingBarHTML() {
+    const workers = D.whoWorking || [];
+    if (!workers.length) return "";
+    const ACT = { grading: "בודק", uploading: "מעלה" };
+    const chips = workers.map((w) => {
+      const act = ACT[w.activity] || "עובד";
+      const where = w.folder ? ` — ${esc(w.folder)}` : "";
+      return `<span class="who-chip">${esc(w.name)} ${act}${where}</span>`;
+    }).join("");
+    return `<div class="who-bar">${chips}</div>`;
   }
 
   function drivePanelHTML() {
@@ -2058,7 +2081,9 @@
             ${A.notes ? `<p class="muted">${esc(A.notes)}</p>` : ""}
           </div>
         </div>
+        ${whoWorkingBarHTML()}
         ${noRubric() ? rubricNoticeHTML() : ""}
+        ${whatNowHTML(A)}
         ${pipelineHTML()}
         ${statsRowHTML(A, I)}
         ${reviewCalloutHTML(A)}
@@ -2087,27 +2112,8 @@
         <section class="panel"><div class="panel-body tight">${logHTML(80, false)}</div></section>`;
     },
     "/settings"() {
-      const node = (title, tech, tag, cls = "warn") => `<div class="node"><b>${title}</b><small>${tech}</small><span class="tag ${cls}">${tag}</span></div>`;
       return `
-        <div class="page-head"><div><h1>חיבורים והגדרות</h1><p>איך המערכת בנויה ומה מחובר עכשיו.</p></div></div>
-        <section class="panel">
-          <div class="panel-head"><h2>איך המערכת בנויה</h2></div>
-          <div class="panel-body">
-            <div class="arch">
-              <div class="arch-row">
-                ${node("מודל", "דרך Claude in Chrome, בכרום ובחשבון שלך", ...(LOCAL.health?.moodle ? ["מחובר", "ok"] : LOCAL.on ? ["צריך להתחבר ל-Claude", "warn"] : ["לא ידוע", "warn"]))}
-                <span class="arch-link" aria-hidden="true">⇄</span>
-                ${node("המערכת", "פייתון במחשב שמסנכרן את התיקייה (start.bat)", ...(LOCAL.on ? ["פועלת", "ok"] : ["לא מחוברת", "warn"]))}
-                <span class="arch-link" aria-hidden="true">⇄</span>
-                ${node("Claude", "בדיקה, סימון וציון", ...(LOCAL.health?.claude ? ["מחובר", "ok"] : ["עוד לא מחובר", "warn"]))}
-              </div>
-              <span class="arch-v" aria-hidden="true">⇅</span>
-              <div class="arch-row center">${node("תיקיית OneDrive", "YallaLinearit: הגשות, ציונים ויומן", ...(LOCAL.health?.root ? ["מחוברת", "ok"] : ["לא מחוברת", "warn"]))}</div>
-              <span class="arch-v" aria-hidden="true">⇅</span>
-              <div class="arch-row center">${node("האתר הזה", ON_LOCAL_HOST ? "דרך המערכת במחשב" : "Vercel, מתחבר למערכת שבמחשב", ...(LOCAL.on ? ["מחובר", "ok"] : ["לא מחובר", "warn"]))}</div>
-            </div>
-          </div>
-        </section>
+        <div class="page-head"><div><h1>חיבורים והגדרות</h1><p>מה מחובר עכשיו.</p></div></div>
         ${drivePanelHTML()}
         <div class="grid-2">
           <section class="panel">
@@ -2536,6 +2542,8 @@
       D.runs.splice(0, D.runs.length, ...data.assignments
         .flatMap((a) => (a.log || []).map((l) => ({ ...l, where: `${a.course}, ${a.title}` })))
         .sort((x, y) => (y.at || "").localeCompare(x.at || "")));
+      D.whoWorking.splice(0, D.whoWorking.length, ...(data.whoWorking || []));
+      D.sysAlerts.splice(0, D.sysAlerts.length, ...(data.sysAlerts || []));
       // מודל מחובר = Claude Code מחובר במחשב (דרכו Claude in Chrome עובד במודל)
       LOCAL.health = { ...LOCAL.health, ...(health || {}), root: data.root, claude: data.claude, claudeVia: data.claudeVia };
       LOCAL.me = data.me || null;
