@@ -40,7 +40,7 @@ from moodle import (anonymize as moodle_anonymize, claims, claude_driver, grades
                     ingest as moodle_ingest, lock as moodle_lock, paths, send as moodle_send, upload as moodle_upload,
                     upload_log)
 
-from . import folder_view, settings as cfg, shared_folder, usage as grading_usage
+from . import folder_view, heartbeat, settings as cfg, shared_folder, usage as grading_usage
 
 
 def root_info() -> tuple[Path | None, str | None]:
@@ -622,8 +622,12 @@ def start_grading(root: Path, course: str, assignment: str, numbers: list[str] |
     def progress(n: str, what: str) -> None:
         with _job_lock:
             job.done[n] = what
+        heartbeat.set_activity(root, activity="grading", courseFolder=course, folder=assignment,
+                               progress=f"{len(job.done)}/{len(job.numbers)}")
 
     def run() -> None:
+        heartbeat.set_activity(root, activity="grading", courseFolder=course, folder=assignment,
+                               progress=f"0/{len(todo)}")
         try:
             rep = grading.grade_assignment(a.dir, todo, ask=ask, on_progress=progress, stop=_stop, **opts)
             job.report, job.summary = asdict(rep), rep.summary()
@@ -635,6 +639,7 @@ def start_grading(root: Path, course: str, assignment: str, numbers: list[str] |
             with _job_lock:
                 job.running = False
                 job.finished_at = datetime.now().isoformat(timespec="seconds")
+            heartbeat.clear_activity(root, "activity", "courseFolder", "folder", "progress")
 
     t = threading.Thread(target=run, daemon=True)
     t.start()
@@ -963,7 +968,9 @@ def start_send(root: Path, course: str, assignment: str, batch_id: str,
             with _send_lock:
                 job.running, job.current = False, ""
                 job.finished_at = datetime.now().isoformat(timespec="seconds")
+            heartbeat.clear_activity(root, "activity", "courseFolder", "folder", "progress")
 
+    heartbeat.set_activity(root, activity="uploading", courseFolder=course, folder=assignment)
     t = threading.Thread(target=run, daemon=True)
     try:
         t.start()
@@ -1391,6 +1398,29 @@ def _activity(a: folder_view.Assignment, log: list[dict]) -> list[dict]:
     return out
 
 
+def _what_now(subs: list[dict], owners: dict, grading_now: set, no_rubric: bool) -> dict:
+    """הצעד הבא של המטלה ומי אחראי עליו. subs הוא הרשימה שבנינו ב-state()."""
+    total = len(subs)
+    if not total:
+        return {"step": "pull", "text": "לא נמשכה עדיין", "owner": owners.get("pull")}
+    if no_rubric:
+        return {"step": "rubric", "text": "מחוון חסר — לא ניתן לבדוק", "owner": owners.get("rubric")}
+    pending = sum(1 for s in subs if s["status"] == "pulled")
+    reviewing = sum(1 for s in subs if s.get("review") and not s.get("approved"))
+    returned = sum(1 for s in subs if s["status"] == "returned")
+    grading_cnt = len(grading_now)
+    if grading_cnt:
+        done = total - pending - grading_cnt
+        return {"step": "grade", "text": f"בבדיקה: {done + grading_cnt}/{total}", "owner": owners.get("return")}
+    if pending:
+        return {"step": "grade", "text": f"ממתינות לבדיקה: {pending} מתוך {total}", "owner": owners.get("return")}
+    if reviewing:
+        return {"step": "review", "text": f"{reviewing} לבדיקה ידנית", "owner": owners.get("review")}
+    if returned < total:
+        return {"step": "ret", "text": f"{total - returned} מוכנות להחזרה", "owner": owners.get("return")}
+    return {"step": "done", "text": "הכל הוחזר", "owner": None}
+
+
 def state(root: Path) -> dict:
     """הקורסים, המטלות וההגשות כפי שהם בתיקייה. בלי שמות של סטודנטים: רק מספרים."""
     courses, out = [], []
@@ -1460,9 +1490,16 @@ def state(root: Path) -> dict:
                             + ([f"משיכה בתהליך: {moodle_lock.parse((a.dir / LOCK_FILE).read_text(encoding='utf-8'))[0]}"] if (a.dir / LOCK_FILE).exists() else [])
                             + ([f"העלאה בתהליך: {who}"] if (who := _upload_lock_holder(a)) else []),
                 "subs": subs, "log": _activity(a, log), "owners": owners, "copying": copying_state(a.dir),
+                "whatNow": _what_now(subs, owners, grading_now, ctx.no_rubric),
             })
+    via = quick_via()
+    alerts = []
+    if via is None:
+        alerts.append({"kind": "warn", "text": "Claude לא מחובר — לא ניתן לבדוק. מחברים ב-claude auth login או בשלב 3 באתר."})
     return {"root": str(root), "courses": courses, "assignments": out, "me": me(),
-            "moodle": False, "claude": quick_via() is not None, "claudeVia": quick_via(), "grading": grade_status(), "sending": send_status(), "copyCheck": copying_status(),
+            "moodle": False, "claude": via is not None, "claudeVia": via,
+            "grading": grade_status(), "sending": send_status(), "copyCheck": copying_status(),
+            "whoWorking": heartbeat.read_all(root), "sysAlerts": alerts,
             "usage": grading_usage.summary(root)}
 
 

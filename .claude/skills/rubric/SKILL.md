@@ -67,11 +67,18 @@ notification. While waiting, answer the user but don't poll.
 
 ## 5. When it's done
 
+**The check that matters most (Ori, 2026-10-23): manual review must stay at 5-6%.** Before delivering, count the
+field-test submissions the rubric would send to a person (§5 of the rubric plus any "to the checker" in §3/§4).
+Above 6% the rubric is not done: group the reasons and turn each group into a decision in a row, as
+`manual-review-rules.md` says. No row or rule may say "to the checker".
+
 1. Read the workflow's result (the `check` report), not the files. If it reports something still wrong
    that you can fix from `questions.md` (an answer, a printed template), fix it in `Rubric.md`.
 2. If a `Rubric.md` is already in `<assignment>\פדגוגי\`, move it first to
    `<assignment>\פדגוגי\Working notes\Rubric v<N>.md`. Then copy `Solutions.md`, `Solution methods.md`,
-   `Rubric.md` from `<work>` to `<assignment>\פדגוגי\`, and `findings.md` to `<assignment>\פדגוגי\Working notes\`.
+   `Rubric.md` from `<work>` to `<assignment>\פדגוגי\`, `manual-review-rules.md` from this skill's folder too
+   (grading sends it to Claude with every submission, so it stays short), and `findings.md` to
+   `<assignment>\פדגוגי\Working notes\`.
    Nothing else goes on top of `פדגוגי`: grading would send it to Claude with every submission.
 3. Delete `<work>` (it holds student pages).
 4. Don't write anything into `Assignment details.json`. Tell the user that from now on grading uses this rubric
