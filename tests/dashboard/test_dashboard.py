@@ -36,6 +36,25 @@ def test_find_root_after_sync_button(tmp_path, monkeypatch):
     assert shared_folder.find_root() == system
 
 
+def test_without_a_synced_folder_the_local_data_folder_is_used(tmp_path, monkeypatch):
+    """חשבון אורח לא יכול לסנכרן את התיקייה של המרצה: האתר עובד מתיקיית הנתונים המקומית."""
+    monkeypatch.delenv("ASSIGNMENT_CHECKER_ROOT", raising=False)
+    monkeypatch.setattr(shared_folder, "onedrive_roots", lambda: [])
+    monkeypatch.setattr(shared_folder.Path, "home", staticmethod(lambda: tmp_path))
+    local = tmp_path / "Exercise Checking System"
+    monkeypatch.setenv("ASSIGNMENT_DATA", str(local))
+    (local / COURSE).mkdir(parents=True)
+    with pytest.raises(shared_folder.FolderNotFound):  # תיקייה בלי מטלות: לא נחשבת
+        shared_folder.find_root()
+    (local / COURSE / HW).mkdir()
+    (local / COURSE / HW / paths.INFO).write_text("{}", encoding="utf-8")
+    assert shared_folder.find_root() == local
+    # תיקייה מסונכרנת, אם יש, קודמת לתיקייה המקומית
+    synced = tmp_path / "BGU" / "נדב מאיר - YallaLinearit" / "Exercise Checking System"
+    synced.mkdir(parents=True)
+    assert shared_folder.find_root() == synced
+
+
 def test_course_folder_without_team_folder_is_not_used(tmp_path, monkeypatch):
     monkeypatch.delenv("ASSIGNMENT_CHECKER_ROOT", raising=False)
     monkeypatch.setattr(shared_folder, "onedrive_roots", lambda: [])
@@ -141,10 +160,25 @@ def test_pull_runs_ingest_with_the_assignment_id(root, monkeypatch):
         return rows
 
     monkeypatch.setattr("moodle.ingest.ingest", fake_ingest)
+    copied = []
+    monkeypatch.setattr(actions, "start_copying", lambda *a, **k: copied.append(a))
     rep = actions.pull(root, COURSE, HW)
     assert seen == {"id": MID, "data": root}
     assert rep["result"] == {"total": 4, "new": 1, "files": 5}
     assert "1 חדשות" in rep["summary"]
+    assert copied == [(root, COURSE, HW)] and any("העתקות" in n for n in rep["notes"])  # starts by itself
+
+
+def test_pull_time_left_follows_the_pace_of_the_phase():
+    assert actions._eta("parts", 1, 15, 0, 0) == 14 * actions.PART_S  # no pace yet: about PART_S a part
+    assert actions._eta("parts", 5, 15, 40, 4) == 100  # 4 parts in 40 s → 10 more in 100 s
+    assert actions._eta("extract", 50, 100, 30, 50) == 30
+    assert actions._eta("extract", 0, 100, 0, 0) is None  # nothing to go by
+    assert actions._eta("parts", 3, 0, 20, 2) is None  # total not known
+    assert actions._eta("number", 10, 10, 5, 10) == 0
+    # waiting for the next part counts down (on 2026-10-23 it went up from 168 to 288 s between two parts)
+    assert actions._eta("parts", 5, 15, 40, 4, waiting=6) == 94
+    assert actions._eta("parts", 5, 15, 40, 4, waiting=60) == 90  # never below the 9 parts not started yet
 
 
 def test_pull_time_left_follows_the_pace_of_the_phase():
@@ -465,8 +499,14 @@ def test_pull_in_parts_keeps_every_number_and_adds_the_new_student(root, monkeyp
     assert rep["result"]["total"] == 4 and rep["result"]["new"] == 1
     key = {r["participant_id"]: r["number"] for r in folder_view.Assignment(root / COURSE / HW).key_rows()}
     assert key["1001"] == "0001" and key["1002"] == "0002" and key["1003"] == "0003" and key["2000"] == "0004"
-    kept = [p for p in (root / COURSE / HW).iterdir() if p.is_dir() and p.name.startswith(paths.DOWNLOAD_PREFIX)]
+    # the download is kept on this computer only, never in the shared folder; the shared folder logs the pull
+    old = f"{paths.DOWNLOAD_PREFIX} 2026-10-21 16-28.zip"  # the fixture's, from before downloads stayed local
+    assert [p.name for p in (root / COURSE / HW).iterdir() if p.name.startswith(paths.DOWNLOAD_PREFIX)] == [old]
+    backup = tmp_path / "Moodle originals" / paths.BACKUP / COURSE / HW
+    kept = [p for p in backup.iterdir() if p.is_dir() and p.name.startswith(paths.DOWNLOAD_PREFIX)]
     assert len(kept) == 1 and sorted(p.name for p in kept[0].iterdir()) == ["part 001.zip", "part 002.zip", "parts.json"]
+    log = (root / COURSE / HW / paths.PULL_LOG).read_text(encoding="utf-8-sig").splitlines()
+    assert log[0] == "pulled_at,by,students,new,files,parts" and log[-1].split(",")[2:] == ["4", "1", "4", "2"]
     assert list(ingest.downloads_dir().iterdir()) == []  # every part was taken
     assert actions.pull_status()["phase"] == "number"
     assert len(list((tmp_path / "Moodle originals" / COURSE / HW).iterdir())) == 4
@@ -521,3 +561,108 @@ def test_the_site_dates_every_kind_of_kept_download(root):
     assert len(times) == 3 and times[0] == "2026-10-22T09:30" and times == sorted(times)
     assert actions._last_download(a) == times[-1] != "2026-10-22T09:30"
     assert len(status.status(a.dir)["downloads"]) == 4  # moodle status lists the folder of parts too
+
+
+def test_a_local_copy_does_not_pull(tmp_path, monkeypatch):
+    """תיקיית מערכת מקומית (לא בתוך YallaLinearit המסונכרנת) לא מושכת: לפני כרום ולפני שנוצר משהו."""
+    from moodle import ingest
+    local = tmp_path / "Exercise Checking System"
+    (local / COURSE).mkdir(parents=True)
+    fake = FakeDownloader(ingest.downloads_dir())
+    monkeypatch.setattr(actions, "_make_downloader", lambda: fake)
+    with pytest.raises(actions.UserError, match="עותק מקומי"):
+        actions.pull(local, COURSE, "Assignment 3", moodle_id="3453769")
+    assert fake.calls == [] and not (local / COURSE / "Assignment 3").exists()
+    monkeypatch.setenv("MOODLE_DRIVER", "simulate")  # the demo has no OneDrive: it may
+
+    def past_the_rule(*a, **k):
+        raise actions.UserError("past the rule")
+    monkeypatch.setattr(actions, "new_assignment", past_the_rule)
+    with pytest.raises(actions.UserError, match="past the rule"):
+        actions.pull(local, COURSE, "Assignment 3", moodle_id="3453769")
+
+
+def test_the_site_dates_pulls_from_the_pull_log_and_old_kept_zips(root):
+    from moodle import ingest
+    a = actions.find_assignment(root, COURSE, HW)
+    (a.dir / paths.PULL_LOG).write_text("pulled_at,by,students,new,files,parts\n"
+                                        "2026-10-23T10:55:07,ori34 (OriLaptop),14,10,14,1\n", encoding="utf-8-sig")
+    assert ingest.pulls(a.dir) == ["2026-10-23T10:55:07"]
+    times = actions._downloads(a)
+    assert times[-1] == "2026-10-23T10:55" and "2026-10-21T16:28" in times  # the fixture's old ZIP still counts
+
+
+# ---------- משיכה חוזרת: רק מה שהשתנה, ומועד ההגשה ממודל ----------
+class RecordingDownloader(FakeDownloader):
+    def __init__(self, downloads):
+        super().__init__(downloads)
+        self.infos = []
+
+    def download(self, info):
+        self.infos.append(info)
+        return super().download(info)
+
+
+def _log_a_pull(a_dir, when="2026-10-25T00:07:00"):
+    (a_dir / paths.PULL_LOG).write_text("pulled_at,by,students,new,files,parts\n"
+                                        f"{when},מתן (PC),3,3,3,15\n", encoding="utf-8-sig")
+
+
+def test_a_pull_after_a_pull_asks_moodle_only_for_what_changed(root, monkeypatch):
+    from datetime import datetime
+    monkeypatch.setattr("moodle.ingest.ingest", lambda *a, **k: folder_view.Assignment(root / COURSE / HW).key_rows())
+    fake = RecordingDownloader(actions.moodle_ingest.downloads_dir())
+    monkeypatch.setattr(actions, "_make_downloader", lambda: fake)
+    actions.pull(root, COURSE, HW)
+    assert "since" not in fake.infos[-1]                       # no pull logged yet: everyone
+    _log_a_pull(root / COURSE / HW)
+    for p in actions.moodle_ingest.downloads_dir().iterdir():
+        p.unlink()
+    actions.pull(root, COURSE, HW)
+    an_hour_before = int(datetime(2026, 10, 24, 23, 7).timestamp() * 1000)
+    assert fake.infos[-1]["since"] == an_hour_before           # what changed since an hour before the last pull
+    for p in actions.moodle_ingest.downloads_dir().iterdir():
+        p.unlink()
+    actions.pull(root, COURSE, HW, full=True)
+    assert "since" not in fake.infos[-1]                       # "pull everything again"
+
+
+class NothingChanged:
+    """Moodle when nobody submitted since the last pull: no parts, only the list, with the due date it read."""
+
+    def __init__(self, downloads, due="2026-10-26T23:59:00"):
+        self.downloads, self.due = downloads, due
+
+    def download(self, info):
+        listed = {"users": 3, "changed": 0, "since": info.get("since", 0), "due": self.due, "parts": 0, "empty": 0,
+                  "failed": [], "files": []}
+        (self.downloads / f"214193210120271-הגשה 0-{info['id']}.json").write_text(json.dumps(listed), encoding="utf-8")
+        return {"status": "started", "message": "ok", "users": 3, "parts": 0}
+
+
+def test_nothing_changed_touches_nothing_logs_the_pull_and_saves_the_due_date(root, monkeypatch):
+    a_dir = root / COURSE / HW
+    _log_a_pull(a_dir)
+    info = json.loads((a_dir / paths.INFO).read_text(encoding="utf-8"))
+    info["due"] = "2026-10-24T23:59:00+02:00"                  # Moodle moved it two days (an extension for everyone)
+    (a_dir / paths.INFO).write_text(json.dumps(info), encoding="utf-8")
+    before = {p.name: p.read_bytes() for p in (a_dir / paths.TO_GRADE).iterdir()}
+    key_before = (a_dir / paths.KEY).read_bytes()
+    monkeypatch.setattr(actions, "_make_downloader", lambda: NothingChanged(actions.moodle_ingest.downloads_dir()))
+    rep = actions.pull(root, COURSE, HW)
+    assert rep["changed"] == 0 and rep["result"]["new"] == 0 and "שום הגשה לא השתנתה" in rep["notes"][0]
+    assert {p.name: p.read_bytes() for p in (a_dir / paths.TO_GRADE).iterdir()} == before
+    assert (a_dir / paths.KEY).read_bytes() == key_before
+    assert len(actions.moodle_ingest.pulls(a_dir)) == 2         # logged: the next pull asks from here on
+    assert list(actions.moodle_ingest.downloads_dir().iterdir()) == []
+    assert paths.read_info(a_dir)["due"] == "2026-10-26T23:59:00"
+
+
+def test_a_due_date_moodle_did_not_give_changes_nothing(root, monkeypatch):
+    a_dir = root / COURSE / HW
+    _log_a_pull(a_dir)
+    due = paths.read_info(a_dir)["due"]
+    for bad in (None, "next Monday"):
+        monkeypatch.setattr(actions, "_make_downloader", lambda: NothingChanged(actions.moodle_ingest.downloads_dir(), bad))
+        actions.pull(root, COURSE, HW)
+    assert paths.read_info(a_dir)["due"] == due

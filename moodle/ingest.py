@@ -5,6 +5,7 @@ for 7-Zip to open it (Python's zipfile garbles some Hebrew names), so this uses
 7-Zip.
 """
 
+import csv
 import json
 import os
 import re
@@ -16,7 +17,7 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 
-from moodle import anonymize, guide, paths
+from moodle import anonymize, guide, lock, paths
 
 SEVEN_ZIP_PATHS = [r"C:\Program Files\7-Zip\7z.exe", r"C:\Program Files (x86)\7-Zip\7z.exe"]
 
@@ -274,10 +275,13 @@ def ingest(assignment_id: str, zip_path: Path | None = None,
     "number" in student folders.
 
     `zip_path` is one ZIP of all submissions, or the list of parts from moodle/download_parts.js (each part is a
-    ZIP of some of the students, all in Moodle's folder per student), which are extracted into the same folder."""
+    ZIP of some of the students, all in Moodle's folder per student), which are extracted into the same folder.
+    A list of only what changed (its "since") holds only those students: everyone else keeps what they have."""
     report = on_progress or (lambda *_: None)
     zip_path = zip_path or find_download(assignment_id)
     in_parts = zip_path.suffix.lower() == LIST
+    if in_parts and nothing_changed(zip_path):
+        return _log_unchanged(assignment_id, zip_path, course, name)
     zips = gather_parts(zip_path) if in_parts else [zip_path]
     report("check", 0, 100)
     for i, z in enumerate(zips):
@@ -286,10 +290,12 @@ def ingest(assignment_id: str, zip_path: Path | None = None,
     anonymize.check_key(target)  # before anything moves: a broken key must leave the folder as it is
 
     # Keep every download: a later one (after the due date) must not erase the first, even a minute later. Parts go
-    # together in a folder
-    stamp = _free_stamp(target)
+    # together in a folder. On this computer only, never in the shared folder (names; GBs)
+    backup = paths.backup_dir(target)
+    backup.mkdir(parents=True, exist_ok=True)
+    stamp = _free_stamp(backup)
     if in_parts:
-        kept_dir = target / f"{paths.DOWNLOAD_PREFIX} {stamp}"
+        kept_dir = backup / f"{paths.DOWNLOAD_PREFIX} {stamp}"
         kept_dir.mkdir()
         moved = []
         for i, z in enumerate(zips, 1):
@@ -298,7 +304,7 @@ def ingest(assignment_id: str, zip_path: Path | None = None,
         shutil.move(zip_path, kept_dir / "parts.json")
         zips = moved
     else:
-        kept = target / f"{paths.DOWNLOAD_PREFIX} {stamp}.zip"
+        kept = backup / f"{paths.DOWNLOAD_PREFIX} {stamp}.zip"
         shutil.move(zip_path, kept)
         zips = [kept]
 
@@ -313,6 +319,55 @@ def ingest(assignment_id: str, zip_path: Path | None = None,
         if code:
             raise subprocess.CalledProcessError(code, ["7z", *args])
 
+    before = set(anonymize.existing_numbers(target).values())
     rows = anonymize.prepare(original, target, on_folder=on_progress and (lambda done, total: report("number", done, total)))
+    log_pull(target, rows, before, len(zips))
     guide.write_guides(paths.data_dir())
     return rows
+
+
+def nothing_changed(list_path: Path) -> bool:
+    """A list from download_parts.js that asked only for what changed since the last pull, and nothing had."""
+    try:
+        listed = json.loads(list_path.read_text(encoding="utf-8"))
+        return int(listed.get("since") or 0) > 0 and listed.get("files") == [] and not listed.get("failed")
+    except (OSError, ValueError, TypeError, AttributeError):
+        return False
+
+
+def _log_unchanged(assignment_id: str, list_path: Path, course: str | None, name: str | None) -> list[dict]:
+    """Nothing changed in Moodle: no file is touched, the list is kept with the other downloads, and the pull is logged
+    (the next one asks only for what changes after it)."""
+    target = assignment_folder(assignment_id, list_path, course, name)
+    anonymize.check_key(target)
+    backup = paths.backup_dir(target)
+    backup.mkdir(parents=True, exist_ok=True)
+    shutil.move(list_path, backup / f"{paths.DOWNLOAD_PREFIX} {_free_stamp(backup)} (no changes).json")
+    rows = anonymize.existing_rows(target)
+    log_pull(target, rows, {int(r["number"]) for r in rows}, 0)
+    return rows
+
+
+PULL_LOG_FIELDS = ["pulled_at", "by", "students", "new", "files", "parts"]
+
+
+def log_pull(target: Path, rows: list[dict], before: set[int], parts: int) -> None:
+    """One row in the assignment's "Pull log.csv": when, who (as in the lock files), and how many. Numbers only."""
+    numbers = {int(r["number"]) for r in rows}
+    log = target / paths.PULL_LOG
+    new_file = not log.exists()
+    with open(log, "a", newline="", encoding="utf-8-sig" if new_file else "utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=PULL_LOG_FIELDS)
+        if new_file:
+            writer.writeheader()
+        writer.writerow({"pulled_at": datetime.now().isoformat(timespec="seconds"), "by": lock.me(),
+                         "students": len(numbers), "new": len(numbers - before), "files": len(rows), "parts": parts})
+
+
+def pulls(target: Path) -> list[str]:
+    """When the assignment was pulled (pulled_at of every row in "Pull log.csv"), oldest first."""
+    try:
+        with open(target / paths.PULL_LOG, encoding="utf-8-sig", newline="") as f:
+            return sorted(r["pulled_at"] for r in csv.DictReader(f) if r.get("pulled_at"))
+    except (OSError, csv.Error):
+        return []

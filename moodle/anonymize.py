@@ -12,6 +12,7 @@ import csv
 import os
 import re
 import shutil
+from datetime import datetime
 from pathlib import Path
 
 from moodle import paths
@@ -35,7 +36,9 @@ def prepare(original: Path, assignment_dir: Path, on_folder=None) -> list[dict]:
 
     The key never loses a student: one who is not in this download (a part that came without folders, a submission
     removed in Moodle) keeps their rows and their files in "1 - Submissions to grade" as they were. On 2026-10-23 a
-    download with two parts without folders dropped 74 students from the key, and the key had to be rebuilt."""
+    download with two parts without folders dropped 74 students from the key, and the key had to be rebuilt.
+    Nothing is deleted: a file this download replaces moves to "Earlier versions/<date>/", the old key to
+    "Key history/", and a key that would lose or move a student is refused (KeyBroken) before anything changes."""
     loose = [f.name for f in original.iterdir() if not f.is_dir()]
     if loose:  # Moodle's "download in folders" was off: a file without its folder has no participant id
         raise ValueError(f"{len(loose)} files in the download are not in a folder per student: "
@@ -45,10 +48,11 @@ def prepare(original: Path, assignment_dir: Path, on_folder=None) -> list[dict]:
         key=lambda f: int(parse_folder(f.name)),
     )
     check_key(assignment_dir)
+    _restore_previous(assignment_dir, assignment_dir / paths.TO_GRADE)
+    key = assignment_dir / paths.KEY
+    key_before = key.read_bytes() if key.exists() else None  # a key that changes under us: another computer pulled
     old_rows = existing_rows(assignment_dir)
-    anon = assignment_dir / paths.TO_GRADE
-    anon.mkdir(exist_ok=True)
-    _restore_previous(assignment_dir, anon)
+    stamp = datetime.now().strftime("%Y-%m-%d %H-%M-%S")
 
     # A student keeps their number across downloads, even after grading started;
     # students who submitted since the last download get the next free numbers
@@ -63,20 +67,15 @@ def prepare(original: Path, assignment_dir: Path, on_folder=None) -> list[dict]:
             numbers[folder] = next_number
             next_number += 1
 
-    # "1 - Submissions to grade" is updated in place, file by file, and only where something changed: a pull that
-    # fails halfway leaves every file either as it was or as it is now (never half written), nothing of a student who
-    # is not in this download is touched, and OneDrive uploads only what changed
-    rows, wanted = [], {}
-    for done, folder in enumerate(sorted(folders, key=numbers.get)):
-        if on_folder:
-            on_folder(done, len(folders))
+    rows, sources = [], {}
+    for folder in sorted(folders, key=numbers.get):
         number = numbers[folder]
         files = sorted(p for p in folder.rglob("*") if p.is_file())
         for index, file in enumerate(files):
             # A second file from the same student becomes 0001-2.pdf
             suffix = "" if index == 0 else f"-{index + 1}"
             anon_name = f"{number:04d}{suffix}{file.suffix.lower()}"
-            wanted[anon_name] = file
+            sources[anon_name] = file
             rows.append({
                 "number": f"{number:04d}",
                 "anon_file": anon_name,
@@ -84,28 +83,100 @@ def prepare(original: Path, assignment_dir: Path, on_folder=None) -> list[dict]:
                 "original_folder": folder.name,
                 "original_file": str(file.relative_to(folder)),
             })
-    for anon_name, file in wanted.items():
-        _put(file, anon / anon_name)
-    # a file of a student in this download that the download no longer has (they submitted fewer files)
-    here_numbers = {f"{n:04d}" for n in numbers.values()}
-    for old in anon.iterdir():
-        if old.is_file() and old.name not in wanted and _number_of(old.name) in here_numbers:
-            old.unlink()
 
     # Students of the key who are not in this download: their rows stay, and so do their files
     here = {parse_folder(f.name) for f in folders}
     rows += [{k: row.get(k, "") for k in MAPPING_FIELDS} for row in old_rows if row["participant_id"] not in here]
     rows.sort(key=lambda r: r["number"])  # stable: a student's files stay in their order (0001.pdf, then 0001-2.pdf)
+    check_new_key(old_rows, rows)  # before any file is touched
 
-    # The key last, and whole or not at all: written next to it, then put in its place in one step
-    key = assignment_dir / paths.KEY
-    tmp = key.with_name(key.name + ".tmp")
-    with open(tmp, "w", newline="", encoding="utf-8-sig") as f:
-        writer = csv.DictWriter(f, fieldnames=MAPPING_FIELDS)
-        writer.writeheader()
-        writer.writerows(rows)
-    os.replace(tmp, key)
+    # The files go in place: one that is the same stays as it is (nothing new for OneDrive to sync), and one that this
+    # download replaces moves to "Earlier versions" first. Nothing in "1 - Submissions to grade" is ever deleted
+    anon = assignment_dir / paths.TO_GRADE
+    anon.mkdir(exist_ok=True)
+    conflicts = submission_conflicts(assignment_dir)
+    if conflicts:
+        raise KeyBroken(f"OneDrive conflict copies in {paths.TO_GRADE}: {', '.join(conflicts[:10])}: nothing was changed")
+    earlier = assignment_dir / paths.EARLIER / stamp
+    done: list[tuple[Path, Path | None]] = []  # (a file this pull wrote or moved, where the old one went): to undo
+    numbers_here = {r["number"] for r in rows if r["anon_file"] in sources}
+    try:
+        for old in sorted(anon.iterdir()):  # a file of a student in this download that the download no longer has
+            if old.is_file() and old.name not in sources and old.name[:4] in numbers_here and old.name[4:5] in (".", "-"):
+                done.append((old, _set_aside(old, earlier)))
+        seen: set[str] = set()
+        for anon_name, source in sources.items():
+            if on_folder and anon_name[:4] not in seen:
+                on_folder(len(seen), len(numbers_here))
+            seen.add(anon_name[:4])
+            target = anon / anon_name
+            if target.is_file() and _same(source, target):
+                continue
+            aside = _set_aside(target, earlier) if target.exists() else None
+            done.append((target, aside))
+            _copy(source, target)
+        if (key.read_bytes() if key.exists() else None) != key_before:
+            raise KeyBroken("the key changed during the pull (another computer pulled the same assignment?): "
+                            "every file was put back and nothing was changed")
+        _write_key(assignment_dir, rows, stamp)
+    except BaseException:
+        _undo(done)
+        raise
     return rows
+
+
+def _undo(done: list[tuple[Path, Path | None]]) -> None:
+    """Put "1 - Submissions to grade" back as it was: what this pull copied goes, and what it moved aside comes back."""
+    for path, aside in reversed(done):
+        if aside is None:
+            path.unlink(missing_ok=True)  # a file this pull copied, where there was none
+        else:
+            path.unlink(missing_ok=True)
+            aside.rename(path)
+
+
+def submission_conflicts(assignment_dir: Path) -> list[str]:
+    """OneDrive conflict copies of submissions ("0571-DESKTOP-ABC.pdf"): two computers wrote the same number, and
+    nobody knows whose file "0571.pdf" holds. Grading ignores such a name, but nothing may number or upload until a
+    person checks them."""
+    anon = assignment_dir / paths.TO_GRADE
+    pattern = re.compile(r"\d{4}(?:-\d+)?-.*\D.*")
+    return sorted(p.name for p in anon.iterdir() if p.is_file() and pattern.fullmatch(p.stem)) if anon.is_dir() else []
+
+
+def _copy(source: Path, target: Path) -> None:
+    """The copy goes next to the target first (.tmp, which the OneDrive sync skips), then takes its place in one step:
+    a pull that stops halfway never leaves a half written submission."""
+    tmp = target.with_name(target.name + ".tmp")
+    try:
+        shutil.copy2(source, tmp)
+        os.replace(tmp, target)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _same(a: Path, b: Path) -> bool:
+    """The same bytes. Never by time: a ZIP's times can repeat, and a resubmission of the same size would be missed."""
+    if a.stat().st_size != b.stat().st_size:
+        return False
+    # byte by byte, not filecmp: it remembers earlier answers by size and time, and a resubmission can match both
+    with open(a, "rb") as fa, open(b, "rb") as fb:
+        while True:
+            x, y = fa.read(1 << 20), fb.read(1 << 20)
+            if x != y:
+                return False
+            if not x:
+                return True
+
+
+def _set_aside(path: Path, earlier: Path) -> Path:
+    """Move a file to "Earlier versions/<date>/", under a free name, and say where."""
+    earlier.mkdir(parents=True, exist_ok=True)
+    target, n = earlier / path.name, 2
+    while target.exists():
+        target, n = earlier / f"{path.stem} ({n}){path.suffix}", n + 1
+    path.rename(target)
+    return target
 
 
 KEY_EMPTY = "the key table is empty or unreadable"
@@ -126,45 +197,56 @@ def check_key(assignment_dir: Path) -> None:
                          f"{f' but {paths.TO_GRADE} has submissions' if has_submissions else ''}. Nothing was changed")
 
 
-PREVIOUS = " (previous)"  # left by the old code when a pull failed halfway
-
-
-def _number_of(anon_name: str) -> str:
-    """"0012-2.pdf" -> "0012"."""
-    return anon_name.split(".")[0].split("-")[0]
-
-
-def _put(source: Path, dest: Path) -> None:
-    """Copy source to dest unless dest already has exactly these bytes; the copy goes next to it first (.tmp, which
-    the OneDrive sync skips), then replaces it in one step."""
-    if dest.is_file() and dest.stat().st_size == source.stat().st_size and _same_bytes(source, dest):
-        return
-    tmp = dest.with_name(dest.name + ".tmp")
-    shutil.copy2(source, tmp)
-    os.replace(tmp, dest)
-
-
-def _same_bytes(a: Path, b: Path) -> bool:
-    """Byte by byte (filecmp remembers earlier answers by size and time, and a resubmission can match both)."""
-    with open(a, "rb") as fa, open(b, "rb") as fb:
-        while True:
-            x, y = fa.read(1 << 20), fb.read(1 << 20)
-            if x != y:
-                return False
-            if not x:
-                return True
+PREVIOUS = " (previous)"  # left by older code when a pull failed halfway
 
 
 def _restore_previous(assignment_dir: Path, anon: Path) -> None:
-    """The old code renamed the folder to "... (previous)" during a pull; one left by a pull that failed halfway has the
+    """Older code renamed the folder to "... (previous)" during a pull; one left by a pull that failed halfway has the
     files that were there before it. Put back what is missing, then remove it."""
     previous = assignment_dir / f"{paths.TO_GRADE}{PREVIOUS}"
     if not previous.is_dir():
         return
+    anon.mkdir(exist_ok=True)
     for old in previous.iterdir():
         if old.is_file() and not (anon / old.name).exists():
             old.replace(anon / old.name)
     shutil.rmtree(previous)
+
+
+class KeyBroken(ValueError):
+    """The new key would lose or move a student, or give a number to two: nothing was changed."""
+
+
+def check_new_key(old_rows: list[dict], rows: list[dict]) -> None:
+    """Every student of the old key is in the new one with the same number, and every number has one student."""
+    old = {r["participant_id"]: r["number"] for r in old_rows}
+    pid_number: dict[str, str] = {}
+    number_pid: dict[str, str] = {}
+    for r in rows:
+        pid, number = r["participant_id"], r["number"]
+        if pid_number.setdefault(pid, number) != number or number_pid.setdefault(number, pid) != pid:
+            raise KeyBroken(f"number {number} would have two students, or a student two numbers: nothing was changed")
+    lost = sorted(n for pid, n in old.items() if pid_number.get(pid) != n)
+    if lost:
+        raise KeyBroken(f"numbers {', '.join(lost[:10])} would change or go missing in the key: nothing was changed")
+
+
+def _write_key(assignment_dir: Path, rows: list[dict], stamp: str) -> None:
+    """The key, written whole or not at all (a temp file, then a rename), with the old one kept in "Key history"."""
+    key = assignment_dir / paths.KEY
+    tmp = assignment_dir / f"{paths.KEY}.writing"
+    with open(tmp, "w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.DictWriter(f, fieldnames=MAPPING_FIELDS)
+        writer.writeheader()
+        writer.writerows(rows)
+    if key.exists():
+        if key.read_bytes() == tmp.read_bytes():
+            tmp.unlink()
+            return
+        history = assignment_dir / paths.KEY_HISTORY
+        history.mkdir(exist_ok=True)
+        shutil.copy2(key, history / f"Key {stamp}.csv")
+    os.replace(tmp, key)
 
 
 def existing_rows(assignment_dir: Path) -> list[dict]:

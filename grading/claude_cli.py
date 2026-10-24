@@ -21,6 +21,7 @@ import json
 import shutil
 import subprocess
 import tempfile
+from datetime import datetime
 from pathlib import Path
 
 from moodle import claude_driver
@@ -31,6 +32,26 @@ EXT = {"image/png": ".png", "image/jpeg": ".jpg", "image/gif": ".gif", "image/we
 
 READ_ALL = ("לפני שאתה עונה, קרא עם הכלי Read את כל הקבצים שברשימה, לפי הסדר: הם העמודים של ההגשה "
             "(והפתרון הרשמי, אם הוא ברשימה). אל תקרא שום קובץ אחר. בסוף החזר רק את התוצאה המובנית.")
+
+
+USAGE_LOG = "Grading usage.jsonl"
+
+
+def log_usage(stdout: str, model: str) -> None:
+    """One line per run in the data folder: tokens and cost only (no names, no content). Never fails the grading."""
+    try:
+        data = json.loads(stdout)
+        usage = data.get("usage") or {}
+        row = {"at": datetime.now().isoformat(timespec="seconds"), "model": model,
+               "input": usage.get("input_tokens"), "output": usage.get("output_tokens"),
+               "cache_read": usage.get("cache_read_input_tokens"),
+               "cache_write": usage.get("cache_creation_input_tokens"),
+               "turns": data.get("num_turns"), "cost_usd": data.get("total_cost_usd")}
+        from moodle import paths
+        with (paths.data_dir() / USAGE_LOG).open("a", encoding="utf-8") as f:
+            f.write(json.dumps(row) + "\n")
+    except Exception:
+        pass
 
 
 def available() -> bool:
@@ -99,6 +120,7 @@ def cli_ask(claude: str, schema: dict, effort: str | None = None, run=subprocess
                 raise error(claude_driver.failure_message(e, TIMEOUT_S)) from e
         finally:
             shutil.rmtree(folder, ignore_errors=True)
+        log_usage(proc.stdout, req["model"])
         answer, problem = claude_driver.read_run(proc)
         if answer is None:
             if problem == claude_driver.NOT_LOGGED_IN:

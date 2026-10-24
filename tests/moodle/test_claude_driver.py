@@ -479,3 +479,36 @@ def test_download_prompt_holds_the_script_with_its_hash():
     prompt = claude_driver.download_prompt(INFO)
     assert "String.raw`" + script + "`" in prompt and f'H !== "{sha}"' in prompt
     assert prompt.rstrip().endswith("await (0, eval)(T);")
+
+
+def test_the_parts_script_asks_only_for_what_changed_since():
+    """A re-pull asks Moodle only for students whose submission changed since the last pull (0 = everyone)."""
+    everyone, _ = claude_driver.parts_script("3438636")
+    assert 'const SINCE = Number("0");' in everyone and "__SINCE__" not in everyone
+    changed, sha = claude_driver.parts_script("3438636", 1761200000000)
+    assert 'const SINCE = Number("1761200000000");' in changed
+    prompt = claude_driver.download_prompt({**INFO, "since": 1761200000000})
+    assert f'H !== "{sha}"' in prompt and '"parts" is 0 when no submission changed' in prompt
+
+
+class FakeTasks:
+    def __init__(self, out):
+        self.out, self.calls = out, []
+
+    def __call__(self, cmd, **kwargs):
+        self.calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout=self.out)
+
+
+def test_closed_chrome_is_opened_on_moodle(monkeypatch, tmp_path):
+    exe = tmp_path / "chrome.exe"
+    exe.write_bytes(b"")
+    monkeypatch.setattr(claude_driver.os, "name", "nt")
+    monkeypatch.setattr(claude_driver, "CHROME_PATHS", (str(exe),))
+    opened, slept = [], []
+    popen = lambda cmd, **k: opened.append(cmd)
+    assert claude_driver.open_chrome(FakeTasks("INFO: No tasks are running"), popen, slept.append) is True
+    assert opened == [[str(exe), claude_driver.HOME_URL]] and slept == [claude_driver.CHROME_START_S]
+    opened.clear()
+    assert claude_driver.open_chrome(FakeTasks("chrome.exe  1234 Console"), popen, slept.append) is False
+    assert opened == []  # already open: nothing to do
