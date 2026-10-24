@@ -181,10 +181,17 @@ When working with this data:
 
 There is **no Moodle API**. Claude in Chrome works in the user's own logged-in Chrome.
 - The user logs in themselves. Claude never types Moodle passwords.
-- Download when someone on the team asks, and once right after an assignment closes: `dashboard/scheduler.py` (a thread of
-  the dashboard server) warns 30 minutes before `SCHEDULE_PULL_TIME` (default 00:05 on the day after `due`, so a 23:59 deadline is in; `.env`), keeps the PC awake, and runs the
-  same `actions.pull` as the button. The day is the assignment's `due` date in `Assignment details.json`; it needs the PC on,
-  Chrome open and logged in to Moodle (sessions expire). `SCHEDULE_PULL=off` turns it off. No other scheduled downloads. Every **upload** to Moodle (grades or feedback) needs a person's yes.
+- Download when someone on the team asks, and by itself at night after an assignment closes: `dashboard/scheduler.py` (a thread
+  of the dashboard server) warns 30 minutes before `SCHEDULE_PULL_TIME` (default 00:05 on the day after `due`, so a 23:59
+  deadline is in; `.env`), keeps the PC awake, and runs the same `actions.pull` as the button, of everyone. Then at the same
+  time every night for `SCHEDULE_REPULL_DAYS` (default 7) it pulls only what changed (late submissions, extensions), and
+  tells only when something new came in or it failed. A failed night pull tries again 30 minutes later, 3 times a night.
+  **Only one computer pulls at night**: the one whose user took the assignment's pull on the site (`claims.task_owners`;
+  the first pull with the button takes it), and only where the shared folder is synced. Nobody's pull, no night pull.
+  `due` is read from Moodle on every pull (the assignment's page, by `download_parts.js`) and saved in
+  `Assignment details.json`, so nobody types it. A closed Chrome is opened on Moodle's home page (`claude_driver.open_chrome`);
+  it still needs the PC on and Chrome logged in to Moodle and to the Claude extension. `SCHEDULE_PULL=off` turns it off.
+  No other scheduled downloads. Every **upload** to Moodle (grades or feedback) needs a person's yes.
 - Submissions page: `https://moodle.bgu.ac.il/moodle/mod/assign/view.php?id=<assignment id>&action=grading`.
   The assignment id is the `id=` in that URL (the number at the end of the ZIP name too).
 - Download by hand: Actions (פעולות) → "הורדת כל ההגשות (השתמש ב 7ZIP לפתיחה)", or straight `view.php?id=<id>&action=downloadall`.
@@ -213,6 +220,12 @@ There is **no Moodle API**. Claude in Chrome works in the user's own logged-in C
   the parts are kept in `Moodle download <date>/` under `Backup - Moodle downloads` on the puller's computer, and the pull is
   logged in the assignment's `Pull log.csv`. Run for real on 3438636 on 2026-10-23: 566 students in 15 parts, every
   earlier number kept. The download shares the "one Chrome job at a time" guard with the connection check and the upload.
+- **A pull after a pull asks only for what changed.** `actions._since` takes the last row of `Pull log.csv` minus an hour and
+  passes it to the script (`__SINCE__`, ms): it asks Moodle only for students whose "עדכון אחרון (הגשה)" in the grading table
+  is at or after it (a date it can't read counts as changed; no date = no submission). Everyone else keeps their files
+  (`anonymize.prepare` keeps students who are not in a download). The list then has `since` and `changed`; with nothing
+  changed it has no parts, and `ingest` only logs the pull (`nothing_changed`). The first night pull, a pull with no earlier
+  log row, and the site's "משוך הכול מחדש" (`POST /api/pull` with `full: true`) ask for everyone.
 - Feedback upload: Actions → "העלאת מספר קובצי משוב כקובץ 7Zip אחד" → the ZIPs in `3 - Ready to upload to Moodle`
   (`Graded - part 01.zip` ...), one at a time. **BGU Moodle imports at once**: clicking "יבוא קבצי משוב" imports
   immediately, with no confirmation list (file → student) before it. Moodle then lands on the grading page with a

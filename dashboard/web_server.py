@@ -299,6 +299,8 @@ class Handler(SimpleHTTPRequestHandler):
             try:
                 # הגשה שעוד לא נמשכה: המשיכה הראשונה שולחת גם את מזהה המטלה במודל
                 extra = {"moodle_id": str(body["moodleId"])} if url.path == "/api/pull" and body.get("moodleId") else {}
+                if url.path == "/api/pull" and body.get("full") is True:  # את כולם, לא רק מה שהשתנה מאז המשיכה הקודמת
+                    extra["full"] = True
                 return self._json(getattr(actions, run)(root, course, assignment, **extra))
             except actions.UserError as e:
                 return self._json({"error": str(e)}, HTTPStatus.UNPROCESSABLE_ENTITY)

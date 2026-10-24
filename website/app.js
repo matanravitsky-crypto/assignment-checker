@@ -1,7 +1,7 @@
 (() => {
   // כל מה שהאתר מציג אמיתי: הנתונים מגיעים מהמערכת שרצה במחשב (start.bat, dashboard/web_server.py),
   // שקוראת את תיקיית OneDrive של הקורס. בלי המערכת אין מספרים במסך
-  const D = { courses: [], assignments: [], rubrics: {}, runs: [], whoWorking: [], sysAlerts: [] };
+  const D = { courses: [], assignments: [], rubrics: {}, runs: [], whoWorking: [], sysAlerts: [], usage: null };
   // באתר הציבורי (Vercel) פונים למערכת שבמחשב. כשהאתר נפתח מהמערכת עצמה, לאותה כתובת
   const ON_LOCAL_HOST = ["localhost", "127.0.0.1"].includes(location.hostname);
   const BASE = ON_LOCAL_HOST ? "" : "http://127.0.0.1:8765/";
@@ -1241,6 +1241,8 @@
         <div class="panel-body">
           <ol class="todo">
             <li><b>Claude בכרום מוריד ממודל.</b> בכרום שלך, עם ההתחברות שלך: עמוד ההגשות של המטלה ← "הורדת כל ההגשות", כש"הורדת הגשות בתיקיות" מסומן. הוא לא מקליד כלום ולא משנה שום הגדרה של המטלה. ה-ZIP נשמר בתיקיית ההורדות, והמערכת מחכה עד שההורדה מסתיימת.</li>
+            <li><b>משיכה חוזרת מורידה רק מה שהשתנה.</b> אחרי המשיכה הראשונה, Claude מבקש ממודל רק את מי שהגיש או החליף קובץ מאז המשיכה הקודמת: כמה דקות במקום כמה GB. כל השאר נשארים כמו שהם. "משוך הכול מחדש" מוריד את כולם.</li>
+            <li><b>בלילה זה קורה לבד.</b> מועד ההגשה נקרא ממודל בכל משיכה. בלילה שאחריו (00:05), ובכל לילה בשבוע שאחריו (הגשות מאוחרות והארכות), המחשב של מי שלקח את "משיכה" מושך בעצמו: פותח את כרום אם הוא סגור, ומנסה שוב אחרי חצי שעה אם מודל לא ענה. רק המחשב שלו, כדי ששני מחשבים לא ימשכו יחד.</li>
             <li><b>הורדתם בעצמכם?</b> אם בתיקיית ההורדות כבר מחכה ZIP ששמו נגמר ב-<code dir="ltr">-${esc(A.moodleId || "<מזהה המטלה>")}.zip</code>, המערכת קולטת אותו ולא מורידה שוב.</li>
             <li><b>שומרת אותו רק במחשב הזה</b>, בתיקייה <code dir="ltr">Moodle originals/Backup - Moodle downloads</code>, ולא ב-OneDrive (יש בו שמות, וכמה GB בכל משיכה). כל הורדה נשמרת, כך שהורדה מאוחרת לא מוחקת את הקודמת. בתיקיית המטלה נרשמת שורה ב-<code dir="ltr">Pull log.csv</code>: מתי, מי וכמה.</li>
             <li><b>מושכים רק ממחשב שהתיקייה המשותפת מסונכרנת בו</b> (YallaLinearit ב-OneDrive). ממחשב עם עותק מקומי המשיכה נעצרת, כי טבלת המפתח שלו לא רואה מספרים שמחשב אחר כבר נתן.</li>
@@ -1251,6 +1253,7 @@
           <div class="row-start">
             ${moodleLink(A, "small")}
             <button class="btn secondary small" data-act="open-inbox">${ICON.folder}פתח את תיקיית ההורדות</button>
+            ${LOCAL.on && !A.empty && A.pulledAt ? `<button class="btn secondary small" data-act="pull-full">משוך הכול מחדש</button>` : ""}
           </div>
         </div>
       </section>
@@ -1534,6 +1537,20 @@
     const worst = rates.indexOf(Math.min(...rates));
     return `<ul class="qbars">${qs.map((q, i) => `
       <li class="${i === worst ? "worst" : ""}"><span>שאלה ${q.n}</span><span class="track"><i style="width:${rates[i]}%"></i></span><b class="num">${rates[i]}%</b></li>`).join("")}</ul>${offNote}`;
+  }
+
+  // עלות הבדיקה עד עכשיו, מתוך יומן השימוש של Claude Code. שווה ערך ל-API: הבדיקה רצה במנוי של הצוות, לא מחויבת
+  function usageHTML() {
+    const u = D.usage;
+    if (!u) return "";
+    const share = u.cacheReadShare == null ? "—" : `${Math.round(u.cacheReadShare * 100)}%`;
+    const models = Object.entries(u.models || {}).map(([m, v]) => `<bdi>${esc(m)}</bdi> · ${v.runs} ריצות · <bdi>$${v.costUsd}</bdi>`).join("<br>");
+    return `<section class="panel"><div class="panel-head"><h3>עלות הבדיקה</h3><span class="meta">שווה ערך ל-API, לא חיוב</span></div>
+      <div class="panel-body"><div class="stat-row" style="grid-template-columns:repeat(3,minmax(0,1fr));margin-top:0">
+        <div class="stat"><span class="stat-l">סך הכל</span><b class="stat-v num">$${u.costUsd}</b><span class="stat-s">${u.runs} ריצות</span></div>
+        <div class="stat"><span class="stat-l">לעבודה</span><b class="stat-v num">$${u.avgUsd}</b><span class="stat-s">ממוצע לריצה</span></div>
+        <div class="stat"><span class="stat-l">מהמטמון</span><b class="stat-v num">${share}</b><span class="stat-s">מהקלט נקרא ולא נכתב מחדש</span></div>
+      </div><p class="muted" style="margin:12px 0 0">${models}</p></div></section>`;
   }
 
   function logHTML(limit, onlyHere) {
@@ -2095,6 +2112,7 @@
           </div>
           <div class="stack">
             <section class="panel"><div class="panel-head"><h3>מחוון</h3><a class="end link" href="#/grade" data-goto-tab="grade:instr">פרטים</a></div><div class="panel-body">${rubricSummaryHTML()}</div></section>
+            ${usageHTML()}
             <section class="panel"><div class="panel-head"><h3>פעילות אחרונה</h3><a class="end link" href="#/runs">ליומן המלא</a></div><div class="panel-body tight">${logHTML(4, true)}</div></section>
           </div>
         </div>
@@ -2311,6 +2329,7 @@
       if (a === "grade-stop") stopLocalGrade();
       if (a === "open-folder") openFolder("folder");
       if (a === "open-inbox") openFolder("inbox");
+      if (a === "pull-full") runLocalPull(true);
       if (a === "open-upload") openFolder("upload");
       if (a === "recheck") { if (LOCAL.on) location.reload(); else connect(true); }
       if (a === "send-confirm" && LOCAL.batch?.assignmentId === cur().id) startLocalSend(LOCAL.batch.id);
@@ -2547,6 +2566,7 @@
       // מודל מחובר = Claude Code מחובר במחשב (דרכו Claude in Chrome עובד במודל)
       LOCAL.health = { ...LOCAL.health, ...(health || {}), root: data.root, claude: data.claude, claudeVia: data.claudeVia };
       LOCAL.me = data.me || null;
+      D.usage = data.usage || null;
       if (health?.checking) followHealth();
       if (!LOCAL.polling) LOCAL.sending = data.sending || null;
       // בדיקה שרצה כשהדף נטען: מציגים את ההתקדמות ואת כפתור העצירה
@@ -2573,7 +2593,8 @@
   // מה שנמשך, נבדק או הועלה במחשב אחר (ההגשות מגיעות דרך OneDrive) מופיע לבד, בלי רענון: כל 20 שניות וכשחוזרים
   // ללשונית. רק כשהלשונית גלויה, שום דבר לא רץ כאן ולא מקלידים, ומציירים מחדש רק אם משהו בתיקייה השתנה
   // "משוך הגשות" אמיתי: השרת מושך ממודל (אם יש טוקן) ומקובצי ZIP בקליטה, ישר לתיקיית OneDrive
-  async function runLocalPull() {
+  // full: את כל ההגשות ממודל. בלי: אחרי משיכה ראשונה, רק מי שההגשה שלו השתנתה מאז המשיכה הקודמת
+  async function runLocalPull(full = false) {
     const A = cur();
     if (!A || state.run[A.id] || !LOCAL.health?.root) return;
     // הגשה שעוד לא נמשכה: המשיכה הראשונה שומרת את מזהה המטלה במודל (dashboard/actions.py new_assignment)
@@ -2589,7 +2610,7 @@
     render();
     // השרת עונה רק בסוף המשיכה (הורדה של ZIP גדול: כמה דקות). בינתיים שואלים אותו כל שנייה כמה התקדמה
     let settled = false;
-    const post = api("api/pull", { method: "POST", body: JSON.stringify({ course: A.courseFolder, assignment: A.folder, ...(moodleId && { moodleId }) }) })
+    const post = api("api/pull", { method: "POST", body: JSON.stringify({ course: A.courseFolder, assignment: A.folder, ...(moodleId && { moodleId }), ...(full && { full: true }) }) })
       .finally(() => { settled = true; });
     followPull(A, run, () => settled);
     try {

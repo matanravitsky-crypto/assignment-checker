@@ -40,7 +40,7 @@ from moodle import (anonymize as moodle_anonymize, claims, claude_driver, grades
                     ingest as moodle_ingest, lock as moodle_lock, paths, send as moodle_send, upload as moodle_upload,
                     upload_log)
 
-from . import folder_view, heartbeat, settings as cfg, shared_folder
+from . import folder_view, heartbeat, settings as cfg, shared_folder, usage as grading_usage
 
 
 def root_info() -> tuple[Path | None, str | None]:
@@ -164,6 +164,37 @@ def _title_from_zip(a: folder_view.Assignment, zip_path: Path, mid: str) -> None
         _write_info(a, info)
 
 
+DUE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")
+
+
+def _due_from_moodle(a: folder_view.Assignment, listing: dict) -> None:
+    """מועד ההגשה כמו שמודל מראה אותו (download_parts.js קורא אותו מעמוד המטלה): נשמר בפרטי המטלה, וממנו המשיכה
+    הלילית (dashboard/scheduler.py) יודעת מתי המטלה נסגרת, בלי שמישהו יקליד. מועד שמודל שינה (הארכה) מתעדכן."""
+    due = listing.get("due")
+    info = a.details()
+    if not info or not isinstance(due, str) or not DUE.fullmatch(due):
+        return
+    if str(info.get("due") or "")[:16] != due[:16]:
+        info["due"] = due
+        _write_info(a, info)
+
+
+SINCE_MARGIN_S = 60 * 60  # משיכה חוזרת מבקשת גם את מה שהשתנה בשעה שלפני המשיכה הקודמת: הגשה שנכנסה בזמן שהיא רצה
+
+
+def _since(a: folder_view.Assignment) -> int:
+    """ממתי לבקש ממודל רק את מה שהשתנה (מילישניות מ-1970): המשיכה האחרונה ב-Pull log.csv, פחות שעה.
+    0 (את כולם) כשאין משיכה קודמת או שאין עוד אף הגשה ממוספרת."""
+    pulled = moodle_ingest.pulls(a.dir)
+    if not pulled or not a.key_rows():
+        return 0
+    try:
+        last = datetime.fromisoformat(pulled[-1])
+    except ValueError:
+        return 0
+    return max(0, int((last.timestamp() - SINCE_MARGIN_S) * 1000))
+
+
 # ---------- כמה התקדמה המשיכה ----------
 # הבקשה POST /api/pull נשארת פתוחה עד סוף המשיכה (גם 25 דקות של הורדה). בינתיים האתר שואל GET /api/pull
 # ומראה מד התקדמות: phase הוא find (מחפש ZIP בהורדות), claude (Claude מבקש את ה-ZIP ממודל),
@@ -248,14 +279,16 @@ def _backup_dir(a: folder_view.Assignment) -> Path | None:
         return None
 
 
-def pull(root: Path, course: str, assignment: str, moodle_id: str | None = None) -> dict:
+def pull(root: Path, course: str, assignment: str, moodle_id: str | None = None, full: bool = False) -> dict:
+    """`full`: ask Moodle for everyone. Otherwise, after a first pull, only for students whose submission changed since
+    the last one (minutes instead of GBs); the others keep what they have."""
     global _pull
     with _pull_lock:
         _pull = PullProgress(course, assignment, running=True, phase="find",
                              started_at=datetime.now().isoformat(timespec="seconds"))
         job = _pull
     try:
-        rep = _do_pull(root, course, assignment, moodle_id)
+        rep = _do_pull(root, course, assignment, moodle_id, full)
         job.summary = rep["summary"]
         if rep["result"]["new"]:
             # new submissions: the copying check (no Claude, no tokens) starts by itself, instead of a click on its page
@@ -279,7 +312,7 @@ NOT_SHARED = ("במחשב הזה תיקיית המערכת היא עותק מק�
               "מסונכרנת בו (OneDrive ← \"הוסף קיצור דרך לקבצים שלי\"), למשל של יוסי.")
 
 
-def _do_pull(root: Path, course: str, assignment: str, moodle_id: str | None) -> dict:
+def _do_pull(root: Path, course: str, assignment: str, moodle_id: str | None, full: bool = False) -> dict:
     # Pull only into the synced shared folder (moodle/paths.py in_shared_folder); the demo has no Moodle and no OneDrive
     if not paths.in_shared_folder(root) and os.environ.get("MOODLE_DRIVER") != "simulate":
         raise UserError(NOT_SHARED.format(root=root))
@@ -306,10 +339,13 @@ def _do_pull(root: Path, course: str, assignment: str, moodle_id: str | None) ->
     before = {r["number"] for r in old_rows}
     lock = _take_lock(a)
     try:
-        zip_path = _zip_from_moodle(a, mid)
+        zip_path = _zip_from_moodle(a, mid, 0 if full else _since(a))
         _title_from_zip(a, zip_path, mid)
+        listing = _listing(zip_path)
+        _due_from_moodle(a, listing)
         without_file = _without_file(zip_path)
         listed = _listed_users(zip_path)
+        changed = int(listing.get("changed") or 0) if int(listing.get("since") or 0) > 0 else None
         rows = moodle_ingest.ingest(mid, zip_path, on_progress=_pull_report)
     except (FileNotFoundError, ValueError) as e:
         raise UserError(_hebrew_error(e, mid)) from e
@@ -321,7 +357,11 @@ def _do_pull(root: Path, course: str, assignment: str, moodle_id: str | None) ->
         "course": course, "assignment": assignment,
         "result": {"total": len(numbers), "new": len(new), "files": len(rows)},
         "summary": f"{len(numbers)} הגשות" + (f", {len(new)} חדשות" if new else ", אין חדשות"),
-        "notes": [f"הקבצים נשמרו ב-\"{paths.TO_GRADE}\". ה-ZIP של מודל נשמר רק במחשב הזה, ב-\"{paths.BACKUP}\"."]
+        "changed": changed,
+        "notes": ([f"ממודל הורדו רק {changed} סטודנטים שההגשה שלהם השתנתה מאז המשיכה הקודמת. כל השאר נשארו כמו שהיו."
+                   if changed else "שום הגשה לא השתנתה במודל מאז המשיכה הקודמת, ולכן שום קובץ לא השתנה."]
+                  if changed is not None else [])
+                 + [f"הקבצים נשמרו ב-\"{paths.TO_GRADE}\". ה-ZIP של מודל נשמר רק במחשב הזה, ב-\"{paths.BACKUP}\"."]
                  + ([f"{without_file} סטודנטים בטבלת ההגשות במודל הגיעו בלי קובץ (לא הגישו קובץ, או שמודל לא שלח אותו)."]
                     if without_file else [])
                  + ([f"בטבלת ההגשות במודל הופיעו רק {listed} סטודנטים, ובטבלת המפתח יש {known}. אף אחד לא נמחק ואף מספר לא השתנה, "
@@ -329,6 +369,17 @@ def _do_pull(root: Path, course: str, assignment: str, moodle_id: str | None) ->
                     if listed and listed < (known := len({r["participant_id"] for r in old_rows})) else []),
         "pulled_at": datetime.now().isoformat(timespec="seconds"),
     }
+
+
+def _listing(download: Path) -> dict:
+    """הרשימה של הורדה בחלקים (moodle/download_parts.js), או {} ל-ZIP אחד ולרשימה שאי אפשר לקרוא."""
+    if download.suffix.lower() != moodle_ingest.LIST:
+        return {}
+    try:
+        listed = json.loads(download.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return listed if isinstance(listed, dict) else {}
 
 
 def _without_file(download: Path) -> int:
@@ -360,10 +411,11 @@ DOWNLOAD_WAIT_S = 25 * 60  # הכי הרבה שמחכים להורדה: פחות
 PARTS_LIST_WAIT_S = 180
 
 
-def _download_safely(downloader, a: folder_view.Assignment) -> dict:
-    """downloader.download, בלי לזרוק: התשובה חוזרת מה-thread כמו כל תשובה אחרת."""
+def _download_safely(downloader, a: folder_view.Assignment, since: int = 0) -> dict:
+    """downloader.download, בלי לזרוק: התשובה חוזרת מה-thread כמו כל תשובה אחרת. `since`: רק מה שהשתנה מאז."""
     try:
-        return downloader.download(paths.read_info(a.dir))
+        info = paths.read_info(a.dir)
+        return downloader.download({**info, "since": since} if since else info)
     except Exception as e:  # noqa: BLE001 — מוצג באתר
         return {"status": "error", "message": f"ההורדה נכשלה ({type(e).__name__})."}
 
@@ -379,7 +431,7 @@ def _make_downloader():
     return _SimDownloader() if os.environ.get("MOODLE_DRIVER") == "simulate" else claude_driver.ClaudeChromeDriver()
 
 
-def _zip_from_moodle(a: folder_view.Assignment, mid: str) -> Path:
+def _zip_from_moodle(a: folder_view.Assignment, mid: str, since: int = 0) -> Path:
     """ה-ZIP של כל ההגשות: מה שכבר מחכה בתיקיית ההורדות (מישהו הוריד ידנית), ואם אין, Claude בכרום מוריד אותו עכשיו.
 
     ingest מעביר כל ZIP שנקלט מתיקיית ההורדות לתיקיית המטלה, כך ש-ZIP שנשאר שם עוד לא נקלט."""
@@ -401,7 +453,7 @@ def _zip_from_moodle(a: folder_view.Assignment, mid: str) -> Path:
         raise UserError(f"{e.who} מושך עכשיו הגשות ממודל במחשב הזה (התחיל ב-{e.since:%H:%M}). "
                         "משיכה אחת בכל פעם: כדאי לחכות שתסתיים ולנסות שוב.") from e
     try:
-        return _download_with_chrome(a, mid)
+        return _download_with_chrome(a, mid, since)
     finally:
         chrome_lock.unlink(missing_ok=True)
 
@@ -415,19 +467,21 @@ def _work_dir() -> Path:
     return d
 
 
-def _download_with_chrome(a: folder_view.Assignment, mid: str) -> Path:
-    """Claude בכרום מוריד ממודל בחלקים, ומחכים שהכול יגיע לתיקיית ההורדות."""
+def _download_with_chrome(a: folder_view.Assignment, mid: str, changed_since: int = 0) -> Path:
+    """Claude בכרום מוריד ממודל בחלקים, ומחכים שהכול יגיע לתיקיית ההורדות. `changed_since`: רק מה שהשתנה מאז."""
     global _checking
     with _send_lock:
         _checking = True
-    since = time.time()
     _pull_report("claude")
     # Claude's run lasts until every part is in (it waits for the page's script), so it runs in a thread and
     # the parts that reach Downloads meanwhile move the progress bar
     answer: dict = {}
     downloader = _make_downloader()
-    worker = threading.Thread(target=lambda: answer.update(_download_safely(downloader, a)), daemon=True)
+    worker = threading.Thread(target=lambda: answer.update(_download_safely(downloader, a, changed_since)), daemon=True)
     try:
+        if isinstance(downloader, claude_driver.ClaudeChromeDriver):
+            claude_driver.open_chrome()  # closed Chrome (the night pull, nobody at the computer): open it first
+        since = time.time()
         worker.start()
         while worker.is_alive():
             worker.join(DOWNLOAD_POLL_S)
@@ -1445,7 +1499,8 @@ def state(root: Path) -> dict:
     return {"root": str(root), "courses": courses, "assignments": out, "me": me(),
             "moodle": False, "claude": via is not None, "claudeVia": via,
             "grading": grade_status(), "sending": send_status(), "copyCheck": copying_status(),
-            "whoWorking": heartbeat.read_all(root), "sysAlerts": alerts}
+            "whoWorking": heartbeat.read_all(root), "sysAlerts": alerts,
+            "usage": grading_usage.summary(root)}
 
 
 def _slots(course_dir: Path) -> list[folder_view.Assignment | int]:
