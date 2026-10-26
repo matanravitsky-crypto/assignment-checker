@@ -23,7 +23,6 @@ def fresh_dashboard_state(monkeypatch, tmp_path):
     actions._hashes.clear()
     actions._ready_cache.clear()
     actions._checking = False
-    actions._sim_login_at = None
     actions._login, actions._install = actions._Background(actions.LOGIN_MINUTES), actions._Background(actions.INSTALL_MINUTES)
     monkeypatch.delenv("MOODLE_READY", raising=False)
     # the local work folder (extracted originals, the computer's pull lock): never the real one in a test
@@ -40,6 +39,17 @@ def fresh_dashboard_state(monkeypatch, tmp_path):
     monkeypatch.setattr(ingest, "downloads_dir", lambda: downloads)
     monkeypatch.setattr(actions, "DOWNLOAD_POLL_S", 0.01)
     monkeypatch.setattr(actions, "_make_downloader", lambda: FakeDownloader(downloads))
+    # pulls and uploads check Chrome and Moodle first (actions.require_moodle): connected, unless a test says otherwise
+    monkeypatch.setattr(claude_driver, "ClaudeChromeDriver", ConnectedChrome)
+    monkeypatch.setattr(claude_driver, "open_chrome", lambda *a, **k: False)
+
+
+class ConnectedChrome:
+    """Claude in Chrome in the tests: the extension is connected and Moodle is logged in."""
+    answer = {"chrome": True, "moodle": True, "message": "Chrome ו-Moodle מוכנים.", "answered": True}
+
+    def check(self, info):
+        return dict(self.answer)
 
 
 class FakeDownloader:

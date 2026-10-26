@@ -99,7 +99,7 @@ def puller(root: Path, course: str, assignment: str) -> str | None:
 
 def mine(root: Path, course: str, assignment: str) -> bool:
     """המחשב הזה מושך את המטלה בלילה: המשיכה שלה רשומה עליי, והתיקייה המשותפת מסונכרנת כאן."""
-    if not paths.in_shared_folder(root) and os.environ.get("MOODLE_DRIVER") != "simulate":
+    if not paths.in_shared_folder(root):
         return False
     return puller(root, course, assignment) == claims.me()
 
