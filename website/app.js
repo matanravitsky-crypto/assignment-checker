@@ -511,6 +511,7 @@
     // האחוז מבודד גם הוא: אחרי "ZIP" הדפדפן היה מצמיד אותו למילה האנגלית ומזיז אותו
     const f = p.total ? Math.min(p.done / p.total, 1) : 0, pct = `⁦${Math.round(100 * f)}%⁩`;
     switch (p.phase) {
+      case "connect": return { step: 0, pct: null, short: "בודק חיבור למודל…", text: "בודק שהתוסף של Claude בכרום מחובר ושכרום מחובר למודל (בדרך כלל עד דקה)…", hint: LONG_WAIT };
       case "claude": return { step: 0, pct: null, short: "Claude פותח את מודל…", text: "Claude פותח את מודל בכרום ומכין את ההורדה (בדרך כלל עד דקה)…", hint: LONG_WAIT };
       case "download": return {
         step: 0, pct: p.total ? Math.round(Math.min(58, 60 * f)) : null, short: "מוריד ממודל…",
@@ -526,7 +527,7 @@
       case "check": return { step: 1, pct: Math.round(60 + 10 * f), short: "בודק את ה-ZIP…", text: `בודק שה-ZIP שלם: ${pct}%`, hint: HERE };
       case "extract": return { step: 2, pct: Math.round(70 + 20 * f), short: "מחלץ…", text: `מחלץ את ה-ZIP: ${pct}%`, hint: HERE };
       case "number": return { step: 3, pct: Math.round(90 + 10 * f), short: "ממספר הגשות…", text: `ממספר הגשות: ${p.done} מתוך ${p.total}`, hint: HERE };
-      default: return { step: 0, pct: 1, short: "מתחיל…", text: "מחפש ZIP של המטלה בתיקיית ההורדות…", hint: LONG_WAIT };
+      default: return { step: 0, pct: 1, short: "מתחיל…", text: "מתחיל משיכה ממודל…", hint: LONG_WAIT };
     }
   }
   function elapsed(since) {
@@ -538,7 +539,7 @@
     run.pull = p;
     const v = pullView(p);
     run.steps = STAGES.pull.steps.map((_, i) => (i < v.step ? "done" : i === v.step ? "running" : "pending"));
-    run.notes = [p.downloaded ? "הורד ממודל" : "ה-ZIP כבר חיכה בתיקיית ההורדות"];
+    run.notes = ["הורד ממודל"];
     run.progress = [v.short, v.pct == null ? "" : `${v.pct}%`, v.soon ? `· ${v.soon}` : ""].filter(Boolean).join(" ");
   }
   function pullBarHTML(compact = false) {
@@ -1243,7 +1244,7 @@
             <li><b>Claude בכרום מוריד ממודל.</b> בכרום שלך, עם ההתחברות שלך: עמוד ההגשות של המטלה ← "הורדת כל ההגשות", כש"הורדת הגשות בתיקיות" מסומן. הוא לא מקליד כלום ולא משנה שום הגדרה של המטלה. ה-ZIP נשמר בתיקיית ההורדות, והמערכת מחכה עד שההורדה מסתיימת.</li>
             <li><b>משיכה חוזרת מורידה רק מה שהשתנה.</b> אחרי המשיכה הראשונה, Claude מבקש ממודל רק את מי שהגיש או החליף קובץ מאז המשיכה הקודמת: כמה דקות במקום כמה GB. כל השאר נשארים כמו שהם. "משוך הכול מחדש" מוריד את כולם.</li>
             <li><b>בלילה זה קורה לבד.</b> מועד ההגשה נקרא ממודל בכל משיכה. בלילה שאחריו (00:05), ובכל לילה בשבוע שאחריו (הגשות מאוחרות והארכות), המחשב של מי שלקח את "משיכה" מושך בעצמו: פותח את כרום אם הוא סגור, ומנסה שוב אחרי חצי שעה אם מודל לא ענה. רק המחשב שלו, כדי ששני מחשבים לא ימשכו יחד.</li>
-            <li><b>הורדתם בעצמכם?</b> אם בתיקיית ההורדות כבר מחכה ZIP ששמו נגמר ב-<code dir="ltr">-${esc(A.moodleId || "<מזהה המטלה>")}.zip</code>, המערכת קולטת אותו ולא מורידה שוב.</li>
+            <li><b>רק ממודל האמיתי.</b> לפני כל משיכה המערכת בודקת שהתוסף של Claude בכרום מחובר ושכרום מחובר למודל. אם משהו לא מחובר, לא מושכים כלום ומקבלים הודעה מה לתקן. ZIP שכבר נמצא בתיקיית ההורדות לא נקלט: כל משיכה מורידה ממודל מחדש.</li>
             <li><b>שומרת אותו רק במחשב הזה</b>, בתיקייה <code dir="ltr">Moodle originals/Backup - Moodle downloads</code>, ולא ב-OneDrive (יש בו שמות, וכמה GB בכל משיכה). כל הורדה נשמרת, כך שהורדה מאוחרת לא מוחקת את הקודמת. בתיקיית המטלה נרשמת שורה ב-<code dir="ltr">Pull log.csv</code>: מתי, מי וכמה.</li>
             <li><b>מושכים רק ממחשב שהתיקייה המשותפת מסונכרנת בו</b> (YallaLinearit ב-OneDrive). ממחשב עם עותק מקומי המשיכה נעצרת, כי טבלת המפתח שלו לא רואה מספרים שמחשב אחר כבר נתן.</li>
             <li><b>מחלצת אותו עם 7-Zip במחשב שלך בלבד.</b> התיקיות עם שמות הסטודנטים לא עולות ל-OneDrive.</li>

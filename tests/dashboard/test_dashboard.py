@@ -383,15 +383,46 @@ def test_pull_progress_keeps_the_error(root, monkeypatch):
     assert status["running"] is False and "לא שלם" in status["error"] and "7-Zip לא מותקן" not in status["error"]
 
 
-def test_pull_takes_a_zip_that_was_downloaded_by_hand(root, monkeypatch):
+def test_pull_never_takes_an_old_zip_waiting_in_downloads(root, monkeypatch):
+    """משיכה היא תמיד הורדה טרייה ממודל: ZIP ישן בתיקיית ההורדות (לא ממודל, או מפעם אחרת) לא נלקח."""
+    import os
+    import time
     from moodle import ingest
-    by_hand = ingest.downloads_dir() / f"קורס-הגשה 0-{MID}.zip"
-    by_hand.write_bytes(b"zip")
+    old = ingest.downloads_dir() / f"קורס-הגשה 0-{MID}.zip"
+    old.write_bytes(b"not from this pull")
+    os.utime(old, (time.time() - 3600, time.time() - 3600))
     seen, fake = [], FakeDownloader(ingest.downloads_dir())
     monkeypatch.setattr(actions, "_make_downloader", lambda: fake)
     monkeypatch.setattr("moodle.ingest.ingest", _record_ingest(seen))
     actions.pull(root, COURSE, HW)
-    assert seen == [by_hand] and fake.calls == []  # לא מורידים שוב
+    assert fake.calls == [MID] and [p.name for p in seen] == [f"214193210120271-x-{MID}.zip"]
+
+
+@pytest.mark.parametrize("answer, says", [
+    ({"chrome": False, "moodle": False, "message": "no extension", "answered": False}, "התוסף של Claude בכרום לא מחובר"),
+    ({"chrome": True, "moodle": False, "message": "login page", "answered": True}, "כרום לא מחובר למודל"),
+])
+def test_pull_needs_the_chrome_extension_and_moodle(root, monkeypatch, answer, says):
+    """בלי תוסף מחובר או בלי מודל מחובר לא מושכים כלום: לפני ההורדה, בלי נעילה ובלי לגעת בתיקייה."""
+    from moodle import claude_driver, ingest
+    monkeypatch.setattr(claude_driver.ClaudeChromeDriver, "answer", answer)
+    fake = FakeDownloader(ingest.downloads_dir())
+    monkeypatch.setattr(actions, "_make_downloader", lambda: fake)
+    monkeypatch.setattr("moodle.ingest.ingest", lambda *a, **k: pytest.fail("nothing to ingest"))
+    with pytest.raises(actions.UserError, match=says):
+        actions.pull(root, COURSE, HW)
+    assert fake.calls == [] and not (root / COURSE / HW / actions.LOCK_FILE).exists()
+
+
+def test_pull_checks_chrome_once_in_30_minutes(root, monkeypatch):
+    from moodle import claude_driver
+    checks = []
+    real = claude_driver.ClaudeChromeDriver.check
+    monkeypatch.setattr(claude_driver.ClaudeChromeDriver, "check", lambda self, info: checks.append(1) or real(self, info))
+    monkeypatch.setattr("moodle.ingest.ingest", _record_ingest([]))
+    actions.pull(root, COURSE, HW)
+    actions.pull(root, COURSE, HW)
+    assert checks == [1]
 
 
 def test_pull_refuses_an_empty_key_before_opening_chrome(root, monkeypatch):
@@ -573,12 +604,8 @@ def test_a_local_copy_does_not_pull(tmp_path, monkeypatch):
     with pytest.raises(actions.UserError, match="עותק מקומי"):
         actions.pull(local, COURSE, "Assignment 3", moodle_id="3453769")
     assert fake.calls == [] and not (local / COURSE / "Assignment 3").exists()
-    monkeypatch.setenv("MOODLE_DRIVER", "simulate")  # the demo has no OneDrive: it may
-
-    def past_the_rule(*a, **k):
-        raise actions.UserError("past the rule")
-    monkeypatch.setattr(actions, "new_assignment", past_the_rule)
-    with pytest.raises(actions.UserError, match="past the rule"):
+    monkeypatch.setenv("MOODLE_DRIVER", "simulate")  # the old demo switch is gone: still no pull
+    with pytest.raises(actions.UserError, match="עותק מקומי"):
         actions.pull(local, COURSE, "Assignment 3", moodle_id="3453769")
 
 

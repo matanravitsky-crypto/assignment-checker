@@ -10,10 +10,10 @@
     python -m moodle upload <assignment id> [--worksheet PATH] [--for-claude]
         Grades and marked files -> "3 - Ready to upload to Moodle", with upload steps.
 
-    python -m moodle send <assignment id> [--dry-run] [--yes] [--simulate]
+    python -m moodle send <assignment id> [--dry-run] [--yes]
         Marked files -> Moodle, through Claude in Chrome. Prepares the batch (new or changed work only), prints
         its summary (numbers only), asks "להעלות למודל? (y/N)" unless --yes, uploads ZIP by ZIP and logs each one.
-        --dry-run only checks the page and attaches the file, then cancels (Moodle imports at once): nothing is imported or logged; --simulate never touches Moodle.
+        --dry-run only checks the page and attaches the file, then cancels (Moodle imports at once): nothing is imported or logged.
         Refused while an upload or a pull of the assignment runs (the lock files). Exit code 1 if it stopped before the end.
 
     python -m moodle record <assignment id> "<zip name>"
@@ -31,10 +31,8 @@ from pathlib import Path
 from moodle import guide, ingest, lock, paths, send, status, upload, upload_log
 
 
-def make_driver(simulate: bool) -> send.MoodleDriver:
+def make_driver() -> send.MoodleDriver:
     """The real driver starts Claude in Chrome, so it is built (and imported) only when it is going to be used."""
-    if simulate:
-        return send.SimulatedDriver()
     from moodle import claude_driver
     return claude_driver.ClaudeChromeDriver()
 
@@ -75,7 +73,7 @@ def run_send(target: Path, args) -> int:
     if args.dry_run:
         print("ריצת ניסיון: בודקים את הדף ומצרפים את הקובץ, ואז מבטלים. שום דבר לא יובא ולא נרשם ביומן")
     report = send.run_batch(
-        target, summary.id, make_driver(args.simulate), dry_run=args.dry_run,
+        target, summary.id, make_driver(), dry_run=args.dry_run,
         on_progress=lambda index, total, name: print(f"{index}/{total} {name}"))
     print(f"הושלמו {len(report.done_zips)} מתוך {report.total_zips} ZIP, נרשמו ביומן {report.recorded} קבצים")
     if report.stopped is not None:
@@ -111,7 +109,6 @@ def main() -> None:
     send_cmd.add_argument("assignment_id")
     send_cmd.add_argument("--dry-run", action="store_true", help="check the page and attach the file, then cancel: import and log nothing")
     send_cmd.add_argument("--yes", action="store_true", help="don't ask before uploading")
-    send_cmd.add_argument("--simulate", action="store_true", help="don't touch Moodle (for trying it out)")
 
     record_cmd = commands.add_parser("record", help="log a ZIP that was uploaded by hand")
     record_cmd.add_argument("assignment_id")

@@ -10,7 +10,7 @@ import pytest
 
 from dashboard import actions
 from moodle import claude_driver
-from moodle.send import SimulatedDriver
+from tests.fakes import FakeDriver
 from tests.dashboard.helpers import BODY, COURSE, HDR, HW, call, mark
 
 OK = {"chrome": True, "moodle": True, "message": "Chrome ו-Moodle מוכנים.", "answered": True}
@@ -153,8 +153,8 @@ def test_an_upload_cannot_start_during_a_check(root):
     mark(root, "0001")
     rep = actions.prepare_send(root, COURSE, HW)
     actions._checking = True
-    with pytest.raises(RuntimeError, match="בדיקת החיבור"):
-        actions.start_send(root, COURSE, HW, rep["id"], driver=SimulatedDriver(), wait=True)
+    with pytest.raises(RuntimeError, match="החיבור"):
+        actions.start_send(root, COURSE, HW, rep["id"], driver=FakeDriver(), wait=True)
     assert not actions.send_status()["running"]
 
 
@@ -283,32 +283,6 @@ def test_installing_and_login_running_show_in_readiness(root, monkeypatch, popen
     monkeypatch.setattr(claude_driver, "find_claude", lambda: "claude")
     actions.start_claude_login()
     assert actions.readiness(root, COURSE, HW)["login_running"] is True
-
-
-# ---------- the site's simulated mode (tests/serve_demo) ----------
-def test_simulate_mode_needs_both_variables(root, monkeypatch, popen):
-    monkeypatch.setenv("MOODLE_READY", "simulate")
-    monkeypatch.setattr(claude_driver, "find_claude", lambda: None)
-    assert actions.readiness(root, COURSE, HW)["installed"] is False  # MOODLE_DRIVER is not simulate: the real checks run
-    monkeypatch.setenv("MOODLE_DRIVER", "simulate")
-    assert actions.readiness(root, COURSE, HW)["installed"] is True
-
-
-def test_simulate_mode_logs_in_after_a_moment_and_never_spawns(root, monkeypatch, popen):
-    monkeypatch.setenv("MOODLE_READY", "simulate")
-    monkeypatch.setenv("MOODLE_DRIVER", "simulate")
-    now = [100.0]
-    monkeypatch.setattr(time, "monotonic", lambda: now[0])
-    monkeypatch.setattr(time, "sleep", lambda s: None)
-    assert actions.readiness(root, COURSE, HW)["logged_in"] is False
-    assert actions.start_claude_login()["started"] is True
-    out = actions.readiness(root, COURSE, HW)
-    assert out["logged_in"] is False and out["login_running"] is True
-    now[0] += 3
-    assert actions.readiness(root, COURSE, HW)["logged_in"] is True
-    done = actions.check_ready(root, COURSE, HW)
-    assert (done["chrome"], done["moodle"]) == (True, True)
-    assert popen.made == []
 
 
 # ---------- the server ----------

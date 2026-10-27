@@ -88,8 +88,7 @@ through "Add shortcut to My files") is the data folder, like Yossi's or Matan's.
 uploaded to OneDrive by the browser sync) does not pull: its key would not see the numbers another computer gave, and
 its newer key would then be uploaded over the shared one, with two students on one number. `paths.in_shared_folder` is
 the rule (a folder named YallaLinearit, or "<owner> - YallaLinearit", above the data folder); `actions.pull` refuses
-before Chrome opens and before anything is created (`NOT_SHARED`), and so does `moodle ingest`. The demo
-(`MOODLE_DRIVER=simulate`) is exempt. There is **one** key table per assignment, in the shared folder, and
+before Chrome opens and before anything is created (`NOT_SHARED`), and so does `moodle ingest`. There is **one** key table per assignment, in the shared folder, and
 `anonymize.prepare` reads it before numbering, so every student keeps their number no matter who pulls. What can still
 break it is two pulls of the same assignment at once, before OneDrive synced the key between them.
 So `dashboard/actions.py` guards the dashboard's pull:
@@ -269,7 +268,7 @@ the same by hand with the ZIPs from `3 - Ready to upload to Moodle` (see `Upload
 5. Uploaded by hand instead? `python -m moodle record <id> "<zip name>"` writes that ZIP's files to the log. It looks
    for the ZIP in the current batch's folder and refuses one that is missing or changed since it was prepared.
 
-CLI: `python -m moodle send <id> [--dry-run] [--yes] [--simulate]`.
+CLI: `python -m moodle send <id> [--dry-run] [--yes]`.
 
 **Facts from the first real runs (2026-10-22)**
 - **BGU Moodle imports at once.** Clicking "יבוא קבצי משוב" on the uploadzip page imports immediately. There is NO
@@ -300,8 +299,12 @@ CLI: `python -m moodle send <id> [--dry-run] [--yes] [--simulate]`.
 **Before the first real upload:** do it once on a test assignment (ask the lecturer for one). Never try it for the
 first time on an assignment with real students.
 
-**Demo, no Moodle:** `python -m tests.make_demo_root data/demo-root`, then `python -m tests.serve_demo`.
-`MOODLE_DRIVER=simulate` and `MOODLE_READY=simulate` are for that demo only.
+**Real Moodle only (Noa's decision, 2026-10-26).** There is no demo or simulated mode: no fake data folder, no
+simulated driver, no `MOODLE_DRIVER=simulate` / `MOODLE_READY=simulate`, no `send --simulate`. Every pull and every upload
+first runs `actions.require_moodle`: the Claude extension in Chrome must be connected and Chrome logged in to Moodle (a
+passing check from the last 30 minutes counts, otherwise a short Claude check runs now, opening a closed Chrome first).
+If not, nothing is pulled or uploaded and the site says what to fix. A pull always downloads fresh from Moodle: a ZIP
+already waiting in Downloads is not taken. Fakes live only in `tests/` (`tests/fakes.py`, the dashboard tests' conftest).
 
 Never upload without the user's yes for that batch, never to a different assignment than the ZIPs were built for,
 and never change assignment settings. Grades (`Grades for Moodle worksheet.csv`) still go by hand through Actions →

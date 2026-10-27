@@ -1,8 +1,8 @@
 """מה שהאתר המחובר עושה, במקום אחד. השלבים עצמם הם הקוד של אורי ב-`moodle/`:
 
   משיכה  → claude_driver.ClaudeChromeDriver.download + moodle.ingest.ingest(<מזהה מטלה>)
-           אם אין בתיקיית ההורדות (Downloads) ZIP שנגמר ב-"-<מזהה>.zip", Claude בכרום מוריד אותו ממודל
-           והמערכת מחכה שיגיע. אחר כך: שומר אותו בתיקיית המטלה, מחלץ עם 7-Zip, ממספר ומעדכן את טבלת המפתח.
+           רק ממודל האמיתי: קודם בודקים שהתוסף של Claude בכרום מחובר ושכרום מחובר למודל, ואז Claude בכרום
+           מוריד את ההגשות ממודל והמערכת מחכה שיגיעו. אחר כך: שומר בתיקיית המטלה, מחלץ עם 7-Zip, ממספר ומעדכן את טבלת המפתח.
   בדיקה  → grading.grade.grade_assignment (שלב 2): שולח את ההגשות הממוספרות ל-Claude (API או Claude Code), כותב
            "Grades by <שם>.csv" ועבודות מסומנות. רץ ברקע, והאתר שואל מה המצב.
   חלוקה  → moodle.claims: כל בודק מסמן אילו עבודות הוא לוקח, וכולם רואים (דרך OneDrive) מי לקח מה.
@@ -209,7 +209,7 @@ class PullProgress:
     phase: str = ""
     done: int = 0
     total: int = 0  # 0 בהורדה: לא ידוע כמה גדול ה-ZIP (אין הורדה קודמת להשוות אליה)
-    downloaded: bool = False  # ה-ZIP הורד עכשיו ממודל (ולא חיכה מוכן בתיקיית ההורדות)
+    downloaded: bool = False  # ההורדה ממודל כבר התחילה
     summary: str = ""
     error: str = ""
     started_at: str = ""
@@ -313,8 +313,8 @@ NOT_SHARED = ("במחשב הזה תיקיית המערכת היא עותק מק�
 
 
 def _do_pull(root: Path, course: str, assignment: str, moodle_id: str | None, full: bool = False) -> dict:
-    # Pull only into the synced shared folder (moodle/paths.py in_shared_folder); the demo has no Moodle and no OneDrive
-    if not paths.in_shared_folder(root) and os.environ.get("MOODLE_DRIVER") != "simulate":
+    # Pull only into the synced shared folder (moodle/paths.py in_shared_folder)
+    if not paths.in_shared_folder(root):
         raise UserError(NOT_SHARED.format(root=root))
     a = new_assignment(root, course, assignment, moodle_id) if moodle_id else find_assignment(root, course, assignment)
     _take_task_if_free(a.dir.parent, assignment, "pull")
@@ -335,6 +335,11 @@ def _do_pull(root: Path, course: str, assignment: str, moodle_id: str | None, fu
         raise UserError(_hebrew_error(e, mid)) from e
     if target is None or target.resolve() != a.dir.resolve():
         raise UserError(f"מזהה המודל {mid} לא מוביל לתיקייה של {a.title}, ולכן לא משכתי. כדאי לרענן את הדף.")
+    _pull_report("connect")
+    try:
+        require_moodle(root, a.dir.parent.name, a.dir.name, "משכתי")
+    except RuntimeError as e:  # an upload or another check is using Chrome right now
+        raise UserError(str(e)) from e
     old_rows = a.key_rows()
     before = {r["number"] for r in old_rows}
     lock = _take_lock(a)
@@ -420,26 +425,13 @@ def _download_safely(downloader, a: folder_view.Assignment, since: int = 0) -> d
         return {"status": "error", "message": f"ההורדה נכשלה ({type(e).__name__})."}
 
 
-class _SimDownloader:
-    """הדגמה (MOODLE_DRIVER=simulate): אין מודל, אז אין ממה להוריד."""
-
-    def download(self, info: dict) -> dict:
-        return {"status": "error", "message": "בהדגמה אין מודל. שמים ZIP של המטלה בתיקיית ההורדות ומושכים שוב."}
-
-
 def _make_downloader():
-    return _SimDownloader() if os.environ.get("MOODLE_DRIVER") == "simulate" else claude_driver.ClaudeChromeDriver()
+    return claude_driver.ClaudeChromeDriver()
 
 
 def _zip_from_moodle(a: folder_view.Assignment, mid: str, since: int = 0) -> Path:
-    """ה-ZIP של כל ההגשות: מה שכבר מחכה בתיקיית ההורדות (מישהו הוריד ידנית), ואם אין, Claude בכרום מוריד אותו עכשיו.
-
-    ingest מעביר כל ZIP שנקלט מתיקיית ההורדות לתיקיית המטלה, כך ש-ZIP שנשאר שם עוד לא נקלט."""
-    global _checking
-    try:
-        return moodle_ingest.find_download(mid)
-    except FileNotFoundError:
-        pass
+    """ההגשות, ממודל עצמו: Claude בכרום מוריד אותן עכשיו. ZIP ישן שמחכה בתיקיית ההורדות לא נלקח: משיכה היא
+    תמיד הורדה טרייה ממודל, אחרי שהבדיקה (require_moodle) ראתה שהתוסף והמודל מחוברים."""
     with _send_lock:  # ההורדה, הבדיקה וההעלאה היו מפעילות את אותו כרום
         if _send.running:
             raise UserError("העלאה למודל רצה עכשיו בכרום. אפשר למשוך כשהיא תסתיים.")
@@ -524,8 +516,7 @@ def _download_with_chrome(a: folder_view.Assignment, mid: str, changed_since: in
         if "did not start" in str(e):
             raise UserError("Claude ביקש ממודל את ה-ZIP, אבל ההורדה לא התחילה בכרום. אם כרום שואל איפה לשמור, "
                             "מכבים בהגדרות שלו את \"שאל איפה לשמור כל קובץ\" ומושכים שוב.") from e
-        raise UserError("ההורדה ממודל לא הסתיימה בזמן. כשהיא תסתיים בכרום, לוחצים שוב \"משוך הגשות\": "
-                        "ה-ZIP שבתיקיית ההורדות ייקלט בלי להוריד שוב.") from e
+        raise UserError("ההורדה ממודל לא הסתיימה בזמן. כדאי לבדוק בכרום שמודל פתוח ומחובר, וללחוץ שוב \"משוך הגשות\".") from e
 
 
 # ---------- החזרה ----------
@@ -837,9 +828,6 @@ def change_claims(root: Path, course: str, assignment: str, take: list[str] | No
 # הכנה (prepare_send) בונה אצווה ורושמת אותה ב-Upload batch.json. ההעלאה עצמה (start_send) רצה ברקע,
 # ואחרי "כן" של אדם: האתר שולח את ה-id של האצווה שהאדם ראה, ואם בינתיים הוכנה אצווה אחרת, לא מעלים.
 # רק העלאה אחת בכל פעם בתהליך הזה, ובין מחשבים הנעילה Upload in progress.txt (moodle/send.py) שומרת.
-SIMULATE_DELAY = 1.0  # שניות לכל ZIP כש-MOODLE_DRIVER=simulate, כדי שיראו התקדמות באתר
-
-
 def _upload_lock_holder(a: folder_view.Assignment) -> str | None:
     """מי מעלה עכשיו את המטלה (נעילה שלא התיישנה, של מישהו אחר או של תהליך אחר שלי שעוד רץ), או None. בלי ה-pid."""
     held = moodle_lock.holder(a.dir / moodle_send.UPLOAD_LOCK)
@@ -902,8 +890,6 @@ def prepare_send(root: Path, course: str, assignment: str) -> dict:
 
 
 def _make_driver() -> moodle_send.MoodleDriver:
-    if os.environ.get("MOODLE_DRIVER") == "simulate":  # הדגמה: לא נוגעים במודל
-        return moodle_send.SimulatedDriver(delay=SIMULATE_DELAY)
     return claude_driver.ClaudeChromeDriver()
 
 
@@ -927,6 +913,7 @@ def start_send(root: Path, course: str, assignment: str, batch_id: str,
     ו-ValueError("stale") אם האצווה כבר לא זו שבקובץ Upload batch.json (הוכנה אחרת מאז)."""
     global _send
     a = find_assignment(root, course, assignment)
+    require_moodle(root, course, assignment, "העליתי")
     base_driver = driver if driver is not None else _make_driver()
     with _send_lock:
         if _send.running:
@@ -986,12 +973,9 @@ LOGIN_MINUTES = 10  # התחברות שלא נגמרה אחרי זמן הזה נ
 INSTALL_MINUTES = 20  # וכך גם התקנה (היא מורידה קובץ, ויכולה לקחת יותר)
 LOGIN_STARTED = "נפתח דף התחברות בדפדפן. אחרי ההתחברות המערכת תזהה לבד שזה הסתיים."
 INSTALL_COMMAND = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "irm https://claude.ai/install.ps1 | iex"]
-SIM_LOGIN_SECONDS = 2.0  # MOODLE_READY=simulate: כמה זמן "ההתחברות" נמשכת
-
 _moodle_cache: tuple[float, dict] | None = None
 _ready_cache: dict[tuple[str, str], tuple[float, dict, str]] = {}  # (קורס, מטלה) → (מתי, התשובה של check, מתי בשעון)
 _checking = False  # בדיקת כרום רצה עכשיו (תחת _send_lock): היא והעלאה היו מפעילות את אותו כרום
-_sim_login_at: float | None = None
 
 
 class _Background:
@@ -1052,23 +1036,8 @@ _login = _Background(LOGIN_MINUTES)
 _install = _Background(INSTALL_MINUTES)
 
 
-def _simulated_ready() -> bool:
-    """הדגמה (tests/serve_demo): התחברות מדומה, בלי `claude` אמיתי. רק יחד עם MOODLE_DRIVER=simulate."""
-    return os.environ.get("MOODLE_READY") == "simulate" and os.environ.get("MOODLE_DRIVER") == "simulate"
-
-
-def _sim_logged_in() -> bool:
-    return _sim_login_at is not None and time.monotonic() - _sim_login_at >= SIM_LOGIN_SECONDS
-
-
-class _SimChecker:
-    def check(self, info: dict) -> dict:
-        time.sleep(1.0)
-        return {"chrome": True, "moodle": True, "message": "Chrome ו-Moodle מוכנים.", "answered": True}
-
-
 def _make_checker():
-    return _SimChecker() if _simulated_ready() else claude_driver.ClaudeChromeDriver()
+    return claude_driver.ClaudeChromeDriver()
 
 
 def moodle_status() -> dict:
@@ -1147,14 +1116,9 @@ def _fresh_check(course: str, assignment: str) -> tuple[dict, str] | None:
 def readiness(root: Path, course: str, assignment: str) -> dict:
     """האם המחשב הזה מוכן להעלות את המטלה. מהירה: לא מפעילה בדיקת כרום, רק קוראת את התוצאה האחרונה (אם טרייה)."""
     find_assignment(root, course, assignment)
-    if _simulated_ready():
-        installed, status = True, {"logged_in": _sim_logged_in(), "message": "Claude Code מחובר." if _sim_logged_in() else claude_driver.NOT_LOGGED_IN}
-        login_running = _sim_login_at is not None and not status["logged_in"]
-        installing = False
-    else:
-        installed = claude_driver.find_claude() is not None
-        status = moodle_status() if installed else {"logged_in": False, "message": claude_driver.NOT_INSTALLED}
-        login_running, installing = _login.running(), _install.running()
+    installed = claude_driver.find_claude() is not None
+    status = moodle_status() if installed else {"logged_in": False, "message": claude_driver.NOT_INSTALLED}
+    login_running, installing = _login.running(), _install.running()
     out = {"installed": installed, "logged_in": bool(status["logged_in"]), "chrome": None, "moodle": None,
            "checked_at": None, "message": status["message"], "login_running": login_running, "installing": installing}
     fresh = _fresh_check(course, assignment) if installed and out["logged_in"] else None
@@ -1202,15 +1166,30 @@ def check_ready(root: Path, course: str, assignment: str) -> dict:
     return out
 
 
+def require_moodle(root: Path, course: str, assignment: str, verb: str) -> None:
+    """משיכה והעלאה רק מול מודל האמיתי: התוסף של Claude בכרום מחובר, וכרום מחובר למודל.
+
+    בדיקה מוצלחת מ-30 הדקות האחרונות מספיקה. אחרת בודקים עכשיו (ריצה קצרה של Claude; כרום סגור, למשל במשיכת
+    לילה, נפתח קודם). `verb` נכנס להודעה: "משכתי" / "העליתי". זורק UserError כשמשהו לא מחובר, ו-RuntimeError
+    כשהעלאה או בדיקה אחרת מפעילות עכשיו את הכרום."""
+    fresh = _fresh_check(course, assignment)
+    result = fresh[0] if fresh else None
+    if not (result and result.get("chrome") and result.get("moodle")):
+        claude_driver.open_chrome()
+        result = check_moodle(root, course, assignment)
+    if result.get("answered") is False or not result.get("chrome"):
+        raise UserError(f"התוסף של Claude בכרום לא מחובר, ולכן לא {verb} כלום. פותחים את כרום, מוודאים שהתוסף Claude "
+                        f"פעיל ומחובר, ומנסים שוב. ({result.get('message') or 'אין פרטים'})")
+    if not result.get("moodle"):
+        raise UserError(f"כרום לא מחובר למודל, ולכן לא {verb} כלום. נכנסים למודל בכרום (moodle.bgu.ac.il) ומנסים שוב. "
+                        f"({result.get('message') or 'אין פרטים'})")
+
+
 def start_claude_login(restart: bool = False) -> dict:
     """פותח התחברות ל-Claude ברקע: `claude auth login` פותח דפדפן, האדם מתחבר עם החשבון שלו, והתהליך נגמר לבד.
 
     בלי --email: כל אחד מתחבר לחשבון שלו. תהליך אחד בכל פעם; עם restart=True הקודם נהרג ומתחיל חדש."""
-    global _moodle_cache, _sim_login_at
-    if _simulated_ready():
-        if _sim_login_at is None or restart:
-            _sim_login_at = time.monotonic()
-        return {"started": True, "running": True, "message": LOGIN_STARTED}
+    global _moodle_cache
     claude = claude_driver.find_claude()
     if not claude:
         return {"started": False, "running": False, "message": claude_driver.NOT_INSTALLED}
@@ -1230,8 +1209,6 @@ def start_claude_login(restart: bool = False) -> dict:
 def start_claude_install() -> dict:
     """מתקין את Claude Code ברקע, עם ההתקנה הרשמית של Anthropic. האתר שואל את האדם לפני שהוא קורא לזה."""
     global _moodle_cache
-    if _simulated_ready():
-        return {"started": False, "running": False, "message": "Claude Code כבר מותקן."}
     if claude_driver.find_claude():
         return {"started": False, "running": False, "message": "Claude Code כבר מותקן."}
     try:

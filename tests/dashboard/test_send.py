@@ -1,6 +1,6 @@
 """Tests for the dashboard's upload to Moodle: prepare, start, follow, stop, and what the site shows after it.
 
-Drivers here are fakes (`SimulatedDriver` or small classes): nothing starts `claude` or touches Moodle.
+Drivers here are fakes (`FakeDriver` or small classes): nothing starts `claude` or touches Moodle.
 """
 from __future__ import annotations
 
@@ -13,7 +13,8 @@ import pytest
 
 from dashboard import actions
 from moodle import claude_driver, lock, paths, upload_log
-from moodle.send import UPLOAD_LOCK, SimulatedDriver, UploadResult, prepare_batch
+from moodle.send import UPLOAD_LOCK, UploadResult, prepare_batch
+from tests.fakes import FakeDriver
 from tests.dashboard.helpers import BODY, COURSE, HDR, HW, MID, NAMES, call, hw, mark
 
 
@@ -64,7 +65,7 @@ def test_prepare_then_start_marks_students_returned(root):
     rep = actions.prepare_send(root, COURSE, HW)
     assert rep["students"] == 2 and "2 סטודנטים" in rep["summary"]
     assert rep["summary"] == 'מטלה "הגשה 0 - קבוצות ומרוכבים" (מודל 3438636): 2 קבצים של 2 סטודנטים, ב-1 קובצי ZIP.'
-    actions.start_send(root, COURSE, HW, rep["id"], driver=SimulatedDriver(), wait=True)
+    actions.start_send(root, COURSE, HW, rep["id"], driver=FakeDriver(), wait=True)
     subs = hw(actions.state(root))["subs"]
     assert [s["status"] for s in subs] == ["returned", "returned", "pulled"]
 
@@ -110,21 +111,21 @@ def test_start_with_a_stale_batch_raises_value_error(root):
     old = actions.prepare_send(root, COURSE, HW)["id"]
     actions.prepare_send(root, COURSE, HW)
     with pytest.raises(ValueError, match="stale"):
-        actions.start_send(root, COURSE, HW, old, driver=SimulatedDriver(), wait=True)
+        actions.start_send(root, COURSE, HW, old, driver=FakeDriver(), wait=True)
     assert not actions.send_status()["running"]
 
 
 def test_needs_login_shows_in_status(root):
     mark(root, "0001")
     rep = actions.prepare_send(root, COURSE, HW)
-    actions.start_send(root, COURSE, HW, rep["id"], driver=SimulatedDriver([UploadResult("needs_login")]), wait=True)
+    actions.start_send(root, COURSE, HW, rep["id"], driver=FakeDriver([UploadResult("needs_login")]), wait=True)
     assert actions.send_status()["stopped"] == "needs_login"
 
 
 def test_state_and_status_have_no_names(root):
     mark(root, "0001")
     rep = actions.prepare_send(root, COURSE, HW)
-    actions.start_send(root, COURSE, HW, rep["id"], driver=SimulatedDriver(), wait=True)
+    actions.start_send(root, COURSE, HW, rep["id"], driver=FakeDriver(), wait=True)
     text = json.dumps([actions.state(root), actions.send_status(), rep], ensure_ascii=False)
     assert not any(name in text for name in NAMES.values())
 
@@ -139,7 +140,7 @@ def test_only_one_upload_runs_at_a_time(root):
     status = actions.send_status()
     assert (status["running"], status["batch_id"], status["current"]) == (True, rep["id"], "Graded - part 01.zip")
     with pytest.raises(RuntimeError, match="העלאה אחרת כבר רצה."):
-        actions.start_send(root, COURSE, HW, rep["id"], driver=SimulatedDriver())
+        actions.start_send(root, COURSE, HW, rep["id"], driver=FakeDriver())
     gate.release.set()
     done = wait_idle()
     assert (done["running"], done["stopped"], done["done"], done["total"]) == (False, None, 1, 1)
@@ -176,7 +177,7 @@ def test_a_crash_before_the_run_also_ends_the_job(root, monkeypatch):
     def boom(*a, **k):
         raise RuntimeError("no way")
     monkeypatch.setattr(actions.moodle_send, "run_batch", boom)
-    actions.start_send(root, COURSE, HW, rep["id"], driver=SimulatedDriver(), wait=True)
+    actions.start_send(root, COURSE, HW, rep["id"], driver=FakeDriver(), wait=True)
     s = actions.send_status()
     assert (s["running"], s["stopped"]) == (False, "error") and "no way" in s["message"]
 
@@ -194,7 +195,7 @@ def test_stop_ends_after_the_zip_in_progress_and_a_new_start_resumes(root):
     s = actions.send_status()
     assert (s["stopped"], s["done"], s["total"], s["running"]) == ("user", 1, 2, False)
     assert statuses(root) == ["returned", "graded", "pulled"]  # 0002 is marked, but not uploaded yet
-    drv = SimulatedDriver()
+    drv = FakeDriver()
     actions.start_send(root, COURSE, HW, batch.id, driver=drv, wait=True)
     s = actions.send_status()
     assert drv.calls == ["Graded - part 02.zip"]  # the first ZIP is skipped on resume
@@ -220,7 +221,7 @@ def test_stop_without_a_job_is_harmless(root):
 def test_dry_run_is_shown_in_status_and_logs_nothing(root):
     mark(root, "0001")
     rep = actions.prepare_send(root, COURSE, HW)
-    actions.start_send(root, COURSE, HW, rep["id"], driver=SimulatedDriver(), dry_run=True, wait=True)
+    actions.start_send(root, COURSE, HW, rep["id"], driver=FakeDriver(), dry_run=True, wait=True)
     s = actions.send_status()
     assert s["dry_run"] is True and s["stopped"] is None
     assert upload_log.read_log(a_dir(root)) == []
@@ -231,27 +232,37 @@ def test_default_driver_is_claude_in_chrome(root, monkeypatch):
     seen = []
 
     class FakeChrome:
+        def check(self, info):
+            return {"chrome": True, "moodle": True, "message": "ok", "answered": True}
+
         def upload_zip(self, info, zip_path, expected, dry_run, sha256=None):
             seen.append(zip_path.name)
             return UploadResult("imported", rows=expected, imported=expected)
     monkeypatch.setattr(claude_driver, "ClaudeChromeDriver", FakeChrome)
-    monkeypatch.delenv("MOODLE_DRIVER", raising=False)
     mark(root, "0001")
     rep = actions.prepare_send(root, COURSE, HW)
     actions.start_send(root, COURSE, HW, rep["id"], wait=True)
     assert seen == ["Graded - part 01.zip"]
 
 
-def test_simulate_env_uses_the_simulated_driver_with_a_delay(root, monkeypatch):
-    monkeypatch.setenv("MOODLE_DRIVER", "simulate")
-    monkeypatch.setattr(claude_driver, "ClaudeChromeDriver", lambda: pytest.fail("must not use Chrome"))
-    slept = []
-    monkeypatch.setattr(time, "sleep", slept.append)
+def test_an_upload_needs_the_chrome_extension_and_moodle(root, monkeypatch):
+    monkeypatch.setattr(claude_driver.ClaudeChromeDriver, "answer",
+                        {"chrome": True, "moodle": False, "message": "login page", "answered": True})
+    driver = FakeDriver()
     mark(root, "0001")
     rep = actions.prepare_send(root, COURSE, HW)
-    actions.start_send(root, COURSE, HW, rep["id"], wait=True)
-    assert slept == [1.0] and actions.send_status()["stopped"] is None
-    assert statuses(root) == ["returned", "pulled", "pulled"]
+    with pytest.raises(actions.UserError, match="כרום לא מחובר למודל"):
+        actions.start_send(root, COURSE, HW, rep["id"], driver=driver, wait=True)
+    assert driver.calls == [] and actions.send_status()["running"] is False
+
+
+def test_server_upload_start_says_what_is_not_connected(root, server, monkeypatch):
+    mark(root, "0001")
+    st, rep = call(server, "POST", "/api/upload/prepare", BODY, HDR)
+    monkeypatch.setattr(claude_driver.ClaudeChromeDriver, "answer",
+                        {"chrome": False, "moodle": False, "message": "no extension", "answered": False})
+    st, err = call(server, "POST", "/api/upload/start", {**BODY, "batchId": rep["id"]}, HDR)
+    assert st == 422 and "התוסף של Claude בכרום לא מחובר" in err["error"]
 
 
 # ---------- state() ----------
@@ -259,7 +270,7 @@ def test_state_shows_when_it_was_returned_and_what_changed_after(root):
     mark(root, "0001", "0002")
     rep = actions.prepare_send(root, COURSE, HW)
     assert hw(actions.state(root))["returnedAt"] is None
-    actions.start_send(root, COURSE, HW, rep["id"], driver=SimulatedDriver(), wait=True)
+    actions.start_send(root, COURSE, HW, rep["id"], driver=FakeDriver(), wait=True)
     last = max(r["uploaded_at"] for r in upload_log.read_log(a_dir(root)))
     assert hw(actions.state(root))["returnedAt"] == last
     (a_dir(root) / paths.MARKED / "0001.pdf").write_bytes(b"%PDF-1.4 changed after the upload")  # the grader edited it
@@ -275,7 +286,7 @@ def test_uploaded_txt_no_longer_decides_returned(root):
 def test_state_does_not_reread_unchanged_files(root, monkeypatch):
     mark(root, "0001", "0002")
     rep = actions.prepare_send(root, COURSE, HW)
-    actions.start_send(root, COURSE, HW, rep["id"], driver=SimulatedDriver(), wait=True)
+    actions.start_send(root, COURSE, HW, rep["id"], driver=FakeDriver(), wait=True)
     reads = []
     real = upload_log.file_hash
     monkeypatch.setattr(upload_log, "file_hash", lambda p: reads.append(p.name) or real(p))
@@ -335,8 +346,7 @@ def test_check_moodle_asks_the_driver_with_the_assignment_details(root, monkeypa
 
 # ---------- the local server ----------
 def test_server_upload_flow(root, server, monkeypatch):
-    monkeypatch.setenv("MOODLE_DRIVER", "simulate")
-    monkeypatch.setattr(actions, "SIMULATE_DELAY", 0.0)
+    monkeypatch.setattr(actions, "_make_driver", lambda: FakeDriver())
     mark(root, "0001", "0002")
     st, rep = call(server, "POST", "/api/upload/prepare", BODY, HDR)
     assert st == 200 and rep["students"] == 2 and "2 סטודנטים" in rep["summary"]

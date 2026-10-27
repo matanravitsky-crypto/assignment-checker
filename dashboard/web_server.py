@@ -317,6 +317,8 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json({"error": "חסרים קורס, מטלה ומזהה אצווה"}, HTTPStatus.BAD_REQUEST)
             try:
                 return self._json(actions.start_send(root, course, assignment, batch_id), HTTPStatus.ACCEPTED)
+            except actions.UserError as e:  # למשל התוסף בכרום או מודל לא מחוברים (actions.require_moodle)
+                return self._json({"error": str(e)}, HTTPStatus.UNPROCESSABLE_ENTITY)
             except ValueError as e:
                 if str(e) == "stale":
                     return self._json({"error": STALE_UPLOAD}, HTTPStatus.CONFLICT)
