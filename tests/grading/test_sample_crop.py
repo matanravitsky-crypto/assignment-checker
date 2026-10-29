@@ -25,9 +25,9 @@ def test_ink_bbox_finds_the_written_area(tmp_path: Path) -> None:
     assert 75 < box.y0 <= 100 and 600 <= box.y1 < 625
 
 
-def test_a_faint_page_with_little_visible_ink_is_not_cropped(tmp_path: Path) -> None:
-    pdf = tmp_path / "faint.pdf"
-    _page_with_ink(pdf, pymupdf.Rect(100, 200, 300, 500))   # "כתב" ב-12% מהעמוד בלבד: חשד לעיפרון חיוור
+def test_a_speck_is_not_mistaken_for_writing(tmp_path: Path) -> None:
+    pdf = tmp_path / "speck.pdf"
+    _page_with_ink(pdf, pymupdf.Rect(100, 200, 160, 260))   # "כתב" ב-1% מהעמוד: כתם, לא תשובה (CROP_MIN_AREA)
     with pymupdf.open(pdf) as doc:
         assert sample.ink_bbox(doc[0]) is None
 
