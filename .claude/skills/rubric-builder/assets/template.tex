@@ -1,0 +1,60 @@
+% Generated from rubric.json by scripts/render_tex.py — edit the JSON, not this file.
+% Preamble order follows the course preamble (latex-hebrew-setup).
+\documentclass[11pt, a4paper]{article}
+\usepackage[a4paper, top=2.3cm, left=1.8cm, right=1.8cm, bottom=2.1cm]{geometry}
+\usepackage{amsmath, amssymb, array, graphicx}
+\usepackage[table]{xcolor}
+\usepackage{tabularx, colortbl, fancyhdr, lastpage, needspace}
+\usepackage{ltablex}\keepXColumns  % tabularx that breaks across pages (no half-empty pages before a long table)
+\usepackage[most]{tcolorbox}
+\usepackage{enumitem}
+\setlist[itemize]{label=$\bullet$}
+\usepackage{hyperref}
+\usepackage{polyglossia}
+\setmainlanguage{hebrew}
+\usepackage{fontspec}
+\setmainfont{<<FONT>>}
+\usepackage{bidi}
+\providecommand\UseMathForPositioningText{}
+\setotherlanguage{english}
+
+\definecolor{teal}{HTML}{2E6E6E}
+\definecolor{paleblue}{HTML}{E4EBF4}
+\definecolor{rowgrey}{HTML}{F5F7FA}
+\definecolor{palegreen}{HTML}{E8F3E8}
+\definecolor{ded}{HTML}{B03030}
+\hypersetup{hidelinks}
+\setlength{\parindent}{0pt}
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.2}
+
+\pagestyle{fancy}\fancyhf{}
+\fancyhead[R]{\small\textbf{<<COURSE>> -- מחוון בדיקה}}
+\fancyhead[L]{\small <<CODE>> \,|\, <<TERM>>}
+\fancyfoot[C]{\small\textcolor{gray}{עמוד \thepage\ מתוך \pageref{LastPage}}}
+\renewcommand{\headrulewidth}{0.3pt}
+
+\newcommand{\qbar}[2]{\par\needspace{8\baselineskip}\vspace{10pt}\colorbox{paleblue}{\parbox{\dimexpr\textwidth-2\fboxsep}{\large\textbf{\textcolor{teal}{#1}}\hfill\textbf{#2 נק'}}}\par\vspace{4pt}}
+\newcommand{\partbar}[2]{\par\needspace{8\baselineskip}\vspace{10pt}\colorbox{paleblue}{\parbox{\dimexpr\textwidth-2\fboxsep}{\large\textbf{\textcolor{teal}{#1}}\hfill\textbf{#2 נק'}}}\par\vspace{4pt}}
+\newcommand{\sechead}[2]{\par\needspace{6\baselineskip}\vspace{5pt}{\color{teal}\textbf{#1 -- #2}}\par\vspace{2pt}}
+\newcommand{\answerbox}[1]{\begin{tcolorbox}[enhanced, sharp corners, colback=palegreen, colframe=palegreen, borderline west={2pt}{0pt}{teal}, boxrule=0pt, left=4pt, top=2pt, bottom=2pt]\textbf{\textcolor{teal}{תשובה:}} #1\end{tcolorbox}}
+\newcommand{\tblhead}[1]{\par\vspace{1pt}\textbf{\textcolor{teal}{#1}}\par\vspace{-3pt}}
+
+\begin{document}
+\thispagestyle{fancy}
+\begin{center}
+{\Huge\bfseries\textcolor{teal}{מחוון בדיקה}}\\[4pt]
+{\Large\bfseries <<COURSE>>}\\[3pt]
+{\color{teal} קורס <<CODE>> \,|\, <<TERM>> \,|\, <<DATE>>}\\[2pt]
+<<PEOPLE>>
+\end{center}
+
+\begin{tcolorbox}[enhanced, sharp corners, colback=palegreen!60, colframe=teal, boxrule=0.6pt, title=\textbf{כללי בדיקה}, coltitle=white, fonttitle=\bfseries, left=4pt, right=4pt, top=4pt, bottom=4pt]
+\begin{itemize}[nosep, leftmargin=*]
+<<RULES>>
+\end{itemize}
+\end{tcolorbox}
+
+<<BODY>>
+
+\end{document}

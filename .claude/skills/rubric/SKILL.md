@@ -1,6 +1,6 @@
 ---
 name: rubric
-description: Build the rubric for an assignment - common mistakes, every correct solution method, and a 0-100 rubric that a council of agents debated and field-tested on real submissions. Use when someone says "מחוון", "תבנה מחוון", "טעויות נפוצות", "פתרונות אפשריים", "rubric" for an assignment in the shared folder.
+description: Build the grading bot's rubric for an assignment (Rubric.md in its פדגוגי folder, the Markdown that grading sends to Claude) - common mistakes, every correct solution method, and a 0-100 rubric that a council of agents debated and field-tested on real submissions. Use when someone says "מחוון", "תבנה מחוון", "טעויות נפוצות", "פתרונות אפשריים", "rubric" for an assignment in the shared folder. For the printed PDF rubric in the course format (for human graders and the committee) use `rubric-builder` instead.
 ---
 
 # מחוון: rubric, common mistakes and solution methods for one assignment

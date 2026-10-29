@@ -1,0 +1,78 @@
+% Smoke test for a Hebrew XeLaTeX setup. Self-contained. Loads the packages the rubric template
+% uses (and a few more), in the same order. Run by setup/check.ps1 and setup/check.sh.
+% Compile by hand with:  xelatex hebrew-smoke-test.tex
+\documentclass[12pt, a4paper]{article}
+\usepackage[a4paper, top=3cm, left=2.5cm, right=2.3cm, bottom=2.7cm]{geometry}
+\usepackage{amsmath, amssymb, array, multicol}
+\usepackage{comment, graphicx}
+\usepackage{pdfpages}
+\usepackage{tikz}
+\usepackage{polyglossia}
+\setmainlanguage{hebrew}
+\usepackage{fontspec}
+\setmainfont{David CLM}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{bidi}
+% Workaround: array.sty 2.7b vs bidi's tabular code.
+\providecommand\UseMathForPositioningText{}
+\usepackage{braket}
+\usepackage[absolute]{textpos}
+\setdefaultlanguage{hebrew}
+\setotherlanguage{english}
+
+% Lecture-notes and exercise-sheet extras
+\usepackage{mathtools}
+\usepackage{amsthm}
+\usepackage[most]{tcolorbox}
+\usepackage{needspace}
+\usepackage{fontawesome5}
+\usepackage[makeroom]{cancel}
+\usepackage{adforn}
+\usetikzlibrary{calc, matrix, arrows.meta, angles, quotes}
+\IfFontExistsTF{Miriam CLM}
+  {\newfontfamily\hebrewfontsf[Script=Hebrew]{Miriam CLM}}
+  {\newfontfamily\hebrewfontsf[Script=Hebrew]{David CLM}}
+
+\newtheorem{theorem}{משפט}
+\newtcolorbox{example}{enhanced, breakable, sharp corners,
+  colback=blue!3, colframe=blue!60!black}
+
+\begin{document}
+
+\section{בדיקת התקנה}
+
+זו שורת טקסט בעברית בגופן \textbf{דוד} עם מתמטיקה $A\vec{x}=\vec{b}$ ומילה באנגלית
+\textenglish{Linear Algebra}.
+
+\begin{theorem}
+אם $A$ הפיכה אז $\det(A)\neq 0$.
+\end{theorem}
+
+\begin{example}
+\faLightbulb\ דוגמה בתוך תיבה:
+\[
+\begin{pmatrix} 1 & 2 \\ 3 & 4 \end{pmatrix}
+\xrightarrow{R_2 \leftarrow R_2 - 3R_1}
+\begin{pmatrix} 1 & 2 \\ 0 & \cancel{-2} \end{pmatrix},
+\qquad \Set{x \in \mathbb{R} | x > 0}
+\]
+\end{example}
+
+\begin{tabular}{|c|c|}
+\hline
+טבלה & עובדת \\
+\hline
+\end{tabular}
+\quad \adforn{21} \quad {\sffamily גופן מרים}
+
+\begin{enumerate}[label=\alph*.]
+\item פריט ראשון
+\item פריט שני
+\end{enumerate}
+
+\begin{tikzpicture}
+\draw[->] (0,0) -- (2,1) node[above] {$v$};
+\end{tikzpicture}
+
+\end{document}
