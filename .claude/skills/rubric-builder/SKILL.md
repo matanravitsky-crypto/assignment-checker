@@ -138,6 +138,9 @@ Each round of remarks, the committee convenes. How, by cost:
   `<work>\inputs\submissions` (kept until approval). Nothing else is re-read.
 - On another computer or after `<work>` is gone: start from `פדגוגי\Working notes\rubric.json`; the loop then runs
   without the agent files (say so).
+- **A remark days or weeks later, even after "מאושר", reopens the loop at the current `rubric.json`** (round N+1 in the
+  changelog), never from scratch: nothing is re-sampled, no agent re-reads submissions, and `Rubric.md` and `Rubric.pdf`
+  are rebuilt from the edited JSON.
 - "מאושר" ends the loop: write the line in `CHANGELOG.md`, delete `<work>\inputs\submissions`.
 A remark that contradicts `Rubric.md` goes into the PDF only after the user says so, and then say that the bot's
 `Rubric.md` still has the old rule.
