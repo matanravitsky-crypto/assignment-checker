@@ -57,7 +57,8 @@
     instr: { grade: store.get("instr.grade", DEFAULT_GRADE_INSTR) },  // נשלחות ל-Claude עם כל בדיקה
     claude: store.get("claude", { model: "claude-opus-5-5", parallel: 5, sendSolution: true }),
     loading: false,
-    pullLimit: store.get("pullLimit", 0),  // כמה הגשות למשוך (0 = את כולן)
+    pullPick: null,  // מזהה המטלה שחלונית "כמה הגשות למשוך" פתוחה בה
+    pullLimit: 0,  // כמה הגשות למשוך (0 = את כולן). לא נשמר בין ביקורים: הגבלה ששכחו הייתה מפתיעה את המשיכה הבאה
     teamCount: store.get("teamCount", 20),  // כמה עבודות פנויות לוקחים בלחיצה אחת
     gradePick: null,  // assignmentId שהחלונית "כמה לבדוק" של כפתור הבדיקה פתוחה בו
     gradeCount: store.get("gradeCount", 100),  // כמה עבודות בודקים בלחיצה אחת
@@ -255,7 +256,14 @@
   // כל כפתור מפעיל את הקוד האמיתי במחשב. המספרים מתעדכנים רק ממה שנכתב בתיקייה
   function runStage(stage) {
     if (!LOCAL.on || !cur()) return;
-    if (stage === "pull") runLocalPull();
+    if (stage === "pull") {
+      // הגשה שעוד לא נמשכה ועוד אין לה קישור: ההודעה "קודם מדביקים את הקישור" באה מיד, בלי חלונית
+      if (cur().empty && !parseMoodleId(state.moodleDraft[cur().id])) { runLocalPull(); return; }
+      state.pullPick = state.pullPick === cur().id ? null : cur().id;
+      state.pullLimit = 0;
+      render();
+      return;
+    }
     if (stage === "grade") { state.gradePick = state.gradePick === cur().id ? null : cur().id; render(); $("#grade-count")?.select(); }
     if (stage === "ret") startSendFlow();
   }
@@ -338,17 +346,34 @@
     const stopBtn = mine && stage === "grade" ? `<button class="btn danger ${big ? "lg" : ""}" data-act="grade-stop" ${run.stopping ? "disabled" : ""}
       title="העבודות שכבר נשלחו ל-Claude יסתיימו ויישמרו. השאר יחכו ללחיצה הבאה על 'בדוק'">${run.stopping ? ICON.spin : ICON.stop}${run.stopping ? "עוצר…" : "עצור בדיקה"}</button>` : "";
     const btn = `<button class="btn ${primary ? "primary" : "secondary"} ${big ? "lg" : ""}" data-run="${stage}" ${disabled ? "disabled" : ""}${why}
-      ${stage === "grade" ? `aria-expanded="${state.gradePick === A.id}"` : ""}>${icon}${text}</button>${stopBtn}`;
-    if (stage === "pull" && LOCAL.on && !busy && !(owner && owner.who !== myName())) return `<span class="pull-wrap">${btn}${pullLimitHTML()}</span>`;
+      ${stage === "grade" ? `aria-expanded="${state.gradePick === A.id}"` : ""}${stage === "pull" && LOCAL.on ? `aria-expanded="${state.pullPick === A.id}" aria-haspopup="dialog"` : ""}>${icon}${text}${stage === "pull" && LOCAL.on && !mine ? `<span class="caret" aria-hidden="true">▾</span>` : ""}</button>${stopBtn}`;
+    if (stage === "pull" && LOCAL.on) return `<span class="pick-wrap">${btn}${disabled ? "" : pullPickHTML()}</span>`;
     return stage === "grade" ? `<span class="pick-wrap">${btn}${disabled ? "" : gradePickHTML()}</span>` : btn;
   }
 
-  // כמה הגשות למשוך: ריק = את כולן. למשל 30 לניסוי, ומשיכה בלי מספר אחר כך מביאה את השאר (המספרים נשמרים)
-  function pullLimitHTML() {
-    const A = cur();
-    const value = state.pullLimit > 0 ? state.pullLimit : "";
-    return `<label class="team-count pull-limit" title="המערכת מורידה את ההגשות הראשונות בטבלת ההגשות במודל. משיכה בלי מספר מביאה אחר כך את כל השאר.">
-      כמה הגשות? <input type="number" id="pull-limit" data-pull-limit="${esc(A.id)}" min="1" step="1" inputmode="numeric" value="${value}" placeholder="הכול"></label>`;
+  // "כמה הגשות למשוך": חלונית שנפתחת מתחת לכפתור המשיכה, כמו "כמה לבדוק". המשיכה לוקחת את ההגשות הראשונות בטבלת
+  // ההגשות במודל שיש להן הגשה; משיכה בלי מספר מביאה אחר כך את כל השאר, והמספרים של מי שכבר נמשך נשמרים
+  const PULL_CHIPS = [10, 25, 50, 100];
+  const pullGoLabel = () => (state.pullLimit > 0 ? `משוך ${state.pullLimit}` : "משוך הכול");
+  function pullPickHTML() {
+    const A = cur(), n = state.pullLimit > 0 ? state.pullLimit : 0;
+    if (state.pullPick !== A.id || state.run[A.id]) return "";
+    const known = n && !PULL_CHIPS.includes(n);
+    const chip = (v, label) => `<button type="button" class="chip" data-pull-chip="${v}" aria-pressed="${n === v}">${label}</button>`;
+    const again = A.pulledAt
+      ? "המשיכה הזו כבר נעשתה פעם: נמשכים רק מי שההגשה שלו השתנתה מאז, ובתוכם לא יותר מהמספר שבחרת."
+      : "נמשכות ההגשות הראשונות בטבלת ההגשות במודל. משיכה בלי מספר מביאה אחר כך את כל השאר, והמספרים של מי שכבר נמשך נשמרים.";
+    return `<div class="grade-pick pull-pick" role="dialog" aria-label="כמה הגשות למשוך">
+      <div class="pp-title">כמה הגשות למשוך?</div>
+      <div class="chips pp-chips">${PULL_CHIPS.map((c) => chip(c, c)).join("")}${chip(0, "הכול")}</div>
+      <label class="team-count pp-custom">או מספר אחר
+        <input type="number" id="pull-limit" data-pull-limit min="1" step="1" inputmode="numeric" placeholder="למשל 30" value="${known ? n : ""}"></label>
+      <p class="hint">${again}</p>
+      <div class="gp-act">
+        <button class="btn primary small" data-act="pull-pick-go">${ICON.pull}<span data-pull-go>${pullGoLabel()}</span></button>
+        <button class="btn ghost small" data-act="pull-pick-close">ביטול</button>
+      </div>
+    </div>`;
   }
 
   function stageState(stage) {
@@ -2285,6 +2310,9 @@
     if (t.closest("a[data-open-local]")) store.set("openLocal", true);  // מהפעם הבאה הקישור הציבורי מעביר לכאן לבד
     const runBtn = t.closest("[data-run]");
     if (runBtn) { runStage(runBtn.dataset.run); return; }
+    const pChip = t.closest("[data-pull-chip]");
+    if (pChip) { state.pullLimit = Number(pChip.dataset.pullChip); render(); return; }
+    if (state.pullPick && !t.closest(".pull-pick")) { state.pullPick = null; render(); }  // לחיצה מחוץ לחלונית סוגרת אותה
     const gChip = t.closest("[data-grade-chip]");
     if (gChip) { state.gradeCount = Number(gChip.dataset.gradeChip); store.set("gradeCount", state.gradeCount); render(); return; }
     if (state.gradePick && !t.closest(".grade-pick")) { state.gradePick = null; render(); }  // לחיצה מחוץ לחלונית סוגרת אותה
@@ -2335,6 +2363,8 @@
       if (a === "open-folder") openFolder("folder");
       if (a === "open-inbox") openFolder("inbox");
       if (a === "pull-full") runLocalPull(true);
+      if (a === "pull-pick-go") { state.pullPick = null; runLocalPull(); state.pullLimit = 0; }  // הגוף של הבקשה נבנה מיד
+      if (a === "pull-pick-close") { state.pullPick = null; render(); }
       if (a === "open-upload") openFolder("upload");
       if (a === "recheck") { if (LOCAL.on) location.reload(); else connect(true); }
       if (a === "send-confirm" && LOCAL.batch?.assignmentId === cur().id) startLocalSend(LOCAL.batch.id);
@@ -2408,6 +2438,8 @@
   document.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && reviewSub()) { e.preventDefault(); saveReview(state.review.id); return; }
     if (e.key === "Enter" && e.target.matches?.("[data-grade-count]")) { gradePicked(); return; }
+    if (e.key === "Enter" && e.target.matches?.("[data-pull-limit]")) { state.pullPick = null; runLocalPull(); state.pullLimit = 0; return; }
+    if (e.key === "Escape" && state.pullPick) { state.pullPick = null; render(); return; }
     if (e.key === "Escape" && state.gradePick) { state.gradePick = null; render(); return; }
     if (e.key === "Escape") { closeDrawer(); $("#sidebar").classList.remove("open"); }
     if (e.key === "Enter" && e.target.matches("[data-open]")) openDrawer(e.target.dataset.open);
@@ -2451,7 +2483,14 @@
       if (go) go.innerHTML = `${ICON.grade}בדוק ${Math.min(state.gradeCount, Number(t.max) || state.gradeCount)}`;
       return;
     }
-    if (t.matches("[data-pull-limit]")) { state.pullLimit = Math.max(0, parseInt(t.value, 10) || 0); store.set("pullLimit", state.pullLimit); return; }
+    if (t.matches("[data-pull-limit]")) {
+      state.pullLimit = Math.max(0, parseInt(t.value, 10) || 0);
+      // רק התווית והסימון משתנים, בלי לצייר מחדש: הסמן נשאר בשדה
+      const go = $("[data-pull-go]");
+      if (go) go.textContent = pullGoLabel();
+      document.querySelectorAll("[data-pull-chip]").forEach((b) => b.setAttribute("aria-pressed", String(Number(b.dataset.pullChip) === state.pullLimit)));
+      return;
+    }
     if (t.matches("[data-team-count]")) { state.teamCount = Math.max(1, parseInt(t.value, 10) || 1); store.set("teamCount", state.teamCount); return; }
     if (t.dataset.instr) {
       const st = t.dataset.instr;
