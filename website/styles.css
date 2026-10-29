@@ -349,6 +349,16 @@ th.qcol { text-align: center; }
 .team-act .field { min-width: 220px; }
 .team-count { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; color: var(--ink-2); }
 .team-count input { width: 76px; padding: 6px 8px; border: 1px solid var(--rule-strong); border-radius: var(--r-sm); background: var(--sheet); color: var(--ink); font: inherit; text-align: center; }
+/* "כמה הגשות למשוך": נפתחת בעדינות מתחת לכפתור, עם מספרים עגולים ושדה למספר אחר */
+.pull-pick { width: min(360px, calc(100vw - 32px)); animation: pull-pick-in .16s ease-out; transform-origin: top; }
+@keyframes pull-pick-in { from { opacity: 0; transform: translateY(-6px) scale(.98); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .pull-pick { animation: none; } }
+.pull-pick .pp-title { font-weight: 650; font-size: 15px; color: var(--ink); }
+.pull-pick .pp-chips { gap: 8px; }
+.pull-pick .pp-chips .chip { padding: 8px 18px; font-size: 15px; min-width: 56px; text-align: center; }
+.pull-pick .pp-custom { justify-content: space-between; }
+.pull-pick .pp-custom input { width: 110px; }
+[data-run="pull"] .caret { margin-inline-start: 8px; font-size: 11px; opacity: .8; }
 .team-count input:focus { outline: none; border-color: var(--blue); box-shadow: 0 0 0 3px var(--blue-soft); }
 /* "כמה לבדוק": חלונית קטנה שנפתחת מתחת לכפתור הבדיקה */
 .pick-wrap { position: relative; display: inline-flex; }

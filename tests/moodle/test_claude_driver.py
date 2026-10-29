@@ -491,6 +491,20 @@ def test_the_parts_script_asks_only_for_what_changed_since():
     assert f'H !== "{sha}"' in prompt and '"parts" is 0 when no submission changed' in prompt
 
 
+def test_the_parts_script_can_be_capped_to_a_number_of_students():
+    """A cap (the site's "how many submissions?"): at most that many students; the list says what the cap was."""
+    everyone, everyone_sha = claude_driver.parts_script("3438636")
+    assert 'const LIMIT = Number("0");' in everyone and "__LIMIT__" not in everyone
+    capped, sha = claude_driver.parts_script("3438636", 0, 30)
+    assert 'const LIMIT = Number("30");' in capped and sha != everyone_sha
+    assert "changed.length = LIMIT" in capped and "limit: LIMIT, available" in capped
+    both, _ = claude_driver.parts_script("3438636", 1761200000000, 5)  # a cap on top of "only what changed"
+    assert 'const SINCE = Number("1761200000000");' in both and 'const LIMIT = Number("5");' in both
+    assert claude_driver.parts_script("3438636", 0, -4)[0] == everyone  # a nonsense cap is no cap
+    prompt = claude_driver.download_prompt({**INFO, "limit": 30})
+    assert f'H !== "{sha}"' in prompt
+
+
 class FakeTasks:
     def __init__(self, out):
         self.out, self.calls = out, []

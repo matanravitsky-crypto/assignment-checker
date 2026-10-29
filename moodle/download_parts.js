@@ -22,6 +22,11 @@
 // students whose "last modified (submission)" in the grading table is at or after it are downloaded, and the others
 // keep what an earlier pull brought (moodle/anonymize.py keeps every student who is not in a download). A date the
 // script can't read counts as changed; a student with no submission date has nothing to download.
+// A cap: __LIMIT__ is replaced by a number (digits only; 0 = no cap). Then at most that many students are downloaded,
+// the first ones in the grading table's own order that have a submission (a student without one has nothing to
+// download and does not count). The list says "limit" and "available" (how many there were before the cap), so
+// Python knows the pull was partial: the next pull without a cap asks for everyone who was left out
+// (moodle/ingest.py log_pull, dashboard/actions.py _since).
 // The due date: read from the assignment's own page, saved in the list as "due" (local time, "2026-10-26T23:59:00"),
 // so the night pull of dashboard/scheduler.py knows when the assignment closes without anyone typing it.
 // __ASSIGNMENT_ID__ is replaced by the Moodle id (digits only). No backtick and no dollar-brace anywhere: Claude gets
@@ -29,6 +34,7 @@
 (async () => {
   const ID = "__ASSIGNMENT_ID__";
   const SINCE = Number("__SINCE__");
+  const LIMIT = Number("__LIMIT__");
   const PART_SIZE = 40;  // ~150 MB per part at ~4 MB per submission: about 10 seconds, well before Moodle cuts
   const TRIES = 3;
   const BASE = "/moodle/mod/assign/view.php";
@@ -78,7 +84,7 @@
       fresh++;
       const cell = column && box.closest("tr") ? box.closest("tr").querySelector("td." + column) : null;
       const text = cell ? cell.textContent : null;
-      if (SINCE > 0 && text !== null && !/\d{4}/.test(text)) continue;  // no submission: nothing to download
+      if ((SINCE > 0 || LIMIT > 0) && text !== null && !/\d{4}/.test(text)) continue;  // no submission: nothing to download
       const at = when(text);
       if (SINCE > 0 && at && at.getTime() < SINCE) continue;  // not changed since the last pull
       changed.push(v);
@@ -86,6 +92,9 @@
     if (!fresh) break;
   }
   if (!users.length) return { error: "no students in the grading table" };
+
+  const available = changed.length;
+  if (LIMIT > 0 && changed.length > LIMIT) changed.length = LIMIT;
 
   // The due date, from the assignment's page: BGU's Hebrew Moodle says "מסתיים: יום רביעי, 28 אוקטובר 2026, 11:59 PM"
   // (seen 2026-10-23, next to "נפתח: ..."), English "Due: ..."; null when it is not there
@@ -206,7 +215,7 @@
       }
       // The list comes last: parts of a download that stopped halfway have no list, and Python never takes them
       // "since" and "changed": only what changed since then was asked for (0: everyone), so no part is not "incomplete"
-      const list = { users: S.users, changed: S.changed, since: SINCE, due, parts: files.length, empty: S.empty,
+      const list = { users: S.users, changed: S.changed, since: SINCE, limit: LIMIT, available, due, parts: files.length, empty: S.empty,
                      retried: S.retried, failed: [], files };
       save(new Blob([JSON.stringify(list)], { type: "application/json" }), (stem || "moodle-" + ID) + ".json");
       S.state = "saved";
@@ -216,5 +225,5 @@
       if (S.error === "no_folders") S.error = "a part came without a folder per student: the option to download in folders is off";
     }
   })();
-  return { users: users.length, changed: changed.length, parts: planned, due };
+  return { users: users.length, changed: changed.length, available, parts: planned, due };
 })();
