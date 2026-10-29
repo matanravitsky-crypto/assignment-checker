@@ -38,7 +38,7 @@ def table(head, rows, spec):
            r"\rowcolor{paleblue} " + " & ".join(r"\textbf{%s}" % h for h in head) + r" \\"]
     for i, row in enumerate(rows):
         out.append((r"\rowcolor{rowgrey} " if i % 2 else "") + " & ".join(fix(c) for c in row) + r" \\")
-    out.append(r"\end{tabularx}")
+    out.append(r"\end{tabularx}\par\vspace{6pt}")
     return "\n".join(out)
 
 
@@ -55,7 +55,7 @@ def section(s):
     o = [r"\sechead{%s}{%s}" % (head, fix(s.get("title", "")))]
     o.append(r"\answerbox{%s}" % fix(s["answer"]))
     if s.get("solution"): o.append("\\[\n%s\n\\]" % s["solution"])
-    if s.get("note"): o.append(r"{\small\textit{%s}}\par" % fix(s["note"]))
+    if s.get("note"): o.append(r"{\small\textit{%s}}\par\vspace{3pt}" % fix(s["note"]))
     o.append(r"\tblhead{חלוקת הניקוד}")
     o.append(table(["שלב", "נקודות"], [[x["desc"], str(x["points"])] for x in s["steps"]], STEPS_SPEC))
     for m in s.get("alt_methods", []):

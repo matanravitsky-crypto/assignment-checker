@@ -2,6 +2,7 @@
 
   python -m grading.sample <מזהה מטלה> --out <תיקייה>             50 למדגם + 6 לניסוי בשטח
   python -m grading.sample <מזהה מטלה> --out <תיקייה> --n 30 --fresh 6
+  python -m grading.sample <מזהה מטלה> --out <תיקייה> --max-side 1000 --crop   זול יותר: תמונות קטנות, בלי שוליים
 
 כותב לתיקייה:
   pages/<מספר>_pNN.jpg   עמוד לתמונה. עמודים ריקים (שער, משבצות) לא נכתבים
@@ -53,8 +54,37 @@ def is_blank(page: pymupdf.Page) -> bool:
     return ink_ratio(small) < BLANK_INK
 
 
-def render_file(path: Path, number: int | str, out: Path, start: int) -> tuple[list[str], int]:
-    """כותב תמונה לכל עמוד לא ריק בקובץ. מחזיר את שמות התמונות ואת מספר העמודים הריקים שדולגו."""
+# חיתוך שוליים: שורה או עמודה של התמונה המוקטנת נחשבת "עם דיו" אם לפחות כך וכך מהפיקסלים שלה כהים.
+# סריקת טלפון של דף A4 היא בדרך כלל 20-35% שוליים לבנים, שעולים טוקנים כמו כתב.
+CROP_SCALE = 0.25
+CROP_LINE_INK = 0.004
+CROP_MARGIN = 0.02
+
+
+def ink_bbox(page: pymupdf.Page) -> pymupdf.Rect | None:
+    """המלבן שבו יש כתב בעמוד, עם שוליים של 2%, בקואורדינטות של העמוד. None אם אין מה לחתוך
+    (הכתב ממלא את העמוד, או שלא נמצא כתב)."""
+    pix = page.get_pixmap(matrix=pymupdf.Matrix(CROP_SCALE, CROP_SCALE), colorspace=pymupdf.csGRAY, alpha=False)
+    w, h, data = pix.width, pix.height, pix.samples
+    rows = [sum(1 for x in range(w) if data[y * w + x] < DARK) >= CROP_LINE_INK * w for y in range(h)]
+    cols = [sum(1 for y in range(h) if data[y * w + x] < DARK) >= CROP_LINE_INK * h for x in range(w)]
+    if not any(rows) or not any(cols):
+        return None
+    y0, y1 = rows.index(True), h - 1 - rows[::-1].index(True)
+    x0, x1 = cols.index(True), w - 1 - cols[::-1].index(True)
+    mx, my = CROP_MARGIN * w, CROP_MARGIN * h
+    x0, y0, x1, y1 = max(0, x0 - mx), max(0, y0 - my), min(w, x1 + 1 + mx), min(h, y1 + 1 + my)
+    area = (x1 - x0) * (y1 - y0) / (w * h)
+    if area > 0.9 or area < 0.4:   # הכתב ממלא את העמוד, או שנמצא "כתב" קטן מדי (עיפרון חיוור שרובו לא נראה): בלי חיתוך
+        return None
+    r = page.rect
+    return pymupdf.Rect(r.x0 + x0 / CROP_SCALE, r.y0 + y0 / CROP_SCALE, r.x0 + x1 / CROP_SCALE, r.y0 + y1 / CROP_SCALE)
+
+
+def render_file(path: Path, number: int | str, out: Path, start: int,
+                max_side: int = MAX_SIDE, crop: bool = False) -> tuple[list[str], int]:
+    """כותב תמונה לכל עמוד לא ריק בקובץ. מחזיר את שמות התמונות ואת מספר העמודים הריקים שדולגו.
+    crop: רק המלבן שיש בו כתב (ink_bbox), כדי שהשוליים הלבנים לא יעלו טוקנים."""
     names: list[str] = []
     blank = 0
     with pymupdf.open(path) as doc:
@@ -64,8 +94,9 @@ def render_file(path: Path, number: int | str, out: Path, start: int) -> tuple[l
             if is_blank(page):
                 blank += 1
                 continue
-            zoom = MAX_SIDE / max(page.rect.width, page.rect.height)
-            pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False)
+            clip = (ink_bbox(page) if crop else None) or page.rect
+            zoom = max_side / max(page.rect.width, page.rect.height)  # לפי העמוד: חיתוך רק מקטין, לא מגדיל
+            pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), clip=clip, alpha=False)
             name = f"{number}_p{start + len(names) + 1:02d}.jpg"
             pix.save(out / name, jpg_quality=JPEG_QUALITY)
             names.append(name)
@@ -79,7 +110,8 @@ def pick(numbers: list[str], n: int, fresh: int, seed: int) -> tuple[list[str], 
     return sorted(chosen[:n]), sorted(chosen[n:])
 
 
-def build(assignment_dir: Path, out: Path, n: int = 50, fresh: int = 6, seed: int | None = None) -> dict:
+def build(assignment_dir: Path, out: Path, n: int = 50, fresh: int = 6, seed: int | None = None,
+          max_side: int = MAX_SIDE, crop: bool = False) -> dict:
     files = paths.files_by_number(assignment_dir / paths.TO_GRADE)
     info = paths.read_info(assignment_dir)
     if seed is None:
@@ -96,7 +128,7 @@ def build(assignment_dir: Path, out: Path, n: int = 50, fresh: int = 6, seed: in
         for f in files[number]:
             suffix = f.suffix.lower()
             if suffix == ".pdf" or suffix in IMAGE_SUFFIXES:
-                got, skipped = render_file(f, number, pages_dir, len(names))
+                got, skipped = render_file(f, number, pages_dir, len(names), max_side, crop)
                 names += got
                 blank += skipped
             else:
@@ -121,13 +153,15 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--n", type=int, default=50, help="כמה הגשות למדגם")
     p.add_argument("--fresh", type=int, default=6, help="כמה הגשות נוספות לניסוי בשטח")
     p.add_argument("--seed", type=int, help="ברירת מחדל: מזהה המטלה")
+    p.add_argument("--max-side", type=int, default=MAX_SIDE, help=f"אורך הצד הארוך של תמונה בפיקסלים (ברירת מחדל {MAX_SIDE})")
+    p.add_argument("--crop", action="store_true", help="לחתוך את השוליים הלבנים: רק המלבן שיש בו כתב")
     args = p.parse_args(argv)
     try:
         folder = paths.assignment_dir(args.assignment_id)
     except FileNotFoundError as e:
         print(e)
         return 2
-    m = build(folder, Path(args.out), args.n, args.fresh, args.seed)
+    m = build(folder, Path(args.out), args.n, args.fresh, args.seed, args.max_side, args.crop)
     total = sum(len(v) for v in m["pages"].values())
     print(f"מדגם: {len(m['sample'])}, ניסוי: {len(m['fresh'])}, עמודים: {total}, "
           f"ריקים שדולגו: {sum(m['blank_skipped'].values())}")
