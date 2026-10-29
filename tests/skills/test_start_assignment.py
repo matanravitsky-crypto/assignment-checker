@@ -221,7 +221,8 @@ def test_status_lists_what_is_there(data):
     prepare.write_details(COURSE, 1, MOODLE_PAGE)
     s = prepare.status(COURSE, 1)
     assert s["folder"].endswith("Assignment 1") and s["details"]["id"] == "3438638"
-    assert s["submissions"] == 0 and s["official_solution"] is False and s["shared_folder"] is False
+    assert s["official_solution"] is False and s["shared_folder"] is False
+    assert "submissions" not in s and "last_pull" not in s  # not this skill's business
     assert s["sheets"] == {} and "Working notes" in s["pedagogy"]
     assert prepare.status(COURSE, 2)["folder"] is None
 

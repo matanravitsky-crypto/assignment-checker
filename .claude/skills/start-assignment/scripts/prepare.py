@@ -22,7 +22,9 @@ Everything code can do is done here, so the skill spends tokens only on Moodle (
   is ".N" at the start of a line (or at its end: Hebrew lines come out reversed), and questions are numbered in order.
 - `readme`: rewrites the README.txt files (`python -m moodle guide`).
 
-Student data never passes through here: this touches the assignment's details and the course material only.
+Student data never passes through here: this touches the assignment's details and the course material only. It
+never pulls submissions and never makes a sample of them: the pull is the site's button, and a sample is made by
+the rubric skills, with the size the user names.
 """
 from __future__ import annotations
 
@@ -430,10 +432,6 @@ def status(course: str, slot: int) -> dict:
         pedagogy = pedagogy_dir(folder)
         out["pedagogy"] = sorted(p.name for p in pedagogy.iterdir()) if pedagogy.is_dir() else []
         out["official_solution"] = (folder / SOLUTION).is_file()
-        subs = folder / paths.TO_GRADE
-        out["submissions"] = len(paths.files_by_number(subs)) if subs.is_dir() else 0
-        log = folder / paths.PULL_LOG
-        out["last_pull"] = log.read_text(encoding="utf-8").strip().splitlines()[-1] if log.is_file() and log.stat().st_size else None
     others = [a.dir.name for a in folder_view.assignments(course_dir(course))]
     out["course_assignments"] = others
     return out
