@@ -24,7 +24,7 @@ from urllib.parse import parse_qs, urlparse
 
 from grading import grade as grading
 
-from . import actions, folder_view, scheduler, settings as cfg, sync
+from . import actions, folder_view, heartbeat, scheduler, settings as cfg, sync
 
 WEBSITE = cfg.REPO_DIR / "website"
 HEADER = "X-Assignment-Checker"
@@ -453,6 +453,8 @@ def serve(port: int = 8765, open_browser: bool = True) -> None:
         print("\nהאתר יעלה בכל זאת, ויציג את ההסבר הזה עד שהתיקייה תסתנכרן.")
     httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     scheduler.start(_lock)  # משיכה מתוזמנת ביום שההגשה נגמרת (dashboard/scheduler.py)
+    if root:
+        heartbeat.start(root)  # כל דקה: כותב Who is working/<שם>.json עם הפעילות הנוכחית (C1)
     actions.refresh_status_soon()  # כבר עכשיו, כדי שהתשובה תהיה מוכנה כשהאתר נפתח
     url = f"http://localhost:{port}/"
     print(f"\nבודק חכם פועל: {url}\nכדי לעצור: Ctrl+C או לסגור את החלון.")

@@ -117,8 +117,8 @@ def release(assignment_dir: Path, numbers: list[str], who: str | None = None) ->
     return dropped
 
 
-# ---------- pull and return: an owner per assignment, kept in the course folder ----------
-STAGES = ("pull", "return")
+# ---------- pull, return, rubric, review: an owner per assignment, kept in the course folder ----------
+STAGES = ("pull", "return", "rubric", "review")
 
 
 def task_key(assignment_folder: str, stage: str) -> str:

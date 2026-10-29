@@ -68,6 +68,7 @@ PULL_LOG = "Pull log.csv"
 SHARED_COURSE_FOLDER = "YallaLinearit"
 PULL_LOCK = "Pull in progress.txt"      # in the assignment folder while a pull runs (see lock.py)
 UPLOAD_LOCK = "Upload in progress.txt"  # in the assignment folder while an upload to Moodle runs
+WHO_WORKING = "Who is working"          # in the data root: one "<name>.json" per computer, current activity (heartbeat.py)
 
 
 def data_dir() -> Path:

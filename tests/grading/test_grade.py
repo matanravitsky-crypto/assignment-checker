@@ -484,16 +484,16 @@ def test_grading_writes_notes_and_a_failure_reaches_the_review_queue(root):
         calls.append(1)
         if len(calls) == 2:
             raise grading.GradingError("Claude עמוס כרגע")
-        return detailed(review="שאלה 8 לא נמצאה", kind="missing", unsure=(4,))
+        return detailed(review="עמודים 1-4 לא קריאים", kind="unreadable", unsure=(4,))
     rep = grading.grade_assignment(a.dir, ask=ask, parallel=1)
     (bad,) = rep.failed
     good = rep.graded[0]
     note = grading.read_notes(a.dir, good)
-    assert note["mistakes"][1] == ["חסר נימוק"] and note["unsure"][4] and note["review_kind"] == "missing"
+    assert note["mistakes"][1] == ["חסר נימוק"] and note["unsure"][4] and note["review_kind"] == "unreadable"
     assert note["marks"][0]["text"] == "חסר נימוק" and note["points"] == [20, 15, 20, 20, 10]
     assert grading.read_notes(a.dir, bad)["error"] == "Claude עמוס כרגע"
     subs = {s["id"]: s for s in actions.state(root)["assignments"][0]["subs"]}
-    assert subs[good]["reviewKind"] == "missing" and subs[good]["unsure"][4] and subs[good]["mistakes"][4] == ["תחום לא נכון"]
+    assert subs[good]["reviewKind"] == "unreadable" and subs[good]["unsure"][4] and subs[good]["mistakes"][4] == ["תחום לא נכון"]
     assert subs[bad]["reviewKind"] == "failed" and subs[bad]["failed"] == "Claude עמוס כרגע" and subs[bad]["status"] == "pulled"
     # בדיקה חוזרת שהצליחה מוחקת את הכישלון
     grading.grade_assignment(a.dir, [bad], ask=lambda req: detailed())
@@ -502,7 +502,7 @@ def test_grading_writes_notes_and_a_failure_reaches_the_review_queue(root):
 
 def test_save_review_approves_with_who_and_rewrites_the_summary_page(root):
     a = asg(root)
-    grading.grade_assignment(a.dir, ["0001"], ask=lambda req: detailed(review="לא בטוח", kind="uncertain"))
+    grading.grade_assignment(a.dir, ["0001"], ask=lambda req: detailed(review="לא בטוח", kind="unreadable"))
     out = grading.save_review(a.dir, "1", [20, 14.7, 20, 20, 0], ["", "חסר נימוק.", "", "", "השאלה לא נמצאה"],
                               "עבודה טובה.", by="dana (PC)", mistakes=[[], ["חסר נימוק"], [], [], []])
     assert out == {"number": "0001", "grade": 75}  # 14.7 → 14.5
@@ -630,7 +630,7 @@ def test_points_above_the_rubric_are_never_kept(root):
     a = asg(root)
     ctx = grading.load_context(a.dir)
     g = grading.parse_answer(detailed(points=(20, 20, 20, 20, 23)), ctx, 1)
-    assert g.points[4] == 20 and "יותר מהמחוון" in g.review and f"{LABELS[4]}: 23 מתוך 20" in g.review
+    assert g.points[4] == 20 and g.review == "" and g.unsure[4]  # נחתך למחוון בלי להטריד אדם
     with pytest.raises(grading.GradingError) as e:
         grading.save_review(a.dir, "0001", [20, 20, 20, 20, 24], [], "", by="x")
     assert f"{LABELS[4]}: 24 מתוך 20" in str(e.value) and not (a.dir / grading.GRADES).exists()
@@ -783,3 +783,11 @@ def test_model_images_carry_a_numbered_grid_but_files_do_not():
     pix = pymupdf.Pixmap(gridded.data)
     # קו הרשת ב-x=500 צבוע כתום באמצע העמוד
     assert any(pix.pixel(pix.width // 2, y)[2] < 200 for y in range(pix.height // 2, pix.height // 2 + 40))
+
+
+def test_doubt_and_missing_pages_are_decided_by_claude_not_sent_to_a_person(root):
+    ctx = grading.load_context(asg(root).dir)
+    for kind in ("uncertain", "missing"):
+        g = grading.parse_answer(detailed(review="לא בטוח", kind=kind, unsure=(1,)), ctx, 1)
+        assert g.review == "" and g.review_kind == "" and g.unsure[1]
+    assert grading.parse_answer(detailed(review="הכול לא קריא", kind="unreadable"), ctx, 1).review_kind == "unreadable"
