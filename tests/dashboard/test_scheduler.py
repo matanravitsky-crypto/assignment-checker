@@ -118,10 +118,11 @@ def test_only_the_computer_of_whoever_took_the_pull(root):
     assert len(pulls) == 1                                              # mine (GRADER_NAME=מתן)
 
 
-def test_a_local_copy_never_pulls_at_night(root, tmp_path):
+def test_a_local_copy_pulls_at_night_too(root, tmp_path):
+    """Since 2026-10-29 the pull owner's computer pulls at night even when its data folder is a local copy."""
     local = tmp_path / "local" / "Exercise Checking System"
     shutil.copytree(root, local)
     pulls = []
     _due(local, "2026-10-24T23:59:00")
     scheduler.tick(local, datetime(2026, 10, 25, 0, 5), {}, _ok(pulls))
-    assert not pulls
+    assert len(pulls) == 1

@@ -306,16 +306,9 @@ def pull(root: Path, course: str, assignment: str, moodle_id: str | None = None,
             job.running = False
 
 
-NOT_SHARED = ("במחשב הזה תיקיית המערכת היא עותק מקומי ({root}), לא התיקייה המשותפת של הקורס ב-OneDrive, ולכן "
-              "לא מושכים ממנו. טבלת המפתח של כל מטלה נמצאת בתיקייה המשותפת: משיכה מעותק מקומי לא הייתה רואה את "
-              "המספרים שמחשב אחר כבר נתן, ושני סטודנטים היו מקבלים אותו מספר. מושכים ממחשב שהתיקייה YallaLinearit "
-              "מסונכרנת בו (OneDrive ← \"הוסף קיצור דרך לקבצים שלי\"), למשל של יוסי.")
-
-
 def _do_pull(root: Path, course: str, assignment: str, moodle_id: str | None, full: bool = False) -> dict:
-    # Pull only into the synced shared folder (moodle/paths.py in_shared_folder)
-    if not paths.in_shared_folder(root):
-        raise UserError(NOT_SHARED.format(root=root))
+    # Any computer may pull, a local data folder too (Ori, the pull owner, 2026-10-29): the key table of the folder it
+    # pulls into is the one that counts, and anonymize.prepare keeps every number in it
     a = new_assignment(root, course, assignment, moodle_id) if moodle_id else find_assignment(root, course, assignment)
     _take_task_if_free(a.dir.parent, assignment, "pull")
     mid = _moodle_id(a)
