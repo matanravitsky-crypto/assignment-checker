@@ -73,7 +73,9 @@ They do not see each other.
 ## Step 3: merge → rubric.json → PDF
 
 `references/merge-rules.md` (`Rubric.md` wins on points and deductions). Question `n` is a string such as
-`"קבוצות 11"`; identical sections share one block with `count`; `general_rules` ≤ 10 short rows. Then
+`"קבוצות 11"`; identical sections share one block with `count`; `general_rules` ≤ 10 short rows, the first of them
+stating what רגיל and מחמיר are. **מחמיר = רגיל + 1 on every row, capped at the section** (Ori, 2026-10-29: a rubric
+whose two columns are identical is not deliverable; `validate_rubric.py` refuses it). Then
 `python "<skill>\scripts\make_pdf.py" "<work>\rubric.json"`. A validation error is a wrong number: fix and rerun.
 A TeX error is a bad LaTeX string: fix that string. One preview of pages 1–2 at 60 dpi, no more.
 

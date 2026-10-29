@@ -3,8 +3,8 @@
 Read all the agent files, then write the JSON section by section. Decide, do not average.
 
 **When the assignment has a `Rubric.md` (the grading bot's rubric), it wins:** section points are its §0 table, and every
-deduction in the error tables is its deduction (רגיל = exactly its value; מחמיר = the upper end of its range, or רגיל+1
-where it leaves discretion, otherwise = רגיל). An agent that disagrees with `Rubric.md` gets a ⚠ line in the report to
+deduction in the error tables is its deduction as רגיל; מחמיר = רגיל + 1 on every row (a range: its upper end + 1), capped
+at the section's points (Ori, 2026-10-29: the two columns must differ, מחמיר is the strict regime). An agent that disagrees with `Rubric.md` gets a ⚠ line in the report to
 the lecturer, not a change in the JSON. The rules below then apply to what `Rubric.md` does not settle: the steps, their
 split, the wording, the alternative methods, the order of the error rows.
 

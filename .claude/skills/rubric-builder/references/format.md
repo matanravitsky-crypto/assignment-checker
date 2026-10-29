@@ -45,4 +45,4 @@ Types: `הבנה` · `חוסר` · `חישוב` · `סימון` · `נימוק �
 
 Optional: `count` on a section — one block for several identical sections (`"letter": "א, ב, ד, ה", "points": 3, "count": 4`; the question's sum uses points × count). `alt_methods` — a list of `{"name": "לגרנז'", "steps": [{"desc": "...", "points": n}, ...]}`; each alternative's steps must sum to the section points (students who used it are graded by that split). `solution` (display math, one or two lines), `note` on a section (plain remark, e.g. "שגיאות קטנות בפירוק – הערה בלבד"), `american` (omit if none), `general_rules` (omit → defaults from `assets/default-rules.json`).
 
-`validate_rubric.py` rejects: section steps ≠ section points · alt_method steps ≠ section points · sections ≠ question points · unknown type · deduction > section points · מחמיר < רגיל · empty answer.
+`validate_rubric.py` rejects: section steps ≠ section points · alt_method steps ≠ section points · sections ≠ question points · unknown type · deduction > section points · מחמיר < רגיל · מחמיר = רגיל while רגיל < section points (מחמיר is the strict regime: רגיל + 1, capped) · empty answer.

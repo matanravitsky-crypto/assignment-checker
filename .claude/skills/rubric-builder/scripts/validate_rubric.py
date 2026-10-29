@@ -34,9 +34,13 @@ def main(path):
                     v = str(er.get(k, ""))
                     if not DED.match(v): e.append(f"{sid}: ניכוי לא תקין '{v}' ({er['desc'][:30]})")
                     elif ded_max(v) > s["points"]: e.append(f"{sid}: ניכוי {v} גדול מהסעיף ({s['points']})")
-                if DED.match(str(er.get("regular",""))) and DED.match(str(er.get("strict",""))) \
-                   and ded_max(str(er["strict"])) < ded_max(str(er["regular"])):
-                    e.append(f"{sid}: מחמיר קטן מרגיל ({er['desc'][:30]})")
+                if DED.match(str(er.get("regular",""))) and DED.match(str(er.get("strict",""))):
+                    reg, strict = ded_max(str(er["regular"])), ded_max(str(er["strict"]))
+                    if strict < reg:
+                        e.append(f"{sid}: מחמיר קטן מרגיל ({er['desc'][:30]})")
+                    # מחמיר הוא משטר בדיקה קשוח: תמיד נקודה יותר מרגיל, אלא אם רגיל כבר בגובה הסעיף (Ori, 2026-10-29)
+                    elif strict == reg and reg < s["points"]:
+                        e.append(f"{sid}: מחמיר שווה לרגיל ({er['desc'][:30]}); מחמיר = רגיל + 1 עד גובה הסעיף")
     for a in r.get("american", []):
         if not a.get("answer"): e.append(f"שאלה {a.get('n')}: אין תשובה")
     if e:
