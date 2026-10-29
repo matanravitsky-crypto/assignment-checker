@@ -1,6 +1,6 @@
 # Subagent prompts — six roles
 
-Pass each one: the prefix, its role block, the paths in `<work>\inputs\` (`.md`/`.txt` files to read as text, `sheet\page-NN.jpg` and `submissions\pages\<number>_pNN.jpg` to read as images), the fixed points per section, and the output path. Spawn roles 1–5 in one turn, in parallel; in this project the grader is K = ceil(Y/10) agents (`grader-1.md` … `grader-K.md`), ~10 submissions each balanced by page count, on `sonnet`; together they read every page of all Y submissions. Role 6 runs later (see SKILL.md step 4). SKILL.md step 2 says which inputs each role gets.
+Pass each one: the prefix, its role block, the paths in `<work>\inputs\` (`.md`/`.txt` files to read as text, `sheet\page-NN.jpg` and `submissions\pages\<number>_pNN.jpg` to read as images), the fixed points per section, and the output path. Role 0 runs first and alone when Solutions.md is missing. Spawn roles 1–5 in one turn, in parallel; in this project the grader is K = ceil(Y/10) agents (`grader-1.md` … `grader-K.md`), ~10 submissions each balanced by page count, on `sonnet`; together they read every page of all Y submissions. Role 6 runs later (see SKILL.md step 4). SKILL.md step 2 says which inputs each role gets.
 
 ## Prefix (all roles)
 ```
@@ -11,6 +11,17 @@ Use only Read and Glob, only inside the inputs folder. Write exactly one file wi
 Privacy: refer to a submission only by its 4-digit number. Never write a name, ID number or email, even if one appears on a page.
 Error types allowed (use these words exactly): הבנה, חוסר, חישוב, סימון, נימוק חסר.
 Be concrete: name the step, the wrong object, the wrong value. "טעות בחישוב" alone is useless; "סימן שגוי בנגזרת של $e^{-x}$" is useful.
+```
+
+## 0. Solutions.md — הפתרון המלא (max 150 lines; runs first, alone, only when פדגוגי has no Solutions.md)
+```
+Write <work>\inputs\Solutions.md: the full solution sheet in Hebrew (Markdown, math in $...$) for every assigned
+question and part, from the sheet pages (images) and the official solution pages (images). Copy the printed question
+text of each part first (every blank, template and set the student fills in: the rubric depends on the exact printed
+form), then the solution, step by step; where the official solution says "similarly", write the steps out. Recompute
+every number and add a one-line check (substitute back) wherever one exists. Box each final answer. State at the top
+which sheets and question numbers are assigned and what the course has taught so far (the topics of the sheets up to
+this one), and name the later topics that are not taught yet. No prose beyond what a TA needs.
 ```
 
 ## 1. solver.md — דרכי פתרון (max 50 lines)
