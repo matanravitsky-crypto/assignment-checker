@@ -181,15 +181,6 @@ def test_pull_time_left_follows_the_pace_of_the_phase():
     assert actions._eta("parts", 5, 15, 40, 4, waiting=60) == 90  # never below the 9 parts not started yet
 
 
-def test_pull_time_left_follows_the_pace_of_the_phase():
-    assert actions._eta("parts", 1, 15, 0, 0) == 14 * actions.PART_S  # no pace yet: about PART_S a part
-    assert actions._eta("parts", 5, 15, 40, 4) == 100  # 4 parts in 40 s → 10 more in 100 s
-    assert actions._eta("extract", 50, 100, 30, 50) == 30
-    assert actions._eta("extract", 0, 100, 0, 0) is None  # nothing to go by
-    assert actions._eta("parts", 3, 0, 20, 2) is None  # total not known
-    assert actions._eta("number", 10, 10, 5, 10) == 0
-
-
 @pytest.mark.parametrize("error, expect", [
     (FileNotFoundError("7-Zip is not installed (winget install 7zip.7zip)"), "7-Zip לא מותקן"),
     (FileNotFoundError(f"No ZIP ending in -{MID}.zip in Downloads"), "תיקיית ההורדות"),
