@@ -88,3 +88,12 @@ def test_numbers_being_graded_here_show_as_grading(root, monkeypatch):
     monkeypatch.setattr(actions, "_job", actions.GradeJob(COURSE, HW, ["0001", "0002"], running=True, done={"0001": "graded"}))
     subs = {s["id"]: s["status"] for s in hw(actions.state(root))["subs"]}
     assert subs["0002"] == "grading" and subs["0003"] == "pulled"
+
+
+def test_state_says_which_model_graded_each_submission(root):
+    from grading import grade as grade_mod
+    a = root / COURSE / HW
+    grade_mod.write_notes(a, "0001", {"model": "claude-opus-5-5", "via": "code", "effort": "high", "graded_at": "2026-10-23T14:02:00"})
+    subs = {s["id"]: s for s in hw(actions.state(root))["subs"]}
+    assert subs["0001"]["gradedWith"] == {"model": "claude-opus-5-5", "via": "code", "effort": "high", "at": "2026-10-23T14:02:00"}
+    assert subs["0002"]["gradedWith"] is None

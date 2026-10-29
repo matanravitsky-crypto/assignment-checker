@@ -1322,6 +1322,9 @@ def _note_fields(note: dict, res: dict) -> dict:
         "marks": [{k: m.get(k) for k in ("page", "x0", "y0", "x1", "y1", "text")} for m in note.get("marks") or [] if isinstance(m, dict)],
         "failed": failed, "reviewKind": "failed" if failed else (kind or ("other" if review else "")),
         "reviewedBy": (note.get("reviewed") or {}).get("by") or "",
+        # מה בדק את העבודה: המודל, דרך מה (api/code) ובאיזה מאמץ. בעבודה שנבדקה לפני שזה נרשם יש רק מודל, או כלום
+        "gradedWith": {"model": str(note.get("model") or ""), "via": str(note.get("via") or ""),
+                       "effort": str(note.get("effort") or ""), "at": str(note.get("graded_at") or "")} if note.get("model") else None,
         "missing": str(res.get("missing") or "") if review else "",
     }
 
