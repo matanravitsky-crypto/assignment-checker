@@ -14,16 +14,18 @@ compatibility: Claude Code on Windows (MiKTeX, installed by setup/) or macOS (Ho
 5. The committee convenes on the remarks only (Step 6), rebuilds, delivers again. Repeat 4–5 until the TA approves.
 
 **The format is fixed.** Never design layout: fill `rubric.json` (schema and example in `references/format.md`);
-`scripts/make_pdf.py` validates it, renders `assets/template.tex` and compiles with XeLaTeX.
+`scripts/make_pdf.py` validates it, renders `Rubric.md` (the bot) and `assets/template.tex`, and compiles the PDF with XeLaTeX.
 
 **Run autonomously.** Ask nothing except for a missing input or install consent. Don't read page images yourself,
 don't read the agents' files more than once, don't preview more than pages 1–2 of a build.
 
-**Two rubrics per assignment.** `Rubric.md` (the `rubric` skill) is the grading bot's; grading sends it to Claude
-with every submission. `Rubric.pdf` (this skill) is for people. **When `Rubric.md` exists it wins** on points per
-section and deductions; the committee fills what the printed format needs (steps a grader judges in 10 seconds,
-answers, error tables, alternative methods) and reports disagreements as ⚠ lines for the lecturer. Without it, points
-per question come from `Assignment details.json` (`rubric.questions[].points`, `max_grade`) or the sheet.
+**One source, two files (Ori, 2026-10-29).** `rubric.json` is the rubric. From it `make_pdf.py` renders both
+`Rubric.md`, the grading bot's rubric (grading sends every top-level `.md`/`.txt` of `פדגוגי` to Claude and takes the
+points per question from its first table; `scripts/render_md.py`), and `Rubric.pdf` for people. Nobody edits either by
+hand. A `Rubric.md` that the `rubric` skill's council wrote earlier is an INPUT: its points per section and deductions
+are taken as רגיל, and on delivery it is archived to `Working notes/Rubric v<N> (council).md` and replaced by the
+rendered one. Without one, points per question come from `Assignment details.json` (`rubric.questions[].points`,
+`max_grade`) or the sheet.
 
 ## Where things are
 
@@ -33,7 +35,7 @@ per question come from `Assignment details.json` (`rubric.questions[].points`, `
 | The full solution | `פדגוגי/Solutions.md` (made by the `rubric` skill) or `Official solution*.pdf`; the sheet `Exercise sheet*.pdf` |
 | Submissions | `1 - Submissions to grade/`, only through `python -m grading.sample` (page images by number, blank pages dropped); never the originals |
 | Work | `%USERPROFILE%\.rubric-work\<id>\` (macOS `~/.rubric-work/<id>/`): outside OneDrive and the repo, it holds student pages. `inputs/`, `agents/`, `rubric.json`, `rubric.tex`, `rubric.pdf`, `CHANGELOG.md` |
-| Output | `פדגוגי/Rubric.pdf`; `פדגוגי/Working notes/rubric.json` and `Rubric PDF changelog.md` so the loop can go on from any computer |
+| Output | `פדגוגי/Rubric.md` (the bot) and `פדגוגי/Rubric.pdf` (people), both from `rubric.json`; `פדגוגי/Working notes/rubric.json` and `Rubric PDF changelog.md` so the loop can go on from any computer |
 
 ## Step 0: environment (first run on a machine only)
 
@@ -87,9 +89,12 @@ rebuild. Once; never in later rounds.
 
 ## Step 5: deliver
 
-1. `<work>\rubric.pdf` → `<assignment>\פדגוגי\Rubric.pdf`; `rubric.json` → `פדגוגי\Working notes\rubric.json`;
-   `CHANGELOG.md` → `Working notes\Rubric PDF changelog.md`. Nothing else into `פדגוגי` (a top-level `.md` would go to
-   Claude with every submission). Send the PDF to the user (SendUserFile).
+1. If `פדגוגי\Rubric.md` exists and was not rendered by this skill (no `rubric.json` line at its top), move it to
+   `פדגוגי\Working notes\Rubric v<N> (council).md`. Then `<work>\Rubric.md` → `פדגוגי\Rubric.md`, `<work>\rubric.pdf` →
+   `פדגוגי\Rubric.pdf`, `rubric.json` → `פדגוגי\Working notes\rubric.json`, `CHANGELOG.md` → `Working notes\Rubric PDF
+   changelog.md`. Nothing else into `פדגוגי` (a top-level `.md` goes to Claude with every submission). Check once with
+   `python -c "from grading import grade; ...load_context(<assignment>)"` that every question's points are found.
+   Send the PDF to the user (SendUserFile).
 2. Keep `<work>` (the agents' files are what the loop runs on). Delete `<work>\inputs\submissions` only when the
    rubric is approved.
 3. Not synced on this computer? Ask once and upload the three files as the `rubric` skill's step 6 does.
