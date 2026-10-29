@@ -1,6 +1,6 @@
 ---
 name: rubric-builder
-description: Build the printed grading rubric (מחוון בדיקה) of one exercise sheet / assignment as a Hebrew PDF in the course's fixed format (points per step, error table with רגיל/מחמיר deductions, alternative solution methods), from the full solution and Y real submissions, by a committee of role agents, then loop on the user's remarks until approved. Use when someone says "מחוון לדף תרגילים X", "תמשוך Y עבודות ותבנה מחוון", "מחוון PDF", "מחוון מודפס", "ניכויים רגיל/מחמיר", or sends remarks on a Rubric.pdf ("לא טוב, תתקנו X"). It is the only rubric skill: it also writes Solutions.md, Solution methods.md, the findings and the manual review rules into פדגוגי.
+description: Build the printed grading rubric (מחוון בדיקה) of one exercise sheet / assignment as a Hebrew PDF in the course's fixed format (points per step, error table with רגיל/מחמיר deductions, alternative solution methods), from the full solution and Y real submissions, by a committee of role agents, then loop on the user's remarks until approved. Use whenever anyone says "מחוון" in any form: "מחוון לדף תרגילים X", "תבנה מחוון", "תמשוך Y עבודות ותבנה מחוון", "מחוון PDF", "מחוון מודפס", "טעויות נפוצות", "פתרונות אפשריים", "דרכי פתרון", "ניכויים רגיל/מחמיר", "rubric", or sends remarks on a Rubric.pdf ("לא טוב, תתקנו X"). It is the only rubric skill: it also writes Solutions.md, Solution methods.md, the findings and the manual review rules into פדגוגי.
 compatibility: Claude Code on Windows (MiKTeX, installed by setup/) or macOS (Homebrew).
 ---
 
