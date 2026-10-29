@@ -349,6 +349,8 @@ th.qcol { text-align: center; }
 .team-act .field { min-width: 220px; }
 .team-count { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; color: var(--ink-2); }
 .team-count input { width: 76px; padding: 6px 8px; border: 1px solid var(--rule-strong); border-radius: var(--r-sm); background: var(--sheet); color: var(--ink); font: inherit; text-align: center; }
+.pull-wrap { display: inline-flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.pull-limit input { width: 84px; }
 .team-count input:focus { outline: none; border-color: var(--blue); box-shadow: 0 0 0 3px var(--blue-soft); }
 /* "כמה לבדוק": חלונית קטנה שנפתחת מתחת לכפתור הבדיקה */
 .pick-wrap { position: relative; display: inline-flex; }

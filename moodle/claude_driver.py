@@ -160,14 +160,15 @@ The script:
 """
 
 
-def parts_script(mid: str, since_ms: int = 0) -> tuple[str, str]:
+def parts_script(mid: str, since_ms: int = 0, limit: int = 0) -> tuple[str, str]:
     """The parts script for this assignment, and its SHA-256: (text, hex). `since_ms`: only the students whose
-    submission changed since then (milliseconds since 1970; 0 = everyone).
+    submission changed since then (milliseconds since 1970; 0 = everyone). `limit`: at most that many students
+    (0 = no cap).
 
     Comment lines are left out (less for Claude to copy), line ends are LF. It goes into String.raw`...` in the
     page, so it may hold no backtick and no "${"."""
     lines = PARTS_SCRIPT.read_text(encoding="utf-8").replace("\r\n", "\n").replace("__ASSIGNMENT_ID__", mid) \
-        .replace("__SINCE__", str(max(0, int(since_ms)))).split("\n")
+        .replace("__SINCE__", str(max(0, int(since_ms)))).replace("__LIMIT__", str(max(0, int(limit)))).split("\n")
     text = "\n".join(line for line in lines if not line.lstrip().startswith("//")).strip()
     if "`" in text or "${" in text:
         raise ValueError("download_parts.js may not hold a backtick or ${: it goes into String.raw")
@@ -185,9 +186,10 @@ await (0, eval)(T);"""
 
 def download_prompt(info: dict) -> str:
     """DOWNLOAD_PROMPT for this assignment, with the checked parts script (its braces stay out of str.format).
-    `info["since"]`: download only what changed since then (milliseconds since 1970), see download_parts.js."""
+    `info["since"]`: download only what changed since then (milliseconds since 1970); `info["limit"]`: at most that many
+    students. See download_parts.js."""
     mid = assignment_id(info)
-    script, sha = parts_script(mid, int(info.get("since") or 0))
+    script, sha = parts_script(mid, int(info.get("since") or 0), int(info.get("limit") or 0))
     return DOWNLOAD_PROMPT.format(grading_url=GRADING_URL.format(id=mid), home_url=HOME_URL, assignment_id=mid,
                                   title=info.get("title") or info.get("name") or "",
                                   wait_minutes=round(DOWNLOAD_TIMEOUT_S / 60) - 2) + \

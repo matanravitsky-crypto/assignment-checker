@@ -301,6 +301,9 @@ class Handler(SimpleHTTPRequestHandler):
                 extra = {"moodle_id": str(body["moodleId"])} if url.path == "/api/pull" and body.get("moodleId") else {}
                 if url.path == "/api/pull" and body.get("full") is True:  # את כולם, לא רק מה שהשתנה מאז המשיכה הקודמת
                     extra["full"] = True
+                if url.path == "/api/pull" and not extra.get("full") and isinstance(body.get("limit"), int) \
+                        and not isinstance(body.get("limit"), bool) and body["limit"] > 0:
+                    extra["limit"] = body["limit"]  # רק כמה הגשות (למשל לניסוי), לא את כולן
                 return self._json(getattr(actions, run)(root, course, assignment, **extra))
             except actions.UserError as e:
                 return self._json({"error": str(e)}, HTTPStatus.UNPROCESSABLE_ENTITY)

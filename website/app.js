@@ -57,6 +57,7 @@
     instr: { grade: store.get("instr.grade", DEFAULT_GRADE_INSTR) },  // נשלחות ל-Claude עם כל בדיקה
     claude: store.get("claude", { model: "claude-opus-5-5", parallel: 5, sendSolution: true }),
     loading: false,
+    pullLimit: store.get("pullLimit", 0),  // כמה הגשות למשוך (0 = את כולן)
     teamCount: store.get("teamCount", 20),  // כמה עבודות פנויות לוקחים בלחיצה אחת
     gradePick: null,  // assignmentId שהחלונית "כמה לבדוק" של כפתור הבדיקה פתוחה בו
     gradeCount: store.get("gradeCount", 100),  // כמה עבודות בודקים בלחיצה אחת
@@ -338,7 +339,16 @@
       title="העבודות שכבר נשלחו ל-Claude יסתיימו ויישמרו. השאר יחכו ללחיצה הבאה על 'בדוק'">${run.stopping ? ICON.spin : ICON.stop}${run.stopping ? "עוצר…" : "עצור בדיקה"}</button>` : "";
     const btn = `<button class="btn ${primary ? "primary" : "secondary"} ${big ? "lg" : ""}" data-run="${stage}" ${disabled ? "disabled" : ""}${why}
       ${stage === "grade" ? `aria-expanded="${state.gradePick === A.id}"` : ""}>${icon}${text}</button>${stopBtn}`;
+    if (stage === "pull" && LOCAL.on && !busy && !(owner && owner.who !== myName())) return `<span class="pull-wrap">${btn}${pullLimitHTML()}</span>`;
     return stage === "grade" ? `<span class="pick-wrap">${btn}${disabled ? "" : gradePickHTML()}</span>` : btn;
+  }
+
+  // כמה הגשות למשוך: ריק = את כולן. למשל 30 לניסוי, ומשיכה בלי מספר אחר כך מביאה את השאר (המספרים נשמרים)
+  function pullLimitHTML() {
+    const A = cur();
+    const value = state.pullLimit > 0 ? state.pullLimit : "";
+    return `<label class="team-count pull-limit" title="המערכת מורידה את ההגשות הראשונות בטבלת ההגשות במודל. משיכה בלי מספר מביאה אחר כך את כל השאר.">
+      כמה הגשות? <input type="number" id="pull-limit" data-pull-limit="${esc(A.id)}" min="1" step="1" inputmode="numeric" value="${value}" placeholder="הכול"></label>`;
   }
 
   function stageState(stage) {
@@ -1246,7 +1256,7 @@
             <li><b>בלילה זה קורה לבד.</b> מועד ההגשה נקרא ממודל בכל משיכה. בלילה שאחריו (00:05), ובכל לילה בשבוע שאחריו (הגשות מאוחרות והארכות), המחשב של מי שלקח את "משיכה" מושך בעצמו: פותח את כרום אם הוא סגור, ומנסה שוב אחרי חצי שעה אם מודל לא ענה. רק המחשב שלו, כדי ששני מחשבים לא ימשכו יחד.</li>
             <li><b>רק ממודל האמיתי.</b> לפני כל משיכה המערכת בודקת שהתוסף של Claude בכרום מחובר ושכרום מחובר למודל. אם משהו לא מחובר, לא מושכים כלום ומקבלים הודעה מה לתקן. ZIP שכבר נמצא בתיקיית ההורדות לא נקלט: כל משיכה מורידה ממודל מחדש.</li>
             <li><b>שומרת אותו רק במחשב הזה</b>, בתיקייה <code dir="ltr">Moodle originals/Backup - Moodle downloads</code>, ולא ב-OneDrive (יש בו שמות, וכמה GB בכל משיכה). כל הורדה נשמרת, כך שהורדה מאוחרת לא מוחקת את הקודמת. בתיקיית המטלה נרשמת שורה ב-<code dir="ltr">Pull log.csv</code>: מתי, מי וכמה.</li>
-            <li><b>מושכים רק ממחשב שהתיקייה המשותפת מסונכרנת בו</b> (YallaLinearit ב-OneDrive). ממחשב עם עותק מקומי המשיכה נעצרת, כי טבלת המפתח שלו לא רואה מספרים שמחשב אחר כבר נתן.</li>
+            <li><b>אפשר למשוך רק חלק.</b> בשדה "כמה הגשות?" ליד הכפתור כותבים מספר (למשל 30, לניסוי): נמשכות ההגשות הראשונות בטבלת ההגשות במודל. משיכה בלי מספר מביאה אחר כך את כל השאר, ומי שכבר נמשך שומר על המספר שלו.</li>
             <li><b>מחלצת אותו עם 7-Zip במחשב שלך בלבד.</b> התיקיות עם שמות הסטודנטים לא עולות ל-OneDrive.</li>
             <li><b>נותנת לכל סטודנט מספר קבוע</b> (0001, 0002…) ומעתיקה את הקבצים ל-"1 - Submissions to grade". מי שכבר נמשך שומר על המספר שלו, ומי שהגיש מאז מקבל את המספר הפנוי הבא.</li>
             <li><b>מעדכנת את טבלת המפתח</b> (מספר ← מזהה המשתתף במודל). זה המקום היחיד שמקשר מספר לסטודנט, והוא נשאר בתיקיית המטלה.</li>
@@ -2441,6 +2451,7 @@
       if (go) go.innerHTML = `${ICON.grade}בדוק ${Math.min(state.gradeCount, Number(t.max) || state.gradeCount)}`;
       return;
     }
+    if (t.matches("[data-pull-limit]")) { state.pullLimit = Math.max(0, parseInt(t.value, 10) || 0); store.set("pullLimit", state.pullLimit); return; }
     if (t.matches("[data-team-count]")) { state.teamCount = Math.max(1, parseInt(t.value, 10) || 1); store.set("teamCount", state.teamCount); return; }
     if (t.dataset.instr) {
       const st = t.dataset.instr;
@@ -2603,7 +2614,7 @@
     render();
     // השרת עונה רק בסוף המשיכה (הורדה של ZIP גדול: כמה דקות). בינתיים שואלים אותו כל שנייה כמה התקדמה
     let settled = false;
-    const post = api("api/pull", { method: "POST", body: JSON.stringify({ course: A.courseFolder, assignment: A.folder, ...(moodleId && { moodleId }), ...(full && { full: true }) }) })
+    const post = api("api/pull", { method: "POST", body: JSON.stringify({ course: A.courseFolder, assignment: A.folder, ...(moodleId && { moodleId }), ...(full && { full: true }), ...(!full && state.pullLimit > 0 && { limit: state.pullLimit }) }) })
       .finally(() => { settled = true; });
     followPull(A, run, () => settled);
     try {
