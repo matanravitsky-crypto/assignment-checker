@@ -1,6 +1,6 @@
 ---
 name: rubric-builder
-description: Build the printed grading rubric (מחוון בדיקה) of one exercise sheet / assignment as a Hebrew PDF in the course's fixed format (points per step, error table with רגיל/מחמיר deductions, alternative solution methods), from the full solution and Y real submissions, by a committee of role agents, then loop on the user's remarks until approved. Use when someone says "מחוון לדף תרגילים X", "תמשוך Y עבודות ותבנה מחוון", "מחוון PDF", "מחוון מודפס", "ניכויים רגיל/מחמיר", or sends remarks on a Rubric.pdf ("לא טוב, תתקנו X"). For the Markdown rubric that the grading bot reads (Rubric.md in פדגוגי) use the `rubric` skill instead.
+description: Build the printed grading rubric (מחוון בדיקה) of one exercise sheet / assignment as a Hebrew PDF in the course's fixed format (points per step, error table with רגיל/מחמיר deductions, alternative solution methods), from the full solution and Y real submissions, by a committee of role agents, then loop on the user's remarks until approved. Use when someone says "מחוון לדף תרגילים X", "תמשוך Y עבודות ותבנה מחוון", "מחוון PDF", "מחוון מודפס", "ניכויים רגיל/מחמיר", or sends remarks on a Rubric.pdf ("לא טוב, תתקנו X"). It is the only rubric skill: it also writes Solutions.md, Solution methods.md, the findings and the manual review rules into פדגוגי.
 compatibility: Claude Code on Windows (MiKTeX, installed by setup/) or macOS (Homebrew).
 ---
 
@@ -22,9 +22,9 @@ don't read the agents' files more than once, don't preview more than pages 1–2
 **One source, two files (Ori, 2026-10-29).** `rubric.json` is the rubric. From it `make_pdf.py` renders both
 `Rubric.md`, the grading bot's rubric (grading sends every top-level `.md`/`.txt` of `פדגוגי` to Claude and takes the
 points per question from its first table; `scripts/render_md.py`), and `Rubric.pdf` for people. Nobody edits either by
-hand. A `Rubric.md` that the `rubric` skill's council wrote earlier is an INPUT: its points per section and deductions
-are taken as רגיל, and on delivery it is archived to `Working notes/Rubric v<N> (council).md` and replaced by the
-rendered one. Without one, points per question come from `Assignment details.json` (`rubric.questions[].points`,
+hand. A `Rubric.md` from the retired `rubric` skill (not rendered from `rubric.json`) is an INPUT: its points per section
+and deductions are taken as רגיל, and on delivery it is archived to `Working notes/Rubric v<N> (council).md` and
+replaced by the rendered one. Otherwise points per question come from `Assignment details.json` (`rubric.questions[].points`,
 `max_grade`) or the sheet.
 
 ## Where things are
@@ -32,10 +32,10 @@ rendered one. Without one, points per question come from `Assignment details.jso
 | What | Where |
 |---|---|
 | The assignment | `paths.assignment_dir(<moodle id>)` in the data folder. "דף תרגילים X" → the assignment whose `questions` in `Assignment details.json` name that sheet; if two do, ask |
-| The full solution | `פדגוגי/Solutions.md` (made by the `rubric` skill) or `Official solution*.pdf`; the sheet `Exercise sheet*.pdf` |
+| The full solution | `פדגוגי/Official solution*.pdf` (cut to the assigned questions) and the sheet `Exercise sheet*.pdf`; `Solutions.md` if an earlier run wrote it |
 | Submissions | `1 - Submissions to grade/`, only through `python -m grading.sample` (page images by number, blank pages dropped); never the originals |
 | Work | `%USERPROFILE%\.rubric-work\<id>\` (macOS `~/.rubric-work/<id>/`): outside OneDrive and the repo, it holds student pages. `inputs/`, `agents/`, `rubric.json`, `rubric.tex`, `rubric.pdf`, `CHANGELOG.md` |
-| Output | `פדגוגי/Rubric.md` (the bot) and `פדגוגי/Rubric.pdf` (people), both from `rubric.json`; `פדגוגי/Working notes/rubric.json` and `Rubric PDF changelog.md` so the loop can go on from any computer |
+| Output | everything the bot and the people need, all in `פדגוגי/`: `Rubric.md` (the bot) and `Rubric.pdf` (people), both from `rubric.json`; `Solutions.md`; `Solution methods.md`; `Manual review rules.md`; in `Working notes/`: `rubric.json`, `findings.md` (the errors seen in the Y submissions, with counts), the agents' reports, `Rubric PDF changelog.md` |
 
 ## Step 0: environment (first run on a machine only)
 
@@ -47,10 +47,11 @@ then the check again until ALL CHECKS PASSED. Perl (latexmk) and OCR are not nee
 ## Step 1: fetch the solution and Y submissions (minimum tokens)
 
 1. `<work>` = `%USERPROFILE%\.rubric-work\<id>`; create `inputs\` and `agents\`.
-2. Copy into `<work>\inputs\`: `פדגוגי\Solutions.md`, `Solution methods.md`, `Rubric.md`, `Working notes\findings.md` (those that exist).
+2. Copy into `<work>\inputs\` whatever exists in `פדגוגי`: `Solutions.md`, `Solution methods.md`, `Rubric.md` (council), `Working notes\findings.md`.
+   Without `Solutions.md`, the official solution PDF goes in as page images (next step) and role 0 writes `Solutions.md` first.
 3. The sheet: `python "<skill>\scripts\prep_inputs.py" "<פדגוגי>\Exercise sheet*.pdf" --images --out "<work>\inputs"`, rename the
    folder to `sheet\`. Always `--images` for Hebrew PDFs (their text extracts garbled). The official solution PDF the
-   same way, only when there is no `Solutions.md`.
+   same way (folder `solution\`), when there is no `Solutions.md`.
 4. `python -m grading.sample <id> --out "<work>\inputs\submissions" --n <Y> --fresh 6 --max-side 1000 --crop` (repo
    root). **Y is the number the TA said. Never guess one; without it, ask.** `--crop` cuts the white margins of each
    scan (only the rectangle with ink, `sample.ink_bbox`) and `--max-side 1000` keeps the page at 1000 px: measured on
@@ -61,6 +62,10 @@ then the check again until ALL CHECKS PASSED. Perl (latexmk) and OCR are not nee
    sheet or `""`. Points per section from `Rubric.md` §0, else from the details or the sheet.
 
 ## Step 2: the committee, one turn, in parallel
+
+**Role 0 first, alone, when `Solutions.md` is missing:** `solutions` (`references/roles.md` §0) reads the sheet and the
+official solution pages and writes `<work>\inputs\Solutions.md`: the full solution of every assigned question and part in
+Hebrew Markdown, each final answer boxed, numbers recomputed. Everyone else reads that file, never the solution images.
 
 Prompts: `references/roles.md`. Every prompt gets: course and assigned questions, the fixed points per section, the
 input paths, the privacy line, "use only Read/Glob on the inputs folder; write your file with Write". One file each in
@@ -78,7 +83,11 @@ They do not see each other.
 `"קבוצות 11"`; identical sections share one block with `count`; `general_rules` ≤ 10 short rows, the first of them
 stating what רגיל and מחמיר are. **מחמיר = רגיל + 1 on every row, capped at the section** (Ori, 2026-10-29: a rubric
 whose two columns are identical is not deliverable; `validate_rubric.py` refuses it). Then
-`python "<skill>\scripts\make_pdf.py" "<work>\rubric.json"`. A validation error is a wrong number: fix and rerun.
+The merge agent also writes `<work>\agents\errors-summary.md` (the findings: per question the most common errors with
+counts out of Y, missing or unreadable submissions by number, rows added, open questions for the lecturer) and
+`<work>\Solution methods.md` (from `solver.md`: the accepted methods per section, what is outside the course scope, in
+Hebrew, for people and for the bot). Then
+`python "<skill>\scripts\make_pdf.py" "<work>\rubric.json"` (validate → `Rubric.md` → TeX → PDF). A validation error is a wrong number: fix and rerun.
 A TeX error is a bad LaTeX string: fix that string. One preview of pages 1–2 at 60 dpi, no more.
 
 ## Step 4: a new grader tries it (first delivery only)
@@ -90,14 +99,22 @@ rebuild. Once; never in later rounds.
 ## Step 5: deliver
 
 1. If `פדגוגי\Rubric.md` exists and was not rendered by this skill (no `rubric.json` line at its top), move it to
-   `פדגוגי\Working notes\Rubric v<N> (council).md`. Then `<work>\Rubric.md` → `פדגוגי\Rubric.md`, `<work>\rubric.pdf` →
-   `פדגוגי\Rubric.pdf`, `rubric.json` → `פדגוגי\Working notes\rubric.json`, `CHANGELOG.md` → `Working notes\Rubric PDF
-   changelog.md`. Nothing else into `פדגוגי` (a top-level `.md` goes to Claude with every submission). Check once with
+   `פדגוגי\Working notes\Rubric v<N> (council).md`. Then into `פדגוגי\`: `Rubric.md`, `Rubric.pdf`, `Solutions.md`
+   (when role 0 wrote it), `Solution methods.md`, and `Manual review rules.md` from `assets\manual-review-rules.md` when
+   missing. Into `פדגוגי\Working notes\`: `rubric.json`, `findings.md` (= `errors-summary.md`), `CHANGELOG.md` as
+   `Rubric PDF changelog.md`, and the agents' reports in `Agents\` (numbers only). Nothing else on top of `פדגוגי`: every
+   top-level `.md` goes to Claude with every submission. Check once with
    `python -c "from grading import grade; ...load_context(<assignment>)"` that every question's points are found.
    Send the PDF to the user (SendUserFile).
 2. Keep `<work>` (the agents' files are what the loop runs on). Delete `<work>\inputs\submissions` only when the
    rubric is approved.
-3. Not synced on this computer? Ask once and upload the three files as the `rubric` skill's step 6 does.
+3. Not synced on this computer (`dashboard/shared_folder.py` doesn't find the shared folder)? Ask once; on yes, upload
+   the files to `<course>/<assignment>/פדגוגי` in the lecturer's OneDrive with Claude in Chrome: open the folder (Create or
+   upload → Folder for `פדגוגי` / `Working notes` if missing), patch the page so the file input doesn't open the Windows
+   dialog (`HTMLInputElement.prototype.click` returns early for `type === 'file'`, appending a detached input to the body),
+   Create or upload → Files upload, `find` the `input[type=file]`, `file_upload` the files (≤ 10 MB a call, copies in the
+   scratchpad if the data folder isn't readable), "Replace all" on a name clash, restore `click`, close the tab. Never
+   upload pages, ZIPs or the key table.
 4. Report, ≤ 10 lines in Hebrew: total, points per question, the 3 heaviest deductions, the most common errors in the
    Y submissions with counts, the בודק חדש's line, every ⚠ disagreement with `Rubric.md`, where the files are.
 
@@ -126,6 +143,8 @@ A remark that contradicts `Rubric.md` goes into the PDF only after the user says
 `Rubric.md` still has the old rule.
 
 ## Who is who, in one line each
+
+- **solutions** (role 0): writes `Solutions.md` from the sheet and the official solution pages when the folder has none.
 
 - **solver / student / lecturer / ta**: four views of the sheet and the solution (methods, traps, what matters,
   steps and deductions). They never see submissions.
