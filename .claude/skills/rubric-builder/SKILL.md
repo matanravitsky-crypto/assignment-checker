@@ -169,6 +169,28 @@ rubric alone and lists every guess. Apply the fixes that are clearly right, rebu
 4. Report, ≤ 10 lines in Hebrew: total, points per question, the 3 heaviest deductions, the most common errors in the
    Y submissions with counts, the בודק חדש's line, every ⚠ disagreement with `Rubric.md`, where the files are.
 
+## Step 7: the calibration round, after a real grading run (Ori, 2026-10-30)
+
+The committee saw Y submissions once. After the bot has graded the assignment (all of it, or at least ~50 works),
+its reports say what the rubric missed. Run this once per assignment after the first real grading run, and again
+when the TA asks ("כיול", "תלמד מהבדיקה"):
+1. `python "<skill>\scripts\calibrate.py" <id> "<work>\rubric.json" --since <date of the rubric> --out "<work>\agents\calibration-input.md"`
+   (repo root). It reads `Grading notes\*.json` (numbers only) and writes: per question the unsure share and how
+   many described mistakes match no error row; the uncovered mistakes grouped with counts; the rows used most; the
+   rows never used; every review reason. Without `--since` it also counts reports graded with an older rubric: their
+   wording differs, so most of them look "uncovered"; use that view only as a list of real error patterns.
+2. ONE committee agent on `sonnet`, as in a substantive remark (Step 6): the calibration input + `rubric.json`
+   + the paragraphs of `grader-*.md` and `findings.md` for the questions with most uncovered mistakes. It answers in
+   the five voices, per question: which uncovered mistakes are a NEW row (desc, type, רגיל, מחמיר = רגיל + 1), which
+   are an EXISTING row that needs clearer wording (quote both), which stay out (a one-off, or already a general
+   rule), and which "unsure" clusters need a sentence in `note`. Points per section never change in a calibration
+   round; a proposal to change points is reported to the TA as a question, not applied. ≤ 40 lines →
+   `<work>\agents\calibration-N.md` (≈ 15–25K: the rubric is the big part).
+3. Apply the new rows and the rewordings to `rubric.json`, `make_pdf.py`, deliver as in Step 5 (its pre-checks
+   included: never swap the rubric while grading runs), one line in `CHANGELOG.md` ("כיול מ-<N> דוחות: +<rows>
+   שורות, <k> ניסוחים"), and report in ≤ 8 lines: what was added, what the bot was unsure about and what now tells
+   it what to do, what was left for the TA to decide. The loop (Step 6) continues from there.
+
 ## Step 6: the loop. It never ends on its own.
 
 Only the TA ends it, with "מאושר" / "מספיק" / "סגור". Every other message after a delivery is a round of remarks,
