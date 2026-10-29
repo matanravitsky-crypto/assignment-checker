@@ -7,7 +7,7 @@ compatibility: Claude Code on Windows (MiKTeX, installed by setup/) or macOS (Ho
 # Rubric Builder: the printed מחוון, built by a committee from Y real submissions
 
 **The flow, and nothing else (Ori, 2026-10-29):**
-1. A TA says: "מחוון לדף תרגילים X, תמשוך Y עבודות" (Y defaults to 50).
+1. A TA says: "מחוון לדף תרגילים X, תמשוך Y עבודות" (Y is the TA's number; never guessed, see Step 1).
 2. The skill fetches the full solution and Y submissions, as cheaply as possible (Step 1).
 3. The committee (Step 2) sees ALL Y submissions, builds the rubric, and delivers `Rubric.pdf` (Steps 3–5).
 4. The TA sends remarks ("לא טוב", "ב-11ג ההורדה גבוהה מדי", "חסרה טעות X").
@@ -36,6 +36,28 @@ replaced by the rendered one. Otherwise points per question come from `Assignmen
 | Submissions | `1 - Submissions to grade/`, only through `python -m grading.sample` (page images by number, blank pages dropped); never the originals |
 | Work | `%USERPROFILE%\.rubric-work\<id>\` (macOS `~/.rubric-work/<id>/`): outside OneDrive and the repo, it holds student pages. `inputs/`, `agents/`, `rubric.json`, `rubric.tex`, `rubric.pdf`, `CHANGELOG.md` |
 | Output | everything the bot and the people need, all in `פדגוגי/`: `Rubric.md` (the bot) and `Rubric.pdf` (people), both from `rubric.json`; `Solutions.md`; `Solution methods.md`; `Manual review rules.md`; in `Working notes/`: `rubric.json`, `findings.md` (the errors seen in the Y submissions, with counts), the agents' reports, `Rubric PDF changelog.md` |
+
+## When nothing is there for sheet X (Ori, 2026-10-29)
+
+Never create an assignment folder, never pick another sheet, never pull or sample on your own. In order:
+
+1. **No assignment names sheet X** (no `Assignment details.json` whose `questions` name it, in either course): look in
+   Moodle, read-only, in the user's logged-in Chrome. The course page (`__ecs.course(<course_id>)` from the
+   `start-assignment` skill's `scripts/moodle_course.js`; Linear Algebra 67024, Discrete Mathematics 67035) lists the
+   assignments; an assignment's page (`__ecs.assign(<id>)`) says which sheet and questions. Without that skill in this
+   checkout, open the course page with Claude in Chrome and read the list the same way. Never type or click in Moodle.
+   - **On Moodle but not in the folder:** say so (title, due, questions), run the `start-assignment` skill for that
+     הגשה (details, sheet, official solution, manual review rules), then say that the submissions still have to be
+     pulled (the site's pull button, by the assignment's pull owner) and stop. The rubric run starts again once
+     `1 - Submissions to grade` has them.
+   - **Not on Moodle either:** say "כנראה שהמטלה על דף X עוד לא נפתחה במודל", with what was checked (the course,
+     the assignments listed there), and stop. Nothing is written anywhere.
+   - **Chrome or Moodle not reachable:** say which, and stop.
+2. **The folder exists but `פדגוגי` has no sheet or no official solution:** ask for them (or for `Solutions.md`); role 0
+   writes solutions only from the sheet and the official solution, never from memory. `start-assignment`'s `materials`
+   step brings both.
+3. **The sample is empty** (`grading.sample` found no submissions): the pull hasn't happened. Say so and stop; never pull.
+   **Fewer than Y:** say how many there are and ask whether to go on with them; Y is the user's call.
 
 ## Step 0: environment (first run on a machine only)
 
