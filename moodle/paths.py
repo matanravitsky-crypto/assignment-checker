@@ -63,8 +63,8 @@ BACKUP = "Backup - Moodle downloads"
 # In the assignment folder: one row per pull (when, who, how many), so every computer sees when it was pulled
 PULL_LOG = "Pull log.csv"
 # The shared folder is the course's OneDrive folder ("YallaLinearit", or "<owner> - YallaLinearit" as OneDrive names
-# it): pulls write the one key there. A copy outside it (a local folder) must not pull: its key would not see the
-# numbers another computer gave, and two students would get one number
+# it). in_shared_folder says whether a folder is inside it; since 2026-10-29 a local copy may pull too (the pull
+# owner's key is the one key), so nothing refuses a pull by it any more
 SHARED_COURSE_FOLDER = "YallaLinearit"
 PULL_LOCK = "Pull in progress.txt"      # in the assignment folder while a pull runs (see lock.py)
 UPLOAD_LOCK = "Upload in progress.txt"  # in the assignment folder while an upload to Moodle runs

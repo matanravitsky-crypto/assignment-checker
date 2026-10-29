@@ -82,18 +82,20 @@ The **key** that links a number back to a student is the Moodle *participant id*
 `anonymize.prepare` reads the existing key, and students who submitted since then get the next free numbers.
 Never delete or rebuild the key table of an assignment that is being graded.
 
-## Pull only where the shared folder is synced, one key
+## One puller per assignment, one key
 
-Ori's decision (2026-10-23): pulls happen only on a computer where the course's OneDrive folder ("YallaLinearit", synced
-through "Add shortcut to My files") is the data folder, like Yossi's or Matan's. There, anyone on the team can press
-"Pull submissions" (or run `python -m moodle ingest <id>`). A local copy (Ori's laptop: `~/Exercise Checking System`,
-uploaded to OneDrive by the browser sync) does not pull: its key would not see the numbers another computer gave, and
-its newer key would then be uploaded over the shared one, with two students on one number. `paths.in_shared_folder` is
-the rule (a folder named YallaLinearit, or "<owner> - YallaLinearit", above the data folder); `actions.pull` refuses
-before Chrome opens and before anything is created (`NOT_SHARED`), and so does `moodle ingest`. There is **one** key table per assignment, in the shared folder, and
-`anonymize.prepare` reads it before numbering, so every student keeps their number no matter who pulls. What can still
-break it is two pulls of the same assignment at once, before OneDrive synced the key between them.
-So `dashboard/actions.py` guards the dashboard's pull:
+Ori is the one who pulls (his decision, 2026-10-29), for any assignment he likes, from his own laptop, where the data
+folder is a local copy (`~/Exercise Checking System`, `ASSIGNMENT_CHECKER_ROOT` in `.env`) that he uploads to the
+lecturer's OneDrive with the browser sync (`onedrive/sync.js`). His university account has no OneDrive of its own
+("Add shortcut to My files" fails with "Couldn't update", `/my` says the user does not exist), so his laptop cannot
+sync YallaLinearit; that is why the earlier rule (2026-10-23: pull only where the shared folder is synced,
+`NOT_SHARED`) was dropped the same day he asked. `paths.in_shared_folder` still tells a synced folder from a local
+copy, but nothing refuses a pull by it: not the site's button, not the night pull, not `moodle ingest`.
+The thing that keeps numbers right is **one key table per assignment**, the one in the folder the puller pulls into:
+`anonymize.prepare` reads it before numbering, so every student keeps their number on every later pull. What would
+break it is a second computer pulling the same assignment into its own copy, so one person owns each assignment's
+pull (`claims.task_owners`, "אצל <name>" on the site), and that person uploads the key with the rest.
+`dashboard/actions.py` also guards the dashboard's pull:
 - **Lock:** while a pull runs, the assignment folder has `Pull in progress.txt` (who and since when). Another
   pull of that assignment waits until it's gone (a lock older than 30 minutes counts as stuck and is ignored).
   The lock text is `<user> (<PC>) pid=<pid>` (`moodle/lock.py`): a fresh lock of the same person on the same PC
