@@ -43,13 +43,14 @@ window.__ecs = (() => {
   async function assign(id) {
     const d = await parse("/moodle/mod/assign/view.php?id=" + id);
     if (loggedOut(d)) return "NOT LOGGED IN";
-    const main = d.querySelector("[role=main]") || d.body;
-    const title = text(main.querySelector("h1, h2") || d.querySelector("h1"));
-    const intro = text(main.querySelector(".activity-description, #intro, .box.generalbox, .description"));
-    const dates = [...main.querySelectorAll('[data-region="activity-dates"] div, .activity-dates div')].map(text);
-    for (const line of text(main).split("\n"))
-      if (/^(מסתיים|נפתח|תאריך הגשה|Due|Opened|Closes)\b/.test(line) && !dates.includes(line)) dates.push(line);
-    return JSON.stringify({ id: String(id), title, dates, intro });
+    // A TA sees the grading summary in [role=main]; the description and the dates sit in the page header, so look
+    // in the whole document (checked on BGU Moodle, 2026-10-29)
+    const title = text(d.querySelector("h1") || d.querySelector(".page-header-headings"));
+    const intro = text(d.querySelector(".activity-description, #intro, .box.generalbox, .description"));
+    const dates = [...d.querySelectorAll('[data-region="activity-dates"] div, .activity-dates div')].map(text).filter(Boolean);
+    for (const line of text(d.body).split("\n"))
+      if (/^(מסתיים|נפתח|תאריך הגשה|Due|Opened|Closes)\b/.test(line.trim()) && !dates.includes(line.trim())) dates.push(line.trim());
+    return JSON.stringify({ id: String(id), title, dates: [...new Set(dates)], intro });
   }
 
   async function resource(id) {

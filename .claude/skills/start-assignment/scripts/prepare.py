@@ -205,18 +205,25 @@ def write_details(course: str, slot: int, new: dict) -> Path:
 
 
 def record_page(course: str, info: dict, page_text: str) -> bool:
-    """Keep the assignment's Moodle page in the course's "Moodle - assignments, quizzes and pages.md" (once per id)."""
+    """Keep the assignment's Moodle page in the course's "Moodle - assignments, quizzes and pages.md": one section per
+    Moodle id, replaced when the page changed (a question added, a date moved) and left alone when it didn't."""
     folder = course_dir(course) / COURSE_MATERIAL
     folder.mkdir(exist_ok=True)
     path = folder / MOODLE_PAGES
     marker = f"מזהה במודל: {info['id']}"
     old = path.read_text(encoding="utf-8") if path.is_file() else "# מטלות, מבדקים ודפי הנחיות במודל\n"
-    if marker in old:
-        return False
-    section = (f"\n---\n\n## {info.get('title') or info['name']}\n\nסוג: assign, {marker}\n"
+    section = (f"## {info.get('title') or info['name']}\n\nסוג: assign, {marker}\n"
                f"https://moodle.bgu.ac.il/moodle/mod/assign/view.php?id={info['id']}\n"
                f"הועתק ממודל ב-{datetime.now():%d/%m/%Y}.\n\n{page_text.strip()}\n")
-    path.write_text(old.rstrip("\n") + "\n" + section, encoding="utf-8")
+    parts = re.split(r"(?m)^---\s*$", old)
+    for i, part in enumerate(parts):
+        if marker in part:
+            if part.strip().split("\n\n", 2)[-1].strip() == page_text.strip():  # heading, source lines, then the text
+                return False
+            parts[i] = "\n\n" + section + "\n"
+            path.write_text("---".join(parts), encoding="utf-8")
+            return True
+    path.write_text(old.rstrip("\n") + "\n\n---\n\n" + section, encoding="utf-8")
     return True
 
 

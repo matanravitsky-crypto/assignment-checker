@@ -119,6 +119,10 @@ def test_details_creates_the_slot_folder_and_records_the_page(data):
     again = json.loads((folder / "Assignment details.json").read_text(encoding="utf-8"))
     assert again["max_grade"] == 100 and again["notes"] == "typed by hand" and again["due"].startswith("2026-11-03")
     assert pages == (data / COURSE / "Course material" / "Moodle - assignments, quizzes and pages.md").read_text(encoding="utf-8")
+    # a page that changed (a question added) replaces its section: one section per id, the new text in it
+    prepare.write_details(COURSE, 1, dict(MOODLE_PAGE, page_text="הגשה 1: שאלות 8, 11"))
+    pages = (data / COURSE / "Course material" / "Moodle - assignments, quizzes and pages.md").read_text(encoding="utf-8")
+    assert pages.count("מזהה במודל: 3438638") == 1 and "שאלות 8, 11" in pages and "יש להגיש" not in pages
 
 
 def test_details_keeps_an_existing_named_folder(data):
