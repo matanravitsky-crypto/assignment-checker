@@ -63,6 +63,10 @@ GRADE_COLUMNS = grades.COLUMNS  # מה כל עמודה אומרת: moodle/grades
 
 DEFAULT_MODEL = "claude-opus-5-5"
 EFFORT = "high"
+# דרך Claude Code (המנוי): מודל וחשיבה זולים יותר, כי כל הגשה עולה הרבה שם (ראו claude_cli.py)
+# ברירת המחדל: Sonnet בחשיבה בינונית (כ-0.04 עד 0.16 דולר להגשה במקום 1.1 ב-Opus), לפי החלטת אורי ב-2026-10-23. אין עדיין מדגם עם ציוני מתרגלים שמשווה את האיכות; GRADING_CLI_MODEL / GRADING_CLI_EFFORT מחזירים ל-Opus
+CLI_MODEL = os.environ.get("GRADING_CLI_MODEL") or "claude-sonnet-5-5"
+CLI_EFFORT = os.environ.get("GRADING_CLI_EFFORT") or "medium"
 MAX_TOKENS = 32000
 # כמה עבודות נשלחות ל-Claude במקביל
 DEFAULT_PARALLEL = 4
@@ -396,8 +400,14 @@ def claude_ask() -> Ask:
         from . import claude_cli
         if not claude_cli.available():
             raise NoApiKey()
-        return claude_cli.cli_ask(claude_driver.find_claude(), SCHEMA, EFFORT, error=GradingError,
-                                  not_logged_in=NoApiKey)
+        cli = claude_cli.cli_ask(claude_driver.find_claude(), SCHEMA, CLI_EFFORT, error=GradingError,
+                                 not_logged_in=NoApiKey)
+
+        def ask_cli(req: dict) -> str:
+            # דרך המנוי הבדיקה רצה ב-Sonnet (כ-0.04 דולר להגשה, לעומת 1.1 ב-Opus). מודל אחר שנבחר במפורש נשאר
+            return cli({**req, "model": CLI_MODEL if req["model"] == DEFAULT_MODEL else req["model"]})
+
+        return ask_cli
     import anthropic
 
     client = anthropic.Anthropic(api_key=key, max_retries=4)
