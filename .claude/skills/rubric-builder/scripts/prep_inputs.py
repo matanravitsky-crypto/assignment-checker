@@ -36,7 +36,14 @@ def handle(path, out, images_only=False):
     if ext == "docx":
         m = ensure("mammoth", "mammoth")
         open(txt_path, "w", encoding="utf-8").write(m.convert_to_markdown(open(path, "rb")).value); return "text"
-    doc = fitz.open(path)  # pdf or image
+    try:
+        doc = fitz.open(path)  # pdf or image
+    except Exception as ex:  # 0-byte file, not a PDF, damaged
+        print(f"  לא נפתח: {os.path.basename(path)} ({type(ex).__name__})"); return "error"
+    if doc.needs_pass:
+        print(f"  מוגן בסיסמה, דולג: {os.path.basename(path)}"); return "error"
+    if len(doc) == 0:
+        print(f"  אין עמודים, דולג: {os.path.basename(path)}"); return "error"
     text = "" if images_only else "\n".join(p.get_text() for p in doc)
     if len(text.strip()) > 80 * len(doc):  # typed
         open(txt_path, "w", encoding="utf-8").write(text); return "text"
@@ -56,7 +63,11 @@ def main():
     if "--out" in args: i = args.index("--out"); out = args[i + 1]; del args[i:i + 2]
     os.makedirs(out, exist_ok=True); files = []
     for a in args:
-        files += sorted(glob.glob(os.path.join(a, "*"))) if os.path.isdir(a) else [a]
+        if os.path.isdir(a): files += sorted(glob.glob(os.path.join(a, "*")))
+        elif any(ch in a for ch in "*?["): files += sorted(glob.glob(a)) or [a]  # a quoted glob: the shell didn't expand it
+        else: files.append(a)
+    missing = [f for f in files if not os.path.exists(f)]
+    if missing: sys.exit("לא נמצא: " + ", ".join(missing))
     for f in files:
         if f.lower().rsplit(".", 1)[-1] in ("pdf", "png", "jpg", "jpeg", "docx"):
             print(f"{handle(f, out, images_only):7s} {os.path.basename(f)}")

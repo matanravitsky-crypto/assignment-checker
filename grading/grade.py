@@ -197,7 +197,8 @@ def _deductions(raw) -> list[dict]:
 
 # קובץ בתיקייה הפדגוגית שהשם שלו אומר שהוא גרסה ישנה או טיוטה לא נשלח ל-Claude: שני מחוונים סותרים מבלבלים אותו,
 # והניקוד נלקח מהטבלה הראשונה. גם קובץ שמתחיל ב-"_" לא נשלח, וגם מה שבתיקיות שבתוכה (למשל "Old")
-_NOT_SENT = re.compile(r"^_|(?<![a-z])v\d+(?![a-z])|(?<![a-z])(old|draft)(?![a-z])|ישן|טיוטה", re.I)
+_NOT_SENT = re.compile(r"^_|(?<![a-z])v\d+(?![a-z])|(?<![a-z])(old|draft)(?![a-z])|ישן|טיוטה"
+                       r"|-(DESKTOP|LAPTOP|PC|MAC)\b|-[A-Z][A-Z0-9]{3,}$", re.I)  # OneDrive conflict copies: Rubric-DESKTOP-ABC
 
 
 def pedagogy_files(assignment_dir: Path) -> list[Path]:

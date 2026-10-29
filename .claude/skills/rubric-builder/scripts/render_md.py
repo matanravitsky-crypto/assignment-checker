@@ -64,7 +64,7 @@ def points_table(r):
 def render(r):
     title = f"# {r.get('course', '')}: {r.get('term', '')} – מחוון".replace(":  –", " –")
     o = [title, "", HEADER, "", "## חלוקת הנקודות", "", points_table(r), ""]
-    rules = r.get("general_rules") or []
+    rules = r.get("general_rules") or default_rules()  # the same fallback as the PDF: the bot must see the same rules
     if rules:
         o += ["## כללי בדיקה", ""] + [f"- **{g['label']}:** {g['text']}" for g in rules] + [""]
     for q in r.get("questions", []):
@@ -78,11 +78,18 @@ def render(r):
     return "\n".join(o).rstrip() + "\n"
 
 
+def default_rules():
+    import os
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets", "default-rules.json")
+    return json.load(open(path, encoding="utf-8-sig"))
+
+
 def main(src, dst):
-    r = json.load(open(src, encoding="utf-8"))
+    r = json.load(open(src, encoding="utf-8-sig"))
     open(dst, "w", encoding="utf-8").write(render(r))
     print("wrote", dst)
 
 
 if __name__ == "__main__":
+    if len(sys.argv) < 3: sys.exit("שימוש: render_md.py <rubric.json> <Rubric.md>")
     main(sys.argv[1], sys.argv[2])

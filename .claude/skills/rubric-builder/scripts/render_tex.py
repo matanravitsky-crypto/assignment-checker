@@ -1,24 +1,49 @@
 #!/usr/bin/env python3
-"""rubric.json -> rubric.tex from assets/template.tex. Strings in the JSON are LaTeX and are inserted as-is,
-except for a few symbols David CLM lacks (⇒ · • ✓ ≠ …) which are turned into math outside $...$,
-and \\notin, which becomes \\not\\in (the kernel's \\notin uses \\ooalign, and that paints a colored
-table row black)."""
+"""rubric.json -> rubric.tex from assets/template.tex. Strings in the JSON are LaTeX and are inserted as-is, except:
+- outside $...$, the characters % & # _ ^ that would break TeX are escaped (a backslash already in front is kept);
+- Unicode math symbols David CLM lacks (⇒ ∩ ℝ ≠ …) become LaTeX commands: wrapped in $ outside math, bare inside;
+- \\notin becomes \\not\\in (the kernel's \\notin uses \\ooalign, and that paints a colored table row black).
+Anything the font still can't show is caught by build_pdf.py ("Missing character")."""
 import sys
 if hasattr(sys.stdout, "reconfigure"): sys.stdout.reconfigure(encoding="utf-8")  # Hebrew on a Windows console
-import json, os, subprocess
+import json, os, re, subprocess
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FONTS = ["David CLM", "Noto Serif Hebrew", "Noto Sans Hebrew", "DejaVu Sans"]
-SYMBOLS = {"⇒": r"$\Rightarrow$", "·": r"$\cdot$", "•": r"$\bullet$", "✓": r"$\checkmark$", "≠": r"$\neq$",
-           "…": r"\ldots{}", "∅": r"$\varnothing$", "∈": r"$\in$", "∉": r"$\not\in$", "≤": r"$\le$", "≥": r"$\ge$"}
+# symbol -> math command (no $). Outside math it is wrapped in $...$.
+SYMBOLS = {"⇒": r"\Rightarrow", "⇐": r"\Leftarrow", "⇔": r"\Leftrightarrow", "→": r"\to", "←": r"\leftarrow",
+           "↔": r"\leftrightarrow", "·": r"\cdot", "⋅": r"\cdot", "•": r"\bullet", "✓": r"\checkmark", "≠": r"\neq",
+           "∅": r"\varnothing", "∈": r"\in", "∉": r"\not\in", "≤": r"\le", "≥": r"\ge", "≈": r"\approx", "≡": r"\equiv",
+           "ℝ": r"\mathbb{R}", "ℂ": r"\mathbb{C}", "ℕ": r"\mathbb{N}", "ℤ": r"\mathbb{Z}", "ℚ": r"\mathbb{Q}",
+           "∞": r"\infty", "√": r"\surd", "×": r"\times", "±": r"\pm", "∓": r"\mp", "−": "-", "∀": r"\forall",
+           "∃": r"\exists", "∄": r"\nexists", "⊆": r"\subseteq", "⊂": r"\subset", "⊄": r"\not\subseteq",
+           "⊇": r"\supseteq", "⊃": r"\supset", "∩": r"\cap", "∪": r"\cup", "∖": r"\setminus", "¬": r"\neg",
+           "∧": r"\wedge", "∨": r"\vee", "²": "^{2}", "³": "^{3}", "½": r"\tfrac{1}{2}", "∑": r"\sum", "∏": r"\prod",
+           "∫": r"\int", "π": r"\pi", "α": r"\alpha", "β": r"\beta", "γ": r"\gamma", "δ": r"\delta", "ε": r"\varepsilon",
+           "θ": r"\theta", "λ": r"\lambda", "μ": r"\mu", "σ": r"\sigma", "φ": r"\varphi", "ω": r"\omega",
+           "∘": r"\circ", "⟨": r"\langle", "⟩": r"\rangle", "′": "'", "…": r"\ldots"}
+TEXT_ONLY = {"…": r"\ldots{}"}  # outside math these are text commands, not $...$
+ESCAPE = re.compile(r"(?<!\\)([%&#])")
+UNDERSCORE = re.compile(r"(?<!\\)_")
+CARET = re.compile(r"(?<!\\)\^")
 
 
 def fix(s):
-    """Symbols outside math become math; \\notin becomes \\not\\in everywhere."""
+    """Text outside $...$: escape TeX specials and turn symbols into math. Inside: symbols become bare commands."""
     parts = str(s).split("$")
-    for i in range(0, len(parts), 2):  # even parts are outside $...$
-        for k, v in SYMBOLS.items():
-            parts[i] = parts[i].replace(k, v)
+    for i in range(len(parts)):
+        p = parts[i]
+        if i % 2 == 0:  # outside math
+            p = ESCAPE.sub(r"\\\1", p)
+            p = UNDERSCORE.sub(r"\\_", p)
+            p = CARET.sub(r"\\^{}", p)
+            for k, v in TEXT_ONLY.items(): p = p.replace(k, v)
+            for k, v in SYMBOLS.items():
+                if k in p: p = p.replace(k, "$%s$" % v)
+        else:
+            for k, v in SYMBOLS.items():
+                if k in p: p = p.replace(k, v + " " if v.startswith("\\") and v[-1].isalpha() else v)
+        parts[i] = p
     return "$".join(parts).replace(r"\notin", r"\not\in")
 
 
@@ -29,7 +54,7 @@ def pick_font():
 
 
 def people(r):
-    parts = [t % v for t, v in (("מרצה: %s", r.get("lecturer", "")), ("מתרגל: %s", r.get("ta", ""))) if v]
+    parts = [t % fix(v) for t, v in (("מרצה: %s", r.get("lecturer", "")), ("מתרגל: %s", r.get("ta", ""))) if v]
     return r"{\small %s}\\[2pt]" % r" \qquad ".join(parts) if parts else ""
 
 
@@ -52,13 +77,13 @@ def section(s):
         head = "סעיפים %s (%d נק' כל אחד)" % (s["letter"], s["points"])
     else:
         head = "סעיף %s (%d נק')" % (s["letter"], s["points"])
-    o = [r"\sechead{%s}{%s}" % (head, fix(s.get("title", "")))]
+    o = [r"\sechead{%s}{%s}" % (fix(head), fix(s.get("title", "")))]
     o.append(r"\answerbox{%s}" % fix(s["answer"]))
-    if s.get("solution"): o.append("\\[\n%s\n\\]" % s["solution"])
+    if s.get("solution"): o.append("\\[\n%s\n\\]" % fix("$" + str(s["solution"]) + "$")[1:-1])
     if s.get("note"): o.append(r"{\small\textit{%s}}\par\vspace{3pt}" % fix(s["note"]))
     o.append(r"\tblhead{חלוקת הניקוד}")
     o.append(table(["שלב", "נקודות"], [[x["desc"], str(x["points"])] for x in s["steps"]], STEPS_SPEC))
-    for m in s.get("alt_methods", []):
+    for m in s.get("alt_methods", []) or []:
         o.append(r"\tblhead{דרך חלופית: %s}" % fix(m["name"]))
         o.append(table(["שלב", "נקודות"], [[x["desc"], str(x["points"])] for x in m["steps"]], STEPS_SPEC))
     if s.get("errors"):
@@ -70,16 +95,16 @@ def section(s):
 
 
 def main(src, dst):
-    r = json.load(open(src, encoding="utf-8"))
-    rules = r.get("general_rules") or json.load(open(os.path.join(HERE, "..", "assets", "default-rules.json"), encoding="utf-8"))
+    r = json.load(open(src, encoding="utf-8-sig"))
+    rules = r.get("general_rules") or json.load(open(os.path.join(HERE, "..", "assets", "default-rules.json"), encoding="utf-8-sig"))
     body = []
     for q in r.get("questions", []):
         n = q["n"]
         label = "שאלה %s" % n if str(n).isdigit() else str(n)  # "קבוצות 11" stays as it is
-        body.append(r"\qbar{%s}{%d}" % (fix(label), q["points"]))
+        body.append(r"\qbar{%s}{%d}" % (fix(label), int(q["points"])))
         body += [section(s) for s in q.get("sections", [])]
     if r.get("american"):
-        body.append(r"\partbar{חלק ב' -- שאלות אמריקאיות}{%d}" % sum(a["points"] for a in r["american"]))
+        body.append(r"\partbar{חלק ב' -- שאלות אמריקאיות}{%d}" % sum(int(a["points"]) for a in r["american"]))
         body.append(r"הניקוד הוא הכול או כלום, לפי ההקפה בטבלה שבעמוד הראשון בלבד. יותר מתשובה אחת או אף תשובה -- 0.\par\vspace{4pt}")
         body.append(table(["שאלה", "תשובה", "נק'", "נימוק"],
                           [[str(a["n"]), a["answer"], str(a["points"]), a.get("reason", "")] for a in r["american"]],
@@ -96,4 +121,5 @@ def main(src, dst):
 
 
 if __name__ == "__main__":
+    if len(sys.argv) < 3: sys.exit("שימוש: render_tex.py <rubric.json> <rubric.tex>")
     main(sys.argv[1], sys.argv[2])

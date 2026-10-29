@@ -110,6 +110,25 @@ def pick(numbers: list[str], n: int, fresh: int, seed: int) -> tuple[list[str], 
     return sorted(chosen[:n]), sorted(chosen[n:])
 
 
+class BadOut(ValueError):
+    """The output folder would leak student pages, or already holds another sample."""
+
+
+def check_out(out: Path) -> None:
+    """Student pages go only to a folder outside the repo and outside OneDrive, and never on top of another sample.
+    (In Git Bash `%USERPROFILE%` is not expanded, which once pointed a work folder into the repo.)"""
+    resolved = out.resolve()
+    repo = Path(__file__).resolve().parent.parent
+    if resolved == repo or repo in resolved.parents:
+        raise BadOut(f"התיקייה {out} נמצאת בתוך ה-repo (ציבורי): עמודי סטודנטים לא נכתבים שם. "
+                     "להשתמש בנתיב מוחלט בתיקיית הבית, למשל ~/.rubric-work/<id>/inputs/submissions")
+    if any(part.lower().startswith("onedrive") for part in resolved.parts) or "%userprofile%" in str(out).lower():
+        raise BadOut(f"התיקייה {out} נמצאת ב-OneDrive או בנתיב לא מפוענח: עמודי סטודנטים לא עולים לענן")
+    pages = resolved / "pages"
+    if pages.is_dir() and any(pages.iterdir()):
+        raise BadOut(f"ב-{pages} כבר יש עמודים מדגימה קודמת; למחוק אותה קודם, אחרת שתי הדגימות מתערבבות")
+
+
 def build(assignment_dir: Path, out: Path, n: int = 50, fresh: int = 6, seed: int | None = None,
           max_side: int = MAX_SIDE, crop: bool = False) -> dict:
     files = paths.files_by_number(assignment_dir / paths.TO_GRADE)
@@ -118,6 +137,7 @@ def build(assignment_dir: Path, out: Path, n: int = 50, fresh: int = 6, seed: in
         seed = int(info.get("id") or 0)
     sample, field = pick(list(files), n, fresh, seed)
 
+    check_out(out)
     pages_dir = out / "pages"
     pages_dir.mkdir(parents=True, exist_ok=True)
     manifest = {"assignment": info.get("id"), "seed": seed, "sample": sample, "fresh": field,
@@ -161,7 +181,11 @@ def main(argv: list[str] | None = None) -> int:
     except FileNotFoundError as e:
         print(e)
         return 2
-    m = build(folder, Path(args.out), args.n, args.fresh, args.seed, args.max_side, args.crop)
+    try:
+        m = build(folder, Path(args.out), args.n, args.fresh, args.seed, args.max_side, args.crop)
+    except BadOut as e:
+        print(e)
+        return 2
     total = sum(len(v) for v in m["pages"].values())
     print(f"מדגם: {len(m['sample'])}, ניסוי: {len(m['fresh'])}, עמודים: {total}, "
           f"ריקים שדולגו: {sum(m['blank_skipped'].values())}")
