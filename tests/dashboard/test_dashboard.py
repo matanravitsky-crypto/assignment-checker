@@ -693,3 +693,23 @@ def test_a_due_date_moodle_did_not_give_changes_nothing(root, monkeypatch):
         monkeypatch.setattr(actions, "_make_downloader", lambda: NothingChanged(actions.moodle_ingest.downloads_dir(), bad))
         actions.pull(root, COURSE, HW)
     assert paths.read_info(a_dir)["due"] == due
+
+
+def test_state_reports_the_rubric_pdf_and_the_site_can_open_it(root, server):
+    ped = root / COURSE / HW / paths.PEDAGOGY[1]
+    (ped / "Working notes").mkdir(parents=True)
+    (ped / "Rubric.pdf").write_bytes(b"%PDF-1.4 rubric")
+    (ped / "Rubric.md").write_text("# a\n\n> rendered from `rubric.json`\n\n| q | pts |\n|---|---|\n| 11 | 20 |\n", encoding="utf-8")
+    (ped / "Working notes" / "Rubric PDF changelog.md").write_text(
+        "# log\n\n- round 0: built.\n- round 1: remarks applied.\n- approved (Ori).\n", encoding="utf-8")
+    _, state = call(server, "GET", "/api/state")
+    r = hw(state)["rubricFile"]
+    assert r["pdf"] and r["md"] == "rendered" and r["approved"] and r["rounds"] == 2 and r["path"].endswith("/Rubric.pdf")
+    st, data = call(server, "GET", f"/api/file?path={quote(r['path'])}")
+    assert st == 200 and data[:4] == b"%PDF"
+    assert call(server, "GET", f"/api/file?path={quote(r['path'][:-4] + '.md')}")[0] == 404  # only the PDF leaves the folder
+
+
+def test_state_says_when_there_is_no_rubric_pdf(root, server):
+    _, state = call(server, "GET", "/api/state")
+    assert hw(state)["rubricFile"] == {"pdf": False, "pdfAt": None, "path": None, "md": None, "approved": False, "rounds": 0}
