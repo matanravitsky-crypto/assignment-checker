@@ -706,7 +706,7 @@ def copying_state(assignment_dir: Path) -> dict | None:
         _copy_reports[str(path)] = hit
     rep = hit[2]
     return {"checkedAt": rep.get("checked_at"), "by": rep.get("by") or "", "summary": rep.get("summary") or "",
-            "checked": rep.get("checked") or 0, "repeated": rep.get("repeated") or [],
+            "checked": rep.get("checked") or 0, "repeated": rep.get("repeated") or [], "material": rep.get("material") or {},
             "pairs": rep.get("pairs") or [], "stale": copying.is_stale(assignment_dir, rep)}
 
 
