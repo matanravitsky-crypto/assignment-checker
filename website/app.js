@@ -1317,6 +1317,28 @@
   "review_reason": ""
 }`;
 
+  // המחוון שבנה הסקיל rubric-builder: Rubric.pdf לאנשים ו-Rubric.md לבוט, שניהם מ-rubric.json. המצב לפי היומן ב-Working notes
+  function rubricFilePanel(A) {
+    const r = A.rubricFile || {};
+    if (!r.pdf) return `<section class="panel">
+      <div class="panel-head"><h3>המחוון (PDF)</h3><span class="end tag warn">אין מחוון</span></div>
+      <div class="panel-body"><p class="lead" style="margin:0">עוד אין מחוון למטלה הזאת.${r.md === "council" ? " יש בתיקייה \"פדגוגי\" Rubric.md ישן, והבוט עובד לפיו בינתיים." : ""}
+        <span class="muted" style="display:block">בונים אותו ב-Claude Code בתיקיית הריפו: "מחוון לדף תרגילים X, תמשוך Y עבודות". כשייבנה, ה-PDF יופיע כאן.</span></p></div>
+    </section>`;
+    const url = `${BASE}api/file?path=${encodeURIComponent(r.path)}`;
+    const bot = r.md === "rendered" ? "הבוט בודק לפי אותו מחוון (Rubric.md מיוצר מאותו מקור)."
+      : r.md === "council" ? "שימו לב: Rubric.md של הבוט ישן ולא מאותו מקור." : "אין Rubric.md לבוט.";
+    return `<section class="panel">
+      <div class="panel-head"><h3>המחוון (PDF)</h3><span class="end tag ${r.approved ? "ok" : "warn"}">${r.approved ? "מאושר" : "ממתין לאישור"}</span></div>
+      <div class="panel-body">
+        <p class="lead" style="margin:0 0 8px">נבנה ${esc(when(r.pdfAt))}${r.rounds ? `, ${r.rounds} סבבי ועדה` : ""}. ${bot}
+          ${r.approved ? "" : " הוועדה ממתינה להערות המתרגל; \"מאושר\" סוגר את הלופ."}</p>
+        <div class="row-start" style="margin-bottom:8px"><a class="btn secondary small" href="${url}" target="_blank" rel="noopener">${ICON.folder}פתח את ה-PDF</a></div>
+        <object data="${url}" type="application/pdf" style="width:100%;height:520px;border:1px solid var(--line,#ddd);border-radius:8px"><p class="muted">הדפדפן לא מציג PDF בתוך הדף. <a href="${url}" target="_blank" rel="noopener">פתחו אותו בלשונית חדשה</a>.</p></object>
+      </div>
+    </section>`;
+  }
+
   // שלב 2: ההנחיות נשלחות ל-Claude. המחוון והפתרון נקראים מתיקיית המטלה (grading/grade.py)
   function gradeInstr() {
     const R = rubric(), A = cur();
@@ -1341,6 +1363,7 @@
         </section>
       </div>
       <div class="stack">
+        ${rubricFilePanel(A)}
         <section class="panel">
           <div class="panel-head"><h3>פתרון רשמי</h3><span class="end tag ${A.solution ? "ok" : "warn"}">${A.solution ? "נמצא" : "אין"}</span></div>
           <div class="panel-body"><p class="lead" style="margin:0">${A.solution
