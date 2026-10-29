@@ -76,7 +76,7 @@ You write rubrics every week. For each section:
 1. Split the official solution into steps a grader can judge yes / partial / no in under 10 seconds.
    Merge anything smaller than 1 point. Split anything a grader would argue about.
 2. Points per step, whole numbers, summing exactly to the section. Weight: understanding > execution.
-3. 3–6 errors, each with רגיל and מחמיר deductions (whole numbers, מחמיר ≥ רגיל, ≤ section points), sorted by severity.
+3. 3–6 errors, each with רגיל and מחמיר deductions (whole numbers; מחמיר = רגיל + 1, capped at the section points, so the two are equal only when רגיל is already the whole section; the validator rejects anything else), sorted by severity.
    Conventions of this course:
    - calculation error, method correct: 1 point in sections of 10–15; nothing in sections of 5–8
    - notation (missing lim, · for ×, non-unit vector, wrong substitution notation): 1 / 2

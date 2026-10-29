@@ -32,14 +32,17 @@ replaced by the rendered one. Otherwise points per question come from `Assignmen
 | What | Where |
 |---|---|
 | The assignment | `paths.assignment_dir(<moodle id>)` in the data folder. "דף תרגילים X" → the assignment whose `questions` in `Assignment details.json` name that sheet; if two do, ask |
-| The full solution | `פדגוגי/Official solution*.pdf` (cut to the assigned questions) and the sheet `Exercise sheet*.pdf`; `Solutions.md` if an earlier run wrote it |
+| The full solution | `<assignment>\Official solution.pdf` (where `start-assignment` puts it, cut to the assigned questions), else `פדגוגי/Official solution*.pdf` (the older place); the sheet `פדגוגי/Exercise sheet*.pdf`; `Solutions.md` if an earlier run wrote it |
 | Submissions | `1 - Submissions to grade/`, only through `python -m grading.sample` (page images by number, blank pages dropped); never the originals |
-| Work | `%USERPROFILE%\.rubric-work\<id>\` (macOS `~/.rubric-work/<id>/`): outside OneDrive and the repo, it holds student pages. `inputs/`, `agents/`, `rubric.json`, `rubric.tex`, `rubric.pdf`, `CHANGELOG.md` |
+| Work | `<home>\.rubric-work\<id>\`: resolve it ONCE with `python -c "import pathlib; print(pathlib.Path.home() / '.rubric-work' / '<id>')"` and use that absolute path everywhere. Never type `%USERPROFILE%` or `~` into a command: Git Bash leaves `%USERPROFILE%` as a literal folder name inside the repo, and student pages would land in OneDrive and git. `grading.sample` refuses an `--out` inside the repo or OneDrive. The folder holds `inputs/`, `agents/`, `rubric.json`, `rubric.tex`, `rubric.pdf`, `CHANGELOG.md` |
+| A run already exists | `פדגוגי\Working notes\rubric.json` exists → this is NOT a first run. Say so (its date, whether the changelog says מאושר) and reopen the loop at it (Step 6). Rebuild from scratch only when the TA says "מחדש", after archiving it as `Working notes\rubric v<N>.json` |
+| Another TA's run | `פדגוגי\Working notes\Rubric run in progress.txt` (`<name> (<PC>) <time>`) younger than 24 h and not mine → stop and say who. Write mine at the start, delete it on delivery |
 | Output | everything the bot and the people need, all in `פדגוגי/`: `Rubric.md` (the bot) and `Rubric.pdf` (people), both from `rubric.json`; `Solutions.md`; `Solution methods.md`; `Manual review rules.md`; in `Working notes/`: `rubric.json`, `findings.md` (the errors seen in the Y submissions, with counts), the agents' reports, `Rubric PDF changelog.md` |
 
 ## When nothing is there for sheet X (Ori, 2026-10-29)
 
-Never create an assignment folder, never pick another sheet, never pull or sample on your own. In order:
+Never create an assignment folder (the one exception: `start-assignment`'s `details` step, which creates `Assignment N/`
+from the Moodle page), never pick another sheet, never pull or sample on your own. In order:
 
 1. **No assignment names sheet X** (no `Assignment details.json` whose `questions` name it, in either course): look in
    Moodle, read-only, in the user's logged-in Chrome. The course page (`__ecs.course(<course_id>)` from the
@@ -68,8 +71,12 @@ then the check again until ALL CHECKS PASSED. Perl (latexmk) and OCR are not nee
 
 ## Step 1: fetch the solution and Y submissions (minimum tokens)
 
-1. `<work>` = `%USERPROFILE%\.rubric-work\<id>`; create `inputs\` and `agents\`.
-2. Copy into `<work>\inputs\` whatever exists in `פדגוגי`: `Solutions.md`, `Solution methods.md`, `Rubric.md` (council), `Working notes\findings.md`.
+1. `<work>` = the absolute path from "Where things are" (`Path.home() / '.rubric-work' / '<id>'`); create `inputs\` and `agents\`.
+   **If `<work>` already exists** (a crashed or interrupted run): reuse it. Keep `inputs\submissions` when its
+   `manifest.json` has the same `n`, run only the roles whose `agents\<role>.md` is missing or empty, never re-sample.
+2. Copy into `<work>\inputs\` whatever exists in `פדגוגי`: `Solutions.md`, `Solution methods.md`, `Working notes\findings.md`,
+   and `Rubric.md` only when it is a council rubric (its first 5 lines don't mention `rubric.json`; a rendered one is
+   already represented by `Working notes\rubric.json`).
    Without `Solutions.md`, the official solution PDF goes in as page images (next step) and role 0 writes `Solutions.md` first.
 3. The sheet: `python "<skill>\scripts\prep_inputs.py" "<פדגוגי>\Exercise sheet*.pdf" --images --out "<work>\inputs"`, rename the
    folder to `sheet\`. Always `--images` for Hebrew PDFs (their text extracts garbled). The official solution PDF the
@@ -79,9 +86,18 @@ then the check again until ALL CHECKS PASSED. Perl (latexmk) and OCR are not nee
    scan (only the rectangle with ink, `sample.ink_bbox`) and `--max-side 1000` keeps the page at 1000 px: measured on
    63 real pages, 1,471 → 585 tokens a page (−60%), handwriting still legible. `pages\<number>_pNN.jpg` and
    `manifest.json`. Skip numbers flagged "no readable page". Split `sample` into groups of ~10 submissions balanced by
-   page count (one grader agent each); `fresh` is for the check in Step 4.
-5. Header fields: course, code, term from the sheet's first page; `date` = `due` (dd/mm/yyyy); lecturer, TA from the
-   sheet or `""`. Points per section from `Rubric.md` §0, else from the details or the sheet.
+   page count (one grader agent each); `fresh` is for the check in Step 4 (empty when the assignment has fewer than
+   Y + 6 submissions: then Step 4 is skipped and the report says so). `sample` refuses a non-empty `pages\` folder:
+   a second sample never mixes with the first.
+5. Header fields: course (required: the validator refuses an empty one), code, term from the sheet's first page;
+   `date` = `due` (dd/mm/yyyy); lecturer, TA from the sheet or `""`. Points per section from `Rubric.md` §0, else from
+   the details or the sheet. **`n` of every question is the exact ending of one label from
+   `grade.question_labels(details)` (e.g. `"קבוצות 11"`), never a bare number**: two sheets can share a question
+   number, and the bot takes the points by that ending. **Math only as LaTeX** (`$\cap$`, `$\mathbb{R}$`, `$\times$`),
+   never Unicode symbols; no Markdown (`**`, backticks) anywhere in `rubric.json`. The validator and `build_pdf.py`
+   refuse what the font can't print.
+6. After every agent: `git status --porcelain` in the repo and the listing of `פדגוגי` must be unchanged. Anything an
+   agent wrote outside `<work>` is deleted and reported.
 
 ## Step 2: the committee, one turn, in parallel
 
@@ -104,7 +120,7 @@ They do not see each other.
 `references/merge-rules.md` (`Rubric.md` wins on points and deductions). Question `n` is a string such as
 `"קבוצות 11"`; identical sections share one block with `count`; `general_rules` ≤ 10 short rows, the first of them
 stating what רגיל and מחמיר are. **מחמיר = רגיל + 1 on every row, capped at the section** (Ori, 2026-10-29: a rubric
-whose two columns are identical is not deliverable; `validate_rubric.py` refuses it). Then
+whose two columns are identical is not deliverable; `validate_rubric.py` refuses it).
 The merge agent also writes `<work>\agents\errors-summary.md` (the findings: per question the most common errors with
 counts out of Y, missing or unreadable submissions by number, rows added, open questions for the lecturer) and
 `<work>\Solution methods.md` (from `solver.md`: the accepted methods per section, what is outside the course scope, in
@@ -115,28 +131,41 @@ A TeX error is a bad LaTeX string: fix that string. One preview of pages 1–2 a
 ## Step 4: a new grader tries it (first delivery only)
 
 Role 6 (`new-grader.md`, model `sonnet`): `rubric.json` as text + 4 of the `fresh` submissions (the 4 with the most
-pages), no solution. It grades by the rubric alone and lists every guess. Apply the fixes that are clearly right,
-rebuild. Once; never in later rounds.
+pages; fewer when `fresh` has fewer; none → skip this step and say so in the report), no solution. It grades by the
+rubric alone and lists every guess. Apply the fixes that are clearly right, rebuild. Once; never in later rounds.
 
 ## Step 5: deliver
 
+0. **Before touching `פדגוגי`:** (a) a OneDrive conflict copy there (`Rubric-DESKTOP-ABC.md`, `*-<PC>.*`) stops the
+   delivery until a person merges it; (b) `Grading part * in progress.txt` in the assignment folder means grading is
+   running on some PC: wait, don't swap the rubric under it; (c) grades already exist (`Grades*.csv` rows) and the
+   points per question change → say how many works were graded on the old points and ask before delivering.
 1. If `פדגוגי\Rubric.md` exists and was not rendered by this skill (no `rubric.json` line at its top), move it to
-   `פדגוגי\Working notes\Rubric v<N> (council).md`. Then into `פדגוגי\`: `Rubric.md`, `Rubric.pdf`, `Solutions.md`
-   (when role 0 wrote it), `Solution methods.md`, and `Manual review rules.md` from `assets\manual-review-rules.md` when
-   missing. Into `פדגוגי\Working notes\`: `rubric.json`, `findings.md` (= `errors-summary.md`), `CHANGELOG.md` as
-   `Rubric PDF changelog.md`, and the agents' reports in `Agents\` (numbers only). Nothing else on top of `פדגוגי`: every
-   top-level `.md` goes to Claude with every submission. Check once with
-   `python -c "from grading import grade; ...load_context(<assignment>)"` that every question's points are found.
-   Send the PDF to the user (SendUserFile).
-2. Keep `<work>` (the agents' files are what the loop runs on). Delete `<work>\inputs\submissions` only when the
-   rubric is approved.
+   `פדגוגי\Working notes\Rubric v<N> (council).md` (`N` = 1 + the highest `v<n>` already in `Working notes`). Files
+   this run replaces and a person may have edited (`Solution methods.md`, `Working notes\findings.md`,
+   `Working notes\rubric.json`) are archived first as `Working notes\<name> v<N>.<ext>`, never overwritten silently.
+   Then into `פדגוגי\`: `Rubric.md`, `Rubric.pdf`, `Solutions.md` (when role 0 wrote it), `Solution methods.md`, and
+   `Manual review rules.md` from `assets\manual-review-rules.md` when missing. Into `פדגוגי\Working notes\`:
+   `rubric.json`, `findings.md` (= `errors-summary.md`), `CHANGELOG.md` as `Rubric PDF changelog.md`, and the agents'
+   reports in `Agents\` (numbers only). Nothing else on top of `פדגוגי`: every top-level `.md` goes to Claude with every
+   submission. Then the check that stops a wrong delivery:
+   ```
+   python -c "from moodle import paths; from grading import grade; c = grade.load_context(paths.assignment_dir('<id>'), send_solution=False); print([(q.label, q.points) for q in c.questions]); print(c.no_rubric or 'OK')"
+   ```
+   Every label's points must equal that question's `points` in `rubric.json`; a mismatch or `NoRubric` means `n` or
+   `Assignment details.json` (`rubric.questions[].points` overrides the table) is wrong: fix, rebuild, check again.
+   Give the user the full path of `פדגוגי\Rubric.pdf` (Claude Code has no file-sending tool).
+2. Keep `<work>` (the agents' files are what the loop runs on). Delete `<work>\inputs\submissions` when the rubric is
+   approved, and also when the loop has been idle for 14 days without "מאושר": ask once, then delete (student pages
+   must not sit on a laptop forever). Delete `Working notes\Rubric run in progress.txt`.
 3. Not synced on this computer (`dashboard/shared_folder.py` doesn't find the shared folder)? Ask once; on yes, upload
    the files to `<course>/<assignment>/פדגוגי` in the lecturer's OneDrive with Claude in Chrome: open the folder (Create or
    upload → Folder for `פדגוגי` / `Working notes` if missing), patch the page so the file input doesn't open the Windows
    dialog (`HTMLInputElement.prototype.click` returns early for `type === 'file'`, appending a detached input to the body),
    Create or upload → Files upload, `find` the `input[type=file]`, `file_upload` the files (≤ 10 MB a call, copies in the
-   scratchpad if the data folder isn't readable), "Replace all" on a name clash, restore `click`, close the tab. Never
-   upload pages, ZIPs or the key table.
+   scratchpad if the data folder isn't readable), "Replace all" on a name clash only after comparing: a OneDrive file
+   modified after this run started is a teammate's and stops the upload for that file. Restore `click`, close the
+   tab. Never upload pages, ZIPs or the key table.
 4. Report, ≤ 10 lines in Hebrew: total, points per question, the 3 heaviest deductions, the most common errors in the
    Y submissions with counts, the בודק חדש's line, every ⚠ disagreement with `Rubric.md`, where the files are.
 
