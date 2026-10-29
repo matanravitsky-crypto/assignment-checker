@@ -1,6 +1,6 @@
 # Subagent prompts — six roles
 
-Pass each one: the prefix, its role block, the paths in `<work>\inputs\` (`.md`/`.txt` files to read as text, `sheet\page-NN.jpg` and `submissions\pages\<number>_pNN.jpg` to read as images), the fixed points per section, and the output path. Spawn roles 1–5 in one turn, in parallel; in this project the grader is usually two agents (`grader-1.md`, `grader-2.md`), each with half of the sampled submissions, on `sonnet`. Role 6 runs later (see SKILL.md step 4). SKILL.md step 2 says which inputs each role gets.
+Pass each one: the prefix, its role block, the paths in `<work>\inputs\` (`.md`/`.txt` files to read as text, `sheet\page-NN.jpg` and `submissions\pages\<number>_pNN.jpg` to read as images), the fixed points per section, and the output path. Spawn roles 1–5 in one turn, in parallel; in this project the grader is K = ceil(Y/10) agents (`grader-1.md` … `grader-K.md`), ~10 submissions each balanced by page count, on `sonnet`; together they read every page of all Y submissions. Role 6 runs later (see SKILL.md step 4). SKILL.md step 2 says which inputs each role gets.
 
 ## Prefix (all roles)
 ```
@@ -78,7 +78,7 @@ Format:
 End each section with a one-line sum check. End the file with the total.
 ```
 
-## 6. auditor.md — בדיקת המחוון על הגשות אמיתיות (max 50 lines; runs AFTER the first PDF)
+## 6. new-grader.md — בדיקת המחוון על הגשות אמיתיות (max 50 lines; runs AFTER the first PDF)
 ```
 You are a new grader. You have ONLY rubric.json (as text) and 3 submissions (images). You have NOT seen the solution.
 Grade each submission, section by section, using nothing but the rubric. For every section write:
