@@ -50,6 +50,19 @@ def test_question_starts_follow_the_numbering_and_skip_page_numbers():
     assert prepare.question_starts(["x .5 y", ".1 a", ".2 b"]) == {1: 1, 2: 2}
 
 
+def test_sub_items_numbered_like_questions_are_not_headings():
+    # Discrete Mathematics' sheet 0: question 2's sub-items ".1 .. .6", an answer line with four of them,
+    # then question 3 on the next page after its own sub-items, and question 4 on the page after
+    texts = [
+        "q .1\n",
+        ":נסמן .2\nא .1\nב .2\nג .3\nד .4\n.4 x .3 y .2 z .1 :פיתרון\n",
+        "a .1\nb .2\nc .3\n:כתבו .3\n",
+        ".4 (א)\n",
+    ]
+    assert prepare.heading_candidates(texts[1]) == [2]
+    assert prepare.question_starts(texts) == {1: 0, 2: 1, 3: 2, 4: 3}
+
+
 def test_page_ranges_run_until_the_next_heading():
     starts = {7: 1, 8: 2, 10: 4, 11: 5, 12: 6}
     found, missing = prepare.page_ranges(starts, [8, 9, 12], n_pages=9, at_top=set(starts))
@@ -171,7 +184,8 @@ def test_add_sheet_files_under_the_standard_names(data, tmp_path):
         prepare.add_sheet(COURSE, 10, "X", tmp_path / "junk.pdf", None, replace=False)
 
 
-def test_materials_cuts_the_assigned_questions_and_copies_the_rest(data):
+def test_materials_cuts_the_assigned_questions_and_copies_the_rest(data, monkeypatch):
+    monkeypatch.setattr(prepare, "RULES_ASSET", data / "no asset here.md")  # the older assignment is the source here
     sheets = data / COURSE / "Course material" / "Sheets"
     _pdf(sheets / "Sheet 3 - Vectors.pdf", ["the sheet"])
     _pdf(sheets / "Sheet 3 - Vectors - solutions.pdf",

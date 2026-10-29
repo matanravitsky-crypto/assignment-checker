@@ -1430,6 +1430,7 @@ def state(root: Path) -> dict:
                 "rubric": [{"label": q.label, "points": q.points, "criteria": q.criteria, "deductions": q.deductions}
                            for q in ctx.questions],
                 "noRubric": ctx.no_rubric, "maxGrade": ctx.max_grade, "solution": (a.dir / grading.SOLUTION).is_file(),
+                "rubricFile": rubric_file_state(a.dir, root),
                 "notes": d.get("notes") or "", "rules": d.get("submission_rules") or [],
                 "warnings": [f"עותק כפול של טבלת המפתח: {c}" for c in key_conflicts(a)]
                             + [f"עותק כפול של הגשה: {c}" for c in moodle_anonymize.submission_conflicts(a.dir)]
@@ -1441,6 +1442,42 @@ def state(root: Path) -> dict:
     return {"root": str(root), "courses": courses, "assignments": out, "me": me(),
             "moodle": False, "claude": quick_via() is not None, "claudeVia": quick_via(), "grading": grade_status(), "sending": send_status(), "copyCheck": copying_status(),
             "usage": grading_usage.summary(root)}
+
+
+RUBRIC_PDF = "Rubric.pdf"
+RUBRIC_MD = "Rubric.md"
+RUBRIC_LOG = "Rubric PDF changelog.md"
+NO_RUBRIC_FILE = {"pdf": False, "pdfAt": None, "path": None, "md": None, "approved": False, "rounds": 0}
+
+
+def rubric_file_state(a_dir: Path, root: Path | None = None) -> dict:
+    """מה המצב של המחוון שבנה הסקיל rubric-builder בתיקיית "פדגוגי" של המטלה: יש Rubric.pdf (ומתי נבנה), האם Rubric.md
+    של הבוט מיוצר מאותו מקור (rubric.json) או ישן (מהמועצה), כמה סבבי ועדה היו, והאם אושר (לפי היומן ב-Working notes).
+    מספרים ותאריכים בלבד."""
+    ped = next((a_dir / n for n in paths.PEDAGOGY if (a_dir / n).is_dir()), None)
+    if ped is None:
+        return dict(NO_RUBRIC_FILE)
+    pdf = ped / RUBRIC_PDF
+    md = ped / RUBRIC_MD
+    md_kind = None
+    if md.is_file():
+        head = md.read_text(encoding="utf-8-sig", errors="replace")[:600]
+        md_kind = "rendered" if "rubric.json" in head else "council"
+    rounds = approved = 0
+    log = ped / "Working notes" / RUBRIC_LOG
+    if log.is_file():
+        lines = [l for l in log.read_text(encoding="utf-8-sig", errors="replace").splitlines() if l.startswith("- ")]
+        rounds = len({m.group(1) for l in lines for m in re.finditer(r"(?:round|סבב) (\d+)", l, re.I)})
+        approved = any("approved" in l.lower() or "מאושר" in l for l in lines)
+    rel = None
+    if pdf.is_file() and root is not None:
+        try:
+            rel = pdf.relative_to(root).as_posix()
+        except ValueError:
+            rel = None
+    return {"pdf": pdf.is_file(),
+            "pdfAt": datetime.fromtimestamp(pdf.stat().st_mtime).isoformat(timespec="minutes") if pdf.is_file() else None,
+            "path": rel, "md": md_kind, "approved": bool(approved), "rounds": rounds}
 
 
 def _slots(course_dir: Path) -> list[folder_view.Assignment | int]:
@@ -1463,7 +1500,7 @@ def _empty_slot(cid: str, course_dir: Path, ai: int, n: int) -> dict:
         "courseFolder": course_dir.name, "folder": folder_view.slot_folder(n), "title": folder_view.slot_title(n),
         "n": ai + 1, "due": None, "questions": 4, "questionLabels": [], "pulledAt": None, "returnedAt": None,
         "moodleId": None, "gradedAt": None, "rubric": [], "maxGrade": None, "solution": False, "notes": "", "rules": [],
-        "warnings": [], "subs": [], "log": [], "empty": True,
+        "rubricFile": dict(NO_RUBRIC_FILE), "warnings": [], "subs": [], "log": [], "empty": True,
     }
 
 

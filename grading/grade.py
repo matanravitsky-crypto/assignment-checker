@@ -54,7 +54,7 @@ import pymupdf
 
 from moodle import claims, claude_driver, grades, paths
 
-from .render import PageImage, render_pdf
+from .render import CROP_DEFAULT, PageImage, render_pdf
 
 # ---------- הגדרות ----------
 GRADES = paths.GRADES
@@ -197,7 +197,8 @@ def _deductions(raw) -> list[dict]:
 
 # קובץ בתיקייה הפדגוגית שהשם שלו אומר שהוא גרסה ישנה או טיוטה לא נשלח ל-Claude: שני מחוונים סותרים מבלבלים אותו,
 # והניקוד נלקח מהטבלה הראשונה. גם קובץ שמתחיל ב-"_" לא נשלח, וגם מה שבתיקיות שבתוכה (למשל "Old")
-_NOT_SENT = re.compile(r"^_|(?<![a-z])v\d+(?![a-z])|(?<![a-z])(old|draft)(?![a-z])|ישן|טיוטה", re.I)
+_NOT_SENT = re.compile(r"^_|(?<![a-z])v\d+(?![a-z])|(?<![a-z])(old|draft)(?![a-z])|ישן|טיוטה"
+                       r"|-(DESKTOP|LAPTOP|PC|MAC)\b|-[A-Z][A-Z0-9]{3,}$", re.I)  # OneDrive conflict copies: Rubric-DESKTOP-ABC
 
 
 def pedagogy_files(assignment_dir: Path) -> list[Path]:
@@ -918,11 +919,27 @@ class GradeReport:
         return ", ".join(parts)
 
 
-def grade_one(pdf: bytes, ctx: Context, ask: Ask, model: str = DEFAULT_MODEL, names: list[str] | None = None) -> tuple[Graded, bytes]:
-    images = render_pdf(pdf, grid=True)
+def marks_to_page(marks: list[Mark], images: list[PageImage]) -> list[Mark]:
+    """המלבנים של Claude הם באלפיות של התמונה שנשלחה (אולי חתוכה); כאן הם חוזרים לאלפיות של העמוד השלם."""
+    out = []
+    for m in marks:
+        img = images[m.page - 1] if 0 < m.page <= len(images) else None
+        if img is None or not img.clip:
+            out.append(m)
+            continue
+        x0, y0 = img.to_page(m.x0, m.y0)
+        x1, y1 = img.to_page(m.x1, m.y1)
+        out.append(Mark(m.page, x0, y0, x1, y1, m.text))
+    return out
+
+
+def grade_one(pdf: bytes, ctx: Context, ask: Ask, model: str = DEFAULT_MODEL, names: list[str] | None = None,
+              crop: bool = CROP_DEFAULT) -> tuple[Graded, bytes]:
+    images = render_pdf(pdf, grid=True, crop=crop)
     if not images:
         raise GradingError("אין עמודים בקובץ.")
     g = parse_answer(ask(build_request(ctx, images, model)), ctx, len(images))
+    g.marks = marks_to_page(g.marks, images)
     scrub_graded(g, names or [])
     return g, mark_pdf(pdf, g, ctx)
 

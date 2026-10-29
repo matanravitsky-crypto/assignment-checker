@@ -33,7 +33,7 @@ JPEG_QUALITY = 60
 # עמוד נחשב ריק אם פחות מהחלק הזה של הפיקסלים כהה (עמוד משבצות או עמוד לבן).
 # נמדד על סריקות של הגשה 0: עמוד ריק יוצא 0, ועמוד בעיפרון חיוור יוצא לפחות 0.0013.
 BLANK_INK = 0.0008
-DARK = 140
+DARK = 140  # כמו grading.render.DARK
 
 # הגשה עם יותר עמודים מזה נקראת רק עד כאן, ומסומנת (למשל חוברת שלמה של 33 עמודים שהועלתה בטעות).
 # בהגשה 0 היו גם עבודות תקינות של 20 עמודים (סעיף לעמוד), ולכן לא פחות מזה.
@@ -54,31 +54,7 @@ def is_blank(page: pymupdf.Page) -> bool:
     return ink_ratio(small) < BLANK_INK
 
 
-# חיתוך שוליים: שורה או עמודה של התמונה המוקטנת נחשבת "עם דיו" אם לפחות כך וכך מהפיקסלים שלה כהים.
-# סריקת טלפון של דף A4 היא בדרך כלל 20-35% שוליים לבנים, שעולים טוקנים כמו כתב.
-CROP_SCALE = 0.25
-CROP_LINE_INK = 0.004
-CROP_MARGIN = 0.02
-
-
-def ink_bbox(page: pymupdf.Page) -> pymupdf.Rect | None:
-    """המלבן שבו יש כתב בעמוד, עם שוליים של 2%, בקואורדינטות של העמוד. None אם אין מה לחתוך
-    (הכתב ממלא את העמוד, או שלא נמצא כתב)."""
-    pix = page.get_pixmap(matrix=pymupdf.Matrix(CROP_SCALE, CROP_SCALE), colorspace=pymupdf.csGRAY, alpha=False)
-    w, h, data = pix.width, pix.height, pix.samples
-    rows = [sum(1 for x in range(w) if data[y * w + x] < DARK) >= CROP_LINE_INK * w for y in range(h)]
-    cols = [sum(1 for y in range(h) if data[y * w + x] < DARK) >= CROP_LINE_INK * h for x in range(w)]
-    if not any(rows) or not any(cols):
-        return None
-    y0, y1 = rows.index(True), h - 1 - rows[::-1].index(True)
-    x0, x1 = cols.index(True), w - 1 - cols[::-1].index(True)
-    mx, my = CROP_MARGIN * w, CROP_MARGIN * h
-    x0, y0, x1, y1 = max(0, x0 - mx), max(0, y0 - my), min(w, x1 + 1 + mx), min(h, y1 + 1 + my)
-    area = (x1 - x0) * (y1 - y0) / (w * h)
-    if area > 0.9 or area < 0.4:   # הכתב ממלא את העמוד, או שנמצא "כתב" קטן מדי (עיפרון חיוור שרובו לא נראה): בלי חיתוך
-        return None
-    r = page.rect
-    return pymupdf.Rect(r.x0 + x0 / CROP_SCALE, r.y0 + y0 / CROP_SCALE, r.x0 + x1 / CROP_SCALE, r.y0 + y1 / CROP_SCALE)
+from .render import ink_bbox  # חיתוך השוליים משותף לדגימה ולבדיקה (grading/render.py)
 
 
 def render_file(path: Path, number: int | str, out: Path, start: int,
@@ -110,6 +86,25 @@ def pick(numbers: list[str], n: int, fresh: int, seed: int) -> tuple[list[str], 
     return sorted(chosen[:n]), sorted(chosen[n:])
 
 
+class BadOut(ValueError):
+    """The output folder would leak student pages, or already holds another sample."""
+
+
+def check_out(out: Path) -> None:
+    """Student pages go only to a folder outside the repo and outside OneDrive, and never on top of another sample.
+    (In Git Bash `%USERPROFILE%` is not expanded, which once pointed a work folder into the repo.)"""
+    resolved = out.resolve()
+    repo = Path(__file__).resolve().parent.parent
+    if resolved == repo or repo in resolved.parents:
+        raise BadOut(f"התיקייה {out} נמצאת בתוך ה-repo (ציבורי): עמודי סטודנטים לא נכתבים שם. "
+                     "להשתמש בנתיב מוחלט בתיקיית הבית, למשל ~/.rubric-work/<id>/inputs/submissions")
+    if any(part.lower().startswith("onedrive") for part in resolved.parts) or "%userprofile%" in str(out).lower():
+        raise BadOut(f"התיקייה {out} נמצאת ב-OneDrive או בנתיב לא מפוענח: עמודי סטודנטים לא עולים לענן")
+    pages = resolved / "pages"
+    if pages.is_dir() and any(pages.iterdir()):
+        raise BadOut(f"ב-{pages} כבר יש עמודים מדגימה קודמת; למחוק אותה קודם, אחרת שתי הדגימות מתערבבות")
+
+
 def build(assignment_dir: Path, out: Path, n: int = 50, fresh: int = 6, seed: int | None = None,
           max_side: int = MAX_SIDE, crop: bool = False) -> dict:
     files = paths.files_by_number(assignment_dir / paths.TO_GRADE)
@@ -118,6 +113,7 @@ def build(assignment_dir: Path, out: Path, n: int = 50, fresh: int = 6, seed: in
         seed = int(info.get("id") or 0)
     sample, field = pick(list(files), n, fresh, seed)
 
+    check_out(out)
     pages_dir = out / "pages"
     pages_dir.mkdir(parents=True, exist_ok=True)
     manifest = {"assignment": info.get("id"), "seed": seed, "sample": sample, "fresh": field,
@@ -161,7 +157,11 @@ def main(argv: list[str] | None = None) -> int:
     except FileNotFoundError as e:
         print(e)
         return 2
-    m = build(folder, Path(args.out), args.n, args.fresh, args.seed, args.max_side, args.crop)
+    try:
+        m = build(folder, Path(args.out), args.n, args.fresh, args.seed, args.max_side, args.crop)
+    except BadOut as e:
+        print(e)
+        return 2
     total = sum(len(v) for v in m["pages"].values())
     print(f"מדגם: {len(m['sample'])}, ניסוי: {len(m['fresh'])}, עמודים: {total}, "
           f"ריקים שדולגו: {sum(m['blank_skipped'].values())}")

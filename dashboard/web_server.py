@@ -23,6 +23,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from grading import grade as grading
+from moodle import paths
 
 from . import actions, folder_view, scheduler, settings as cfg, sync
 
@@ -211,11 +212,13 @@ class Handler(SimpleHTTPRequestHandler):
             query = parse_qs(url.query)
             rel = query.get("path", [""])[0]
             target = (root / rel).resolve()
-            # רק קבצים של הגשות (תיקיות 1-2-3): PDF, ובהגשות גם תמונות. טבלת המפתח, עם השמות, לא יוצאת מהתיקייה
+            # רק קבצים של הגשות (תיקיות 1-2-3): PDF, ובהגשות גם תמונות; וגם המחוון המודפס, Rubric.pdf שבתיקייה "פדגוגי".
+            # טבלת המפתח, עם השמות, לא יוצאת מהתיקייה
             allowed = (folder_view.SUBMISSIONS, folder_view.GRADED, folder_view.READY)
             kinds = FILE_TYPES if target.parent.name == folder_view.SUBMISSIONS else (".pdf",)
+            rubric_pdf = target.parent.name in paths.PEDAGOGY and target.name == actions.RUBRIC_PDF
             if (not target.is_file() or not target.is_relative_to(root.resolve())
-                    or target.suffix.lower() not in kinds or target.parent.name not in allowed):
+                    or target.suffix.lower() not in kinds or (target.parent.name not in allowed and not rubric_pdf)):
                 return self.send_error(HTTPStatus.NOT_FOUND)
             data = target.read_bytes()
             self.send_response(HTTPStatus.OK)

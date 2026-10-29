@@ -102,8 +102,14 @@ def sheets(course: str) -> dict[int, dict]:
     return out
 
 
+RULES_ASSET = ROOT / ".claude" / "skills" / "rubric-builder" / "assets" / "manual-review-rules.md"
+
+
 def review_rules_source(course: str) -> Path | None:
-    """The newest assignment (this course first, then any) that has a Manual review rules.md: the file is general."""
+    """rubric-builder's own copy (the one source, it writes the same file when missing); without it, the newest
+    assignment (this course first, then any) that has a Manual review rules.md: the file is general."""
+    if RULES_ASSET.is_file():
+        return RULES_ASSET
     candidates = []
     for folder in paths.assignment_dirs():
         f = pedagogy_dir(folder) / REVIEW_RULES
@@ -231,6 +237,31 @@ def record_page(course: str, info: dict, page_text: str) -> bool:
 
 # ---------- the solution's pages ----------
 
+def heading_candidates(text: str) -> list[int]:
+    """The numbers on a page that may be question headings, in order. Not a heading: a line with several ".N"
+    (a list of answers, ".1 ... .2 ... .3"), and a run ".1, .2, .3, ..." of two or more that restarts at 1 (the
+    sub-items of a question; Discrete Mathematics numbers them like questions, so ".3 .4" there looked like
+    questions 3 and 4)."""
+    found = []
+    for line in text.splitlines():
+        numbers = [int(m.group(1)) for m in QUESTION_RE.finditer(line)]
+        if len(numbers) == 1:
+            found.append(numbers[0])
+    keep = [True] * len(found)
+    i = 0
+    while i < len(found):
+        if found[i] == 1:
+            j = i
+            while j + 1 < len(found) and found[j + 1] == found[j] + 1:
+                j += 1
+            if j > i:
+                keep[i:j + 1] = [False] * (j - i + 1)
+            i = j + 1
+        else:
+            i += 1
+    return [n for n, k in zip(found, keep) if k]
+
+
 def question_starts(texts: list[str]) -> dict[int, int]:
     """Question number → the page (0-based) where its heading first appears. Questions are numbered in order, so after
     the first heading a number counts only when it continues the sequence (a gap of one is allowed: a heading the text
@@ -238,8 +269,7 @@ def question_starts(texts: list[str]) -> dict[int, int]:
     starts: dict[int, int] = {}
     last: int | None = None
     for i, text in enumerate(texts):
-        for m in QUESTION_RE.finditer(text):
-            n = int(m.group(1))
+        for n in heading_candidates(text):
             if last is None or n in (last + 1, last + 2):
                 starts[n] = i
                 last = n
@@ -255,7 +285,7 @@ def top_headings(texts: list[str], starts: dict[int, int]) -> set[int]:
     at_top = set()
     for n, page in starts.items():
         lines = [line for line in texts[page].splitlines() if line.strip()][:3]
-        if any(int(m.group(1)) == n for line in lines for m in QUESTION_RE.finditer(line)):
+        if n in heading_candidates("\n".join(lines)):
             at_top.add(n)
     return at_top
 
@@ -383,7 +413,8 @@ def materials(course: str, slot: int, sheet: int | None, numbers: list[int] | No
         source = review_rules_source(course)
         if source:
             shutil.copyfile(source, rules)
-            report["written"].append(f"{rules} (עותק של {source.parent.parent.name})")
+            origin = "rubric-builder" if source == RULES_ASSET else source.parent.parent.name
+            report["written"].append(f"{rules} (עותק של {origin})")
         else:
             report["warnings"].append(f"אין {REVIEW_RULES} באף מטלה להעתיק ממנה.")
     return report
