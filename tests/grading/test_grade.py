@@ -783,3 +783,26 @@ def test_model_images_carry_a_numbered_grid_but_files_do_not():
     pix = pymupdf.Pixmap(gridded.data)
     # קו הרשת ב-x=500 צבוע כתום באמצע העמוד
     assert any(pix.pixel(pix.width // 2, y)[2] < 200 for y in range(pix.height // 2, pix.height // 2 + 40))
+
+
+def test_summary_titles_and_scores_are_written_as_sheet_question_and_fraction():
+    assert grading.question_title("דף קבוצות 11") == "דף קבוצות, שאלה 11"
+    assert grading.question_title("דף מספרים מרוכבים 8") == "דף מספרים מרוכבים, שאלה 8"
+    assert grading.question_title("כל המטלה") == "כל המטלה"
+    pdf = homework_pdf("x", HW, pages=1)
+    ctx = grading.Context("מטלה", "קורס", [grading.Question("דף קבוצות 11", 20)])
+    g = grading.Graded([20], ["הכל נכון"], 20, "משוב כללי שלא נכתב בעמוד", [])
+    with pymupdf.open(stream=grading.mark_pdf(pdf, g, ctx), filetype="pdf") as doc:
+        # קודם הציון, ואז השאלה, ובשורה נפרדת ההסבר. PyMuPDF קורא מקף כ-\xad
+        assert "20/20 - דף קבוצות, שאלה 11 הכל נכון" in text(doc[0]).replace("\xad", "-")
+
+
+def test_math_inside_hebrew_is_wrapped_so_it_is_drawn_left_to_right():
+    lrm = grading.LRM
+    assert grading.ltr_runs("יש איבר: (-1,1)∈A ו-(-1,1)∉B.") == \
+        f"יש איבר: {lrm}(-1,1)∈A{lrm} ו-{lrm}(-1,1)∉B{lrm}."
+    assert grading.ltr_runs("הקבוצה היא x = 2 + t, ולכן") == f"הקבוצה היא {lrm}x = 2 + t{lrm}, ולכן"
+    assert grading.ltr_runs("בלי מתמטיקה בכלל.") == "בלי מתמטיקה בכלל."
+    rlm = grading.RLM
+    assert grading.rtl_parens("חסר נימוק (למשל x = 2) בשלב") == f"חסר נימוק ({rlm}למשל x = 2{rlm}) בשלב"
+    assert grading.rtl_parens("הנקודה (-1,1) שייכת") == "הנקודה (-1,1) שייכת"  # סוגריים של מתמטיקה לא משתנים

@@ -281,7 +281,7 @@ SYSTEM = """אתה מתרגל שבודק תרגילי בית במתמטיקה (�
 - אם כתב היד לא קריא, חסרים עמודים, או שהניקוד לא ודאי, מסמנים needs_review=true ומסבירים ב-review_reason (ראו "בדיקה ידנית" למטה). אחרת review_reason ריק.
 
 questions: אחד לכל שאלה במטלה, באותו סדר ועם אותה תווית כמו ברשימת השאלות.
-- comment: משפט קצר על התשובה.
+- comment: שאלה שקיבלה את כל הניקוד ואין בה מה לתקן: בדיוק "תשובה נכונה", בלי שום דבר נוסף (לא מה נעשה טוב ולא התשובות). אחרת: קודם מה חסר או שגוי בעבודה שלו, כעובדה ("לא הראיתם ש...", "חסר נימוק ל...", "טעות בסימן בשורה..."), ורק אחר כך, אם צריך, מה לעשות כדי לתקן ("כדי לתקן: ..."). לא מתחילים בציווי כמו "הראו ש...", כי לא ברור אם זה מה שנעשה או מה שחסר. בקצרה, בלי חיזוקים על דברים שהסטודנט יודע שנעשו נכון. לא כותבים בו את התשובות הסופיות (לא "התשובה היא 3-i" ולא רשימת ערכים), כי הסטודנט רואה אותן בעבודה שלו וההסבר נהיה לא ברור. בלי סימני קבוצות כמו ∈ ו-∉: כותבים במילים ("שייך", "לא שייך"). בלי קודים פנימיים של המחוון (כמו "8ג-T3" או "S0"), הסטודנט לא מכיר אותם.
 - mistakes: סוגי הטעויות בתשובה, ריק אם היא נכונה. כל טעות בניסוח קצר וכללי, 2 עד 6 מילים, שלא תלוי בעבודה הזו, כך שאותה טעות אצל סטודנטים שונים תקבל בדיוק אותו ניסוח (למשל "חסר נימוק להכלה ההפוכה"). אם במחוון יש לשאלה טעויות מוכרות, משתמשים בניסוח שלהן מילה במילה ומורידים כמו שכתוב שם.
 - unsure: true אם הניקוד בשאלה הזו לא ודאי (לא קריא, תשובה חלקית שקשה להעריך, דרך שלא בטוח שהיא נכונה).
 
@@ -295,10 +295,10 @@ annotations, סימונים על גבי העבודה:
 - כל סימון מקיף מקום מדויק בעבודה של הסטודנט: הכתב היד של הטעות, של הצעד החסר או של הנימוק הלא מספיק. מלבן שמקיף שטח ריק, או את נוסח השאלה המודפס, שגוי. דברים נכונים לא מסמנים.
 - page: מספר העמוד, מ-1, לפי סדר התמונות.
 - x0, y0, x1, y1: המלבן שמקיף את המקום, באלפיות של רוחב העמוד ושל גובהו. (0, 0) היא הפינה השמאלית העליונה ו-(1000, 1000) הימנית התחתונה. המלבן צמוד לשורה או לשורות הרלוונטיות בכתב היד (בדרך כלל פחות מ-15% מגובה העמוד), לא לחצי עמוד.
-- text: הערה קצרה בעברית, עד 12 מילים, שאומרת מה לא נכון. מתמטיקה בטקסט פשוט (A^-1, det(A)), בלי LaTeX.
+- text: מתחיל בשאלה ובסעיף שהטעות שייכת להם, בצורה "שאלה 8, סעיף ג:" (כך ברור על איזה סעיף מדובר, גם כשכמה סעיפים כתובים באותה שורה), ואחריו הערה קצרה, עד 20 מילים, באותו סדר כמו ה-comment: קודם מה חסר או שגוי בעבודה, כעובדה ולא בציווי ("לא הראיתם ש...", לא "הראו ש..."), ואם צריך אחר כך "כדי לתקן: ...". אם אפשר, בציטוט של המילים הראשונות של השורה. מתמטיקה בטקסט פשוט (A^-1, det(A)), בלי LaTeX.
 
 feedback, המשוב לסטודנט:
-- בעברית, בגוף שני רבים, ענייני ומעודד. קודם מה שנעשה טוב, ואז מה צריך לתקן, לפי שאלות. עד 120 מילים, בלי LaTeX.
+- בעברית, בגוף שני רבים, ענייני. עבודה שאין בה מה לתקן: משפט אחד כמו "עבודה טובה". אחרת: משפט אחד על הנקודה המרכזית לתיקון. לא חוזרים על ההערות שכתבת לכל שאלה (הסטודנט רואה אותן), לא מחזקים על דברים צפויים, לא מונים את התשובות הנכונות. עד 30 מילים, בלי LaTeX, בלי לחזור על התשובות הסופיות של הסטודנט, ובלי סימני קבוצות כמו ∈.
 - אף פעם לא כותבים שם, תעודת זהות או פרט מזהה אחר של הסטודנט, גם אם הם מופיעים בעבודה. זה נכון גם להערות."""
 
 # למה עבודה צריכה בדיקה ידנית. האתר מציג אותן בעברית ומסנן לפיהן (ושם גם failed: הבדיקה האוטומטית נכשלה)
@@ -563,9 +563,52 @@ def _html(text: str, size: float = 10, color: str = "#d90000") -> str:
     return f'<div dir="rtl" style="color: {color}; font-size: {size:g}px; line-height: 1.25">{_esc(text)}</div>'
 
 
+LRM = "\u200e"
+_HEBREW = "\u0590-\u05ff"
+# רצף של תווים שאינם עברית (אותיות לטיניות, מספרים, סימנים), גם עם רווחים ביניהם: "(-1,1)∈A", "x = 2 + t"
+_LTR_RUN = re.compile(rf"[^\s{_HEBREW}]+(?:[ \t]+[^\s{_HEBREW}]+)*")
+_HAS_MATH = re.compile(r"[A-Za-z0-9∈∉⊆⊂⊄∪∩∅ℝℂℕℤ=<>≤≥≠]")
+
+
+def ltr_runs(text: str) -> str:
+    """מקיף כל קטע של מתמטיקה או לטינית ב-LRM, כדי שבשורה בעברית הוא יוצג משמאל לימין ולא הפוך
+    (בלי זה "(-1,1)∈A" מצוייר כ-"A∋(1,1-)"). סימן פיסוק בסוף הקטע ומקף שאחרי אות עברית נשארים בחוץ."""
+    def wrap(m: re.Match) -> str:
+        run = m.group(0)
+        if not _HAS_MATH.search(run):
+            return run
+        head = ""
+        lead = re.match(r"[.,;:!?]+\s*", run)  # \u05e0\u05e7\u05d5\u05d3\u05ea\u05d9\u05d9\u05dd \u05d0\u05d7\u05e8\u05d9 \u05de\u05d9\u05dc\u05d4 \u05d1\u05e2\u05d1\u05e8\u05d9\u05ea, \u05d5\u05d0\u05d6 \u05d4\u05e7\u05d8\u05e2: ": (-1,1)\u2208A"
+        if lead:
+            head, run = lead.group(0), run[lead.end():]
+        if run.startswith("-") and m.start() > 0 and "\u05d0" <= text[m.start() - 1] <= "\u05ea":
+            head, run = head + "-", run[1:]
+        tail = re.search(r"[.,;:!?]+$", run)
+        tail = tail.group(0) if tail else ""
+        if tail:
+            run = run[:-len(tail)]
+        return f"{head}{LRM}{run}{LRM}{tail}" if run else m.group(0)
+    return _LTR_RUN.sub(wrap, text)
+
+
+RLM = "\u200f"
+_PAREN_WITH_HEBREW = re.compile(rf"\(([^()]*[{_HEBREW}][^()]*)\)")
+
+
+def rtl_parens(text: str) -> str:
+    """סוגריים שיש בהם עברית נשארים בצד הנכון: "(למשל x = 2)" ולא ")x = 2 למשל(". סוגריים של מתמטיקה לא נוגעים בהם."""
+    return _PAREN_WITH_HEBREW.sub(lambda m: f"({RLM}{m.group(1)}{RLM})", text)
+
+
 def _esc(s: str) -> str:
     from html import escape
-    return escape(str(s)).replace("\n", "<br>")
+    return escape(rtl_parens(ltr_runs(str(s)))).replace("\n", "<br>")
+
+
+def question_title(label: str) -> str:
+    """"דף קבוצות 11" -> "דף קבוצות, שאלה 11". תווית בלי מספר בסוף נשארת כמו שהיא."""
+    m = re.fullmatch(r"(.*\D)\s+(\d+)", label.strip())
+    return f"{m.group(1).strip()}, שאלה {m.group(2)}" if m else label
 
 
 class Ink:
@@ -707,12 +750,12 @@ def _write(page: pymupdf.Page, rect: pymupdf.Rect, html: str, archive, backdrop:
 
 
 def _summary_page(doc: pymupdf.Document, g: Graded, ctx: Context, archive, extra: list[str] | None = None) -> None:
-    """עמוד ראשון חדש: הציון, הניקוד לכל שאלה והמשוב (ואחריהם הערות שלא היה להן מקום על העבודה)."""
+    """עמוד ראשון חדש: הציון והניקוד וההערה לכל שאלה (ואחריהן הערות שלא היה להן מקום על העבודה). המשוב הכללי (g.feedback) הולך רק לקובץ הציונים."""
     first = doc[0].rect
     page = doc.new_page(0, width=first.width, height=first.height)
     rows = "".join(
-        f'<p style="margin: 0 0 6px"><b>{_esc(q.label)}: {_pts(p)} מתוך {_pts(q.points)}</b>'
-        + (f". {_esc(c)}" if c else "") + "</p>"
+        f'<p style="margin: 0 0 2px"><b>{_pts(p)}/{_pts(q.points)} - {_esc(question_title(q.label))}</b></p>'
+        + (f'<p style="margin: 0 0 10px">{_esc(c)}</p>' if c else '<p style="margin: 0 0 10px"></p>')
         for q, p, c in zip(ctx.questions, g.points, g.comments)
     )
     more = "".join(f'<p style="margin: 6px 0 0">{_esc(t)}</p>' for t in extra or [])
@@ -721,7 +764,7 @@ def _summary_page(doc: pymupdf.Document, g: Graded, ctx: Context, archive, extra
         f'<p style="font-size: 16px; margin: 0">{_esc(ctx.title)}</p>'
         f'<p style="font-size: 22px; font-weight: bold; margin: 8px 0 16px">ציון: {_pts(g.grade)} מתוך {_pts(ctx.max_grade)}</p>'
         f"{rows}"
-        f'<p style="margin-top: 16px">{_esc(g.feedback)}</p>{more}</div>'
+        f"{more}</div>"
     )
     m = 50
     page.insert_htmlbox(pymupdf.Rect(m, m, first.width - m, first.height - m), html, css=_CSS, archive=archive, scale_low=0)
