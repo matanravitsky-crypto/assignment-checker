@@ -240,3 +240,37 @@ def test_a_typed_page_three_submissions_share_is_course_material(assignment):
     assert pairs(rep) == {("0004", "0005"): {"text"}}
     (group,) = rep.repeated
     assert group["kind"] == "text" and group["numbers"] == 3
+
+
+QUESTION = ("Prove that for every three sets A, B and C the intersection of A with the union of B and C equals "
+            "the union of the intersection of A and B with the intersection of A and C, and explain each step.")
+
+
+def material(assignment, text: str) -> None:
+    """דף תרגילים של הקורס, ב-"<קורס>/Course material/Sheets"."""
+    folder = assignment.parent / paths.COURSE_MATERIAL / "Sheets"
+    folder.mkdir(parents=True, exist_ok=True)
+    doc = pymupdf.open()
+    doc.new_page().insert_textbox(pymupdf.Rect(60, 60, 540, 600), text, fontname="helv")
+    doc.save(folder / "Sheet 1 - Sets.pdf")
+    doc.close()
+
+
+def test_a_booklet_page_two_students_inserted_is_course_material(assignment):
+    # העמוד מהחוברת כמו שהוא, עם הכותרת שלו (typed מוסיף כותרת של שאלה 11)
+    material(assignment, "Assignment 0, question 11: prove that A∩(B∪C) = (A∩B)∪(A∩C) " + THIRD + " " + QUESTION)
+    put(assignment, "0001.pdf", typed("One", THIRD))
+    put(assignment, "0002.pdf", typed("Two", THIRD))
+    rep = check.check_assignment(assignment)
+    assert rep.pairs == [] and rep.repeated == []
+    assert rep.material == {"pages": 2, "files": 1}
+
+
+def test_quoting_the_question_is_not_copying_but_the_same_answer_still_is(assignment):
+    material(assignment, QUESTION)
+    put(assignment, "0001.pdf", typed("One", QUESTION + " " + ANSWER))
+    put(assignment, "0002.pdf", typed("Two", QUESTION + " " + OTHER))
+    put(assignment, "0003.pdf", typed("Three", QUESTION + " " + ANSWER))
+    rep = check.check_assignment(assignment)
+    assert pairs(rep) == {("0001", "0003"): {"text"}}
+    assert rep.material["pages"] == 0

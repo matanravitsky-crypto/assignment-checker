@@ -51,6 +51,9 @@ README = "README.txt"
 # The lecturer's or TA's grading material, in the assignment folder: rubric, solutions, accepted methods (.md/.txt).
 # Grading sends all of it to Claude. "פדגוגי" is the name the team gave it; "Pedagogy" works too.
 PEDAGOGY = ("Pedagogy", "פדגוגי")
+# The course's own material, in the course folder: exercise sheets and booklets with their solutions (Sheets/...).
+# The copying check reads it so that a page a student copied from the booklet is not a suspicion
+COURSE_MATERIAL = "Course material"
 # A pull never deletes or overwrites a submission: a file that a newer download replaces (a resubmission, or a
 # second file that is gone) moves here first, "Earlier versions/<date>/0001.pdf". The key before every change goes
 # to "Key history" (not next to the key: a "Key - number to student*.csv" there counts as an OneDrive conflict copy)
