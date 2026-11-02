@@ -321,7 +321,7 @@ def ingest(assignment_id: str, zip_path: Path | None = None,
 
     before = set(anonymize.existing_numbers(target).values())
     rows = anonymize.prepare(original, target, on_folder=on_progress and (lambda done, total: report("number", done, total)))
-    log_pull(target, rows, before, len(zips))
+    log_pull(target, rows, before, len(zips), partial=partial_of(zip_path, kept_dir / "parts.json" if in_parts else None))
     guide.write_guides(paths.data_dir())
     return rows
 
@@ -348,26 +348,68 @@ def _log_unchanged(assignment_id: str, list_path: Path, course: str | None, name
     return rows
 
 
-PULL_LOG_FIELDS = ["pulled_at", "by", "students", "new", "files", "parts"]
+PULL_LOG_FIELDS = ["pulled_at", "by", "students", "new", "files", "parts", "partial"]
 
 
-def log_pull(target: Path, rows: list[dict], before: set[int], parts: int) -> None:
-    """One row in the assignment's "Pull log.csv": when, who (as in the lock files), and how many. Numbers only."""
+def partial_of(*lists: Path | None) -> int:
+    """How many students a capped pull was limited to (the "limit" of the list from download_parts.js), 0 when the pull
+    was not cut: no cap, or fewer students than the cap. `lists`: where the list may be (the one Chrome saved, or the
+    copy kept with the parts)."""
+    for path in lists:
+        try:
+            listed = json.loads(path.read_text(encoding="utf-8")) if path and path.suffix.lower() == LIST else None
+        except (OSError, ValueError):
+            continue
+        if isinstance(listed, dict):
+            limit, available = int(listed.get("limit") or 0), int(listed.get("available") or 0)
+            return limit if limit and available > limit else 0
+    return 0
+
+
+def log_pull(target: Path, rows: list[dict], before: set[int], parts: int, partial: int = 0) -> None:
+    """One row in the assignment's "Pull log.csv": when, who (as in the lock files), and how many. Numbers only.
+    `partial`: the cap the pull was cut to (0 = it brought everyone it asked for): the next pull must then ask for
+    everyone, not only for what changed since this one (`pulls(complete_only=True)`)."""
     numbers = {int(r["number"]) for r in rows}
     log = target / paths.PULL_LOG
+    _add_log_columns(log)
     new_file = not log.exists()
     with open(log, "a", newline="", encoding="utf-8-sig" if new_file else "utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=PULL_LOG_FIELDS)
         if new_file:
             writer.writeheader()
         writer.writerow({"pulled_at": datetime.now().isoformat(timespec="seconds"), "by": lock.me(),
-                         "students": len(numbers), "new": len(numbers - before), "files": len(rows), "parts": parts})
+                         "students": len(numbers), "new": len(numbers - before), "files": len(rows), "parts": parts,
+                         "partial": partial or ""})
 
 
-def pulls(target: Path) -> list[str]:
-    """When the assignment was pulled (pulled_at of every row in "Pull log.csv"), oldest first."""
+def _add_log_columns(log: Path) -> None:
+    """A log written before the column "partial" existed gets it (empty), so the new rows line up with the header."""
+    if not log.exists():
+        return
+    try:
+        with open(log, encoding="utf-8-sig", newline="") as f:
+            reader = csv.DictReader(f)
+            old = reader.fieldnames or []
+            rows = list(reader)
+        if "partial" in old or not old:
+            return
+        tmp = log.with_name(log.name + ".tmp")
+        with open(tmp, "w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.DictWriter(f, fieldnames=PULL_LOG_FIELDS, extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows({**r, "partial": ""} for r in rows)
+        os.replace(tmp, log)
+    except (OSError, csv.Error):
+        pass
+
+
+def pulls(target: Path, complete_only: bool = False) -> list[str]:
+    """When the assignment was pulled (pulled_at of every row in "Pull log.csv"), oldest first. `complete_only`: leave
+    out the pulls that were cut to a number of students, since later pulls may not trust them as "everyone is here"."""
     try:
         with open(target / paths.PULL_LOG, encoding="utf-8-sig", newline="") as f:
-            return sorted(r["pulled_at"] for r in csv.DictReader(f) if r.get("pulled_at"))
+            return sorted(r["pulled_at"] for r in csv.DictReader(f)
+                          if r.get("pulled_at") and not (complete_only and (r.get("partial") or "").strip()))
     except (OSError, csv.Error):
         return []

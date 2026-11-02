@@ -185,7 +185,7 @@ SINCE_MARGIN_S = 60 * 60  # משיכה חוזרת מבקשת גם את מה שה
 def _since(a: folder_view.Assignment) -> int:
     """ממתי לבקש ממודל רק את מה שהשתנה (מילישניות מ-1970): המשיכה האחרונה ב-Pull log.csv, פחות שעה.
     0 (את כולם) כשאין משיכה קודמת או שאין עוד אף הגשה ממוספרת."""
-    pulled = moodle_ingest.pulls(a.dir)
+    pulled = moodle_ingest.pulls(a.dir, complete_only=True)  # a pull cut to N students left others out: ask for all
     if not pulled or not a.key_rows():
         return 0
     try:
@@ -279,16 +279,18 @@ def _backup_dir(a: folder_view.Assignment) -> Path | None:
         return None
 
 
-def pull(root: Path, course: str, assignment: str, moodle_id: str | None = None, full: bool = False) -> dict:
+def pull(root: Path, course: str, assignment: str, moodle_id: str | None = None, full: bool = False,
+         limit: int = 0) -> dict:
     """`full`: ask Moodle for everyone. Otherwise, after a first pull, only for students whose submission changed since
-    the last one (minutes instead of GBs); the others keep what they have."""
+    the last one (minutes instead of GBs); the others keep what they have. `limit`: at most that many students (the
+    first in Moodle's grading table that have a submission); a later pull without it brings the rest."""
     global _pull
     with _pull_lock:
         _pull = PullProgress(course, assignment, running=True, phase="find",
                              started_at=datetime.now().isoformat(timespec="seconds"))
         job = _pull
     try:
-        rep = _do_pull(root, course, assignment, moodle_id, full)
+        rep = _do_pull(root, course, assignment, moodle_id, full, limit)
         job.summary = rep["summary"]
         if rep["result"]["new"]:
             # new submissions: the copying check (no Claude, no tokens) starts by itself, instead of a click on its page
@@ -306,7 +308,8 @@ def pull(root: Path, course: str, assignment: str, moodle_id: str | None = None,
             job.running = False
 
 
-def _do_pull(root: Path, course: str, assignment: str, moodle_id: str | None, full: bool = False) -> dict:
+def _do_pull(root: Path, course: str, assignment: str, moodle_id: str | None, full: bool = False,
+             limit: int = 0) -> dict:
     # Any computer may pull, a local data folder too (Ori, the pull owner, 2026-10-29): the key table of the folder it
     # pulls into is the one that counts, and anonymize.prepare keeps every number in it
     a = new_assignment(root, course, assignment, moodle_id) if moodle_id else find_assignment(root, course, assignment)
@@ -337,13 +340,15 @@ def _do_pull(root: Path, course: str, assignment: str, moodle_id: str | None, fu
     before = {r["number"] for r in old_rows}
     lock = _take_lock(a)
     try:
-        zip_path = _zip_from_moodle(a, mid, 0 if full else _since(a))
+        zip_path = _zip_from_moodle(a, mid, 0 if full else _since(a), limit)
         _title_from_zip(a, zip_path, mid)
         listing = _listing(zip_path)
         _due_from_moodle(a, listing)
         without_file = _without_file(zip_path)
         listed = _listed_users(zip_path)
         changed = int(listing.get("changed") or 0) if int(listing.get("since") or 0) > 0 else None
+        available = int(listing.get("available") or 0)
+        cut = int(listing.get("limit") or 0) if int(listing.get("limit") or 0) and available > int(listing.get("limit") or 0) else 0
         rows = moodle_ingest.ingest(mid, zip_path, on_progress=_pull_report)
     except (FileNotFoundError, ValueError) as e:
         raise UserError(_hebrew_error(e, mid)) from e
@@ -356,9 +361,11 @@ def _do_pull(root: Path, course: str, assignment: str, moodle_id: str | None, fu
         "result": {"total": len(numbers), "new": len(new), "files": len(rows)},
         "summary": f"{len(numbers)} הגשות" + (f", {len(new)} חדשות" if new else ", אין חדשות"),
         "changed": changed,
-        "notes": ([f"ממודל הורדו רק {changed} סטודנטים שההגשה שלהם השתנתה מאז המשיכה הקודמת. כל השאר נשארו כמו שהיו."
-                   if changed else "שום הגשה לא השתנתה במודל מאז המשיכה הקודמת, ולכן שום קובץ לא השתנה."]
-                  if changed is not None else [])
+        "notes": ([f"המשיכה הוגבלה ל-{cut} הגשות מתוך {available} שהיו במודל. משיכה בלי הגבלה תביא את כל השאר, "
+                   "וכל מי שכבר נמשך שומר על המספר שלו."] if cut else [])
+                 + ([f"ממודל הורדו רק {changed} סטודנטים שההגשה שלהם השתנתה מאז המשיכה הקודמת. כל השאר נשארו כמו שהיו."
+                     if changed else "שום הגשה לא השתנתה במודל מאז המשיכה הקודמת, ולכן שום קובץ לא השתנה."]
+                    if changed is not None else [])
                  + [f"הקבצים נשמרו ב-\"{paths.TO_GRADE}\". ה-ZIP של מודל נשמר רק במחשב הזה, ב-\"{paths.BACKUP}\"."]
                  + ([f"{without_file} סטודנטים בטבלת ההגשות במודל הגיעו בלי קובץ (לא הגישו קובץ, או שמודל לא שלח אותו)."]
                     if without_file else [])
@@ -409,11 +416,12 @@ DOWNLOAD_WAIT_S = 25 * 60  # הכי הרבה שמחכים להורדה: פחות
 PARTS_LIST_WAIT_S = 180
 
 
-def _download_safely(downloader, a: folder_view.Assignment, since: int = 0) -> dict:
-    """downloader.download, בלי לזרוק: התשובה חוזרת מה-thread כמו כל תשובה אחרת. `since`: רק מה שהשתנה מאז."""
+def _download_safely(downloader, a: folder_view.Assignment, since: int = 0, limit: int = 0) -> dict:
+    """downloader.download, בלי לזרוק: התשובה חוזרת מה-thread כמו כל תשובה אחרת. `since`: רק מה שהשתנה מאז.
+    `limit`: לא יותר מכמה סטודנטים."""
     try:
         info = paths.read_info(a.dir)
-        return downloader.download({**info, "since": since} if since else info)
+        return downloader.download({**info, **({"since": since} if since else {}), **({"limit": limit} if limit else {})})
     except Exception as e:  # noqa: BLE001 — מוצג באתר
         return {"status": "error", "message": f"ההורדה נכשלה ({type(e).__name__})."}
 
@@ -422,7 +430,7 @@ def _make_downloader():
     return claude_driver.ClaudeChromeDriver()
 
 
-def _zip_from_moodle(a: folder_view.Assignment, mid: str, since: int = 0) -> Path:
+def _zip_from_moodle(a: folder_view.Assignment, mid: str, since: int = 0, limit: int = 0) -> Path:
     """ההגשות, ממודל עצמו: Claude בכרום מוריד אותן עכשיו. ZIP ישן שמחכה בתיקיית ההורדות לא נלקח: משיכה היא
     תמיד הורדה טרייה ממודל, אחרי שהבדיקה (require_moodle) ראתה שהתוסף והמודל מחוברים."""
     with _send_lock:  # ההורדה, הבדיקה וההעלאה היו מפעילות את אותו כרום
@@ -438,7 +446,7 @@ def _zip_from_moodle(a: folder_view.Assignment, mid: str, since: int = 0) -> Pat
         raise UserError(f"{e.who} מושך עכשיו הגשות ממודל במחשב הזה (התחיל ב-{e.since:%H:%M}). "
                         "משיכה אחת בכל פעם: כדאי לחכות שתסתיים ולנסות שוב.") from e
     try:
-        return _download_with_chrome(a, mid, since)
+        return _download_with_chrome(a, mid, since, limit)
     finally:
         chrome_lock.unlink(missing_ok=True)
 
@@ -452,8 +460,9 @@ def _work_dir() -> Path:
     return d
 
 
-def _download_with_chrome(a: folder_view.Assignment, mid: str, changed_since: int = 0) -> Path:
-    """Claude בכרום מוריד ממודל בחלקים, ומחכים שהכול יגיע לתיקיית ההורדות. `changed_since`: רק מה שהשתנה מאז."""
+def _download_with_chrome(a: folder_view.Assignment, mid: str, changed_since: int = 0, limit: int = 0) -> Path:
+    """Claude בכרום מוריד ממודל בחלקים, ומחכים שהכול יגיע לתיקיית ההורדות. `changed_since`: רק מה שהשתנה מאז.
+    `limit`: לא יותר מכמה סטודנטים."""
     global _checking
     with _send_lock:
         _checking = True
@@ -462,7 +471,7 @@ def _download_with_chrome(a: folder_view.Assignment, mid: str, changed_since: in
     # the parts that reach Downloads meanwhile move the progress bar
     answer: dict = {}
     downloader = _make_downloader()
-    worker = threading.Thread(target=lambda: answer.update(_download_safely(downloader, a, changed_since)), daemon=True)
+    worker = threading.Thread(target=lambda: answer.update(_download_safely(downloader, a, changed_since, limit)), daemon=True)
     try:
         if isinstance(downloader, claude_driver.ClaudeChromeDriver):
             claude_driver.open_chrome()  # closed Chrome (the night pull, nobody at the computer): open it first

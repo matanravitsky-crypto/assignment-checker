@@ -537,7 +537,7 @@ def test_pull_in_parts_keeps_every_number_and_adds_the_new_student(root, monkeyp
     kept = [p for p in backup.iterdir() if p.is_dir() and p.name.startswith(paths.DOWNLOAD_PREFIX)]
     assert len(kept) == 1 and sorted(p.name for p in kept[0].iterdir()) == ["part 001.zip", "part 002.zip", "parts.json"]
     log = (root / COURSE / HW / paths.PULL_LOG).read_text(encoding="utf-8-sig").splitlines()
-    assert log[0] == "pulled_at,by,students,new,files,parts" and log[-1].split(",")[2:] == ["4", "1", "4", "2"]
+    assert log[0] == "pulled_at,by,students,new,files,parts,partial" and log[-1].split(",")[2:] == ["4", "1", "4", "2", ""]
     assert list(ingest.downloads_dir().iterdir()) == []  # every part was taken
     assert actions.pull_status()["phase"] == "number"
     assert len(list((tmp_path / "Moodle originals" / COURSE / HW).iterdir())) == 4
@@ -653,6 +653,79 @@ def test_a_pull_after_a_pull_asks_moodle_only_for_what_changed(root, monkeypatch
         p.unlink()
     actions.pull(root, COURSE, HW, full=True)
     assert "since" not in fake.infos[-1]                       # "pull everything again"
+
+
+class CappedDownloader(FakeDownloader):
+    """Moodle with a cap: the list says what was asked for (limit) and how many there were (available)."""
+
+    def __init__(self, downloads, available=3):
+        super().__init__(downloads)
+        self.infos, self.available = [], available
+
+    def download(self, info):
+        self.infos.append(info)
+        limit = info.get("limit", 0)
+        stem = f"214193210120271-הגשה 0-{info['id']}"
+        listed = {"users": self.available, "changed": min(limit, self.available) if limit else self.available,
+                  "since": info.get("since", 0), "limit": limit, "available": self.available, "parts": 0, "empty": 0,
+                  "failed": [], "files": []}
+        (self.downloads / f"{stem}.json").write_text(json.dumps(listed), encoding="utf-8")
+        return {"status": "started", "message": "ok", "users": self.available, "parts": 0}
+
+
+def test_a_capped_pull_says_so_and_the_next_pull_asks_for_everyone(root, monkeypatch, tmp_path):
+    """A pull cut to N students left others out: the log marks it, and the next pull is not "only what changed since"
+    (those left out would never come), until a complete pull is logged."""
+    from datetime import datetime
+    a_dir = root / COURSE / HW
+    monkeypatch.setattr("moodle.ingest.ingest", lambda *a, **k: folder_view.Assignment(a_dir).key_rows())
+    fake = CappedDownloader(actions.moodle_ingest.downloads_dir(), available=9)
+    monkeypatch.setattr(actions, "_make_downloader", lambda: fake)
+    _log_a_pull(a_dir, "2026-10-24T09:00:00")                          # an earlier complete pull
+    rep = actions.pull(root, COURSE, HW, limit=4)
+    assert fake.infos[-1]["limit"] == 4 and "since" in fake.infos[-1]  # the cap comes on top of "only what changed"
+    assert any("הוגבלה ל-4 הגשות מתוך 9" in n for n in rep["notes"])
+    # ingest was faked, so the log row is written by hand the way ingest does it from the list
+    actions.moodle_ingest.log_pull(a_dir, folder_view.Assignment(a_dir).key_rows(), set(), 1, partial=4)
+    header = (a_dir / paths.PULL_LOG).read_text(encoding="utf-8-sig").splitlines()
+    assert header[0].endswith(",partial") and header[1].endswith(",15,") and header[-1].endswith(",4")  # old row kept
+    assert len(actions.moodle_ingest.pulls(a_dir)) == 2 and len(actions.moodle_ingest.pulls(a_dir, complete_only=True)) == 1
+    for p in actions.moodle_ingest.downloads_dir().iterdir():
+        p.unlink()
+    actions.pull(root, COURSE, HW)
+    assert fake.infos[-1]["since"] == int(datetime(2026, 10, 24, 8, 0).timestamp() * 1000)  # the complete pull, not the cut
+    assert "limit" not in fake.infos[-1]
+    only_cut = tmp_path / "only-cut"
+    only_cut.mkdir()
+    actions.moodle_ingest.log_pull(only_cut, folder_view.Assignment(a_dir).key_rows(), set(), 1, partial=4)
+    assert actions.moodle_ingest.pulls(only_cut, complete_only=True) == []                    # nothing complete: everyone
+
+
+def test_partial_of_reads_the_cap_from_the_list(tmp_path):
+    cut = tmp_path / "x-1.json"
+    cut.write_text(json.dumps({"limit": 5, "available": 9}), encoding="utf-8")
+    assert actions.moodle_ingest.partial_of(cut) == 5
+    cut.write_text(json.dumps({"limit": 5, "available": 3}), encoding="utf-8")   # fewer than the cap: nothing was left out
+    assert actions.moodle_ingest.partial_of(cut) == 0
+    cut.write_text(json.dumps({"limit": 0, "available": 9}), encoding="utf-8")
+    assert actions.moodle_ingest.partial_of(cut) == 0
+    assert actions.moodle_ingest.partial_of(tmp_path / "gone.json", None) == 0
+
+
+@pytest.mark.parametrize("sent, expect", [(30, 30), (0, None), (-3, None), ("30", None), (True, None), (2.5, None)])
+def test_the_server_passes_only_a_whole_positive_cap(root, server, monkeypatch, sent, expect):
+    seen = {}
+
+    def fake_pull(r, course, assignment, **kwargs):
+        seen.update(kwargs)
+        return {"summary": "x", "result": {"total": 0, "new": 0, "files": 0}, "notes": []}
+
+    monkeypatch.setattr(actions, "pull", fake_pull)
+    st, _ = call(server, "POST", "/api/pull", {"course": COURSE, "assignment": HW, "limit": sent}, {"X-Assignment-Checker": "1"})
+    assert st == 200 and seen.get("limit") == expect
+    seen.clear()
+    call(server, "POST", "/api/pull", {"course": COURSE, "assignment": HW, "limit": 30, "full": True}, {"X-Assignment-Checker": "1"})
+    assert "limit" not in seen and seen["full"] is True                 # "pull everything again" ignores the cap
 
 
 class NothingChanged:
