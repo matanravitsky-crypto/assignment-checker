@@ -713,11 +713,14 @@ def test_server_stops_a_running_grading(root, server, monkeypatch):
 
 
 def _scan_page(ink_rect=(100, 100, 300, 140)):
-    """עמוד לבן עם פס "כתב יד" כהה אחד, ב-ink_rect (נקודות)."""
+    """עמוד לבן עם 'כתב יד' מדומה ב-ink_rect: קטעים קצרים שלא מסוננים על ידי _drop_long_lines."""
     doc = pymupdf.open()
     page = doc.new_page()
+    seg = 22  # אורך קטע בנקודות (< 45% מ-595)
     for y in range(int(ink_rect[1]), int(ink_rect[3]), 3):
-        page.draw_line((ink_rect[0], y), (ink_rect[2], y), color=(0, 0, 0.3), width=1.2)
+        for x in range(int(ink_rect[0]), int(ink_rect[2]), seg + 5):
+            x1 = min(x + seg, ink_rect[2])
+            page.draw_line((x, y), (x1, y), color=(0, 0, 0.3), width=1.5)
     return doc, page
 
 
@@ -747,8 +750,9 @@ def test_mark_with_no_writing_anywhere_is_dropped_and_its_note_goes_to_the_summa
 
 def test_note_goes_to_free_paper_not_over_the_writing():
     doc, page = _scan_page((100, 100, 500, 140))
-    for y in range(160, 200, 3):  # עוד שורה כתובה ישר מתחת
-        page.draw_line((100, y), (500, y), color=(0, 0, 0.3), width=1.2)
+    for y in range(160, 200, 3):  # עוד שורה כתובה ישר מתחת (קטעים קצרים, לא מסוננים)
+        for x in range(100, 500, 27):
+            page.draw_line((x, y), (min(x + 22, 500), y), color=(0, 0, 0.3), width=1.2)
     ink = grading.Ink(page)
     box = pymupdf.Rect(100, 100, 500, 140)
     note = grading._note_rect(box, page.rect, "חסר נימוק להכלה", 11, ink)
