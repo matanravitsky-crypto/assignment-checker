@@ -594,19 +594,20 @@ def test_the_site_dates_every_kind_of_kept_download(root):
     assert len(status.status(a.dir)["downloads"]) == 4  # moodle status lists the folder of parts too
 
 
-def test_a_local_copy_does_not_pull(tmp_path, monkeypatch):
-    """תיקיית מערכת מקומית (לא בתוך YallaLinearit המסונכרנת) לא מושכת: לפני כרום ולפני שנוצר משהו."""
-    from moodle import ingest
+def test_a_local_copy_pulls_too(tmp_path, monkeypatch):
+    """תיקיית מערכת מקומית (לא בתוך YallaLinearit המסונכרנת) מושכת כמו כל מחשב אחר: אורי, בעל המשיכה, מושך
+    מהמחשב שלו (2026-10-29). טבלת המפתח של התיקייה שמושכים אליה היא זו שקובעת."""
     local = tmp_path / "Exercise Checking System"
     (local / COURSE).mkdir(parents=True)
-    fake = FakeDownloader(ingest.downloads_dir())
-    monkeypatch.setattr(actions, "_make_downloader", lambda: fake)
-    with pytest.raises(actions.UserError, match="עותק מקומי"):
-        actions.pull(local, COURSE, "Assignment 3", moodle_id="3453769")
-    assert fake.calls == [] and not (local / COURSE / "Assignment 3").exists()
-    monkeypatch.setenv("MOODLE_DRIVER", "simulate")  # the old demo switch is gone: still no pull
-    with pytest.raises(actions.UserError, match="עותק מקומי"):
-        actions.pull(local, COURSE, "Assignment 3", moodle_id="3453769")
+    seen = {}
+
+    def fake_ingest(assignment_id, zip_path=None, course=None, name=None, **_):
+        seen["id"], seen["dir"] = assignment_id, paths.find_assignment(assignment_id)
+        return []
+
+    monkeypatch.setattr("moodle.ingest.ingest", fake_ingest)
+    actions.pull(local, COURSE, "Assignment 3", moodle_id="3453769")
+    assert seen == {"id": "3453769", "dir": local / COURSE / "Assignment 3"}
 
 
 def test_the_site_dates_pulls_from_the_pull_log_and_old_kept_zips(root):

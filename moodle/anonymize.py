@@ -182,11 +182,20 @@ def _set_aside(path: Path, earlier: Path) -> Path:
 KEY_EMPTY = "the key table is empty or unreadable"
 
 
+NUMBERED = re.compile(r"\d{4}(?:-\d+)?")
+
+
+def is_numbered(path: Path) -> bool:
+    """A numbered submission ("0001.pdf", "0001-2.pdf"), not the README.txt that `guide` leaves in the folder, not a
+    temp file and not a OneDrive conflict copy."""
+    return path.is_file() and NUMBERED.fullmatch(path.stem) is not None
+
+
 def check_key(assignment_dir: Path) -> None:
     """Refuse to number when the key is empty or unreadable while the assignment already has submissions: numbering
     from it would give every student a new number, and grades would reach the wrong student. Changes nothing."""
     anon = assignment_dir / paths.TO_GRADE
-    has_submissions = anon.is_dir() and any(f.is_file() and not f.name.endswith(".tmp") for f in anon.iterdir())
+    has_submissions = anon.is_dir() and any(is_numbered(f) for f in anon.iterdir())
     try:
         rows = existing_rows(assignment_dir)
         ok = all(row.get("participant_id", "").isdigit() and row.get("number", "").isdigit() for row in rows)

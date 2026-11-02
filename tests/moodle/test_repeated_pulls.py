@@ -193,6 +193,19 @@ def test_an_empty_or_broken_key_stops_the_pull_before_anything_moves(data, broke
     assert sorted(p.name for p in folder().iterdir()) == kept
 
 
+def test_a_readme_in_the_submissions_folder_is_not_a_submission(data):
+    """`guide` leaves a README.txt in "1 - Submissions to grade" of a new assignment: with no key yet, the first pull
+    must go ahead, not stop as if numbered submissions already existed."""
+    moodle = Moodle(data, 3)
+    assignment = data / COURSE / NAME
+    (assignment / paths.TO_GRADE).mkdir(parents=True)
+    (assignment / paths.TO_GRADE / paths.README).write_text("מה יש כאן", encoding="utf-8-sig")
+    anonymize.check_key(assignment)  # no error
+    ingest.ingest(MID, moodle.download(False), COURSE, NAME)
+    assert len(key()) == 20
+    assert (assignment / paths.TO_GRADE / paths.README).exists()
+
+
 def test_a_folder_left_by_the_old_code_gives_its_files_back(data):
     """The old code renamed the folder to "(previous)" during a pull; one left by a failed pull is merged back."""
     moodle = Moodle(data, 10)
