@@ -787,7 +787,7 @@ def _take_task_if_free(course_dir: Path, assignment: str, stage: str) -> None:
 # ---------- מה השתנה בתיקייה ----------
 # האתר שואל כל כמה שניות (GET /api/changes) ומקבל חתימה של התיקייה: שמות, זמני שינוי וגדלים של הקבצים שהמצב
 # נבנה מהם. כשמשהו השתנה (בודק אחר לקח עבודות, OneDrive הביא ציונים, מישהו משך), החתימה משתנה והאתר טוען מחדש.
-_WATCHED = (paths.TO_GRADE, paths.MARKED, paths.UPLOAD, paths.NOTES, paths.CLAIMS)
+_WATCHED = (paths.TO_GRADE, paths.MARKED, paths.UPLOAD, paths.NOTES, paths.CLAIMS, paths.OFFICIAL_KEY)
 
 
 def _scan(h, folder: Path) -> None:
@@ -1452,7 +1452,7 @@ def state(root: Path) -> dict:
                 "rubric": [{"label": q.label, "points": q.points, "criteria": q.criteria, "deductions": q.deductions}
                            for q in ctx.questions],
                 "noRubric": ctx.no_rubric, "maxGrade": ctx.max_grade, "solution": (a.dir / grading.SOLUTION).is_file(),
-                "rubricFile": rubric_file_state(a.dir, root),
+                "rubricFile": rubric_file_state(a.dir, root), "officialKey": official_key_state(a.dir, root),
                 "notes": d.get("notes") or "", "rules": d.get("submission_rules") or [],
                 "warnings": [f"עותק כפול של טבלת המפתח: {c}" for c in key_conflicts(a)]
                             + [f"עותק כפול של הגשה: {c}" for c in moodle_anonymize.submission_conflicts(a.dir)]
@@ -1502,6 +1502,113 @@ def rubric_file_state(a_dir: Path, root: Path | None = None) -> dict:
             "path": rel, "md": md_kind, "approved": bool(approved), "rounds": rounds}
 
 
+# ---------- המכוון הרשמי של המרצה (grading.official_key) ----------
+KEY_FILE_TYPES = (*grading.KEY_MEDIA, ".docx", ".txt", ".md")
+MAX_KEY_BYTES = 30_000_000
+MAX_KEY_TEXT = 200_000
+
+
+def official_key_state(a_dir: Path, root: Path | None = None) -> dict | None:
+    """מה האתר מציג על המכוון: הקבצים (עם נתיב לצפייה), אם יש טקסט, הניקוד שהוזן, מי העלה ומתי. None אם אין מכוון."""
+    key = grading.official_key(a_dir)
+    if key is None:
+        return None
+    folder = a_dir / paths.OFFICIAL_KEY
+    every = sorted(p for p in folder.iterdir() if p.is_file()) if folder.is_dir() else []
+    d = grading.read_details(a_dir)
+    rel = lambda f: f.relative_to(root).as_posix() if root is not None and f.is_relative_to(root) else None
+    return {"files": [{"name": f.name, "path": rel(f), "sent": f.suffix.lower() in grading.KEY_MEDIA} for f in every],
+            "text": key.text[:MAX_KEY_TEXT], "points": key.points,
+            "by": d.get("official_key_by"), "at": d.get("official_key_at")}
+
+
+def _write_details(a_dir: Path, d: dict) -> None:
+    tmp = a_dir / (paths.INFO + ".tmp")
+    tmp.write_text(json.dumps(d, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.replace(tmp, a_dir / paths.INFO)
+
+
+def _retire_key(a_dir: Path) -> None:
+    """המכוון הקודם (הקבצים והטקסט) עובר ל-"Earlier official keys/<תאריך>/". שום דבר לא נמחק."""
+    old = [p for p in ((a_dir / paths.OFFICIAL_KEY), (a_dir / paths.OFFICIAL_KEY_TEXT)) if p.exists()]
+    if not old:
+        return
+    dest = a_dir / paths.OFFICIAL_KEY_OLD / datetime.now().strftime("%Y-%m-%d %H-%M-%S")
+    while dest.exists():
+        dest = dest.with_name(dest.name + " (2)")
+    dest.mkdir(parents=True)
+    for p in old:
+        os.replace(p, dest / p.name)
+
+
+def save_official_key(root: Path, course: str, assignment: str, *, file_name: str | None = None,
+                      data: bytes | None = None, text: str | None = None, points: dict | None = None,
+                      remove: bool = False) -> dict:
+    """שומר את המכוון שהגיע מהמרצה. קובץ חדש או טקסט חדש מחליפים את המכוון הקודם (שעובר ל-Earlier official keys).
+    Word: הקובץ נשמר כמו שהוא, והטקסט שלו נשלח ל-Claude. points: {שם שאלה: ניקוד}, רק לשאלות של המטלה.
+    remove: המכוון יוצא מהבדיקה (גם הוא עובר ל-Earlier official keys)."""
+    a = find_assignment(root, course, assignment)
+    if _job.running and _job.assignment == assignment and _job.course == course:
+        raise UserError("בדיקה של המטלה הזאת רצה עכשיו. מחליפים מכוון אחרי שהיא נגמרת (או עוצרים אותה), "
+                        "כדי שכל העבודות ייבדקו לפי אותו מכוון.")
+    d = grading.read_details(a.dir)
+    if remove:
+        _retire_key(a.dir)
+        for k in ("official_key_points", "official_key_by", "official_key_at"):
+            d.pop(k, None)
+        _write_details(a.dir, d)
+        return {"officialKey": None}
+    text = (text or "").strip() if text is not None else None
+    if data is not None:
+        name = Path(str(file_name or "")).name.strip()
+        ext = Path(name).suffix.lower()
+        if not name or ext not in KEY_FILE_TYPES:
+            raise UserError("המכוון צריך להיות PDF, תמונה (PNG/JPG), Word (.docx) או קובץ טקסט.")
+        if not data or len(data) > MAX_KEY_BYTES:
+            raise UserError(f"הקובץ ריק או גדול מ-{MAX_KEY_BYTES // 1_000_000} MB.")
+        extracted = ""
+        if ext == ".docx":
+            try:
+                extracted = grading.docx_text(data)
+            except ValueError as e:
+                raise UserError(str(e)) from e
+        elif ext in (".txt", ".md"):
+            extracted = data.decode("utf-8-sig", errors="replace").strip()
+        _retire_key(a.dir)
+        folder = a.dir / paths.OFFICIAL_KEY
+        folder.mkdir()
+        (folder / name).write_bytes(data)
+        if extracted or text:
+            (a.dir / paths.OFFICIAL_KEY_TEXT).write_text(
+                "\n\n".join(t for t in (extracted, text) if t) + "\n", encoding="utf-8")
+    elif text is not None:
+        if len(text) > MAX_KEY_TEXT:
+            raise UserError("הטקסט של המכוון ארוך מדי.")
+        if text:
+            (a.dir / paths.OFFICIAL_KEY_TEXT).write_text(text + "\n", encoding="utf-8")
+        else:
+            (a.dir / paths.OFFICIAL_KEY_TEXT).unlink(missing_ok=True)
+    if grading.official_key(a.dir) is None:
+        raise UserError("עוד אין מכוון: מעלים קובץ או מדביקים את הטקסט שלו.")
+    if points is not None:
+        labels = {q.label for q in grading.load_context(a.dir, send_solution=False).questions}
+        clean = {}
+        for label, v in points.items():
+            if label not in labels:
+                raise UserError(f"אין במטלה שאלה בשם \"{label}\".")
+            if v in (None, ""):
+                continue
+            x = grading._num(v, -1)
+            if x <= 0 or x > 1000:
+                raise UserError(f"הניקוד של \"{label}\" צריך להיות מספר חיובי.")
+            clean[label] = x
+        d["official_key_points"] = clean
+    d["official_key_by"] = claims.me()
+    d["official_key_at"] = datetime.now().isoformat(timespec="minutes")
+    _write_details(a.dir, d)
+    return {"officialKey": official_key_state(a.dir, root)}
+
+
 def _slots(course_dir: Path) -> list[folder_view.Assignment | int]:
     """עשר ההגשות של הקורס לפי הסדר: המטלה שבתיקייה, או המספר שלה אם עוד אין לה תיקייה.
     מטלה בלי מספר בשם התיקייה (או מעבר לעשר) מופיעה בסוף."""
@@ -1522,7 +1629,7 @@ def _empty_slot(cid: str, course_dir: Path, ai: int, n: int) -> dict:
         "courseFolder": course_dir.name, "folder": folder_view.slot_folder(n), "title": folder_view.slot_title(n),
         "n": ai + 1, "due": None, "questions": 4, "questionLabels": [], "pulledAt": None, "returnedAt": None,
         "moodleId": None, "gradedAt": None, "rubric": [], "maxGrade": None, "solution": False, "notes": "", "rules": [],
-        "rubricFile": dict(NO_RUBRIC_FILE), "warnings": [], "subs": [], "log": [], "empty": True,
+        "rubricFile": dict(NO_RUBRIC_FILE), "officialKey": None, "warnings": [], "subs": [], "log": [], "empty": True,
     }
 
 

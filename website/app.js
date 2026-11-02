@@ -50,6 +50,7 @@
     tab: { pull: "list", grade: "list", ret: "list" },
     filter: "all",
     query: { pull: "", grade: "", ret: "" },
+    keyDraft: {},     // assignmentId -> המכוון שעוד לא נשמר: { file, text, points: {שאלה: ניקוד} }
     moodleDraft: {},  // assignmentId -> מה שהוקלד בשדה "מזהה המטלה במודל" של הגשה שעוד לא נמשכה
     run: {},          // assignmentId -> { stage, steps[] }
     seenDone: {},     // assignmentId:stage -> true, כדי להנפיש את ה-V רק ברגע ההשלמה
@@ -1186,7 +1187,12 @@
     if (state.gradeKey !== key) { state.gradeKey = key; state.gradeShown = GRADE_PAGE; }
     const rows = found.slice(0, state.gradeShown);
     const more = found.length - rows.length;
+    const K = A.officialKey;
+    const keyLine = `<div class="notice ${K ? "ok" : ""}">${K ? ICON.check : ICON.warn}<div>${K
+      ? `<b>הבדיקה הולכת לפי המכוון הרשמי</b>${K.at ? ` (הועלה ${esc(when(K.at))})` : ""}. כדאי להתחיל ב"בדוק" על כמה עבודות ולעבור עליהן לפני שבודקים את כולן.`
+      : `<b>עוד אין מכוון רשמי.</b> כשהוא מגיע מהמרצה מעלים אותו`} <button class="btn ghost small" data-tab="grade:instr">${K ? "לצפייה במכוון" : "בלשונית \"מחוון והנחיות\""}</button></div></div>`;
     return `${teamHTML()}
+      ${keyLine}
       <section class="panel">
         <div class="panel-head">
           <div class="chips" role="group" aria-label="סינון לפי מצב">
@@ -1335,6 +1341,7 @@
       `השאלות והניקוד (מתוך ${A.maxGrade || 100}):`,
       ...R.questions.map((q) => `${q.req || `שאלה ${q.n}`}: ${q.pts} נק'${q.criteria ? `. ${q.criteria}` : ""}`),
       "",
+      ...(A.officialKey ? ["המכוון הרשמי של המרצה מצורף, והבדיקה הולכת לפיו (הוא גובר על המחוון)."] : []),
       state.claude.sendSolution && A.solution ? "מצורפים: הפתרון הרשמי ועמודי ההגשה כתמונות." : "מצורפים: עמודי ההגשה כתמונות.",
       "Claude מחזיר JSON לפי הסכמה.",
     ].join("\n");
@@ -1375,12 +1382,78 @@
     </section>`;
   }
 
+  // המכוון הרשמי של המרצה (grading.official_key): קובץ (PDF, תמונה, Word, טקסט) או טקסט מודבק, וניקוד לכל שאלה.
+  // כשיש מכוון, כל "בדוק" שולח אותו ל-Claude עם כל עבודה, והוא גובר על המחוון. נשמר בתיקיית המטלה, אז כל הצוות רואה אותו
+  const KEY_ACCEPT = ".pdf,.png,.jpg,.jpeg,.docx,.txt,.md";
+  function keyDraft(A) {
+    const k = A.officialKey;
+    return (state.keyDraft[A.id] ||= { file: null, text: k?.text || "", points: { ...(k?.points || {}) } });
+  }
+  function officialKeyPanel(A) {
+    const k = A.officialKey, d = keyDraft(A), qs = A.rubric?.length ? A.rubric : (A.questionLabels || []).map((l) => ({ label: l, points: 0 }));
+    const missing = qs.filter((q) => !(Number(d.points[q.label]) > 0) && !(q.points > 0));
+    const files = (k?.files || []).map((f) => f.path
+      ? `<a class="btn secondary small" href="${BASE}api/file?path=${encodeURIComponent(f.path)}" target="_blank" rel="noopener">${ICON.folder}${esc(f.name)}</a>`
+      : `<span class="tag">${esc(f.name)}</span>`).join(" ");
+    return `<section class="panel" id="official-key">
+      <div class="panel-head"><h2>המכוון הרשמי</h2><span class="end tag ${k ? "ok" : "warn"}">${k ? "פעיל: הבדיקה לפיו" : "עוד לא הועלה"}</span></div>
+      <div class="panel-body">
+        <p class="lead" style="margin:0 0 10px">${k
+          ? `הועלה${k.by ? ` על ידי ${esc(k.by)}` : ""}${k.at ? ` ב-${esc(when(k.at))}` : ""}. כל לחיצה על "בדוק" שולחת אותו ל-Claude עם כל עבודה, והוא גובר על המחוון ועל הפתרון.`
+          : "כשהמכוון מגיע מהמרצה, מעלים אותו כאן (PDF, תמונה, Word או טקסט) או מדביקים את הטקסט שלו. מאותו רגע כל בדיקה הולכת לפיו."}</p>
+        ${files ? `<div class="row-start" style="margin-bottom:10px;flex-wrap:wrap;gap:6px">${files}</div>` : ""}
+        <div class="field"><label for="ok-file">${k ? "להחליף בקובץ אחר" : "קובץ המכוון"}</label>
+          <input id="ok-file" type="file" accept="${KEY_ACCEPT}" data-key-file>
+          ${d.file ? `<p class="hint">נבחר: <b>${esc(d.file.name)}</b> (${Math.ceil(d.file.size / 1024)} KB). יישמר בלחיצה על "שמור".</p>` : ""}
+          <p class="hint">PDF ותמונות נשלחים ל-Claude כמו שהם. מ-Word נשלח הטקסט (נוסחאות מורכבות עדיף לשמור כ-PDF).</p></div>
+        <div class="field"><label for="ok-text">טקסט המכוון${k?.files?.length ? " (לא חובה, נוסף לקובץ)" : ""}</label>
+          <textarea id="ok-text" rows="6" data-key-text placeholder="אפשר להדביק כאן את המכוון, או הערות נוספות של המרצה לבדיקה">${esc(d.text)}</textarea></div>
+        <div class="field"><label>ניקוד לכל שאלה לפי המכוון</label>
+          ${qs.length ? qs.map((q) => `<div class="rubric-row">
+              <span>${esc(q.label)}${q.points ? `<small class="muted" style="display:block">עכשיו: ${q.points} נק׳</small>` : ""}</span>
+              <span class="rpts"><input type="number" min="0" step="0.5" style="width:80px" data-key-pt="${esc(q.label)}" value="${d.points[q.label] ?? ""}" placeholder="${q.points || ""}"><span>נק׳</span></span>
+            </div>`).join("") : `<p class="muted">למטלה עוד אין רשימת שאלות.</p>`}
+          <p class="hint">${missing.length ? `אין ציונים בלי ניקוד לכל שאלה: חסר ל${esc(missing.map((q) => q.label).join(", "))}.` : "ריק = הניקוד מהמחוון."}</p></div>
+        <div class="row-start" style="gap:8px">
+          <button class="btn primary small" data-act="key-save">${ICON.check}${k ? "שמור שינויים" : "שמור מכוון"}</button>
+          ${k ? `<button class="btn ghost small" data-act="key-remove">הוצא את המכוון מהבדיקה</button>` : ""}
+        </div>
+      </div>
+    </section>`;
+  }
+
+  async function saveOfficialKey(remove) {
+    const A = cur(), d = keyDraft(A);
+    if (remove && !confirm("להוציא את המכוון מהבדיקה? הקבצים לא נמחקים: הם עוברים לתיקייה Earlier official keys.")) return;
+    const body = { course: A.courseFolder, assignment: A.folder };
+    if (remove) body.remove = true;
+    else {
+      if (d.file) {
+        const buf = new Uint8Array(await d.file.arrayBuffer());
+        let bin = "";
+        for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
+        Object.assign(body, { fileName: d.file.name, data: btoa(bin) });
+      }
+      body.text = d.text;
+      body.points = Object.fromEntries(Object.entries(d.points).filter(([, v]) => v !== "" && v != null).map(([k, v]) => [k, Number(v)]));
+    }
+    try {
+      await api("api/official-key", { method: "POST", body: JSON.stringify(body) });
+      delete state.keyDraft[A.id];
+      await loadLocal();
+      toast(remove ? "המכוון הוצא מהבדיקה." : "המכוון נשמר. מעכשיו כל בדיקה הולכת לפיו.");
+    } catch (e) {
+      toast(e.message, ICON.warn);
+    }
+  }
+
   // שלב 2: ההנחיות נשלחות ל-Claude. המחוון והפתרון נקראים מתיקיית המטלה (grading/grade.py)
   function gradeInstr() {
     const R = rubric(), A = cur();
     const total = R.questions.reduce((a, q) => a + q.pts, 0);
     return `<div class="split wide-first">
       <div class="stack">
+        ${officialKeyPanel(A)}
         ${instrBox("grade", "הנחיות לבדיקה", "ההנחיות הכלליות שנשלחות ל-Claude עם כל עבודה, יחד עם המחוון. כדאי לכתוב כאן כל מה שהייתם אומרים למתרגל חדש לפני שהוא מתחיל לבדוק. הן נשמרות בדפדפן הזה ונשלחות בכל לחיצה על \"בדוק\".")}
         <section class="panel">
           <div class="panel-head"><h2>מחוון</h2><span class="meta">${esc(course().name)}, ${esc(A.title)}</span></div>
@@ -2385,6 +2458,8 @@
       if (a === "grade-one") gradeOne(id);
       if (a === "grade-stop") stopLocalGrade();
       if (a === "open-folder") openFolder("folder");
+      if (a === "key-save") saveOfficialKey(false);
+      if (a === "key-remove") saveOfficialKey(true);
       if (a === "open-inbox") openFolder("inbox");
       if (a === "pull-full") runLocalPull(true);
       if (a === "pull-pick-go") { state.pullPick = null; runLocalPull(); state.pullLimit = 0; }  // הגוף של הבקשה נבנה מיד
@@ -2498,6 +2573,8 @@
     }
     if (t.dataset.query) { state.query[t.dataset.query] = t.value; render(); return; }
     if (t.dataset.moodleId) { state.moodleDraft[t.dataset.moodleId] = t.value; return; }
+    if (t.matches("[data-key-text]")) { keyDraft(cur()).text = t.value; return; }
+    if (t.dataset.keyPt != null) { keyDraft(cur()).points[t.dataset.keyPt] = t.value; return; }
     if (t.matches("[data-name-draft]")) { state.nameDraft = t.value; return; }
     if (t.matches("[data-grade-count]")) {
       state.gradeCount = Math.max(1, parseInt(t.value, 10) || 1);
@@ -2530,6 +2607,8 @@
     const t = e.target;
     if (t.dataset.set && (t.type === "checkbox" || t.tagName === "SELECT")) { setPath(t.dataset.set, t.type === "checkbox" ? t.checked : t.value); updatePrompt(); }
     if (t.dataset.rvPts != null && reviewSub()) render();
+    if (t.matches("[data-key-file]")) { keyDraft(cur()).file = t.files[0] || null; render(); }
+    if (t.dataset.keyPt != null) render();  // הודעת "חסר ניקוד" מתעדכנת כשיוצאים מהשדה
   });
 
   function persistSetting(key) { store.set(key, state[key]); }

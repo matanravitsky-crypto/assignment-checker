@@ -481,6 +481,8 @@ textarea:focus, .field input:focus, .field select:focus, .rreq:focus, .rpts inpu
 
 .notice { display: flex; gap: 12px; padding: 12px 14px; margin-bottom: 16px; border-radius: var(--r-md); background: var(--warn-soft); color: var(--ink); font-size: 13.5px; }
 .notice svg { color: var(--warn); margin-top: 2px; }
+.notice.ok { background: var(--ok-soft); }
+.notice.ok svg { color: var(--ok); }
 .secret { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px dashed var(--rule); }
 .secret:last-of-type { border-bottom: 0; }
 .secret svg { color: var(--ink-3); }

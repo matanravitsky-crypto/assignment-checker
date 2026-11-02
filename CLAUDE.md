@@ -43,7 +43,11 @@ Exercise Checking System/                  the data folder (ASSIGNMENT_DATA, def
       3 - Ready to upload to Moodle/  built by `upload`/`send`: ZIPs, grades sheet, Upload steps.txt,
                                   Upload log.csv (what went up, per number), Upload batch.json (the current batch),
                                   Upload batch <id>/ (that batch's ZIPs; `upload` never writes there)
-      Assignment details.json     Moodle id, course, name, Hebrew title, due date, questions, rules, max_grade, rubric
+      Assignment details.json     Moodle id, course, name, Hebrew title, due date, questions, rules, max_grade, rubric,
+                                  official_key_points (the points per question from the lecturer's key)
+      Official key/, Official key.txt   the lecturer's official grading key (המכוון), uploaded from the site's grading step
+                                  (POST /api/official-key). When present every grading run sends it first and it wins over
+                                  any other rubric (grading.official_key, KEY_RULE). Replaced ones go to Earlier official keys/
       Grades.csv                  number,grade,feedback: older grades and approvals typed by hand
       Grades by <name>.csv        each grader's own grades  ← grading output (readers merge all of them, moodle/grades.py)
       Who grades what/<name>.json the numbers each grader took (moodle/claims.py)
