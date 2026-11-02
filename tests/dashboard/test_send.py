@@ -218,6 +218,43 @@ def test_stop_without_a_job_is_harmless(root):
     assert actions.stop_send()["running"] is False
 
 
+# ---------- the upload's stop and grading's stop are two flags ----------
+# They were one Event (two `_stop = ...` lines in actions.py): stopping one stopped the other on the same computer
+def test_stopping_grading_leaves_an_upload_alone(root, monkeypatch):
+    batch = two_zip_batch(root)
+    monkeypatch.setattr(actions, "_job", actions.GradeJob(running=True))  # a grading run on this computer
+    gate = GateDriver()
+    actions.start_send(root, COURSE, HW, batch.id, driver=gate)
+    assert gate.inside.wait(5)
+    actions.stop_grading()
+    gate.release.set()
+    s = wait_idle()
+    assert (s["stopped"], s["done"], s["total"]) == (None, 2, 2)
+
+
+def test_stopping_an_upload_leaves_grading_alone(root, monkeypatch):
+    inside, release, seen = threading.Event(), threading.Event(), {}
+
+    def grade_assignment(a_dir, todo, *, stop, **kw):
+        inside.set()
+        release.wait(5)
+        seen["stopped"] = stop.is_set()
+        return actions.grading.GradeReport(total=len(todo), graded=list(todo))
+
+    monkeypatch.setattr(actions.grading, "require_rubric", lambda ctx: None)
+    monkeypatch.setattr(actions.grading, "grade_assignment", grade_assignment)
+    actions.start_grading(root, COURSE, HW, ["0001"], ask=lambda req: "{}")
+    assert inside.wait(5)
+    batch = two_zip_batch(root)
+    actions.start_send(root, COURSE, HW, batch.id, driver=StopsAfterFirst(), wait=True)  # "stop" on the upload
+    assert actions.send_status()["stopped"] == "user"
+    release.set()
+    end = time.time() + 5
+    while actions.grade_status()["running"] and time.time() < end:
+        time.sleep(0.01)
+    assert seen["stopped"] is False
+
+
 def test_dry_run_is_shown_in_status_and_logs_nothing(root):
     mark(root, "0001")
     rep = actions.prepare_send(root, COURSE, HW)

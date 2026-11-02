@@ -594,7 +594,8 @@ class GradeJob:
 
 _job = GradeJob()
 _job_lock = threading.Lock()
-_stop = threading.Event()  # הדגל שהבדיקה שרצה בודקת לפני כל הגשה
+# הדגל שהבדיקה שרצה בודקת לפני כל הגשה. נפרד מ-_stop של ההעלאה: עצירה של אחת לא עוצרת את השנייה
+_grade_stop = threading.Event()
 
 
 def stop_grading() -> dict:
@@ -602,7 +603,7 @@ def stop_grading() -> dict:
     with _job_lock:
         if _job.running:
             _job.stopping = True
-            _stop.set()
+            _grade_stop.set()
     return grade_status()
 
 
@@ -626,7 +627,7 @@ def start_grading(root: Path, course: str, assignment: str, numbers: list[str] |
         _job = GradeJob(course, assignment, todo, running=bool(todo),
                         started_at=datetime.now().isoformat(timespec="seconds"))
         job = _job
-        _stop.clear()
+        _grade_stop.clear()
     if not todo:
         job.summary = "אין הגשות שמחכות לבדיקה."
         job.finished_at = job.started_at
@@ -638,7 +639,7 @@ def start_grading(root: Path, course: str, assignment: str, numbers: list[str] |
 
     def run() -> None:
         try:
-            rep = grading.grade_assignment(a.dir, todo, ask=ask, on_progress=progress, stop=_stop, **opts)
+            rep = grading.grade_assignment(a.dir, todo, ask=ask, on_progress=progress, stop=_grade_stop, **opts)
             job.report, job.summary = asdict(rep), rep.summary()
         except (grading.NoApiKey, grading.ClaudeLimit) as e:
             job.error = str(e)
@@ -875,7 +876,7 @@ class SendJob:
 
 _send = SendJob()
 _send_lock = threading.Lock()
-_stop = threading.Event()
+_stop = threading.Event()  # "עצור" של ההעלאה: ה-ZIP הבא לא מתחיל (לבדיקה יש _grade_stop משלה)
 
 
 def send_status() -> dict:

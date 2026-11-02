@@ -19,6 +19,7 @@ def fresh_dashboard_state(monkeypatch, tmp_path):
     """Module-level state of dashboard.actions starts empty in every test, and no test can start `claude`."""
     actions._send = actions.SendJob()
     actions._stop.clear()
+    actions._grade_stop.clear()
     actions._moodle_cache = None
     actions._hashes.clear()
     actions._ready_cache.clear()
