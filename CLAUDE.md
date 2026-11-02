@@ -54,6 +54,7 @@ Exercise Checking System/                  the data folder (ASSIGNMENT_DATA, def
       Pull in progress.txt        the same while a pull runs
       Pull log.csv                pulled_at,by,students,new,files,parts: one row per pull (numbers only), so every
                                   computer sees when it was pulled
+      Pull check.json             the last pull's check: nothing lost, missed, doubled or changed (moodle/pull_check.py)
       (older pulls left "Moodle download <date>.zip" here; new ones keep it on the puller's computer only)
 
 Moodle originals/                          on the downloader's computer only (ASSIGNMENT_WORK)
@@ -91,9 +92,27 @@ sync YallaLinearit; that is why the earlier rule (2026-10-23: pull only where th
 `NOT_SHARED`) was dropped the same day he asked. `paths.in_shared_folder` still tells a synced folder from a local
 copy, but nothing refuses a pull by it: not the site's button, not the night pull, not `moodle ingest`.
 The thing that keeps numbers right is **one key table per assignment**, the one in the folder the puller pulls into:
-`anonymize.prepare` reads it before numbering, so every student keeps their number on every later pull. What would
-break it is a second computer pulling the same assignment into its own copy, so one person owns each assignment's
-pull (`claims.task_owners`, "אצל <name>" on the site), and that person uploads the key with the rest.
+`anonymize.prepare` reads it before numbering, so every student keeps their number on every later pull.
+**Anyone on the team may pull any assignment** (Ori, 2026-11-02): the site's pull button works for everyone, also when
+the pull is registered to someone else (`claims.task_owners` decides only who pulls at night). Three things keep that safe:
+- **The pull check** (`moodle/pull_check.py`). Before the new key is written, `prepare` looks at the disk again on its
+  own: every student keeps their number, no number has two students; every numbered file that was there is still there
+  as it was, or (for a student in this download whose file it replaced) its old version is in `Earlier versions`; a file
+  of a student not in the download is unchanged (size and time); every file of the download is in the folder with
+  exactly its bytes; nothing appeared that the download did not bring; no student came in two folders. Any failure
+  raises `PullCheckFailed` and every file goes back, with no key written. Then, against Moodle (`moodle_side`): the
+  students whose ZIPs came (the `ids` of every part in the list of `download_parts.js`) are exactly the extracted
+  folders; if fewer came than the students Moodle's table shows with a submission date (`with_date`), the difference
+  is counted for a person to look at (by count: the table knows user ids, the ZIP participant ids). First real run,
+  Discrete 3453769 on 2026-11-02: 64 in the table, 64 with a date, 64 came, 14 earlier students kept as they were. The result is `Pull check.json` in the assignment folder (numbers
+  only) and lines in the pull's report.
+- **The key between computers** (`onedrive/sync.js`). Two computers that pulled the same assignment each have their own
+  key, and uploading one over the other would drop students or give one number to two students. Before uploading an
+  assignment whose key in OneDrive differs from this computer's, the sync compares them (`keyProblems`): the local key
+  must hold every student of the OneDrive key with the same number, and no number of someone else. Otherwise nothing of
+  that assignment is uploaded (`withoutConflicts`) and the report says which numbers clash. A key that only adds new
+  students uploads as usual.
+- The lock and the rest below.
 `dashboard/actions.py` also guards the dashboard's pull:
 - **Lock:** while a pull runs, the assignment folder has `Pull in progress.txt` (who and since when). Another
   pull of that assignment waits until it's gone (a lock older than 30 minutes counts as stuck and is ignored).

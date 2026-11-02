@@ -17,7 +17,7 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 
-from moodle import anonymize, guide, lock, paths
+from moodle import anonymize, guide, lock, paths, pull_check
 
 SEVEN_ZIP_PATHS = [r"C:\Program Files\7-Zip\7z.exe", r"C:\Program Files (x86)\7-Zip\7z.exe"]
 
@@ -319,11 +319,29 @@ def ingest(assignment_id: str, zip_path: Path | None = None,
         if code:
             raise subprocess.CalledProcessError(code, ["7z", *args])
 
-    before = set(anonymize.existing_numbers(target).values())
-    rows = anonymize.prepare(original, target, on_folder=on_progress and (lambda done, total: report("number", done, total)))
+    known = anonymize.existing_numbers(target)
+    before = set(known.values())
+    # Moodle's side of the check: the students whose ZIPs came are exactly the folders that were extracted
+    listing = _read_list(kept_dir / "parts.json") if in_parts else {}
+    extracted = {anonymize.parse_folder(f.name) for f in original.iterdir() if f.is_dir()}
+    moodle, problems = pull_check.moodle_side(listing, extracted)
+    if problems:
+        raise pull_check.PullCheckFailed("; ".join(problems))
+    check: dict = {}
+    rows = anonymize.prepare(original, target, on_folder=on_progress and (lambda done, total: report("number", done, total)),
+                             check=check)
+    pull_check.write(target, {"by": lock.me(), "ok": True, **check, **moodle})
     log_pull(target, rows, before, len(zips), partial=partial_of(zip_path, kept_dir / "parts.json" if in_parts else None))
     guide.write_guides(paths.data_dir())
     return rows
+
+
+def _read_list(path: Path) -> dict:
+    try:
+        listed = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return listed if isinstance(listed, dict) else {}
 
 
 def nothing_changed(list_path: Path) -> bool:
@@ -344,6 +362,11 @@ def _log_unchanged(assignment_id: str, list_path: Path, course: str | None, name
     backup.mkdir(parents=True, exist_ok=True)
     shutil.move(list_path, backup / f"{paths.DOWNLOAD_PREFIX} {_free_stamp(backup)} (no changes).json")
     rows = anonymize.existing_rows(target)
+    files = pull_check.snapshot(target / paths.TO_GRADE, anonymize.is_numbered)
+    pull_check.write(target, {"by": lock.me(), "ok": True, "nothing_changed": True,
+                              "students_before": len({r["participant_id"] for r in rows}),
+                              "students_after": len({r["participant_id"] for r in rows}), "new_students": 0,
+                              "files_in_folder": len(files)})
     log_pull(target, rows, {int(r["number"]) for r in rows}, 0)
     return rows
 

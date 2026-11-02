@@ -36,7 +36,7 @@ import pymupdf
 
 from copying import check as copying
 from grading import grade as grading
-from moodle import (anonymize as moodle_anonymize, claims, claude_driver, grades as moodle_grades,
+from moodle import (anonymize as moodle_anonymize, claims, claude_driver, grades as moodle_grades, pull_check,
                     ingest as moodle_ingest, lock as moodle_lock, paths, send as moodle_send, upload as moodle_upload,
                     upload_log)
 
@@ -350,6 +350,9 @@ def _do_pull(root: Path, course: str, assignment: str, moodle_id: str | None, fu
         available = int(listing.get("available") or 0)
         cut = int(listing.get("limit") or 0) if int(listing.get("limit") or 0) and available > int(listing.get("limit") or 0) else 0
         rows = moodle_ingest.ingest(mid, zip_path, on_progress=_pull_report)
+    except pull_check.PullCheckFailed as e:
+        raise UserError("הבדיקה שבסוף המשיכה מצאה בעיה, ולכן המשיכה בוטלה: כל קובץ חזר למקומו וטבלת המפתח לא השתנתה. "
+                        f"מושכים שוב; אם זה חוזר, שולחים את ההודעה הזו לאורי. ({e})") from e
     except (FileNotFoundError, ValueError) as e:
         raise UserError(_hebrew_error(e, mid)) from e
     finally:
@@ -366,6 +369,7 @@ def _do_pull(root: Path, course: str, assignment: str, moodle_id: str | None, fu
                  + ([f"ממודל הורדו רק {changed} סטודנטים שההגשה שלהם השתנתה מאז המשיכה הקודמת. כל השאר נשארו כמו שהיו."
                      if changed else "שום הגשה לא השתנתה במודל מאז המשיכה הקודמת, ולכן שום קובץ לא השתנה."]
                     if changed is not None else [])
+                 + _check_notes(a)
                  + [f"הקבצים נשמרו ב-\"{paths.TO_GRADE}\". ה-ZIP של מודל נשמר רק במחשב הזה, ב-\"{paths.BACKUP}\"."]
                  + ([f"{without_file} סטודנטים בטבלת ההגשות במודל הגיעו בלי קובץ (לא הגישו קובץ, או שמודל לא שלח אותו)."]
                     if without_file else [])
@@ -385,6 +389,22 @@ def _listing(download: Path) -> dict:
     except (OSError, ValueError):
         return {}
     return listed if isinstance(listed, dict) else {}
+
+
+def _check_notes(a: folder_view.Assignment) -> list[str]:
+    """מה הבדיקה שבסוף המשיכה מצאה (moodle/pull_check.py, "Pull check.json"), במילים: מספרים בלבד."""
+    c = pull_check.read(a.dir)
+    if not c or not c.get("ok"):
+        return []
+    lines = [f"נבדק אחרי המשיכה: אף קובץ לא נעלם ואף סטודנט לא איבד או החליף מספר. "
+             f"{c.get('students_before', 0)} סטודנטים היו, {c.get('students_after', 0)} יש עכשיו"
+             + (f"; {c['files_written']} קבצים נכתבו, {c.get('files_moved_to_earlier', 0)} גרסאות קודמות עברו ל-\"{paths.EARLIER}\""
+                if c.get("files_written") or c.get("files_moved_to_earlier") else "")
+             + f"; {c.get('files_unchanged', c.get('files_in_folder', 0))} קבצים לא השתנו."]
+    if c.get("with_date_no_file"):
+        lines.append(f"במודל {c['with_date_no_file']} סטודנטים יותר מופיעים עם תאריך הגשה ממה שהגיע מהם קבצים "
+                     "(אולי הגישו טקסט בלי קובץ). כדאי לבדוק במודל.")
+    return lines
 
 
 def _without_file(download: Path) -> int:
