@@ -66,7 +66,7 @@
     pad2(d.getHours()) + ":" + pad2(d.getMinutes()) + ":00";
 
   // Every student in the grading table, page after page (the table's own filter and page size apply)
-  const users = [], changed = [];
+  const users = [], changed = [], dated = new Set();
   for (let page = 0; page < 200; page++) {
     const r = await fetch(BASE + "?id=" + ID + "&action=grading&page=" + page, { credentials: "same-origin" });
     if (!r.ok || /login/.test(r.url)) return { error: "the grading page did not open (" + r.status + ")" };
@@ -84,6 +84,7 @@
       fresh++;
       const cell = column && box.closest("tr") ? box.closest("tr").querySelector("td." + column) : null;
       const text = cell ? cell.textContent : null;
+      if (text !== null && /\d{4}/.test(text)) dated.add(v);  // Moodle shows a submission date: there is something to get
       if ((SINCE > 0 || LIMIT > 0) && text !== null && !/\d{4}/.test(text)) continue;  // no submission: nothing to download
       const at = when(text);
       if (SINCE > 0 && at && at.getTime() < SINCE) continue;  // not changed since the last pull
@@ -95,6 +96,9 @@
 
   const available = changed.length;
   if (LIMIT > 0 && changed.length > LIMIT) changed.length = LIMIT;
+  // For the check after the pull (moodle/pull_check.py): the students asked for that Moodle shows with a submission
+  // date. Each of them should come in some part; one that does not is counted for a person to look at
+  const withDate = changed.filter((v) => dated.has(v));
 
   // The due date, from the assignment's page: BGU's Hebrew Moodle says "מסתיים: יום רביעי, 28 אוקטובר 2026, 11:59 PM"
   // (seen 2026-10-23, next to "נפתח: ..."), English "Due: ..."; null when it is not there
@@ -123,7 +127,7 @@
 
   const u16 = (b, i) => b[i] | (b[i + 1] << 8);
   const u32 = (b, i) => (b[i] | (b[i + 1] << 8) | (b[i + 2] << 16) | (b[i + 3] << 24)) >>> 0;
-  // How many students a ZIP holds, from its central directory; null if the ZIP is cut or is no ZIP at all.
+  // Which students a ZIP holds (their participant ids), from its central directory; null if the ZIP is cut or is no ZIP.
   // A file that is not in a student's folder throws: the folders option went off, and asking again will not help
   const studentsIn = async (blob) => {
     const tail = new Uint8Array(await blob.slice(Math.max(0, blob.size - 65557)).arrayBuffer());
@@ -146,7 +150,7 @@
       else if (!/[/\\]$/.test(name)) throw new Error("no_folders");
       i += 46 + nameLength + extra + comment;
     }
-    return students.size;
+    return students;
   };
   const fileName = (r) => {
     const cd = r.headers.get("Content-Disposition") || "";
@@ -194,8 +198,9 @@
           // "of 015": the parts planned so far, so the progress bar knows the total from the first part on
           const name = stem + " part " + pad(files.length + 1) + " of " + pad(S.parts) + ".zip";
           save(got.blob, name);  // at once: the page never holds more than one part
-          files.push({ name, size: got.blob.size, students: got.students, asked: part.ids.length });
-          if (!helper && got.students === part.ids.length) helper = part.ids[0];
+          files.push({ name, size: got.blob.size, students: got.students.size, asked: part.ids.length,
+                       ids: [...got.students] });
+          if (!helper && got.students.size === part.ids.length) helper = part.ids[0];
           S.done = files.length;
           await sleep(1500);  // Chrome writes the part to disk before the next one comes
           continue;
@@ -216,7 +221,7 @@
       // The list comes last: parts of a download that stopped halfway have no list, and Python never takes them
       // "since" and "changed": only what changed since then was asked for (0: everyone), so no part is not "incomplete"
       const list = { users: S.users, changed: S.changed, since: SINCE, limit: LIMIT, available, due, parts: files.length, empty: S.empty,
-                     retried: S.retried, failed: [], files };
+                     retried: S.retried, failed: [], files, with_date: withDate };
       save(new Blob([JSON.stringify(list)], { type: "application/json" }), (stem || "moodle-" + ID) + ".json");
       S.state = "saved";
     } catch (e) {

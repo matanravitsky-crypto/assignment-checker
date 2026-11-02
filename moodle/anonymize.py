@@ -15,7 +15,7 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
-from moodle import paths
+from moodle import paths, pull_check
 
 # Moodle names each folder "<full name>_<participant id>_assignsubmission_file"
 FOLDER_PATTERN = re.compile(r"^(?P<name>.+)_(?P<participant>\d+)_assignsubmission_file_?$")
@@ -31,8 +31,10 @@ def parse_folder(folder_name: str) -> str:
     return match.group("participant")
 
 
-def prepare(original: Path, assignment_dir: Path, on_folder=None) -> list[dict]:
+def prepare(original: Path, assignment_dir: Path, on_folder=None, check: dict | None = None) -> list[dict]:
     """`on_folder(done, total)` hears every student folder that was copied, for the dashboard's progress bar.
+    `check`: gets the counts of moodle/pull_check.py `verify`, which looks at the disk again before the key is written
+    (nothing lost, forgotten, doubled or changed that the download did not bring); a failure undoes the pull.
 
     The key never loses a student: one who is not in this download (a part that came without folders, a submission
     removed in Moodle) keeps their rows and their files in "1 - Submissions to grade" as they were. On 2026-10-23 a
@@ -47,6 +49,9 @@ def prepare(original: Path, assignment_dir: Path, on_folder=None) -> list[dict]:
         (f for f in original.iterdir() if f.is_dir()),
         key=lambda f: int(parse_folder(f.name)),
     )
+    pids = [parse_folder(f.name) for f in folders]
+    if len(pids) != len(set(pids)):  # one student in two folders: their files would be taken twice, or one lost
+        raise pull_check.PullCheckFailed(f"{len(pids) - len(set(pids))} students are in two folders of the download")
     check_key(assignment_dir)
     _restore_previous(assignment_dir, assignment_dir / paths.TO_GRADE)
     key = assignment_dir / paths.KEY
@@ -100,6 +105,7 @@ def prepare(original: Path, assignment_dir: Path, on_folder=None) -> list[dict]:
     earlier = assignment_dir / paths.EARLIER / stamp
     done: list[tuple[Path, Path | None]] = []  # (a file this pull wrote or moved, where the old one went): to undo
     numbers_here = {r["number"] for r in rows if r["anon_file"] in sources}
+    before_files = pull_check.snapshot(anon, is_numbered)
     try:
         for old in sorted(anon.iterdir()):  # a file of a student in this download that the download no longer has
             if old.is_file() and old.name not in sources and old.name[:4] in numbers_here and old.name[4:5] in (".", "-"):
@@ -118,7 +124,11 @@ def prepare(original: Path, assignment_dir: Path, on_folder=None) -> list[dict]:
         if (key.read_bytes() if key.exists() else None) != key_before:
             raise KeyBroken("the key changed during the pull (another computer pulled the same assignment?): "
                             "every file was put back and nothing was changed")
+        counts = pull_check.verify(before_files, old_rows, rows, sources, anon,
+                                   {p.name: aside for p, aside in done if aside}, is_numbered)
         _write_key(assignment_dir, rows, stamp)
+        if check is not None:
+            check.update(counts)
     except BaseException:
         _undo(done)
         raise

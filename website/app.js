@@ -337,9 +337,10 @@
       if (LOCAL.sending?.running && sendingHere()) { text = sendProgressText(); spinning = true; }
       if (LOCAL.rd?.flow && LOCAL.rd.assignmentId === A.id && !mine) { text = "בודק שהמחשב מוכן…"; spinning = true; disabled = true; }
     }
-    // משיכה והחזרה שמישהו אחר בצוות לקח: הכפתור אצלו. אפשר להעביר אליך מלוח המשימות
+    // החזרה שמישהו אחר בצוות לקח: הכפתור אצלו. אפשר להעביר אליך מלוח המשימות. משיכה: כל אחד יכול למשוך, גם כשהיא
+    // רשומה על מישהו אחר (רק המשיכה הלילית נשארת שלו); הבדיקה שבסוף כל משיכה (moodle/pull_check.py) מוודאת ששום דבר לא אבד
     const owner = ownerOf(A, stage);
-    if (owner && owner.who !== myName() && !spinning) { text = `אצל ${owner.who}`; disabled = true; primary = false; }
+    if (stage !== "pull" && owner && owner.who !== myName() && !spinning) { text = `אצל ${owner.who}`; disabled = true; primary = false; }
     const icon = spinning ? ICON.spin : ICON[stage === "ret" ? "ret" : stage];
     const why = LOCAL.on && stage === "grade" && !LOCAL.health?.claude ? ` title="${esc(NO_KEY)}"` : "";
     // בזמן בדיקה: כפתור עצירה. מה שכבר נשלח ל-Claude מסתיים ונשמר, והשאר נשאר "ממתינה לבדיקה"
