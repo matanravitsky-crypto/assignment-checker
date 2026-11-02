@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 
+import base64
 import json
 import mimetypes
 import os
@@ -217,8 +218,13 @@ class Handler(SimpleHTTPRequestHandler):
             allowed = (folder_view.SUBMISSIONS, folder_view.GRADED, folder_view.READY)
             kinds = FILE_TYPES if target.parent.name == folder_view.SUBMISSIONS else (".pdf",)
             rubric_pdf = target.parent.name in paths.PEDAGOGY and target.name == actions.RUBRIC_PDF
+            # המכוון הרשמי שהועלה מהאתר: "Official key/" שבתיקיית המטלה
+            key_file = target.parent.name == paths.OFFICIAL_KEY and target.suffix.lower() in actions.KEY_FILE_TYPES
+            if key_file:
+                kinds = actions.KEY_FILE_TYPES
             if (not target.is_file() or not target.is_relative_to(root.resolve())
-                    or target.suffix.lower() not in kinds or (target.parent.name not in allowed and not rubric_pdf)):
+                    or target.suffix.lower() not in kinds
+                    or (target.parent.name not in allowed and not rubric_pdf and not key_file)):
                 return self.send_error(HTTPStatus.NOT_FOUND)
             data = target.read_bytes()
             self.send_response(HTTPStatus.OK)
@@ -377,6 +383,29 @@ class Handler(SimpleHTTPRequestHandler):
             except RuntimeError as e:
                 return self._json({"error": str(e)}, HTTPStatus.CONFLICT)
             return self._json(job, HTTPStatus.ACCEPTED)
+        if url.path == "/api/official-key":
+            # המכוון הרשמי של המרצה: קובץ (base64), טקסט מודבק, ניקוד לכל שאלה, או remove
+            course, assignment = body.get("course"), body.get("assignment")
+            if not course or not isinstance(assignment, str) or not assignment or "/" in assignment or "\\" in assignment:
+                return self._json({"error": "חסרים קורס ומטלה"}, HTTPStatus.BAD_REQUEST)
+            points = body.get("points")
+            if points is not None and not (isinstance(points, dict) and all(isinstance(k, str) for k in points)):
+                return self._json({"error": "הניקוד לא תקין"}, HTTPStatus.BAD_REQUEST)
+            text = body.get("text")
+            try:
+                data = base64.b64decode(body["data"], validate=True) if isinstance(body.get("data"), str) else None
+            except ValueError:
+                return self._json({"error": "הקובץ לא הגיע שלם"}, HTTPStatus.BAD_REQUEST)
+            try:
+                return self._json(actions.save_official_key(
+                    root, course, assignment, file_name=body.get("fileName"), data=data,
+                    text=text if isinstance(text, str) else None, points=points, remove=body.get("remove") is True))
+            except actions.UserError as e:
+                return self._json({"error": str(e)}, HTTPStatus.UNPROCESSABLE_ENTITY)
+            except FileNotFoundError as e:
+                return self._json({"error": str(e)}, HTTPStatus.NOT_FOUND)
+            except OSError as e:  # OneDrive באמצע סנכרון, קובץ פתוח
+                return self._json({"error": f"המכוון לא נשמר: {e}"}, HTTPStatus.CONFLICT)
         if url.path == "/api/copying":
             # בדיקת העתקות (copying/check.py): בלי Claude, רצה ברקע, והאתר שואל על המצב ב-GET /api/copying
             course, assignment = body.get("course"), body.get("assignment")

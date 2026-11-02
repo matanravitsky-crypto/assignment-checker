@@ -51,6 +51,13 @@ README = "README.txt"
 # The lecturer's or TA's grading material, in the assignment folder: rubric, solutions, accepted methods (.md/.txt).
 # Grading sends all of it to Claude. "פדגוגי" is the name the team gave it; "Pedagogy" works too.
 PEDAGOGY = ("Pedagogy", "פדגוגי")
+# The lecturer's official grading key (המכוון), uploaded from the site's grading step. In the assignment folder:
+# "Official key/" holds the file as given (PDF, image, Word or text) and "Official key.txt" the text sent to Claude
+# (pasted, or read out of a Word file). The points per question go in Assignment details.json, "official_key_points".
+# When there is a key, grading follows it before any other rubric. A replaced key moves to "Earlier official keys/<date>/"
+OFFICIAL_KEY = "Official key"
+OFFICIAL_KEY_TEXT = "Official key.txt"
+OFFICIAL_KEY_OLD = "Earlier official keys"
 # A pull never deletes or overwrites a submission: a file that a newer download replaces (a resubmission, or a
 # second file that is gone) moves here first, "Earlier versions/<date>/0001.pdf". The key before every change goes
 # to "Key history" (not next to the key: a "Key - number to student*.csv" there counts as an OneDrive conflict copy)
