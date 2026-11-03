@@ -1772,13 +1772,19 @@
   const PUBLIC_STALE_H = 3;  // המחשב שמפרסם שולח לפחות פעם בשעה. יותר מזה: כנראה כבוי
   const PUB = { data: null, error: "", loading: !!PUBLIC_STATUS_URL && !ON_LOCAL_HOST };
 
+  // פעם בדקה מקבלים עותק טרי (ה-CDN של GitHub שומר עותק עד 5 דקות). fresh: הכפתור "סנכרון", כתובת שלא הייתה
+  // בשום מטמון, כדי לקבל את מה שפורסם ממש עכשיו
+  async function fetchPublic(fresh = false) {
+    const q = fresh ? `t=${Date.now()}` : `m=${Math.floor(Date.now() / 60000)}`;
+    const r = await fetch(`${PUBLIC_STATUS_URL}?${q}`, { cache: "no-store" });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return r.json();
+  }
+
   async function loadPublic() {
     if (!PUBLIC_STATUS_URL || LOCAL.on) return;
     try {
-      // פעם בדקה מקבלים עותק טרי (ה-CDN של GitHub שומר עותק עד 5 דקות)
-      const r = await fetch(`${PUBLIC_STATUS_URL}?m=${Math.floor(Date.now() / 60000)}`, { cache: "no-store" });
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      PUB.data = await r.json();
+      PUB.data = await fetchPublic();
       PUB.error = "";
     } catch (e) {
       PUB.error = e.message;
@@ -2779,7 +2785,7 @@
     return fetch(BASE + path, { cache: "no-store", ...opts, headers: { "Content-Type": "application/json", "X-Assignment-Checker": "1" } })
       .then(async (r) => {
         const data = await r.json().catch(() => ({}));
-        if (!r.ok) throw new Error(data.error || `המערכת במחשב החזירה שגיאה ${r.status}`);
+        if (!r.ok) throw Object.assign(new Error(data.error || `המערכת במחשב החזירה שגיאה ${r.status}`), { status: r.status });
         return data;
       }, () => { throw new Error("אין חיבור למערכת במחשב. אם המחשב נדלק עכשיו, מחכים דקה; אחרת מפעילים את start.bat."); });
   }
@@ -3143,18 +3149,70 @@
     if (!warn) syncPopTimer = setTimeout(() => { pop.hidden = true; }, 15000);
   }
 
+  // הכפתור מופיע אצל כולם באתר הציבורי, גם בלי מערכת במחשב (לפני 2026-11-03 הוא הוסתר שם, ולכן רק מי שהמערכת רצה
+  // אצלו ראה אותו). בלי מערכת הוא מביא מיד את לוח המספרים שהמחשב המפרסם קרא מתיקיית OneDrive (syncPublic)
+  const publicSync = () => !ON_LOCAL_HOST && !!PUBLIC_STATUS_URL;
+
   function renderSyncBtn() {
     const b = $("#sync-btn");
-    b.hidden = !LOCAL.on;
+    b.hidden = !LOCAL.on && !publicSync();
     b.disabled = LOCAL.syncing;
     b.classList.toggle("busy", LOCAL.syncing);
     $("span", b).textContent = LOCAL.syncing ? "מסנכרן…" : "סנכרון";
     b.title = (LOCAL.syncedAt ? `סונכרן לאחרונה ב-${LOCAL.syncedAt.slice(11, 16)}. ` : "")
-      + "קורא מחדש את תיקיית OneDrive ומעדכן את כל המספרים במסך";
+      + (LOCAL.on ? "קורא מחדש את תיקיית OneDrive ומעדכן את כל המספרים במסך" : "מביא את המספרים האחרונים שנקראו מתיקיית OneDrive");
   }
 
+  // המספרים של הלוח הציבורי, באותה צורה כמו stageCounts, כדי ש-syncChanges יאמר מה השתנה
+  function publicCounts(d) {
+    const out = {};
+    (d?.courses || []).forEach((c) => (c.assignments || []).filter((a) => !a.empty).forEach((a) => {
+      out[`${c.name}/${a.title}`] = { a: { title: a.title, course: c.name }, pulled: a.pulled, graded: a.graded, returned: a.returned };
+    }));
+    return out;
+  }
+
+  const localNow = () => { const t = new Date(); return new Date(t - t.getTimezoneOffset() * 60000).toISOString().slice(0, 19); };
+
+  // אין מערכת במחשב הזה: אין ממה לקרוא את OneDrive כאן, אז מביאים את מה שהמחשב המפרסם קרא ממנו. הוא בודק את התיקייה
+  // כל 2 דקות ומפרסם כל שינוי (PUBLISH_CHECK_S ב-dashboard/public_status.py)
+  async function syncPublic() {
+    LOCAL.syncing = true;
+    renderSyncBtn();
+    const had = !!PUB.data, before = publicCounts(PUB.data);
+    try {
+      const d = await fetchPublic(true);
+      PUB.data = d;
+      PUB.error = "";
+      PUB.loading = false;
+      LOCAL.syncedAt = localNow();
+      if (!LOCAL.on && !cur()) render();
+      const lines = had ? syncChanges(before, publicCounts(d)) : [];
+      const stale = (Date.now() - Date.parse(d.publishedAt)) / 3600000 > PUBLIC_STALE_H;
+      const from = d.publishedBy ? `המחשב של ${d.publishedBy}` : "המחשב שמפרסם את המספרים";
+      const notes = [
+        stale ? { warn: true, text: `${from} לא פרסם מספרים מאז ${when(d.publishedAt)}. הוא כנראה כבוי, אז ייתכן שהמספרים ישנים.` }
+          : { warn: false, text: `המספרים כאן מגיעים מ${from}: הוא בודק את תיקיית OneDrive כל 2 דקות ומפרסם כל שינוי. הפרסום האחרון: ${when(d.publishedAt)}.` },
+        { warn: false, text: "כדי לסנכרן ישירות מ-OneDrive במחשב שלך, ולמשוך, לבדוק ולהחזיר ממנו, מחברים אותו פעם אחת (ההוראות בדף, מתחת ללוח)." },
+      ];
+      const title = lines.length ? `${plural(lines.length, "מטלה אחת התעדכנה", "מטלות התעדכנו")} מתיקיית OneDrive`
+        : "הכול מעודכן: אלה המספרים האחרונים מתיקיית OneDrive";
+      showSyncPop(title, lines, notes, stale);
+    } catch (e) {
+      showSyncPop("הסנכרון לא הצליח", [], [{ warn: true, text: `לא הצלחתי להביא את המספרים (${e.message}). בודקים את החיבור לאינטרנט ולוחצים שוב.` }], true);
+    } finally {
+      LOCAL.syncing = false;
+      renderSyncBtn();
+    }
+  }
+
+  // מערכת מלפני הכפתור (2026-11-03) עונה 404 על api/refresh. היא גם מלפני העדכון העצמי, אז היא לא תתעדכן בלי לעלות מחדש
+  const OLD_SYSTEM = "המערכת שרצה במחשב הזה ישנה: היא מלפני כפתור הסנכרון, והיא לא מתעדכנת לבד. היא מתעדכנת מ-GitHub כשהיא עולה, "
+    + "אז מפעילים מחדש את המחשב (או סוגרים את start.bat ומפעילים אותו שוב). מאז היא מתעדכנת לבד, והכפתור יעבוד.";
+
   async function syncNow() {
-    if (LOCAL.syncing || !LOCAL.on) return;
+    if (LOCAL.syncing) return;
+    if (!LOCAL.on) { if (publicSync()) await syncPublic(); return; }
     LOCAL.syncing = true;
     renderSyncBtn();
     const hadRoot = !!LOCAL.health?.root, before = stageCounts();
@@ -3172,7 +3230,8 @@
         : "הכול מעודכן: המספרים במסך זהים לתיקיית OneDrive";
       showSyncPop(title, lines, notes, notes.some((n) => n.warn));
     } catch (e) {
-      showSyncPop("הסנכרון לא הצליח", [], [{ warn: true, text: e.message }], true);
+      const old = e.status === 404;
+      showSyncPop(old ? "המערכת במחשב הזה ישנה" : "הסנכרון לא הצליח", [], [{ warn: true, text: old ? OLD_SYSTEM : e.message }], true);
     } finally {
       LOCAL.syncing = false;
       renderSyncBtn();

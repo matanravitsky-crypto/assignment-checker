@@ -198,6 +198,10 @@ Each teammate grades on their own computer with their own Claude subscription, s
   That shortcut exists only on Matan's PC (`%LOCALAPPDATA%\BodekHacham\onedrive-signin`, not in the repo); elsewhere
   the person signs in to OneDrive themselves. "Not synced" has three causes, checked in this order: a stale tab
   (`/api/state` already has it), a server still running old code (see "Problems already solved"), or OneDrive stuck.
+  The button shows for everyone on the public site, also without a system on that computer (until 2026-11-03 it was
+  hidden there, so only Matan saw it): then it fetches the public numbers board fresh from the gist (`syncPublic`,
+  a `?t=` URL no cache has seen) and says what changed and when the publishing computer last published. A system from
+  before the button answers 404 on `/api/refresh`; the site then says it is old and updates when it restarts.
 - **Grading** skips numbers someone else holds and claims what it grades. Once anyone took something, the site's "Grade"
   button grades only my claimed, ungraded work; with no claims at all it grades everything pending, as before.
 - **Grades never share a file**: grading writes `Grades by <name>.csv` (with `graded_at`, `graded_by`). Every reader
