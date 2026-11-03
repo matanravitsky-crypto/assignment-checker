@@ -297,6 +297,12 @@ class Handler(SimpleHTTPRequestHandler):
         root = self._root()
         if not root:
             return
+        if url.path == "/api/refresh":
+            # הכפתור "סנכרון": קורא מחדש את כל התיקייה ובודק ש-OneDrive מסנכרן אותה (מפעיל אותו אם הוא לא רץ)
+            try:
+                return self._json(actions.refresh(root))
+            except actions.UserError as e:
+                return self._json({"error": str(e)}, HTTPStatus.SERVICE_UNAVAILABLE)
         if url.path in _LOCKED_STEPS:
             # משיכה: moodle ingest. החזרה: moodle upload. הכנת העלאה: moodle send. אחת בכל פעם
             course, assignment = body.get("course"), body.get("assignment")

@@ -965,3 +965,24 @@ span.rv-arrow { visibility: hidden; }
 /* "מה עושים" בעמוד המשיכה: שלוש שורות ממוספרות */
 .how-to { margin: 10px auto 4px; padding-inline-start: 22px; text-align: start; max-width: 520px; line-height: 1.7; }
 .how-to li::marker { font-weight: 700; color: var(--blue); }
+
+/* "סנכרון" בשורה העליונה: קורא מחדש את תיקיית OneDrive, והחלונית שמתחתיו אומרת מה השתנה ומה מצב OneDrive */
+.top-actions { position: relative; }
+.sync-btn[hidden], .sync-pop[hidden] { display: none; }
+.sync-btn svg { width: 16px; height: 16px; }
+.sync-btn.busy svg { animation: spin 1s linear infinite; }
+.sync-pop {
+  position: absolute; top: calc(100% + 10px); inset-inline-end: 0; z-index: 30;
+  width: min(400px, calc(100vw - 32px)); padding: 14px 16px 12px;
+  background: var(--sheet); border: 1px solid var(--rule); border-radius: var(--r-md); box-shadow: var(--lift);
+  font-size: 14px; line-height: 1.6; color: var(--ink);
+}
+.sync-pop h3 { margin: 0 0 6px; padding-inline-end: 28px; font-size: 14.5px; display: flex; align-items: flex-start; gap: 8px; }
+.sync-pop h3 svg { width: 18px; height: 18px; color: var(--ok); margin-top: 2px; }
+.sync-pop.warn h3 svg { color: var(--warn); }
+.sync-pop ul { margin: 0 0 4px; padding-inline-start: 20px; }
+.sync-pop .sync-more { margin: 0; color: var(--ink-3); font-size: 13px; }
+.sync-pop .sync-od { margin: 8px 0 0; font-size: 13px; color: var(--ink-2); }
+.sync-pop .sync-od.warn { padding: 8px 10px; border-radius: var(--r-sm); background: var(--warn-soft); color: var(--ink); }
+.sync-pop .sync-x { position: absolute; top: 6px; inset-inline-end: 6px; padding: 4px 8px; font-size: 13px; }
+@media (max-width: 560px) { .sync-btn span { display: none; } }
