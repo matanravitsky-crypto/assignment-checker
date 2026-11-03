@@ -65,6 +65,13 @@ AUTH_TIMEOUT_S = 30
 DOWNLOAD_BUDGET_USD = 2.0  # opens a page, maybe ticks one box, runs the parts script and waits for it (a check every 20 s)
 DOWNLOAD_TIMEOUT_S = 20 * 60  # the run waits for every part: 15 parts took ~3 minutes on 2026-10-23
 MESSAGE_MAX = 300
+# A run that ends with an error code and no output this soon never reached Moodle: Claude Code itself failed to start
+# (2026-11-03 12:01, right after a `claude update` that hung: exit code 4294967295, and the pull button looked like it did
+# nothing). The check and the download then run once more after a short pause. Reaching Moodle takes Claude several turns,
+# so within this window the parts script cannot have started. Uploads never run twice by themselves
+CRASH_WINDOW_S = 20
+CRASH_PAUSE_S = 5
+STDERR_MAX = 200
 
 NOT_LOGGED_IN = "Claude Code לא מחובר במחשב הזה. מריצים פעם אחת: claude auth login"
 NOT_INSTALLED = "Claude Code לא מותקן במחשב הזה (הפקודה claude לא נמצאה)."
@@ -335,12 +342,24 @@ def read_answer(stdout: str | None) -> tuple[dict | None, str]:
     return (answer, "") if answer is not None else (None, UNEXPECTED)
 
 
+def crashed(proc) -> bool:
+    """Claude Code ended with an error code and wrote nothing at all: it failed before it could answer."""
+    return bool(getattr(proc, "returncode", 0)) and not str(getattr(proc, "stdout", "") or "").strip()
+
+
+def stderr_tail(proc) -> str:
+    """The last line Claude Code wrote to stderr, short: why it failed, when it says so."""
+    lines = [line.strip() for line in str(getattr(proc, "stderr", "") or "").splitlines() if line.strip()]
+    return lines[-1][:STDERR_MAX] if lines else ""
+
+
 def read_run(proc) -> tuple[dict | None, str]:
     """read_answer for a finished process. A non-zero exit never counts as an answer."""
     code = getattr(proc, "returncode", 0)
     answer, problem = read_answer(proc.stdout)
     if code and (answer is not None or problem == UNEXPECTED):
-        return None, f"Claude Code נכשל (קוד יציאה {code})."
+        tail = stderr_tail(proc)
+        return None, f"Claude Code נכשל (קוד יציאה {code})." + (f" הוא כתב: {tail}" if tail else "")
     return answer, problem
 
 
@@ -377,21 +396,32 @@ class ClaudeChromeDriver:
     """The `MoodleDriver` for Moodle through Claude in Chrome. `run` is subprocess.run, a fake in tests."""
 
     def __init__(self, model: str = DEFAULT_MODEL, budget_usd: float = DEFAULT_BUDGET_USD,
-                 timeout_s: int = TIMEOUT_S, run=subprocess.run, claude: str | None = None):
+                 timeout_s: int = TIMEOUT_S, run=subprocess.run, claude: str | None = None,
+                 sleep=time.sleep, clock=time.monotonic):
         self.model = model
         self.budget_usd = budget_usd
         self.timeout_s = timeout_s
         self.run = run
         self.claude = claude
+        self.sleep = sleep
+        self.clock = clock
 
     def execute(self, claude: str, prompt: str, folder: Path, schema: dict, budget_usd: float, timeout_s: float,
-                tools: str = ""):
-        """Run the CLI with `folder` as its only folder. May raise: the callers turn that into a result."""
+                tools: str = "", again_if_crashed: bool = False):
+        """Run the CLI with `folder` as its only folder. May raise: the callers turn that into a result.
+
+        `again_if_crashed`: once more when Claude Code failed to start (`crashed` within CRASH_WINDOW_S). Never for an upload."""
         cmd = build_command(prompt, folder, model=self.model, budget_usd=budget_usd, schema=schema, claude=claude,
                             tools=tools)
+        started = self.clock()
         # stdin closed: a headless run must not wait for input nobody types
-        return self.run(cmd, capture_output=True, text=True, encoding="utf-8", timeout=timeout_s,
+        proc = self.run(cmd, capture_output=True, text=True, encoding="utf-8", timeout=timeout_s,
                         cwd=folder, stdin=subprocess.DEVNULL)
+        if again_if_crashed and crashed(proc) and self.clock() - started < CRASH_WINDOW_S:
+            self.sleep(CRASH_PAUSE_S)
+            proc = self.run(cmd, capture_output=True, text=True, encoding="utf-8", timeout=timeout_s,
+                            cwd=folder, stdin=subprocess.DEVNULL)
+        return proc
 
     def upload_zip(self, info: dict, zip_path: Path, expected: int, dry_run: bool,
                    sha256: str | None = None) -> UploadResult:
@@ -434,7 +464,8 @@ class ClaudeChromeDriver:
             prompt = CHECK_PROMPT.format(grading_url=GRADING_URL.format(id=assignment_id(info)), home_url=HOME_URL)
             # No ZIP to carry and nothing to upload, so the run gets an empty folder and no built-in tools (tools="")
             with tempfile.TemporaryDirectory(prefix="moodle-check-", ignore_cleanup_errors=True) as empty:
-                proc = self.execute(claude, prompt, Path(empty), CHECK_SCHEMA, CHECK_BUDGET_USD, timeout_s)
+                proc = self.execute(claude, prompt, Path(empty), CHECK_SCHEMA, CHECK_BUDGET_USD, timeout_s,
+                                    again_if_crashed=True)
         except Exception as error:  # never raise: the answer is a dict for the site
             return {"chrome": False, "moodle": False, "message": failure_message(error, timeout_s)}
         answer, problem = read_run(proc)
@@ -463,7 +494,8 @@ class ClaudeChromeDriver:
         try:
             prompt = download_prompt(info)
             with tempfile.TemporaryDirectory(prefix="moodle-download-", ignore_cleanup_errors=True) as empty:
-                proc = self.execute(claude, prompt, Path(empty), DOWNLOAD_SCHEMA, DOWNLOAD_BUDGET_USD, timeout_s)
+                proc = self.execute(claude, prompt, Path(empty), DOWNLOAD_SCHEMA, DOWNLOAD_BUDGET_USD, timeout_s,
+                                    again_if_crashed=True)
         except Exception as error:  # never raise: the caller shows the message
             return {"status": "error", "message": failure_message(error, timeout_s)}
         answer, problem = read_run(proc)
