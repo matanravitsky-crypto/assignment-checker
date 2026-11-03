@@ -1768,7 +1768,7 @@
   // ---------- לוח המספרים הציבורי ----------
   // מי שאין במחשב שלו מערכת רואה כאן מה נעשה: מחשב אחד בצוות מפרסם סיכום של מספרים בלבד (dashboard/public_status.py)
   // לקובץ ציבורי, והאתר קורא אותו. בלי שמות, ציונים, הערות או קבצים. מתרענן כל דקה
-  const PUBLIC_STATUS_URL = "";
+  const PUBLIC_STATUS_URL = "https://gist.githubusercontent.com/matanravitsky-crypto/f1d11991473c2ece643fc479ed963117/raw/status.json";
   const PUBLIC_STALE_H = 3;  // המחשב שמפרסם שולח לפחות פעם בשעה. יותר מזה: כנראה כבוי
   const PUB = { data: null, error: "", loading: !!PUBLIC_STATUS_URL && !ON_LOCAL_HOST };
 
