@@ -22,6 +22,7 @@ Each folder has a README.md that explains it.
 | `tests/` | All tests (`tests/moodle/`, `tests/dashboard/`). Run `python -m pytest` from the repo root; CI runs them on every PR |
 | `install-autostart.bat`, `autostart.vbs` | Once per computer: a shortcut in the Windows Startup folder runs `autostart.vbs` at every sign-in, a watchdog that checks `/api/health` every minute and runs `start.bat background` hidden when the system is down (no browser, no pause; output to `%TEMP%odek-hacham.log`). Chrome blocks the public site from reaching 127.0.0.1 (permission `loopback-network`, denied on Matan's Chrome 155), so the Vercel page forwards to `http://localhost:8765` by itself once the user has clicked "פתח את המערכת" there (localStorage `ac:openLocal`; `?stay` turns it off). Installed on Matan's PC on 2026-10-22 |
 | `start.bat` | Double-click: updates from GitHub (`git pull --ff-only`, skipped with a message if it can't), runs `claude update` (an old Claude Code refuses the new models; stopped after `CLAUDE_UPDATE_WAIT_S`, default 120 seconds), sets up `.venv` once, installs `requirements.txt`, starts the dashboard. Teammate setup (folder shortcut, Python, 7-Zip, Git, `git clone`) is in `README.md` and on the site's not-connected page |
+| `website/connect.ps1` | Teammate setup in one command, shown with a copy button on the site's not-connected page: `irm https://bodek-hacham.vercel.app/connect.ps1 \| iex`. Installs what is missing (Git, Python 3.12, 7-Zip with winget; Claude Code with Anthropic's installer, the same `INSTALL_COMMAND` the site's button runs), clones to `%USERPROFILE%\Bodek Hacham\assignment-checker` (a computer whose Startup shortcut already exists keeps that folder; a running server skips all of it), runs `install-autostart.bat quiet` (no `pause`), waits up to 8 minutes for `/api/health`, and opens the site with `?open` (sets `ac:openLocal`, so the public link forwards to the computer from then on). ASCII-only English output: Hebrew prints backwards in a PowerShell window. `website/vercel.json` serves it as UTF-8 text. It cannot add the OneDrive shortcut; it says so when `/api/health` has no root |
 
 ## Student data: never in the repo
 
@@ -233,6 +234,20 @@ There is **no Moodle API**. Claude in Chrome works in the user's own logged-in C
   renames a broken one to `... (incomplete).zip`, so it is never taken again.
 - **An expired Moodle session shows nginx "404 Not Found"**, not a login page. Opening `https://moodle.bgu.ac.il/moodle/my/`
   signs Chrome in again by itself (SSO). Every Claude prompt does that once before giving up (`SESSION_RULE`).
+- **The pull button runs through the Claude of whoever clicks it** (2026-11-03, Matan: "the system tells the Claude on that
+  user's computer to pull and put the files in the right place in the Drive"). On the site, "משוך" and "משוך הכול מחדש"
+  first go through the same readiness list as the upload (`startPullFlow` → `readyLoop`, `then: "pull"`): Claude Code
+  installed (button, after a yes), signed in to this person's account (the sign-in page opens by itself), the Claude in
+  Chrome extension and Moodle connected (the short check, cached 30 minutes, so a connected computer pulls at once). When
+  all are ✓ the pull starts with no further click, through `claude -p --chrome` on that computer. An empty slot (first pull,
+  with its link) goes straight to `POST /api/pull`, where `require_moodle` checks the same. A computer that is not connected
+  sees `website/connect.ps1` on the not-connected page.
+- **A Claude Code that fails to start is run once more.** On 2026-11-03 at 12:01 a pull from the button failed with
+  "Claude Code נכשל (קוד יציאה 4294967295)", right after a `claude update` that hung, and looked like it did nothing.
+  `ClaudeChromeDriver.execute(again_if_crashed=True)` (the check and the download only, never an upload: Moodle may have
+  imported) runs the same command again after `CRASH_PAUSE_S` when it ended with an error code and no output within
+  `CRASH_WINDOW_S` (20 s; reaching Moodle takes Claude several turns, so the parts script cannot have started). A failure's
+  message now carries the last line Claude Code wrote to stderr.
 - **The pull button downloads by itself, in parts.** `POST /api/pull` first takes an unconsumed ZIP (or list of parts) of
   the assignment in Downloads. If there is none, `ClaudeChromeDriver.download` runs one locked-down `claude -p --chrome`
   (`--tools ""`, an empty temp folder, `download_prompt`): it opens the grading page, ticks the folders checkbox if it is off

@@ -8,6 +8,8 @@
   // אותו אתר, ישירות מהמערכת: עובד בלי הרשאת "גישה למכשיר" של כרום
   const LOCAL_SITE = "http://localhost:8765/";
   const REPO_URL = "https://github.com/matanravitsky-crypto/assignment-checker";
+  // מחבר מחשב של מישהו מהצוות בפקודה אחת (website/connect.ps1, מתפרסם עם האתר)
+  const CONNECT_COMMAND = "irm https://bodek-hacham.vercel.app/connect.ps1 | iex";
   const DEFAULT_GRADE_INSTR = [
     "לבדוק כל שאלה בנפרד, לפי המחוון ולפי הפתרון הרשמי.",
     "פתרון נכון בדרך אחרת מקבל ניקוד מלא.",
@@ -38,8 +40,10 @@
   };
 
   // כרום חוסם לאתר הציבורי גישה למחשב (הרשאת "גישה למכשיר", loopback-network), אבל מעבר לכתובת המקומית מותר תמיד.
-  // מי שפתח פעם את המערכת מכאן ("פתח את המערכת") מועבר אליה לבד בכל כניסה. ?stay משאיר באתר הציבורי ומבטל את המעבר
+  // מי שפתח פעם את המערכת מכאן ("פתח את המערכת") מועבר אליה לבד בכל כניסה. ?stay משאיר באתר הציבורי ומבטל את המעבר.
+  // ?open עושה מה שהכפתור עושה: website/connect.ps1 פותח כך את האתר בסוף ההתקנה, ומאז הקישור הציבורי מעביר למחשב
   if (!ON_LOCAL_HOST) {
+    if (new URLSearchParams(location.search).has("open")) store.set("openLocal", true);
     if (new URLSearchParams(location.search).has("stay")) store.set("openLocal", false);
     else if (store.get("openLocal", false)) { location.replace(LOCAL_SITE + location.hash); return; }
   }
@@ -337,7 +341,10 @@
       if (!mine) text = n ? `העלה ${n} למודל` : I.done.ret ? "הכל הועלה" : "אין עבודות להעלאה";
       if (LOCAL.sending?.running || LOCAL.starting) disabled = true;  // העלאה אחת בכל פעם, גם אם היא של מטלה אחרת
       if (LOCAL.sending?.running && sendingHere()) { text = sendProgressText(); spinning = true; }
-      if (LOCAL.rd?.flow && LOCAL.rd.assignmentId === A.id && !mine) { text = "בודק שהמחשב מוכן…"; spinning = true; disabled = true; }
+      if (LOCAL.rd?.flow && LOCAL.rd.then === "send" && LOCAL.rd.assignmentId === A.id && !mine) { text = "בודק שהמחשב מוכן…"; spinning = true; disabled = true; }
+    }
+    if (LOCAL.on && stage === "pull" && LOCAL.rd?.flow && LOCAL.rd.then === "pull" && LOCAL.rd.assignmentId === A.id && !mine) {
+      text = "מחבר את המחשב ל-Claude…"; spinning = true; disabled = true;
     }
     // החזרה שמישהו אחר בצוות לקח: הכפתור אצלו. אפשר להעביר אליך מלוח המשימות. משיכה: כל אחד יכול למשוך, גם כשהיא
     // רשומה על מישהו אחר (רק המשיכה הלילית נשארת שלו); הבדיקה שבסוף כל משיכה (moodle/pull_check.py) מוודאת ששום דבר לא אבד
@@ -349,7 +356,7 @@
     const stopBtn = mine && stage === "grade" ? `<button class="btn danger ${big ? "lg" : ""}" data-act="grade-stop" ${run.stopping ? "disabled" : ""}
       title="העבודות שכבר נשלחו ל-Claude יסתיימו ויישמרו. השאר יחכו ללחיצה הבאה על 'בדוק'">${run.stopping ? ICON.spin : ICON.stop}${run.stopping ? "עוצר…" : "עצור בדיקה"}</button>` : "";
     const btn = `<button class="btn ${primary ? "primary" : "secondary"} ${big ? "lg" : ""}" data-run="${stage}" ${disabled ? "disabled" : ""}${why}
-      ${stage === "grade" ? `aria-expanded="${state.gradePick === A.id}"` : ""}${stage === "pull" && LOCAL.on ? `aria-expanded="${state.pullPick === A.id}" aria-haspopup="dialog"` : ""}>${icon}${text}${stage === "pull" && LOCAL.on && !mine ? `<span class="caret" aria-hidden="true">▾</span>` : ""}</button>${stopBtn}`;
+      ${stage === "grade" ? `aria-expanded="${state.gradePick === A.id}"` : ""}${stage === "pull" && LOCAL.on ? `aria-expanded="${state.pullPick === A.id}" aria-haspopup="dialog"` : ""}>${icon}${text}${stage === "pull" && LOCAL.on && !spinning ? `<span class="caret" aria-hidden="true">▾</span>` : ""}</button>${stopBtn}`;
     if (stage === "pull" && LOCAL.on) return `<span class="pick-wrap">${btn}${disabled ? "" : pullPickHTML()}</span>`;
     return stage === "grade" ? `<span class="pick-wrap">${btn}${disabled ? "" : gradePickHTML()}</span>` : btn;
   }
@@ -526,7 +533,7 @@
           ${stageButton(stage, { big: true })}
         </div>
       </section>
-      ${stage === "pull" ? pullBarHTML() : ""}
+      ${stage === "pull" ? `${readyPanelHTML("pull")}${pullBarHTML()}` : ""}
       ${runStepsHTML(stage)}`;
   }
 
@@ -899,8 +906,8 @@
   const readyUrl = (A) => `api/ready?course=${encodeURIComponent(A.courseFolder)}&assignment=${encodeURIComponent(A.folder)}`;
   const readyAssignment = (rd) => D.assignments.find((a) => a.id === rd.assignmentId);
   const allReady = (d) => !!d && d.installed && d.logged_in && d.chrome === true && d.moodle === true;
-  const newReady = (A, flow) => ({
-    assignmentId: A.id, flow, data: null, looping: false, fetchedAt: 0, checking: false, checkTried: false, checkError: "",
+  const newReady = (A, flow, then = "send") => ({
+    assignmentId: A.id, flow, then, data: null, looping: false, fetchedAt: 0, checking: false, checkTried: false, checkError: "",
     loginTried: false, loginError: "", installAsk: false, installTried: false, installError: "",
   });
 
@@ -922,7 +929,7 @@
       return;
     }
     delete state.run[A.id];
-    if (allReady(rd.data)) { rd.flow = false; prepareLocalSend(); return; }
+    if (allReady(rd.data)) { readyDone(rd); return; }
     render();
     readyLoop(rd);
   }
@@ -937,7 +944,7 @@
         const d = (rd.data = await api(readyUrl(readyAssignment(rd))));
         let acted = false;
         if (rd.flow) {
-          if (allReady(d)) { rd.flow = false; render(); prepareLocalSend(); break; }
+          if (allReady(d)) { readyDone(rd); break; }
           if (d.installed && !d.logged_in && !d.login_running && !rd.loginTried) { acted = true; await startReadyLogin(rd, false); }
           if (d.installed && d.logged_in && d.chrome == null && !rd.checking && !rd.checkTried) { acted = true; rd.checkTried = true; checkReady(rd); }
         }
@@ -1019,6 +1026,40 @@
     return rd;
   }
 
+  // ---------- משיכה דרך ה-Claude של מי שלוחץ ----------
+  // "משוך" עובר באותה רשימת מוכנות כמו ההעלאה: כל אחד בצוות שלוחץ מושך דרך Claude Code שמותקן ומחובר במחשב שלו,
+  // והתוסף Claude in Chrome בכרום שלו. מה שחסר מותקן או מתחבר כאן (התחברות נפתחת לבד; התקנה רק אחרי "כן"),
+  // וכשהכול ✓ המשיכה מתחילה בלי לחיצה נוספת. בדיקה מ-30 הדקות האחרונות מספיקה, אז במחשב מחובר זה מיידי.
+  // הגשה שעוד אין לה תיקייה (הגשה ריקה, משיכה ראשונה) הולכת ישר לשרת, וגם שם require_moodle בודק את כרום ומודל
+  async function startPullFlow({ full = false, limit = 0 } = {}) {
+    const A = cur();
+    if (!A || state.run[A.id] || !LOCAL.health?.root || (LOCAL.rd?.flow && LOCAL.rd.assignmentId === A.id)) return;
+    if (A.empty) { runLocalPull(full, limit); return; }
+    const rd = (LOCAL.rd = newReady(A, true, "pull"));
+    rd.full = full;
+    rd.limit = limit;
+    render();
+    try {
+      rd.data = await api(readyUrl(A));
+    } catch (e) {
+      LOCAL.rd = null;
+      render();
+      toast(e.message, ICON.warn);
+      return;
+    }
+    if (allReady(rd.data)) { readyDone(rd); return; }
+    render();
+    readyLoop(rd);
+  }
+
+  // הכול ✓: ממשיכים למה שביקשו, משיכה או הכנת ההעלאה
+  function readyDone(rd) {
+    rd.flow = false;
+    render();
+    if (rd.then === "pull") runLocalPull(rd.full, rd.limit);
+    else prepareLocalSend();
+  }
+
   // הרשימה עצמה: ✓ מוכן, ✗ חסר (עם כפתור), ⏳ בעבודה. משמשת גם את חלון ההכנה וגם את הלשונית
   function readyChecklistHTML(rd) {
     const d = rd.data;
@@ -1073,12 +1114,15 @@
     return `<ul class="ready-list">${install}${login}${chrome}</ul>`;
   }
 
-  // חלון ההכנה: מופיע אחרי הלחיצה על "העלה N למודל", ונעלם כשהכול ✓ (ואז עוברים להכנת האצווה)
-  function readyPanelHTML() {
+  // חלון ההכנה: מופיע אחרי הלחיצה על "העלה N למודל" (then: "send") או על "משוך" (then: "pull"), ונעלם כשהכול ✓
+  // (ואז עוברים להכנת האצווה, או שהמשיכה מתחילה)
+  function readyPanelHTML(then = "send") {
     const rd = LOCAL.rd;
-    if (!LOCAL.on || !rd?.flow || rd.assignmentId !== cur()?.id || !rd.data) return "";
+    if (!LOCAL.on || !rd?.flow || rd.then !== then || rd.assignmentId !== cur()?.id || !rd.data) return "";
+    const title = then === "pull" ? "לפני המשיכה: מחברים את המחשב הזה ל-Claude שלך" : "לפני ההעלאה: בודקים שהמחשב הזה מוכן";
     return `<section class="panel report send-panel ready-panel" aria-live="polite">
-      <div class="panel-head"><h3>לפני ההעלאה: בודקים שהמחשב הזה מוכן</h3><button class="btn ghost small end" data-act="ready-close">ביטול</button></div>
+      <div class="panel-head"><h3>${title}</h3><button class="btn ghost small end" data-act="ready-close">ביטול</button></div>
+      ${then === "pull" ? `<p class="hint" style="margin:0 16px">המשיכה רצה דרך Claude Code שבמחשב הזה ודרך התוסף Claude in Chrome בכרום שלך, עם ההתחברות שלך למודל. כשהכול כאן ✓ היא מתחילה לבד.</p>` : ""}
       <div class="panel-body">${readyChecklistHTML(rd)}</div>
     </section>`;
   }
@@ -1745,7 +1789,7 @@
         <div class="panel-head"><h2>איך מתחברים</h2><span class="end tag warn">${LOCAL.probing ? "מנסה להתחבר…" : "לא מחובר"}</span></div>
         <div class="panel-body">
           <ol class="todo">
-            <li>המערכת צריכה לרוץ במחשב. אחרי לחיצה אחת על <code dir="ltr">install-autostart.bat</code> בתיקייה assignment-checker היא עולה לבד, בלי חלון, בכל הדלקה של המחשב. (בלי זה: לחיצה כפולה על <code dir="ltr">start.bat</code>, והחלון השחור נשאר פתוח.)</li>
+            <li>המערכת צריכה לרוץ במחשב. <b>פעם ראשונה במחשב הזה?</b> הפקודה שבחלק הבא מתקינה ומפעילה אותה. מחשב שכבר מותקן מפעיל אותה לבד, בלי חלון, בכל הדלקה (<code dir="ltr">install-autostart.bat</code>), או בלחיצה כפולה על <code dir="ltr">start.bat</code>.</li>
             <li>לוחצים "פתח את המערכת". אותו אתר נפתח בכתובת <code dir="ltr">http://localhost:8765</code>, עם הנתונים האמיתיים ובלי שום הרשאה. <b>מהפעם הבאה הקישור הזה מעביר לשם לבד.</b></li>
           </ol>
           <div class="row-start">
@@ -1756,15 +1800,27 @@
         </div>
       </section>
       <section class="panel" style="margin-bottom:24px">
-        <div class="panel-head"><h2>פעם ראשונה במחשב הזה?</h2><span class="meta">פעם אחת לכל אחד מהצוות</span></div>
+        <div class="panel-head"><h2>פעם ראשונה במחשב הזה? פקודה אחת מחברת אותו</h2><span class="meta">פעם אחת לכל אחד מהצוות</span></div>
         <div class="panel-body">
+          <p class="lead">כל אחד בצוות מושך, בודק ומעלה דרך ה-Claude שלו, במחשב שלו. כדי שהכפתורים כאן יפעילו אותו, מחברים את המחשב פעם אחת:</p>
           <ol class="todo">
+            <li><b>פותחים PowerShell:</b> לוחצים על מקש Windows, כותבים PowerShell ולוחצים Enter.</li>
+            <li><b>מדביקים את השורה הזו ולוחצים Enter:</b>
+              <div class="row-start" style="margin-top:8px"><pre class="prompt" dir="ltr" style="flex:1">${esc(CONNECT_COMMAND)}</pre>
+              <button class="btn primary small" data-act="copy-connect">${ICON.check}העתק</button></div></li>
+            <li><b>זהו.</b> הפקודה מתקינה מה שחסר (Git, Python, 7-Zip ו-Claude Code), מורידה את המערכת, מפעילה אותה כך שתעלה לבד, בלי חלון, בכל הדלקה של המחשב, ופותחת את האתר מחובר. מהפעם הבאה הקישור הזה מעביר לשם לבד.</li>
+            <li><b>בלחיצה הראשונה על "משוך הגשות"</b> האתר מחבר את Claude Code לחשבון Claude שלך (נפתח דף התחברות) ובודק שהתוסף Claude in Chrome מחובר בכרום שלך ושכרום מחובר למודל. מאז כל משיכה רצה דרך ה-Claude שלך, וההגשות נשמרות ממוספרות בתיקיית OneDrive של הקורס.</li>
             <li><b>גישה לתיקייה:</b> מבקשים מהמרצה גישה לתיקייה YallaLinearit. בדפדפן, על התיקייה: Add shortcut to My files. באפליקציית OneDrive במחשב מתחברים עם חשבון האוניברסיטה.</li>
-            <li><b>התוכנות</b>, בחלון PowerShell: <code dir="ltr">winget install Python.Python.3.12</code>, <code dir="ltr">winget install 7zip.7zip</code>, <code dir="ltr">winget install Git.Git</code></li>
-            <li><b>המערכת:</b> בחלון חדש, בתיקייה שבה רוצים לשמור אותה: <code dir="ltr">git clone ${REPO_URL}</code></li>
-            <li><b>מפעילים, פעם אחת:</b> לחיצה כפולה על <code dir="ltr">install-autostart.bat</code> בתיקייה assignment-checker. מעכשיו המערכת עולה לבד, בלי חלון, בכל פעם שהמחשב נדלק, והקישור הזה פשוט עובד. בכל הפעלה היא מתעדכנת מ-GitHub, כך שכולם עובדים על אותה גרסה. (בלי הפעלה אוטומטית: לחיצה כפולה על <code dir="ltr">start.bat</code>, והחלון השחור נשאר פתוח.)</li>
           </ol>
-          <div class="row-start"><a class="btn secondary small" href="${REPO_URL}#readme" target="_blank" rel="noopener">ההסבר המלא ב-GitHub</a></div>
+          <details style="margin-top:12px"><summary>בלי הפקודה: אותו דבר ביד</summary>
+            <ol class="todo" style="margin-top:8px">
+              <li><b>התוכנות</b>, בחלון PowerShell: <code dir="ltr">winget install Python.Python.3.12</code>, <code dir="ltr">winget install 7zip.7zip</code>, <code dir="ltr">winget install Git.Git</code></li>
+              <li><b>המערכת:</b> בחלון חדש, בתיקייה שבה רוצים לשמור אותה: <code dir="ltr">git clone ${REPO_URL}</code></li>
+              <li><b>מפעילים, פעם אחת:</b> לחיצה כפולה על <code dir="ltr">install-autostart.bat</code> בתיקייה assignment-checker. מעכשיו המערכת עולה לבד, בלי חלון, בכל פעם שהמחשב נדלק. בכל הפעלה היא מתעדכנת מ-GitHub, כך שכולם עובדים על אותה גרסה. (בלי הפעלה אוטומטית: לחיצה כפולה על <code dir="ltr">start.bat</code>, והחלון השחור נשאר פתוח.)</li>
+            </ol>
+          </details>
+          <div class="row-start" style="margin-top:12px"><a class="btn secondary small" href="${REPO_URL}#readme" target="_blank" rel="noopener">ההסבר המלא ב-GitHub</a>
+            <a class="btn secondary small" href="connect.ps1" target="_blank" rel="noopener">מה הפקודה עושה</a></div>
         </div>
       </section>
       ${how}`;
@@ -2464,11 +2520,26 @@
       if (a === "key-save") saveOfficialKey(false);
       if (a === "key-remove") saveOfficialKey(true);
       if (a === "open-inbox") openFolder("inbox");
-      if (a === "pull-full") runLocalPull(true);
-      if (a === "pull-pick-go") { state.pullPick = null; runLocalPull(); state.pullLimit = 0; }  // הגוף של הבקשה נבנה מיד
+      if (a === "pull-full") startPullFlow({ full: true });
+      if (a === "pull-pick-go") { state.pullPick = null; startPullFlow({ limit: state.pullLimit }); state.pullLimit = 0; }  // כמה למשוך נשמר בזרימה
       if (a === "pull-pick-close") { state.pullPick = null; render(); }
       if (a === "open-upload") openFolder("upload");
       if (a === "recheck") { if (LOCAL.on) location.reload(); else connect(true); }
+      if (a === "copy-connect") {
+        // הלוח של הדפדפן, ואם הוא מסרב (דפדפן מוטמע, דף לא מאובטח): הדרך הישנה, טקסט מסומן והעתקה
+        (navigator.clipboard ? navigator.clipboard.writeText(CONNECT_COMMAND) : Promise.reject(new Error("no clipboard")))
+          .catch(() => {
+            const t = Object.assign(document.createElement("textarea"), { value: CONNECT_COMMAND });
+            t.style.cssText = "position:fixed;opacity:0";
+            document.body.append(t);
+            t.select();
+            const copied = document.execCommand("copy");
+            t.remove();
+            if (!copied) throw new Error("copy");
+          })
+          .then(() => toast("הפקודה הועתקה. מדביקים אותה ב-PowerShell ולוחצים Enter.", ICON.check))
+          .catch(() => toast("לא הצלחתי להעתיק. מסמנים את השורה ומעתיקים ביד (Ctrl+C).", ICON.warn));
+      }
       if (a === "send-confirm" && LOCAL.batch?.assignmentId === cur().id) startLocalSend(LOCAL.batch.id);
       if (a === "send-cancel") { LOCAL.batch = null; render(); }
       if (a === "send-stop") stopLocalSend();
@@ -2540,7 +2611,7 @@
   document.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && reviewSub()) { e.preventDefault(); saveReview(state.review.id); return; }
     if (e.key === "Enter" && e.target.matches?.("[data-grade-count]")) { gradePicked(); return; }
-    if (e.key === "Enter" && e.target.matches?.("[data-pull-limit]")) { state.pullPick = null; runLocalPull(); state.pullLimit = 0; return; }
+    if (e.key === "Enter" && e.target.matches?.("[data-pull-limit]")) { state.pullPick = null; startPullFlow({ limit: state.pullLimit }); state.pullLimit = 0; return; }
     if (e.key === "Escape" && state.pullPick) { state.pullPick = null; render(); return; }
     if (e.key === "Escape" && state.gradePick) { state.gradePick = null; render(); return; }
     if (e.key === "Escape") { closeDrawer(); $("#sidebar").classList.remove("open"); }
@@ -2743,8 +2814,9 @@
   // מה שנמשך, נבדק או הועלה במחשב אחר (ההגשות מגיעות דרך OneDrive) מופיע לבד, בלי רענון: כל 20 שניות וכשחוזרים
   // ללשונית. רק כשהלשונית גלויה, שום דבר לא רץ כאן ולא מקלידים, ומציירים מחדש רק אם משהו בתיקייה השתנה
   // "משוך הגשות" אמיתי: השרת מושך ממודל (אם יש טוקן) ומקובצי ZIP בקליטה, ישר לתיקיית OneDrive
-  // full: את כל ההגשות ממודל. בלי: אחרי משיכה ראשונה, רק מי שההגשה שלו השתנתה מאז המשיכה הקודמת
-  async function runLocalPull(full = false) {
+  // full: את כל ההגשות ממודל. בלי: אחרי משיכה ראשונה, רק מי שההגשה שלו השתנתה מאז המשיכה הקודמת. limit: כמה למשוך (0 = הכול).
+  // הכפתורים קוראים ל-startPullFlow, שבודק קודם שהמחשב מחובר ל-Claude
+  async function runLocalPull(full = false, limit = 0) {
     const A = cur();
     if (!A || state.run[A.id] || !LOCAL.health?.root) return;
     // הגשה שעוד לא נמשכה: המשיכה הראשונה שומרת את מזהה המטלה במודל (dashboard/actions.py new_assignment)
@@ -2760,7 +2832,7 @@
     render();
     // השרת עונה רק בסוף המשיכה (הורדה של ZIP גדול: כמה דקות). בינתיים שואלים אותו כל שנייה כמה התקדמה
     let settled = false;
-    const post = api("api/pull", { method: "POST", body: JSON.stringify({ course: A.courseFolder, assignment: A.folder, ...(moodleId && { moodleId }), ...(full && { full: true }), ...(!full && state.pullLimit > 0 && { limit: state.pullLimit }) }) })
+    const post = api("api/pull", { method: "POST", body: JSON.stringify({ course: A.courseFolder, assignment: A.folder, ...(moodleId && { moodleId }), ...(full && { full: true }), ...(!full && limit > 0 && { limit }) }) })
       .finally(() => { settled = true; });
     followPull(A, run, () => settled);
     try {
