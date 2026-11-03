@@ -4,6 +4,35 @@ University project (BGU) that grades student assignments with Claude:
 pull submissions from Moodle → grade by rubric → TA approves → return grades and marked files to Moodle.
 Courses are large (up to ~1,000 students per assignment). The team works in Hebrew.
 
+## Any teammate's computer
+
+The system runs on the computer of whoever uses it, not on a server, and every teammate's computer can pull, grade
+and return once it is set up. Nothing is tied to one person's PC: "Matan's PC" or "Ori's laptop" below says where
+something was first seen or checked, not the only place it works. Names in tests and `docs/Roadmap.md` (יוסי and
+the like) are made up. Never tell a teammate "it only works on Matan's computer"; find which of these is missing on
+theirs, in this order, and say how to fix it:
+1. **The repo on this computer, and its server up**: `curl http://127.0.0.1:8765/api/health`. If not, `start.bat`
+   (once, `install-autostart.bat`). Setup of a new computer: README.md, "הפעלה אצל כל אחד מהצוות".
+2. **The shared folder**: `/api/health` names it, or `python -m moodle status <id>`. The site and the commands find
+   the synced OneDrive folder the same way (`shared_folder.find_root`, `use_for_commands`; before 2026-11-03 the
+   commands looked only in `~/Exercise Checking System` and failed on every computer that only syncs OneDrive).
+3. **Claude Code signed in to this person's own Claude account** (`claude auth status`): grading, pull and upload.
+4. **Chrome with the Claude in Chrome extension, signed in to Moodle**: pull and upload.
+5. **`GRADER_NAME` in the repo's `.env`** (the site asks for it): whose claims and grades these are.
+
+**A Claude that sees only GitHub** (claude.ai with the GitHub connector, Claude Code on the web, any cloud session)
+runs on Anthropic's machines, not on the user's computer. It can read and change the code and open PRs, but it cannot
+reach the OneDrive folder, Moodle, Chrome or the local server, so it cannot pull, grade, check copying or upload. Say
+so plainly and send the user to Claude Code on their own computer: the Claude desktop app → Code → the
+`assignment-checker` folder they cloned (or `claude` in a terminal there).
+
+**GitHub**: every teammate has write access (orimes-source, ezraariel, noa-rodnizky, tikochin; Shazumi178 is
+Nadav). Work on a branch and open a PR. The first push from a new computer opens a GitHub sign-in in the browser
+(Git Credential Manager); `gh auth login` once for PRs from the command line.
+
+**Moodle uploads are on hold** (Matan, 2026-10-22, and the team's setup issue #22): nothing goes up to Moodle, not
+even a dry run of `send`, until Matan says the course staff approved returning feedback through the system.
+
 ## Repo layout
 
 Each folder has a README.md that explains it.
@@ -32,7 +61,7 @@ them in Hebrew). The names are constants
 in `moodle/paths.py`, so code never spells them out by hand:
 
 ```
-Exercise Checking System/                  the data folder (ASSIGNMENT_DATA, default ~/Exercise Checking System)
+Exercise Checking System/                  the data folder (the synced one, found by itself; else ASSIGNMENT_DATA, default ~/Exercise Checking System)
   README.txt
   Linear Algebra/                           a folder per course
     README.txt
@@ -164,6 +193,9 @@ Each teammate grades on their own computer with their own Claude subscription, s
   (pulled, graded, returned). It also checks OneDrive itself on this computer (`dashboard/onedrive_check.py`): the
   folder is inside OneDrive (Cloud Files API), OneDrive.exe runs (started if not), no AADSTS50076 in the AAD log in the
   last 20 minutes (BGU wants MFA, see the shortcut "חיבור OneDrive BGU"), and how many files from here are not uploaded yet.
+  That shortcut exists only on Matan's PC (`%LOCALAPPDATA%\BodekHacham\onedrive-signin`, not in the repo); elsewhere
+  the person signs in to OneDrive themselves. "Not synced" has three causes, checked in this order: a stale tab
+  (`/api/state` already has it), a server still running old code (see "Problems already solved"), or OneDrive stuck.
 - **Grading** skips numbers someone else holds and claims what it grades. Once anyone took something, the site's "Grade"
   button grades only my claimed, ungraded work; with no claims at all it grades everything pending, as before.
 - **Grades never share a file**: grading writes `Grades by <name>.csv` (with `graded_at`, `graded_by`). Every reader
@@ -179,10 +211,11 @@ Each teammate grades on their own computer with their own Claude subscription, s
 https://bgu365-my.sharepoint.com/personal/mein_bgu_ac_il/_layouts/15/onedrive.aspx?id=%2Fpersonal%2Fmein%5Fbgu%5Fac%5Fil%2FDocuments%2FYallaLinearit%2FExercise%20Checking%20System
 Next to it, `YallaLinearit/Course Material (tex)/exercises and solutions/` has the linear algebra questions and solutions as .tex.
 
-The folder is **synced** on Matan's PC (`C:\Users\PC\BGU\<owner> - YallaLinearit`). Syncing works through
-"Add shortcut to My files" on the shared folder (the older note that the button fails is out of date), and the dashboard
-finds the synced folder by itself (`dashboard/shared_folder.py`). To point at another path, set `ASSIGNMENT_CHECKER_ROOT`
-(the dashboard) or `ASSIGNMENT_DATA` (the `moodle` commands) to the synced path of `Exercise Checking System`, and check
+Each teammate **syncs** the folder on their own computer through "Add shortcut to My files" on the shared folder (the
+older note that the button fails is out of date); OneDrive names it `<owner> - YallaLinearit`, e.g. on Matan's PC
+`C:\Users\PC\BGU\נדב מאיר - YallaLinearit`. The dashboard and the `moodle`/`grading`/`copying` commands find the synced
+folder by themselves (`dashboard/shared_folder.py`). To point at another path, set `ASSIGNMENT_CHECKER_ROOT` (both; also
+in `.env`) to the synced path of `Exercise Checking System`, or `ASSIGNMENT_DATA` (the commands only; it wins), and check
 with `python -m moodle status <id>`.
 - A teammate without the shortcut can still open the link above (the lecturer shares it) and view or download what
   they need, e.g. `Linear Algebra/Assignment 0 - Sets and Complex Numbers/1 - Submissions to grade/0023.pdf`.
@@ -351,6 +384,9 @@ in the assignment.
 | Students name files anything ("Untitled (7).pdf", their own name, ...) | Ignore filenames. Only the folder's participant id matters |
 | A name with words after the extension ("x.pdf דיסקרטית מתוקן") or none at all became "0044.pdf דיסקרטית מתוקן" / "0474", which grading can't open as a PDF (2026-11-03) | `anonymize.extension`: a real extension stays; otherwise the file's first bytes decide (PDF, JPEG, PNG). The next pull of such a student writes `0044.pdf` and moves the old name to `Earlier versions` |
 | `claude update` in `start.bat` hung for over 5 minutes (2026-11-03): nothing after it ran, so the site and the night pull stayed down until someone killed it | `start.bat` runs the update through PowerShell and stops it (with its children) after `CLAUDE_UPDATE_WAIT_S` seconds (default 120), says so, and starts the version already on the computer |
+| A test through the site ran old code (2026-11-02: the server was 69 commits behind `main`) | The watchdog starts `start.bat` only when `/api/health` is down, and `git pull` runs only on start, so a server that stays up keeps its code. Before a real test, update the checkout and stop the server's python process; the watchdog brings it back within a minute |
+| After a pull cut to N students ("כמה?"), the next pull (also the night pulls) asked Moodle for everyone (2026-11-03) | By design: `_since` counts only complete pulls. Release the pull task after a cut pull unless the rest is wanted |
+| Stopping the headless `claude -p --chrome` of a pull did not stop the download | `download_parts.js` keeps running in its Moodle tab and parts keep landing in Downloads until the tab is closed. Close it, and move those parts aside before the next pull |
 | Chrome left the ZIP as "Unconfirmed *.crdownload" | Chrome was asking where to save. Turn off "Ask where to save each file" in Chrome settings |
 | Re-running ingest failed deleting folders 7-Zip extracted as read-only | `ingest.remove_tree` clears read-only and retries |
 | A pull that failed halfway could leave an empty key (the next pull renumbered everyone) or lose the files of students not in the next download; two pulls in one minute overwrote the kept download | `anonymize.prepare` updates "1 - Submissions to grade" in place, only what changed, each file and the key via `.tmp` + `os.replace`; `check_key` refuses to pull (before Chrome opens) when the key is empty or broken but submissions exist; kept downloads are named to the second, with " (2)" when taken. `tests/moodle/test_repeated_pulls.py` pulls 8 times in a row with changing submissions |

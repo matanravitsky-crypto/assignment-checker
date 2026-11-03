@@ -85,6 +85,8 @@ def run_send(target: Path, args) -> int:
 def main() -> None:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")  # Hebrew messages, even when the output is piped
+    from dashboard import shared_folder  # the same folder as the site: the synced one, unless ASSIGNMENT_DATA says
+    shared_folder.use_for_commands()
     parser = argparse.ArgumentParser(prog="python -m moodle")
     commands = parser.add_subparsers(dest="command", required=True)
 

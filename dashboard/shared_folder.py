@@ -118,3 +118,20 @@ def find_root() -> Path:
         "  3. לחכות דקה שהתיקייה תופיע במחשב, ולנסות שוב.\n"
         "אפשר גם להגדיר נתיב ידנית במשתנה הסביבה ASSIGNMENT_CHECKER_ROOT."
     )
+
+
+def use_for_commands() -> None:
+    """שורת הפקודה (python -m moodle | grading | copying) עובדת באותה תיקייה כמו האתר.
+
+    הפקודות מוצאות מטלות דרך ASSIGNMENT_DATA (moodle/paths.py), שברירת המחדל שלו ~/Exercise Checking System.
+    עד 2026-11-03 הן לא חיפשו את התיקייה המסונכרנת, ולכן במחשב שהנתונים בו רק ב-OneDrive (כמו אצל כל הצוות)
+    "python -m grading <id>" אמר שהמטלה לא קיימת, ורק האתר עבד. ASSIGNMENT_DATA שהוגדר ביד עדיין קודם.
+    """
+    from . import settings
+    settings.load_env()
+    if os.environ.get("ASSIGNMENT_DATA"):
+        return
+    try:
+        os.environ["ASSIGNMENT_DATA"] = str(find_root())
+    except FolderNotFound:
+        pass  # ברירת המחדל נשארת, והפקודה תגיד שלא מצאה את המטלה
