@@ -31,6 +31,27 @@ def parse_folder(folder_name: str) -> str:
     return match.group("participant")
 
 
+EXTENSION = re.compile(r"\.[a-z0-9]{1,5}")
+# What a file holds, by its first bytes, for a name whose ending is not an extension
+MAGIC = [(b"%PDF", ".pdf"), (b"\xff\xd8\xff", ".jpg"), (b"\x89PNG", ".png")]
+
+
+def extension(file: Path) -> str:
+    """The extension the numbered file gets. Students name files "<x>.pdf דיסקרטית מתוקן" (Discrete, 2026-11-03), and
+    Path.suffix of that is ".pdf דיסקרטית מתוקן": grading could not open "0044.pdf דיסקרטית מתוקן" as a PDF. Then the
+    file's first bytes decide, else the extension at the start of that ending, else none."""
+    suffix = file.suffix.lower()
+    if EXTENSION.fullmatch(suffix):
+        return suffix
+    with open(file, "rb") as f:
+        head = f.read(8)
+    for magic, ext in MAGIC:
+        if head.startswith(magic):
+            return ext
+    found = re.match(r"\.[a-z0-9]{1,5}\b", suffix, re.ASCII)
+    return found.group(0) if found else ""
+
+
 def prepare(original: Path, assignment_dir: Path, on_folder=None, check: dict | None = None) -> list[dict]:
     """`on_folder(done, total)` hears every student folder that was copied, for the dashboard's progress bar.
     `check`: gets the counts of moodle/pull_check.py `verify`, which looks at the disk again before the key is written
@@ -79,7 +100,7 @@ def prepare(original: Path, assignment_dir: Path, on_folder=None, check: dict | 
         for index, file in enumerate(files):
             # A second file from the same student becomes 0001-2.pdf
             suffix = "" if index == 0 else f"-{index + 1}"
-            anon_name = f"{number:04d}{suffix}{file.suffix.lower()}"
+            anon_name = f"{number:04d}{suffix}{extension(file)}"
             sources[anon_name] = file
             rows.append({
                 "number": f"{number:04d}",
@@ -108,7 +129,7 @@ def prepare(original: Path, assignment_dir: Path, on_folder=None, check: dict | 
     before_files = pull_check.snapshot(anon, is_numbered)
     try:
         for old in sorted(anon.iterdir()):  # a file of a student in this download that the download no longer has
-            if old.is_file() and old.name not in sources and old.name[:4] in numbers_here and old.name[4:5] in (".", "-"):
+            if old.is_file() and old.name not in sources and old.name[:4] in numbers_here and old.name[4:5] in (".", "-", ""):
                 done.append((old, _set_aside(old, earlier)))
         seen: set[str] = set()
         for anon_name, source in sources.items():
