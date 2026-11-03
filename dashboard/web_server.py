@@ -26,7 +26,7 @@ from urllib.parse import parse_qs, urlparse
 from grading import grade as grading
 from moodle import paths
 
-from . import actions, folder_view, scheduler, settings as cfg, sync, updater
+from . import actions, folder_view, public_status, scheduler, settings as cfg, sync, updater
 
 WEBSITE = cfg.REPO_DIR / "website"
 HEADER = "X-Assignment-Checker"
@@ -498,6 +498,8 @@ def serve(port: int = 8765, open_browser: bool = True) -> None:
     # מתעדכנת לבד מ-GitHub כשאף אחד לא עובד עליה (dashboard/updater.py): נעצרת, ו-autostart.vbs מעלה אותה מעודכנת
     updater.start(port, httpd.shutdown, _lock,
                   lambda: actions.running_jobs() + (["night pull"] if scheduler.in_night_window() else []))
+    # לוח המספרים הציבורי באתר: רק במחשב שיש ב-.env שלו PUBLIC_STATUS_GIST (dashboard/public_status.py)
+    public_status.start()
     actions.refresh_status_soon()  # כבר עכשיו, כדי שהתשובה תהיה מוכנה כשהאתר נפתח
     url = f"http://localhost:{port}/"
     print(f"\nבודק חכם פועל: {url}\nכדי לעצור: Ctrl+C או לסגור את החלון.")

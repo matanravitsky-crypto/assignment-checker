@@ -1765,6 +1765,55 @@
       <ul class="criteria">${R.questions.map((q) => `<li><span title="${esc(q.req)}">שאלה ${q.n}</span><span class="track"><i style="width:${q.pts}%"></i></span><b class="num">${q.pts}</b></li>`).join("")}</ul>`;
   }
 
+  // ---------- לוח המספרים הציבורי ----------
+  // מי שאין במחשב שלו מערכת רואה כאן מה נעשה: מחשב אחד בצוות מפרסם סיכום של מספרים בלבד (dashboard/public_status.py)
+  // לקובץ ציבורי, והאתר קורא אותו. בלי שמות, ציונים, הערות או קבצים. מתרענן כל דקה
+  const PUBLIC_STATUS_URL = "https://gist.githubusercontent.com/matanravitsky-crypto/f1d11991473c2ece643fc479ed963117/raw/status.json";
+  const PUBLIC_STALE_H = 3;  // המחשב שמפרסם שולח לפחות פעם בשעה. יותר מזה: כנראה כבוי
+  const PUB = { data: null, error: "", loading: !!PUBLIC_STATUS_URL && !ON_LOCAL_HOST };
+
+  async function loadPublic() {
+    if (!PUBLIC_STATUS_URL || LOCAL.on) return;
+    try {
+      // פעם בדקה מקבלים עותק טרי (ה-CDN של GitHub שומר עותק עד 5 דקות)
+      const r = await fetch(`${PUBLIC_STATUS_URL}?m=${Math.floor(Date.now() / 60000)}`, { cache: "no-store" });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      PUB.data = await r.json();
+      PUB.error = "";
+    } catch (e) {
+      PUB.error = e.message;
+    }
+    PUB.loading = false;
+    if (!LOCAL.on && !cur()) render();
+  }
+
+  function publicBoardHTML() {
+    const d = PUB.data;
+    if (!d?.courses?.length) return PUB.loading ? `<p class="send-line">${ICON.spin}<span>טוען את מצב העבודה…</span></p>` : "";
+    const age = (Date.now() - Date.parse(d.publishedAt)) / 3600000;
+    const stale = age > PUBLIC_STALE_H;
+    const cell = (n, of) => `<td><b class="num">${n}</b>${of && n < of ? `<small class="sub">מתוך ${of}</small>` : ""}</td>`;
+    const courses = d.courses.map((c) => {
+      const rows = c.assignments.filter((a) => !a.empty);
+      const notYet = c.assignments.length - rows.length;
+      const body = rows.map((a) => `<tr>
+          <td><b>${esc(a.title)}</b>${a.due ? `<small class="sub">הגשה עד ${esc(when(a.due))}</small>` : ""}</td>
+          <td><b class="num">${a.pulled}</b>${a.pulledAt ? `<small class="sub">${esc(when(a.pulledAt))}</small>` : ""}</td>
+          ${cell(a.graded, a.pulled)}${cell(a.review)}${cell(a.approved, a.graded)}
+          <td><b class="num">${a.returned}</b>${a.returnedAt ? `<small class="sub">${esc(when(a.returnedAt))}</small>` : ""}</td>
+          <td class="col-hide-sm">${a.pullOwner ? esc(a.pullOwner) : `<span class="muted">—</span>`}</td>
+        </tr>`).join("");
+      return `<section class="panel" style="margin-bottom:24px">
+        <div class="panel-head"><h2>${esc(c.name)}</h2><span class="meta">${rows.length ? plural(rows.length, "מטלה אחת נמשכה", "מטלות נמשכו") : "עוד לא נמשכה אף מטלה"}${notYet ? ` · ${notYet} עוד לא` : ""}</span></div>
+        ${rows.length ? `<div class="table-wrap"><table class="board-table">
+          <thead><tr><th>מטלה</th><th>נמשכו</th><th>נבדקו</th><th>לבדיקה ידנית</th><th>אושרו</th><th>הוחזרו למודל</th><th class="col-hide-sm">מושך/ת</th></tr></thead>
+          <tbody>${body}</tbody></table></div>` : ""}
+      </section>`;
+    }).join("");
+    return `<p class="hint" style="margin:0 0 16px">${stale ? `<span class="tag warn">לא עודכן מאז ${esc(when(d.publishedAt))}</span> המחשב שמפרסם את המספרים כנראה כבוי, אז ייתכן שהם ישנים.`
+      : `עודכן ${esc(when(d.publishedAt))}${d.publishedBy ? `, מהמחשב של ${esc(d.publishedBy)}` : ""}. מתעדכן לבד.`}</p>${courses}`;
+  }
+
   // אין חיבור למערכת שבמחשב, או שאין עדיין מטלות: אין מספרים להציג
   function offlineHTML() {
     const how = `
@@ -1782,9 +1831,12 @@
           <pre class="prompt" dir="ltr">python -m moodle ingest &lt;assignment id&gt; --course "Linear Algebra" --name "Assignment 1 - Vectors"</pre></div></div>${how}`;
     }
     if (LOCAL.on) return `<div class="page-head"><div><h1>תיקיית OneDrive לא נמצאה</h1><p>המערכת פועלת, אבל לא מצאה במחשב הזה את התיקייה של הקורס. ההסבר מופיע למעלה.</p></div></div>${how}`;
+    const board = publicBoardHTML();
     return `
-      <div class="page-head"><div><h1>המערכת לא מחוברת</h1>
-        <p>האתר מציג רק נתונים אמיתיים, מתוך תיקיית OneDrive של הקורס. הם מגיעים מהמערכת שרצה במחשב שלך, ועכשיו היא לא מחוברת.</p></div></div>
+      ${board ? `<div class="page-head"><div><h1>מצב העבודה</h1>
+        <p>כל אחד רואה כאן כמה הגשות נמשכו, נבדקו והוחזרו בכל מטלה. רק מספרים: בלי שמות, בלי ציונים ובלי קבצים. כדי למשוך, לבדוק ולהחזיר מהמחשב שלך, מחברים אותו פעם אחת (למטה).</p></div></div>${board}`
+        : `<div class="page-head"><div><h1>המערכת לא מחוברת</h1>
+        <p>האתר מציג רק נתונים אמיתיים, מתוך תיקיית OneDrive של הקורס. הם מגיעים מהמערכת שרצה במחשב שלך, ועכשיו היא לא מחוברת.</p></div></div>`}
       <section class="panel" style="margin-bottom:24px">
         <div class="panel-head"><h2>איך מתחברים</h2><span class="end tag warn">${LOCAL.probing ? "מנסה להתחבר…" : "לא מחובר"}</span></div>
         <div class="panel-body">
@@ -3181,6 +3233,10 @@
   (async () => {
     state.loading = ON_LOCAL_HOST;  // באתר הציבורי מראים מיד איך מתחברים, בלי לחכות
     render();
+    if (!ON_LOCAL_HOST) {  // לוח המספרים הציבורי, למי שאין במחשב שלו מערכת. נטען במקביל לניסיון החיבור
+      loadPublic();
+      setInterval(loadPublic, 60000);
+    }
     await connect();
     state.loading = false;
     booted = true;
