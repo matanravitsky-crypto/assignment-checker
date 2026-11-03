@@ -157,7 +157,13 @@ Each teammate grades on their own computer with their own Claude subscription, s
   (from the folder: counts, who took what, what's left).
 - **Live**: the site polls `GET /api/changes` every 5 seconds (a hash of names, mtimes and sizes of the files the state
   is built from; folders count by name only, since Windows updates a folder's mtime late) and reloads when it changes.
-  Numbers this computer is grading right now come back from `/api/state` as `"grading"`.
+  Numbers this computer is grading right now come back from `/api/state` as `"grading"`. A focused form field holds
+  the reload only for 15 seconds after it was last touched (before 2026-11-03 a focused `<select>`, such as the
+  assignment picker, stopped the reloads until the user clicked elsewhere, so a pull didn't show).
+- **"סנכרון"** (top bar, `POST /api/refresh`): reads the whole folder again and lists what changed per assignment
+  (pulled, graded, returned). It also checks OneDrive itself on this computer (`dashboard/onedrive_check.py`): the
+  folder is inside OneDrive (Cloud Files API), OneDrive.exe runs (started if not), no AADSTS50076 in the AAD log in the
+  last 20 minutes (BGU wants MFA, see the shortcut "חיבור OneDrive BGU"), and how many files from here are not uploaded yet.
 - **Grading** skips numbers someone else holds and claims what it grades. Once anyone took something, the site's "Grade"
   button grades only my claimed, ungraded work; with no claims at all it grades everything pending, as before.
 - **Grades never share a file**: grading writes `Grades by <name>.csv` (with `graded_at`, `graded_by`). Every reader

@@ -109,6 +109,11 @@
         </div>
 
         <div class="top-actions">
+          <button class="btn secondary small sync-btn" id="sync-btn" hidden title="קורא מחדש את תיקיית OneDrive ומעדכן את כל המספרים במסך">
+            <svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 0 1-14.2 5M4 12a8 8 0 0 1 14.2-5"/><path d="M18.5 3v4h-4M5.5 21v-4h4"/></svg>
+            <span>סנכרון</span>
+          </button>
+          <div class="sync-pop" id="sync-pop" hidden role="status" aria-live="polite"></div>
           <span class="demo-badge" id="mode-badge">מתחבר…</span>
           <button class="btn ghost" id="theme-btn" aria-label="החלף ערכת צבעים">
             <svg viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></svg>

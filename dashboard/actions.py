@@ -40,7 +40,7 @@ from moodle import (anonymize as moodle_anonymize, claims, claude_driver, grades
                     ingest as moodle_ingest, lock as moodle_lock, paths, send as moodle_send, upload as moodle_upload,
                     upload_log)
 
-from . import folder_view, settings as cfg, shared_folder, usage as grading_usage
+from . import folder_view, onedrive_check, settings as cfg, shared_folder, usage as grading_usage
 
 
 def root_info() -> tuple[Path | None, str | None]:
@@ -804,19 +804,47 @@ def _scan(h, folder: Path) -> None:
         h.update(b"-\n")
 
 
+def _watched_dirs(root: Path) -> list[Path]:
+    """התיקיות שהמצב שהאתר מציג נבנה מהן: תיקיית הקורס, "Who does what", ובכל מטלה התיקייה ו-_WATCHED."""
+    out: list[Path] = []
+    for course_dir in folder_view.courses(root):
+        out += [course_dir, course_dir / paths.TASKS]
+        for a in folder_view.assignments(course_dir):
+            out += [a.dir, *(a.dir / sub for sub in _WATCHED)]
+    return out
+
+
 def changes(root: Path) -> str:
     h = hashlib.sha1()
-    for course_dir in folder_view.courses(root):
-        h.update(f"#{course_dir.name}\n".encode("utf-8", "surrogatepass"))
-        _scan(h, course_dir)
-        _scan(h, course_dir / paths.TASKS)
-        for a in folder_view.assignments(course_dir):
-            _scan(h, a.dir)
-            for sub in _WATCHED:
-                _scan(h, a.dir / sub)
+    for folder in _watched_dirs(root):
+        if folder.parent == root:
+            h.update(f"#{folder.name}\n".encode("utf-8", "surrogatepass"))
+        _scan(h, folder)
     with _job_lock:  # הבדיקה שרצה כאן: כל עבודה שנגמרה משנה את מה שהאתר מציג
         h.update(f"{_job.running}|{len(_job.done)}\n".encode())
     return h.hexdigest()
+
+
+# ---------- "סנכרון": קוראים מחדש מ-OneDrive ----------
+UNREADABLE = ("תיקיית OneDrive לא נקראת עכשיו ({error}). בדרך כלל זה אומר ש-OneDrive צריך להתחבר מחדש לאוניברסיטה: "
+              "מפעילים את הקיצור \"חיבור OneDrive BGU\" בשולחן העבודה, מתחברים ומאשרים בטלפון, ולוחצים שוב על סנכרון.")
+
+
+def refresh(root: Path) -> dict:
+    """הכפתור "סנכרון" באתר: קורא מחדש את כל התיקייה מהדיסק, בלי שום זיכרון מהקריאה הקודמת, ובודק ש-OneDrive
+    עצמו מסנכרן אותה במחשב הזה (onedrive_check). מחזיר את המצב המלא, את החתימה שלו (כדי שהאתר לא יטען שוב
+    בסיבוב הבא) ומה מצב OneDrive."""
+    _notes.clear()
+    try:
+        dirs = _watched_dirs(root)
+    except OSError as e:
+        raise UserError(UNREADABLE.format(error=e.strerror or e)) from e
+    od = onedrive_check.status(root, dirs)
+    try:
+        st = state(root)
+    except OSError as e:
+        raise UserError(UNREADABLE.format(error=e.strerror or e)) from e
+    return {"state": st, "sig": changes(root), "onedrive": od, "at": datetime.now().isoformat(timespec="seconds")}
 
 
 def claims_view(root: Path, course: str, assignment: str) -> dict:

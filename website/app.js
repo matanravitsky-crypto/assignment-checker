@@ -27,6 +27,7 @@
     rd: null,          // מוכנות המחשב להעלאה (Claude Code, התחברות, כרום ומודל), למטלה הנוכחית
     probing: false,    // מנסים עכשיו להתחבר למערכת במחשב
     me: null,          // השם שלי בצוות: {name, set}. set=false עד שבחרו שם באתר (אז זה שם המשתמש של Windows)
+    syncing: false, syncedAt: null,  // הכפתור "סנכרון": רץ עכשיו, ומתי סונכרן לאחרונה
   };
   const $ = (sel, root = document) => root.querySelector(sel);
   const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -2363,8 +2364,10 @@
   function renderPickers() {
     const cs = $("#course-select"), as = $("#assignment-select");
     const list = D.assignments.filter((a) => a.courseId === state.courseId);
-    cs.innerHTML = D.courses.map((c) => `<option value="${c.id}" ${c.id === state.courseId ? "selected" : ""}>${esc(c.name)}</option>`).join("") || "<option>אין קורסים</option>";
-    as.innerHTML = list.map((a) => `<option value="${a.id}" ${a.id === state.assignmentId ? "selected" : ""}>${esc(a.title)}</option>`).join("") || "<option>אין מטלות</option>";
+    // כותבים מחדש רק כשמשהו השתנה: טעינה מחדש מ-OneDrive לא סוגרת רשימה שפתוחה עכשיו
+    const fill = (el, html) => { if (el.dataset.html !== html) { el.innerHTML = html; el.dataset.html = html; } };
+    fill(cs, D.courses.map((c) => `<option value="${c.id}" ${c.id === state.courseId ? "selected" : ""}>${esc(c.name)}</option>`).join("") || "<option>אין קורסים</option>");
+    fill(as, list.map((a) => `<option value="${a.id}" ${a.id === state.assignmentId ? "selected" : ""}>${esc(a.title)}</option>`).join("") || "<option>אין מטלות</option>");
     cs.disabled = !D.courses.length;
     as.disabled = !list.length;
   }
@@ -2692,9 +2695,10 @@
     }, 2500);
   }
 
-  async function loadLocal() {
+  // given: מצב שכבר הגיע (הכפתור "סנכרון" מקבל אותו מ-api/refresh), במקום לבקש את api/state
+  async function loadLocal(given = null) {
     try {
-      const [data, health] = await Promise.all([api("api/state"), api("api/health").catch(() => null)]);
+      const [data, health] = given ? [given, null] : await Promise.all([api("api/state"), api("api/health").catch(() => null)]);
       LOCAL.sig = JSON.stringify(data);
       D.courses.splice(0, D.courses.length, ...data.courses);
       D.assignments.splice(0, D.assignments.length, ...data.assignments.map((a) => ({
@@ -2934,10 +2938,18 @@
   // מה שקורה בתיקיית OneDrive (בודקים אחרים לוקחים עבודות, ציונים מגיעים, מישהו משך או העלה) מופיע לבד:
   // כל כמה שניות שואלים את המערכת על חתימת התיקייה, וכשהיא משתנה טוענים מחדש. רק כשהדף גלוי
   let changesBusy = false, lastSig = null;
+  // בזמן הקלדה או בחירה לא מציירים מחדש (רשימה פתוחה הייתה נסגרת). אבל הפוקוס נשאר על השדה גם אחרי שסיימו (למשל
+  // אחרי שבחרו מטלה ברשימה למעלה), ואז האתר הפסיק להתעדכן עד שלחצו במקום אחר. לכן חוסמים רק בשניות שאחרי שנגעו בשדה
+  let fieldTouched = 0;
+  ["pointerdown", "keydown", "input"].forEach((t) => document.addEventListener(t, (e) => {
+    if (e.target.matches?.("input, textarea, select")) fieldTouched = Date.now();
+  }, true));
+  const FIELD_IDLE_MS = 15000;
+  const editing = () => !!document.activeElement?.matches?.("input, textarea, select") && Date.now() - fieldTouched < FIELD_IDLE_MS;
   async function pollChanges() {
-    if (changesBusy || !LOCAL.on || !LOCAL.health?.root || document.hidden) return;
+    if (changesBusy || LOCAL.syncing || !LOCAL.on || !LOCAL.health?.root || document.hidden) return;
     // לא באמצע ריצה ולא בזמן הקלדה: הסיבוב שאחרי יטען
-    if (LOCAL.polling || Object.keys(state.run).length || document.activeElement?.matches?.("input, textarea, select")) return;
+    if (LOCAL.polling || Object.keys(state.run).length || editing()) return;
     changesBusy = true;
     try {
       const { sig } = await api("api/changes");
@@ -2950,6 +2962,95 @@
     }
   }
   const CHANGES_POLL_MS = 5000;
+
+  // ---------- "סנכרון": קוראים מחדש את כל תיקיית OneDrive ומראים מה השתנה ----------
+  // השרת (POST api/refresh) קורא הכול מהדיסק ובודק ש-OneDrive עצמו עובד במחשב: רץ, מחובר לאוניברסיטה, ואין קבצים
+  // מכאן שעוד לא עלו. מה שהמסך מציג לכל מטלה נספר לפני ואחרי, כדי לומר בדיוק מה התעדכן
+  function stageCounts() {
+    const out = {};
+    D.assignments.filter((a) => !a.empty).forEach((a) => {
+      const I = info(a);
+      out[`${a.courseFolder}/${a.folder}`] = { a, pulled: I.subs.length, graded: I.graded.length, returned: I.returned.length };
+    });
+    return out;
+  }
+
+  function syncChanges(before, after) {
+    const what = [["pulled", "נמשכו"], ["graded", "נבדקו"], ["returned", "הוחזרו"]];
+    return Object.entries(after).flatMap(([k, n]) => {
+      const o = before[k] || { pulled: 0, graded: 0, returned: 0 };
+      const parts = what.filter(([f]) => n[f] !== o[f]).map(([f, w]) => `${w} ${n[f]} (קודם ${o[f]})`);
+      return parts.length ? [`${n.a.title}, ${n.a.course}: ${parts.join(", ")}`] : [];
+    });
+  }
+
+  function oneDriveNotes(od) {
+    if (!od) return [];
+    const out = [];
+    if (od.synced === false) out.push({ warn: true, text: "התיקייה במחשב הזה היא עותק מקומי ולא תיקייה של OneDrive: מה שאחרים בצוות עושים לא מגיע אליה לבד." });
+    if (od.signin) out.push({ warn: true, text: "OneDrive לא מצליח להתחבר לאוניברסיטה (צריך אימות דו-שלבי), ולכן לא מביא את מה שהשתנה בענן. מפעילים את הקיצור \"חיבור OneDrive BGU\" בשולחן העבודה, מתחברים ומאשרים בטלפון, ולוחצים שוב על סנכרון." });
+    if (od.started) out.push({ warn: true, text: "OneDrive לא רץ במחשב, אז הפעלתי אותו. עד שיביא את מה שהשתנה בענן יכולות לעבור כמה דקות: כדאי ללחוץ שוב על סנכרון בעוד דקה." });
+    else if (od.running === false) out.push({ warn: true, text: "OneDrive לא רץ במחשב ולא הצלחתי להפעיל אותו. מפעילים אותו מתפריט התחל ולוחצים שוב על סנכרון." });
+    if (od.pending) out.push({ warn: true, text: `${plural(od.pending, "קובץ אחד מהמחשב הזה עוד לא עלה", "קבצים מהמחשב הזה עוד לא עלו")} ל-OneDrive (למשל ${od.pendingFiles?.[0] || ""}). שאר הצוות יראה אותם כשיעלו, בדרך כלל תוך דקה.` });
+    if (!out.length && od.synced) out.push({ warn: false, text: "האפליקציה של OneDrive רצה ומחוברת, וכל הקבצים של המחשב הזה כבר בענן." });
+    return out;
+  }
+
+  let syncPopTimer = null;
+  function showSyncPop(title, lines, notes, warn) {
+    const pop = $("#sync-pop");
+    pop.className = `sync-pop${warn ? " warn" : ""}`;
+    pop.innerHTML = `<button class="btn ghost small sync-x" aria-label="סגור">✕</button>
+      <h3>${warn ? ICON.warn : ICON.check}<span>${esc(title)}</span></h3>
+      ${lines.length ? `<ul>${lines.slice(0, 8).map((l) => `<li>${esc(l)}</li>`).join("")}</ul>` : ""}
+      ${lines.length > 8 ? `<p class="sync-more">ועוד ${lines.length - 8}</p>` : ""}
+      ${notes.map((n) => `<p class="sync-od${n.warn ? " warn" : ""}">${esc(n.text)}</p>`).join("")}`;
+    pop.hidden = false;
+    $(".sync-x", pop).addEventListener("click", () => { pop.hidden = true; });
+    clearTimeout(syncPopTimer);
+    if (!warn) syncPopTimer = setTimeout(() => { pop.hidden = true; }, 15000);
+  }
+
+  function renderSyncBtn() {
+    const b = $("#sync-btn");
+    b.hidden = !LOCAL.on;
+    b.disabled = LOCAL.syncing;
+    b.classList.toggle("busy", LOCAL.syncing);
+    $("span", b).textContent = LOCAL.syncing ? "מסנכרן…" : "סנכרון";
+    b.title = (LOCAL.syncedAt ? `סונכרן לאחרונה ב-${LOCAL.syncedAt.slice(11, 16)}. ` : "")
+      + "קורא מחדש את תיקיית OneDrive ומעדכן את כל המספרים במסך";
+  }
+
+  async function syncNow() {
+    if (LOCAL.syncing || !LOCAL.on) return;
+    LOCAL.syncing = true;
+    renderSyncBtn();
+    const hadRoot = !!LOCAL.health?.root, before = stageCounts();
+    try {
+      const rep = await api("api/refresh", { method: "POST", body: "{}" });
+      await loadLocal(rep.state);
+      lastSig = rep.sig;
+      LOCAL.syncedAt = rep.at;
+      refreshDrawer();
+      renderStatus();
+      const lines = hadRoot ? syncChanges(before, stageCounts()) : [];
+      const notes = oneDriveNotes(rep.onedrive);
+      const title = !hadRoot ? "המערכת מחוברת לתיקיית OneDrive"
+        : lines.length ? `${plural(lines.length, "מטלה אחת התעדכנה", "מטלות התעדכנו")} מתיקיית OneDrive`
+        : "הכול מעודכן: המספרים במסך זהים לתיקיית OneDrive";
+      showSyncPop(title, lines, notes, notes.some((n) => n.warn));
+    } catch (e) {
+      showSyncPop("הסנכרון לא הצליח", [], [{ warn: true, text: e.message }], true);
+    } finally {
+      LOCAL.syncing = false;
+      renderSyncBtn();
+    }
+  }
+  $("#sync-btn").addEventListener("click", syncNow);
+  document.addEventListener("click", (e) => {
+    const pop = $("#sync-pop");
+    if (!pop.hidden && !e.target.closest?.("#sync-pop, #sync-btn")) pop.hidden = true;
+  });
 
   function openFolder(which) {
     const A = cur();
@@ -2974,6 +3075,7 @@
     set("#conn-moodle", !!LOCAL.health?.moodle, LOCAL.health?.moodle ? "דרך Claude בכרום" : LOCAL.on ? "צריך להתחבר" : "לא מחובר");
     set("#conn-claude", !!LOCAL.health?.claude, LOCAL.health?.claude ? "מחובר" : LOCAL.on ? "עוד לא מחובר" : "לא מחובר");
     set("#conn-drive", live, live ? "מחובר" : "לא מחובר");
+    renderSyncBtn();
     $("#proto-note").textContent = live
       ? (LOCAL.health?.claude ? "כל המספרים במסך נקראים מתיקיית OneDrive של הקורס." : "כל המספרים במסך נקראים מתיקיית OneDrive של הקורס. הבדיקה עם Claude עוד לא מחוברת (מחברים את Claude Code במחשב, או ANTHROPIC_API_KEY ב-.env).")
       : "האתר מציג רק נתונים אמיתיים, מהמערכת שרצה במחשב (start.bat). כרגע היא לא מחוברת.";
