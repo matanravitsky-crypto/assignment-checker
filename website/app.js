@@ -30,6 +30,7 @@
     probing: false,    // מנסים עכשיו להתחבר למערכת במחשב
     me: null,          // השם שלי בצוות: {name, set}. set=false עד שבחרו שם באתר (אז זה שם המשתמש של Windows)
     syncing: false, syncedAt: null,  // הכפתור "סנכרון": רץ עכשיו, ומתי סונכרן לאחרונה
+    access: null,      // באתר הציבורי: מה כרום אומר על הגישה למערכת שבמחשב ("granted" / "prompt" / "denied")
   };
   const $ = (sel, root = document) => root.querySelector(sel);
   const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -39,14 +40,10 @@
     set(k, v) { try { localStorage.setItem("ac:" + k, JSON.stringify(v)); } catch {} },
   };
 
-  // כרום חוסם לאתר הציבורי גישה למחשב (הרשאת "גישה למכשיר", loopback-network), אבל מעבר לכתובת המקומית מותר תמיד.
-  // מי שפתח פעם את המערכת מכאן ("פתח את המערכת") מועבר אליה לבד בכל כניסה. ?stay משאיר באתר הציבורי ומבטל את המעבר.
-  // ?open עושה מה שהכפתור עושה: website/connect.ps1 פותח כך את האתר בסוף ההתקנה, ומאז הקישור הציבורי מעביר למחשב
-  if (!ON_LOCAL_HOST) {
-    if (new URLSearchParams(location.search).has("open")) store.set("openLocal", true);
-    if (new URLSearchParams(location.search).has("stay")) store.set("openLocal", false);
-    else if (store.get("openLocal", false)) { location.replace(LOCAL_SITE + location.hash); return; }
-  }
+  // האתר הציבורי (Vercel) עובד ישירות מול המערכת שבמחשב (BASE), והכתובת למעלה נשארת bodek-hacham.vercel.app
+  // (מתן, 2026-11-03). כרום שואל פעם אחת בכל מחשב אם לאפשר לאתר לגשת לאפליקציות ולשירותים במכשיר: לוחצים "אפשר".
+  // עד אז מי שלחץ פעם "פתח את המערכת" הועבר בכל כניסה ל-localhost:8765 (openLocal), ומי שהמערכת שלו לא רצה באותו רגע
+  // קיבל שגיאה של כרום בלי שום הסבר. אין יותר מעבר, ו-openLocal הישן לא נקרא. localhost:8765 עדיין עובד גם ישירות
 
   // ---------- State ----------
   const state = {
@@ -1786,17 +1783,17 @@
       <div class="page-head"><div><h1>המערכת לא מחוברת</h1>
         <p>האתר מציג רק נתונים אמיתיים, מתוך תיקיית OneDrive של הקורס. הם מגיעים מהמערכת שרצה במחשב שלך, ועכשיו היא לא מחוברת.</p></div></div>
       <section class="panel" style="margin-bottom:24px">
-        <div class="panel-head"><h2>איך מתחברים</h2><span class="end tag warn">${LOCAL.probing ? "מנסה להתחבר…" : "לא מחובר"}</span></div>
+        <div class="panel-head"><h2>איך מתחברים</h2><span class="end tag warn">${LOCAL.probing ? (LOCAL.access === "prompt" ? "מחכה לאישור בכרום…" : "מנסה להתחבר…") : "לא מחובר"}</span></div>
         <div class="panel-body">
           <ol class="todo">
-            <li>המערכת צריכה לרוץ במחשב. <b>פעם ראשונה במחשב הזה?</b> הפקודה שבחלק הבא מתקינה ומפעילה אותה. מחשב שכבר מותקן מפעיל אותה לבד, בלי חלון, בכל הדלקה (<code dir="ltr">install-autostart.bat</code>), או בלחיצה כפולה על <code dir="ltr">start.bat</code>.</li>
-            <li>לוחצים "פתח את המערכת". אותו אתר נפתח בכתובת <code dir="ltr">http://localhost:8765</code>, עם הנתונים האמיתיים ובלי שום הרשאה. <b>מהפעם הבאה הקישור הזה מעביר לשם לבד.</b></li>
+            <li>המערכת צריכה לרוץ במחשב הזה. <b>פעם ראשונה במחשב הזה?</b> הפקודה שבחלק הבא מתקינה אותה, כך שהיא עולה לבד, בלי חלון, בכל הדלקה. מחשב שכבר מותקן: היא עולה לבד, או בלחיצה כפולה על <code dir="ltr">start.bat</code>.</li>
+            <li>${accessStep()}</li>
           </ol>
           <div class="row-start">
-            <a class="btn primary lg" data-open-local href="${LOCAL_SITE}${esc(location.hash)}">${ICON.chev}פתח את המערכת</a>
-            <button class="btn secondary small" data-act="recheck">${ICON.redo}נסה להתחבר מכאן</button>
+            <button class="btn primary lg" data-act="recheck">${ICON.redo}התחבר</button>
+            <a class="btn secondary small" href="${LOCAL_SITE}${esc(location.hash)}">פתח בכתובת המקומית (localhost:8765)</a>
           </div>
-          <p class="hint">אפשר גם לעבוד מהכתובת הזו: אם כרום שואל אם לאפשר לאתר לגשת לאפליקציות ולשירותים במכשיר, לוחצים "אפשר", והאתר מתחבר לבד תוך כמה שניות.</p>
+          <p class="hint">האתר מתחבר לבד ברגע שהמערכת במחשב עונה, ונשאר בכתובת הזו.</p>
         </div>
       </section>
       <section class="panel" style="margin-bottom:24px">
@@ -2463,7 +2460,6 @@
   // ---------- Events ----------
   document.addEventListener("click", (e) => {
     const t = e.target;
-    if (t.closest("a[data-open-local]")) store.set("openLocal", true);  // מהפעם הבאה הקישור הציבורי מעביר לכאן לבד
     const runBtn = t.closest("[data-run]");
     if (runBtn) { runStage(runBtn.dataset.run); return; }
     const pChip = t.closest("[data-pull-chip]");
@@ -2730,6 +2726,30 @@
         if (!r.ok) throw new Error(data.error || `המערכת במחשב החזירה שגיאה ${r.status}`);
         return data;
       }, () => { throw new Error("אין חיבור למערכת במחשב. אם המחשב נדלק עכשיו, מחכים דקה; אחרת מפעילים את start.bat."); });
+  }
+
+  // מה כרום אומר על הגישה של האתר הציבורי למערכת שבמחשב (Local Network Access): "granted", "prompt", "denied",
+  // או null כשאין דרך לדעת (אתר מקומי, דפדפן אחר). השם של ההרשאה השתנה בין גרסאות כרום
+  async function localAccess() {
+    if (ON_LOCAL_HOST || !navigator.permissions) return null;
+    for (const name of ["loopback-network", "local-network-access"]) {
+      try { return (await navigator.permissions.query({ name })).state; } catch { /* שם שהגרסה הזו לא מכירה */ }
+    }
+    return null;
+  }
+
+  // השלב השני בדף "לא מחובר", לפי מה שכרום אומר על ההרשאה
+  function accessStep() {
+    if (LOCAL.access === "denied") {
+      return `<b>כרום חוסם לאתר את הגישה למערכת שבמחשב.</b> לוחצים על הסמל שליד הכתובת למעלה, נכנסים ל"הגדרות האתר",
+        ובשורה "אפליקציות ושירותים במכשיר" (או "גישה לרשת המקומית") בוחרים "אפשר". חוזרים לכאן, והאתר מתחבר לבד.`;
+    }
+    if (LOCAL.access === "granted") {
+      return `כרום כבר מאשר לאתר לגשת למערכת שבמחשב, אז <b>המערכת פשוט לא רצה עכשיו</b>: אולי המחשב רק נדלק, או שהיא באמצע
+        עדכון אוטומטי (עד 3 דקות). האתר מתחבר לבד ברגע שהיא עולה. אם זה נמשך, מריצים את הפקודה שלמטה.`;
+    }
+    return `כרום ישאל אם לאפשר לאתר לגשת לאפליקציות ולשירותים במכשיר: לוחצים <b>"אפשר"</b>. זה קורה פעם אחת בכל מחשב.
+      אם החלון לא הופיע, לוחצים "התחבר".`;
   }
 
   // המערכת עונה ב-api/health. באתר הציבורי כרום שואל פעם אחת אם לאפשר גישה למכשיר, ועד התשובה הבקשה מחכה
@@ -3165,9 +3185,12 @@
   async function connect(manual = false) {
     if (LOCAL.probing || LOCAL.on) return;
     LOCAL.probing = true;
+    LOCAL.access = await localAccess();
     renderStatus();
+    if (manual || !booted) render();  // "מחכה לאישור בכרום" בזמן שכרום שואל
     const ok = await detectLocal(ON_LOCAL_HOST ? 20000 : 60000);  // במחשב עצמו המערכת עונה, גם אם לאט: מחכים, לא "לא מחובר"
     LOCAL.probing = false;
+    LOCAL.access = await localAccess();
     if (ok) {
       LOCAL.on = true;
       if (LOCAL.health.root) await loadLocal();

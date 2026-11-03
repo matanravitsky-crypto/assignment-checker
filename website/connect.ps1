@@ -16,7 +16,7 @@
   $ErrorActionPreference = 'Continue'
   $ProgressPreference = 'SilentlyContinue'
   $repo = 'https://github.com/matanravitsky-crypto/assignment-checker'
-  $site = 'https://bodek-hacham.vercel.app/?open#/pull'  # ?open: from now on the site's link forwards to this computer
+  $site = 'https://bodek-hacham.vercel.app/#/pull'  # the site talks to the system on this computer; Chrome asks once to allow it
   $health = 'http://127.0.0.1:8765/api/health'
   $link = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Startup\Bodek Hacham.lnk'  # as in install-autostart.bat
   $waitMinutes = 8  # the first start installs Python packages and updates Claude Code (up to 2 minutes)
@@ -125,6 +125,7 @@
 
   Step 'Opening the site'
   Start-Process $site
+  Say 'Chrome asks once whether the site may access apps and services on this device: click "Allow".'
   Say 'In the site press "pull". The first time, it signs Claude Code in to YOUR Claude account and checks'
   Say 'the Claude in Chrome extension; after that every pull runs through your own Claude, in your own Chrome.'
   Write-Host ''
