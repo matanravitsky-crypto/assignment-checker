@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import sys
 
+from dashboard import shared_folder
 from moodle import paths
 
 from . import check
@@ -17,6 +18,7 @@ from . import check
 def main(argv: list[str] | None = None) -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
+    shared_folder.use_for_commands()
     p = argparse.ArgumentParser(prog="python -m copying", description="חשד להעתקה בין הגשות (בלי Claude)")
     p.add_argument("assignment_id", help="מזהה המטלה במודל (id ב-Assignment details.json)")
     args = p.parse_args(argv)
