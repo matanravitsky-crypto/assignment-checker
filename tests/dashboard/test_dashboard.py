@@ -383,15 +383,46 @@ def test_pull_progress_keeps_the_error(root, monkeypatch):
     assert status["running"] is False and "לא שלם" in status["error"] and "7-Zip לא מותקן" not in status["error"]
 
 
-def test_pull_takes_a_zip_that_was_downloaded_by_hand(root, monkeypatch):
+def test_pull_never_takes_an_old_zip_waiting_in_downloads(root, monkeypatch):
+    """משיכה היא תמיד הורדה טרייה ממודל: ZIP ישן בתיקיית ההורדות (לא ממודל, או מפעם אחרת) לא נלקח."""
+    import os
+    import time
     from moodle import ingest
-    by_hand = ingest.downloads_dir() / f"קורס-הגשה 0-{MID}.zip"
-    by_hand.write_bytes(b"zip")
+    old = ingest.downloads_dir() / f"קורס-הגשה 0-{MID}.zip"
+    old.write_bytes(b"not from this pull")
+    os.utime(old, (time.time() - 3600, time.time() - 3600))
     seen, fake = [], FakeDownloader(ingest.downloads_dir())
     monkeypatch.setattr(actions, "_make_downloader", lambda: fake)
     monkeypatch.setattr("moodle.ingest.ingest", _record_ingest(seen))
     actions.pull(root, COURSE, HW)
-    assert seen == [by_hand] and fake.calls == []  # לא מורידים שוב
+    assert fake.calls == [MID] and [p.name for p in seen] == [f"214193210120271-x-{MID}.zip"]
+
+
+@pytest.mark.parametrize("answer, says", [
+    ({"chrome": False, "moodle": False, "message": "no extension", "answered": False}, "התוסף של Claude בכרום לא מחובר"),
+    ({"chrome": True, "moodle": False, "message": "login page", "answered": True}, "כרום לא מחובר למודל"),
+])
+def test_pull_needs_the_chrome_extension_and_moodle(root, monkeypatch, answer, says):
+    """בלי תוסף מחובר או בלי מודל מחובר לא מושכים כלום: לפני ההורדה, בלי נעילה ובלי לגעת בתיקייה."""
+    from moodle import claude_driver, ingest
+    monkeypatch.setattr(claude_driver.ClaudeChromeDriver, "answer", answer)
+    fake = FakeDownloader(ingest.downloads_dir())
+    monkeypatch.setattr(actions, "_make_downloader", lambda: fake)
+    monkeypatch.setattr("moodle.ingest.ingest", lambda *a, **k: pytest.fail("nothing to ingest"))
+    with pytest.raises(actions.UserError, match=says):
+        actions.pull(root, COURSE, HW)
+    assert fake.calls == [] and not (root / COURSE / HW / actions.LOCK_FILE).exists()
+
+
+def test_pull_checks_chrome_once_in_30_minutes(root, monkeypatch):
+    from moodle import claude_driver
+    checks = []
+    real = claude_driver.ClaudeChromeDriver.check
+    monkeypatch.setattr(claude_driver.ClaudeChromeDriver, "check", lambda self, info: checks.append(1) or real(self, info))
+    monkeypatch.setattr("moodle.ingest.ingest", _record_ingest([]))
+    actions.pull(root, COURSE, HW)
+    actions.pull(root, COURSE, HW)
+    assert checks == [1]
 
 
 def test_pull_refuses_an_empty_key_before_opening_chrome(root, monkeypatch):
@@ -506,7 +537,7 @@ def test_pull_in_parts_keeps_every_number_and_adds_the_new_student(root, monkeyp
     kept = [p for p in backup.iterdir() if p.is_dir() and p.name.startswith(paths.DOWNLOAD_PREFIX)]
     assert len(kept) == 1 and sorted(p.name for p in kept[0].iterdir()) == ["part 001.zip", "part 002.zip", "parts.json"]
     log = (root / COURSE / HW / paths.PULL_LOG).read_text(encoding="utf-8-sig").splitlines()
-    assert log[0] == "pulled_at,by,students,new,files,parts" and log[-1].split(",")[2:] == ["4", "1", "4", "2"]
+    assert log[0] == "pulled_at,by,students,new,files,parts,partial" and log[-1].split(",")[2:] == ["4", "1", "4", "2", ""]
     assert list(ingest.downloads_dir().iterdir()) == []  # every part was taken
     assert actions.pull_status()["phase"] == "number"
     assert len(list((tmp_path / "Moodle originals" / COURSE / HW).iterdir())) == 4
@@ -563,23 +594,20 @@ def test_the_site_dates_every_kind_of_kept_download(root):
     assert len(status.status(a.dir)["downloads"]) == 4  # moodle status lists the folder of parts too
 
 
-def test_a_local_copy_does_not_pull(tmp_path, monkeypatch):
-    """תיקיית מערכת מקומית (לא בתוך YallaLinearit המסונכרנת) לא מושכת: לפני כרום ולפני שנוצר משהו."""
-    from moodle import ingest
+def test_a_local_copy_pulls_too(tmp_path, monkeypatch):
+    """תיקיית מערכת מקומית (לא בתוך YallaLinearit המסונכרנת) מושכת כמו כל מחשב אחר: אורי, בעל המשיכה, מושך
+    מהמחשב שלו (2026-10-29). טבלת המפתח של התיקייה שמושכים אליה היא זו שקובעת."""
     local = tmp_path / "Exercise Checking System"
     (local / COURSE).mkdir(parents=True)
-    fake = FakeDownloader(ingest.downloads_dir())
-    monkeypatch.setattr(actions, "_make_downloader", lambda: fake)
-    with pytest.raises(actions.UserError, match="עותק מקומי"):
-        actions.pull(local, COURSE, "Assignment 3", moodle_id="3453769")
-    assert fake.calls == [] and not (local / COURSE / "Assignment 3").exists()
-    monkeypatch.setenv("MOODLE_DRIVER", "simulate")  # the demo has no OneDrive: it may
+    seen = {}
 
-    def past_the_rule(*a, **k):
-        raise actions.UserError("past the rule")
-    monkeypatch.setattr(actions, "new_assignment", past_the_rule)
-    with pytest.raises(actions.UserError, match="past the rule"):
-        actions.pull(local, COURSE, "Assignment 3", moodle_id="3453769")
+    def fake_ingest(assignment_id, zip_path=None, course=None, name=None, **_):
+        seen["id"], seen["dir"] = assignment_id, paths.find_assignment(assignment_id)
+        return []
+
+    monkeypatch.setattr("moodle.ingest.ingest", fake_ingest)
+    actions.pull(local, COURSE, "Assignment 3", moodle_id="3453769")
+    assert seen == {"id": "3453769", "dir": local / COURSE / "Assignment 3"}
 
 
 def test_the_site_dates_pulls_from_the_pull_log_and_old_kept_zips(root):
@@ -590,3 +618,172 @@ def test_the_site_dates_pulls_from_the_pull_log_and_old_kept_zips(root):
     assert ingest.pulls(a.dir) == ["2026-10-23T10:55:07"]
     times = actions._downloads(a)
     assert times[-1] == "2026-10-23T10:55" and "2026-10-21T16:28" in times  # the fixture's old ZIP still counts
+
+
+# ---------- משיכה חוזרת: רק מה שהשתנה, ומועד ההגשה ממודל ----------
+class RecordingDownloader(FakeDownloader):
+    def __init__(self, downloads):
+        super().__init__(downloads)
+        self.infos = []
+
+    def download(self, info):
+        self.infos.append(info)
+        return super().download(info)
+
+
+def _log_a_pull(a_dir, when="2026-10-25T00:07:00"):
+    (a_dir / paths.PULL_LOG).write_text("pulled_at,by,students,new,files,parts\n"
+                                        f"{when},מתן (PC),3,3,3,15\n", encoding="utf-8-sig")
+
+
+def test_a_pull_after_a_pull_asks_moodle_only_for_what_changed(root, monkeypatch):
+    from datetime import datetime
+    monkeypatch.setattr("moodle.ingest.ingest", lambda *a, **k: folder_view.Assignment(root / COURSE / HW).key_rows())
+    fake = RecordingDownloader(actions.moodle_ingest.downloads_dir())
+    monkeypatch.setattr(actions, "_make_downloader", lambda: fake)
+    actions.pull(root, COURSE, HW)
+    assert "since" not in fake.infos[-1]                       # no pull logged yet: everyone
+    _log_a_pull(root / COURSE / HW)
+    for p in actions.moodle_ingest.downloads_dir().iterdir():
+        p.unlink()
+    actions.pull(root, COURSE, HW)
+    an_hour_before = int(datetime(2026, 10, 24, 23, 7).timestamp() * 1000)
+    assert fake.infos[-1]["since"] == an_hour_before           # what changed since an hour before the last pull
+    for p in actions.moodle_ingest.downloads_dir().iterdir():
+        p.unlink()
+    actions.pull(root, COURSE, HW, full=True)
+    assert "since" not in fake.infos[-1]                       # "pull everything again"
+
+
+class CappedDownloader(FakeDownloader):
+    """Moodle with a cap: the list says what was asked for (limit) and how many there were (available)."""
+
+    def __init__(self, downloads, available=3):
+        super().__init__(downloads)
+        self.infos, self.available = [], available
+
+    def download(self, info):
+        self.infos.append(info)
+        limit = info.get("limit", 0)
+        stem = f"214193210120271-הגשה 0-{info['id']}"
+        listed = {"users": self.available, "changed": min(limit, self.available) if limit else self.available,
+                  "since": info.get("since", 0), "limit": limit, "available": self.available, "parts": 0, "empty": 0,
+                  "failed": [], "files": []}
+        (self.downloads / f"{stem}.json").write_text(json.dumps(listed), encoding="utf-8")
+        return {"status": "started", "message": "ok", "users": self.available, "parts": 0}
+
+
+def test_a_capped_pull_says_so_and_the_next_pull_asks_for_everyone(root, monkeypatch, tmp_path):
+    """A pull cut to N students left others out: the log marks it, and the next pull is not "only what changed since"
+    (those left out would never come), until a complete pull is logged."""
+    from datetime import datetime
+    a_dir = root / COURSE / HW
+    monkeypatch.setattr("moodle.ingest.ingest", lambda *a, **k: folder_view.Assignment(a_dir).key_rows())
+    fake = CappedDownloader(actions.moodle_ingest.downloads_dir(), available=9)
+    monkeypatch.setattr(actions, "_make_downloader", lambda: fake)
+    _log_a_pull(a_dir, "2026-10-24T09:00:00")                          # an earlier complete pull
+    rep = actions.pull(root, COURSE, HW, limit=4)
+    assert fake.infos[-1]["limit"] == 4 and "since" in fake.infos[-1]  # the cap comes on top of "only what changed"
+    assert any("הוגבלה ל-4 הגשות מתוך 9" in n for n in rep["notes"])
+    # ingest was faked, so the log row is written by hand the way ingest does it from the list
+    actions.moodle_ingest.log_pull(a_dir, folder_view.Assignment(a_dir).key_rows(), set(), 1, partial=4)
+    header = (a_dir / paths.PULL_LOG).read_text(encoding="utf-8-sig").splitlines()
+    assert header[0].endswith(",partial") and header[1].endswith(",15,") and header[-1].endswith(",4")  # old row kept
+    assert len(actions.moodle_ingest.pulls(a_dir)) == 2 and len(actions.moodle_ingest.pulls(a_dir, complete_only=True)) == 1
+    for p in actions.moodle_ingest.downloads_dir().iterdir():
+        p.unlink()
+    actions.pull(root, COURSE, HW)
+    assert fake.infos[-1]["since"] == int(datetime(2026, 10, 24, 8, 0).timestamp() * 1000)  # the complete pull, not the cut
+    assert "limit" not in fake.infos[-1]
+    only_cut = tmp_path / "only-cut"
+    only_cut.mkdir()
+    actions.moodle_ingest.log_pull(only_cut, folder_view.Assignment(a_dir).key_rows(), set(), 1, partial=4)
+    assert actions.moodle_ingest.pulls(only_cut, complete_only=True) == []                    # nothing complete: everyone
+
+
+def test_partial_of_reads_the_cap_from_the_list(tmp_path):
+    cut = tmp_path / "x-1.json"
+    cut.write_text(json.dumps({"limit": 5, "available": 9}), encoding="utf-8")
+    assert actions.moodle_ingest.partial_of(cut) == 5
+    cut.write_text(json.dumps({"limit": 5, "available": 3}), encoding="utf-8")   # fewer than the cap: nothing was left out
+    assert actions.moodle_ingest.partial_of(cut) == 0
+    cut.write_text(json.dumps({"limit": 0, "available": 9}), encoding="utf-8")
+    assert actions.moodle_ingest.partial_of(cut) == 0
+    assert actions.moodle_ingest.partial_of(tmp_path / "gone.json", None) == 0
+
+
+@pytest.mark.parametrize("sent, expect", [(30, 30), (0, None), (-3, None), ("30", None), (True, None), (2.5, None)])
+def test_the_server_passes_only_a_whole_positive_cap(root, server, monkeypatch, sent, expect):
+    seen = {}
+
+    def fake_pull(r, course, assignment, **kwargs):
+        seen.update(kwargs)
+        return {"summary": "x", "result": {"total": 0, "new": 0, "files": 0}, "notes": []}
+
+    monkeypatch.setattr(actions, "pull", fake_pull)
+    st, _ = call(server, "POST", "/api/pull", {"course": COURSE, "assignment": HW, "limit": sent}, {"X-Assignment-Checker": "1"})
+    assert st == 200 and seen.get("limit") == expect
+    seen.clear()
+    call(server, "POST", "/api/pull", {"course": COURSE, "assignment": HW, "limit": 30, "full": True}, {"X-Assignment-Checker": "1"})
+    assert "limit" not in seen and seen["full"] is True                 # "pull everything again" ignores the cap
+
+
+class NothingChanged:
+    """Moodle when nobody submitted since the last pull: no parts, only the list, with the due date it read."""
+
+    def __init__(self, downloads, due="2026-10-26T23:59:00"):
+        self.downloads, self.due = downloads, due
+
+    def download(self, info):
+        listed = {"users": 3, "changed": 0, "since": info.get("since", 0), "due": self.due, "parts": 0, "empty": 0,
+                  "failed": [], "files": []}
+        (self.downloads / f"214193210120271-הגשה 0-{info['id']}.json").write_text(json.dumps(listed), encoding="utf-8")
+        return {"status": "started", "message": "ok", "users": 3, "parts": 0}
+
+
+def test_nothing_changed_touches_nothing_logs_the_pull_and_saves_the_due_date(root, monkeypatch):
+    a_dir = root / COURSE / HW
+    _log_a_pull(a_dir)
+    info = json.loads((a_dir / paths.INFO).read_text(encoding="utf-8"))
+    info["due"] = "2026-10-24T23:59:00+02:00"                  # Moodle moved it two days (an extension for everyone)
+    (a_dir / paths.INFO).write_text(json.dumps(info), encoding="utf-8")
+    before = {p.name: p.read_bytes() for p in (a_dir / paths.TO_GRADE).iterdir()}
+    key_before = (a_dir / paths.KEY).read_bytes()
+    monkeypatch.setattr(actions, "_make_downloader", lambda: NothingChanged(actions.moodle_ingest.downloads_dir()))
+    rep = actions.pull(root, COURSE, HW)
+    assert rep["changed"] == 0 and rep["result"]["new"] == 0 and "שום הגשה לא השתנתה" in rep["notes"][0]
+    assert {p.name: p.read_bytes() for p in (a_dir / paths.TO_GRADE).iterdir()} == before
+    assert (a_dir / paths.KEY).read_bytes() == key_before
+    assert len(actions.moodle_ingest.pulls(a_dir)) == 2         # logged: the next pull asks from here on
+    assert list(actions.moodle_ingest.downloads_dir().iterdir()) == []
+    assert paths.read_info(a_dir)["due"] == "2026-10-26T23:59:00"
+
+
+def test_a_due_date_moodle_did_not_give_changes_nothing(root, monkeypatch):
+    a_dir = root / COURSE / HW
+    _log_a_pull(a_dir)
+    due = paths.read_info(a_dir)["due"]
+    for bad in (None, "next Monday"):
+        monkeypatch.setattr(actions, "_make_downloader", lambda: NothingChanged(actions.moodle_ingest.downloads_dir(), bad))
+        actions.pull(root, COURSE, HW)
+    assert paths.read_info(a_dir)["due"] == due
+
+
+def test_state_reports_the_rubric_pdf_and_the_site_can_open_it(root, server):
+    ped = root / COURSE / HW / paths.PEDAGOGY[1]
+    (ped / "Working notes").mkdir(parents=True)
+    (ped / "Rubric.pdf").write_bytes(b"%PDF-1.4 rubric")
+    (ped / "Rubric.md").write_text("# a\n\n> rendered from `rubric.json`\n\n| q | pts |\n|---|---|\n| 11 | 20 |\n", encoding="utf-8")
+    (ped / "Working notes" / "Rubric PDF changelog.md").write_text(
+        "# log\n\n- round 0: built.\n- round 1: remarks applied.\n- approved (Ori).\n", encoding="utf-8")
+    _, state = call(server, "GET", "/api/state")
+    r = hw(state)["rubricFile"]
+    assert r["pdf"] and r["md"] == "rendered" and r["approved"] and r["rounds"] == 2 and r["path"].endswith("/Rubric.pdf")
+    st, data = call(server, "GET", f"/api/file?path={quote(r['path'])}")
+    assert st == 200 and data[:4] == b"%PDF"
+    assert call(server, "GET", f"/api/file?path={quote(r['path'][:-4] + '.md')}")[0] == 404  # only the PDF leaves the folder
+
+
+def test_state_says_when_there_is_no_rubric_pdf(root, server):
+    _, state = call(server, "GET", "/api/state")
+    assert hw(state)["rubricFile"] == {"pdf": False, "pdfAt": None, "path": None, "md": None, "approved": False, "rounds": 0}

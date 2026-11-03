@@ -8,7 +8,7 @@ from http.server import ThreadingHTTPServer
 import pytest
 
 from moodle import claude_driver, ingest, paths
-from dashboard import actions
+from dashboard import actions, onedrive_check
 from tests.sample_files import homework_pdf
 
 from tests.dashboard.helpers import COURSE, HW, MID, NAMES, write_key
@@ -19,11 +19,11 @@ def fresh_dashboard_state(monkeypatch, tmp_path):
     """Module-level state of dashboard.actions starts empty in every test, and no test can start `claude`."""
     actions._send = actions.SendJob()
     actions._stop.clear()
+    actions._grade_stop.clear()
     actions._moodle_cache = None
     actions._hashes.clear()
     actions._ready_cache.clear()
     actions._checking = False
-    actions._sim_login_at = None
     actions._login, actions._install = actions._Background(actions.LOGIN_MINUTES), actions._Background(actions.INSTALL_MINUTES)
     monkeypatch.delenv("MOODLE_READY", raising=False)
     # the local work folder (extracted originals, the computer's pull lock): never the real one in a test
@@ -33,6 +33,11 @@ def fresh_dashboard_state(monkeypatch, tmp_path):
     monkeypatch.setenv("ASSIGNMENT_WORK", str(tmp_path / "Moodle originals"))
     # no test starts a login or an installer, whatever is installed on this computer
     monkeypatch.setattr(actions.subprocess, "Popen", lambda *a, **k: pytest.fail("a test started a real process"))
+    # the "סנכרון" button's OneDrive check: never the real OneDrive of this computer. Healthy, unless a test says otherwise
+    monkeypatch.setattr(onedrive_check, "_cloud_files", lambda: None)
+    monkeypatch.setattr(onedrive_check, "running", lambda: True)
+    monkeypatch.setattr(onedrive_check, "needs_signin", lambda: False)
+    monkeypatch.setattr(onedrive_check, "start", lambda: pytest.fail("a test started OneDrive"))
     monkeypatch.setattr(claude_driver, "auth_status", lambda *a, **k: {"logged_in": False, "message": "fake"})
     # no test opens Moodle or reads the real Downloads folder: "Moodle" drops the assignment's ZIP into a temp Downloads
     downloads = tmp_path / "Downloads"
@@ -40,6 +45,17 @@ def fresh_dashboard_state(monkeypatch, tmp_path):
     monkeypatch.setattr(ingest, "downloads_dir", lambda: downloads)
     monkeypatch.setattr(actions, "DOWNLOAD_POLL_S", 0.01)
     monkeypatch.setattr(actions, "_make_downloader", lambda: FakeDownloader(downloads))
+    # pulls and uploads check Chrome and Moodle first (actions.require_moodle): connected, unless a test says otherwise
+    monkeypatch.setattr(claude_driver, "ClaudeChromeDriver", ConnectedChrome)
+    monkeypatch.setattr(claude_driver, "open_chrome", lambda *a, **k: False)
+
+
+class ConnectedChrome:
+    """Claude in Chrome in the tests: the extension is connected and Moodle is logged in."""
+    answer = {"chrome": True, "moodle": True, "message": "Chrome ו-Moodle מוכנים.", "answered": True}
+
+    def check(self, info):
+        return dict(self.answer)
 
 
 class FakeDownloader:

@@ -2,6 +2,7 @@
 
   python -m grading.sample <מזהה מטלה> --out <תיקייה>             50 למדגם + 6 לניסוי בשטח
   python -m grading.sample <מזהה מטלה> --out <תיקייה> --n 30 --fresh 6
+  python -m grading.sample <מזהה מטלה> --out <תיקייה> --max-side 1000 --crop   זול יותר: תמונות קטנות, בלי שוליים
 
 כותב לתיקייה:
   pages/<מספר>_pNN.jpg   עמוד לתמונה. עמודים ריקים (שער, משבצות) לא נכתבים
@@ -32,7 +33,7 @@ JPEG_QUALITY = 60
 # עמוד נחשב ריק אם פחות מהחלק הזה של הפיקסלים כהה (עמוד משבצות או עמוד לבן).
 # נמדד על סריקות של הגשה 0: עמוד ריק יוצא 0, ועמוד בעיפרון חיוור יוצא לפחות 0.0013.
 BLANK_INK = 0.0008
-DARK = 140
+DARK = 140  # כמו grading.render.DARK
 
 # הגשה עם יותר עמודים מזה נקראת רק עד כאן, ומסומנת (למשל חוברת שלמה של 33 עמודים שהועלתה בטעות).
 # בהגשה 0 היו גם עבודות תקינות של 20 עמודים (סעיף לעמוד), ולכן לא פחות מזה.
@@ -53,8 +54,13 @@ def is_blank(page: pymupdf.Page) -> bool:
     return ink_ratio(small) < BLANK_INK
 
 
-def render_file(path: Path, number: int | str, out: Path, start: int) -> tuple[list[str], int]:
-    """כותב תמונה לכל עמוד לא ריק בקובץ. מחזיר את שמות התמונות ואת מספר העמודים הריקים שדולגו."""
+from .render import ink_bbox  # חיתוך השוליים משותף לדגימה ולבדיקה (grading/render.py)
+
+
+def render_file(path: Path, number: int | str, out: Path, start: int,
+                max_side: int = MAX_SIDE, crop: bool = False) -> tuple[list[str], int]:
+    """כותב תמונה לכל עמוד לא ריק בקובץ. מחזיר את שמות התמונות ואת מספר העמודים הריקים שדולגו.
+    crop: רק המלבן שיש בו כתב (ink_bbox), כדי שהשוליים הלבנים לא יעלו טוקנים."""
     names: list[str] = []
     blank = 0
     with pymupdf.open(path) as doc:
@@ -64,8 +70,9 @@ def render_file(path: Path, number: int | str, out: Path, start: int) -> tuple[l
             if is_blank(page):
                 blank += 1
                 continue
-            zoom = MAX_SIDE / max(page.rect.width, page.rect.height)
-            pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False)
+            clip = (ink_bbox(page) if crop else None) or page.rect
+            zoom = max_side / max(page.rect.width, page.rect.height)  # לפי העמוד: חיתוך רק מקטין, לא מגדיל
+            pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), clip=clip, alpha=False)
             name = f"{number}_p{start + len(names) + 1:02d}.jpg"
             pix.save(out / name, jpg_quality=JPEG_QUALITY)
             names.append(name)
@@ -79,13 +86,34 @@ def pick(numbers: list[str], n: int, fresh: int, seed: int) -> tuple[list[str], 
     return sorted(chosen[:n]), sorted(chosen[n:])
 
 
-def build(assignment_dir: Path, out: Path, n: int = 50, fresh: int = 6, seed: int | None = None) -> dict:
+class BadOut(ValueError):
+    """The output folder would leak student pages, or already holds another sample."""
+
+
+def check_out(out: Path) -> None:
+    """Student pages go only to a folder outside the repo and outside OneDrive, and never on top of another sample.
+    (In Git Bash `%USERPROFILE%` is not expanded, which once pointed a work folder into the repo.)"""
+    resolved = out.resolve()
+    repo = Path(__file__).resolve().parent.parent
+    if resolved == repo or repo in resolved.parents:
+        raise BadOut(f"התיקייה {out} נמצאת בתוך ה-repo (ציבורי): עמודי סטודנטים לא נכתבים שם. "
+                     "להשתמש בנתיב מוחלט בתיקיית הבית, למשל ~/.rubric-work/<id>/inputs/submissions")
+    if any(part.lower().startswith("onedrive") for part in resolved.parts) or "%userprofile%" in str(out).lower():
+        raise BadOut(f"התיקייה {out} נמצאת ב-OneDrive או בנתיב לא מפוענח: עמודי סטודנטים לא עולים לענן")
+    pages = resolved / "pages"
+    if pages.is_dir() and any(pages.iterdir()):
+        raise BadOut(f"ב-{pages} כבר יש עמודים מדגימה קודמת; למחוק אותה קודם, אחרת שתי הדגימות מתערבבות")
+
+
+def build(assignment_dir: Path, out: Path, n: int = 50, fresh: int = 6, seed: int | None = None,
+          max_side: int = MAX_SIDE, crop: bool = False) -> dict:
     files = paths.files_by_number(assignment_dir / paths.TO_GRADE)
     info = paths.read_info(assignment_dir)
     if seed is None:
         seed = int(info.get("id") or 0)
     sample, field = pick(list(files), n, fresh, seed)
 
+    check_out(out)
     pages_dir = out / "pages"
     pages_dir.mkdir(parents=True, exist_ok=True)
     manifest = {"assignment": info.get("id"), "seed": seed, "sample": sample, "fresh": field,
@@ -96,7 +124,7 @@ def build(assignment_dir: Path, out: Path, n: int = 50, fresh: int = 6, seed: in
         for f in files[number]:
             suffix = f.suffix.lower()
             if suffix == ".pdf" or suffix in IMAGE_SUFFIXES:
-                got, skipped = render_file(f, number, pages_dir, len(names))
+                got, skipped = render_file(f, number, pages_dir, len(names), max_side, crop)
                 names += got
                 blank += skipped
             else:
@@ -121,13 +149,19 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--n", type=int, default=50, help="כמה הגשות למדגם")
     p.add_argument("--fresh", type=int, default=6, help="כמה הגשות נוספות לניסוי בשטח")
     p.add_argument("--seed", type=int, help="ברירת מחדל: מזהה המטלה")
+    p.add_argument("--max-side", type=int, default=MAX_SIDE, help=f"אורך הצד הארוך של תמונה בפיקסלים (ברירת מחדל {MAX_SIDE})")
+    p.add_argument("--crop", action="store_true", help="לחתוך את השוליים הלבנים: רק המלבן שיש בו כתב")
     args = p.parse_args(argv)
     try:
         folder = paths.assignment_dir(args.assignment_id)
     except FileNotFoundError as e:
         print(e)
         return 2
-    m = build(folder, Path(args.out), args.n, args.fresh, args.seed)
+    try:
+        m = build(folder, Path(args.out), args.n, args.fresh, args.seed, args.max_side, args.crop)
+    except BadOut as e:
+        print(e)
+        return 2
     total = sum(len(v) for v in m["pages"].values())
     print(f"מדגם: {len(m['sample'])}, ניסוי: {len(m['fresh'])}, עמודים: {total}, "
           f"ריקים שדולגו: {sum(m['blank_skipped'].values())}")

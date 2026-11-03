@@ -47,8 +47,72 @@
     return out;
   }
 
-  if (typeof window === "undefined") { module.exports = { plan, SKIP }; return; }
+  // ---------- טבלת המפתח בין מחשבים ----------
+  // כל אחד בצוות יכול למשוך, כל אחד למחשב שלו. אם שני מחשבים משכו את אותה מטלה, לכל אחד טבלת מפתח משלו, ומי שמעלה
+  // אחרון היה דורס את השנייה: סטודנטים נעלמים מהטבלה המשותפת, או ששני סטודנטים מקבלים אותו מספר, וקובץ 0481.pdf של
+  // סטודנט אחד דורס את 0481.pdf של אחר. לכן לפני שמעלים מטלה שהטבלה שלה בוואן דרייב שונה מזו שבמחשב, משווים את התוכן:
+  // הטבלה במחשב חייבת להכיל כל סטודנט שבוואן דרייב, עם אותו מספר, בלי מספר של מישהו אחר. אחרת לא מעלים כלום מהמטלה
+  // הזו (לא את הטבלה ולא את ההגשות), ומדווחים. טבלה במחשב שרק מוסיפה סטודנטים חדשים עולה כרגיל.
+  const KEY_NAME = "Key - number to student.csv";
+  function csvRows(text) {
+    const rows = [];
+    let row = [], cell = "", quoted = false;
+    const t = String(text || "").replace(/^﻿/, "");
+    for (let i = 0; i < t.length; i++) {
+      const ch = t[i];
+      if (quoted) {
+        if (ch === '"' && t[i + 1] === '"') { cell += '"'; i++; } else if (ch === '"') quoted = false; else cell += ch;
+      } else if (ch === '"') quoted = true;
+      else if (ch === ",") { row.push(cell); cell = ""; }
+      else if (ch === "\n" || ch === "\r") {
+        if (ch === "\r" && t[i + 1] === "\n") i++;
+        row.push(cell); cell = "";
+        if (row.some((c) => c !== "")) rows.push(row);
+        row = [];
+      } else cell += ch;
+    }
+    row.push(cell);
+    if (row.some((c) => c !== "")) rows.push(row);
+    const head = rows.shift() || [];
+    return rows.map((r) => Object.fromEntries(head.map((h, i) => [h, r[i] ?? ""])));
+  }
+  // מה לא מתאים בין הטבלה שבמחשב לזו שבוואן דרייב, במספרים בלבד. ריק: אפשר להעלות
+  function keyProblems(localCsv, remoteCsv) {
+    const map = (csv) => {
+      const byPid = new Map(), byNumber = new Map();
+      for (const r of csvRows(csv)) {
+        if (!r.participant_id || !r.number) continue;
+        byPid.set(r.participant_id, r.number);
+        byNumber.set(r.number, r.participant_id);
+      }
+      return { byPid, byNumber };
+    };
+    const local = map(localCsv), remote = map(remoteCsv);
+    const missing = [], moved = [], taken = [];
+    for (const [pid, number] of remote.byPid) {
+      if (!local.byPid.has(pid)) missing.push(number);
+      else if (local.byPid.get(pid) !== number) moved.push(number);
+    }
+    for (const [number, pid] of local.byNumber) {
+      if (remote.byNumber.has(number) && remote.byNumber.get(number) !== pid) taken.push(number);
+    }
+    const out = [];
+    const few = (a) => a.sort().slice(0, 15).join(", ") + (a.length > 15 ? ` ועוד ${a.length - 15}` : "");
+    if (missing.length) out.push(`${missing.length} סטודנטים שבוואן דרייב חסרים בטבלה שבמחשב (${few(missing)})`);
+    if (moved.length) out.push(`${moved.length} סטודנטים עם מספר אחר במחשב (${few(moved)})`);
+    if (taken.length) out.push(`${taken.length} מספרים שבמחשב שייכים בוואן דרייב לסטודנט אחר (${few(taken)})`);
+    return out;
+  }
+  // upload בלי הקבצים של מטלות שהטבלה שלהן לא מתאימה. problems: {תיקיית מטלה (יחסית לקורס): [בעיות]}
+  function withoutConflicts(upload, problems) {
+    const bad = Object.keys(problems).filter((dir) => problems[dir].length);
+    return upload.filter((f) => !bad.some((dir) => f.path === dir || f.path.startsWith(dir + "/")));
+  }
+
+  if (typeof window === "undefined") { module.exports = { plan, SKIP, keyProblems, withoutConflicts, csvRows }; return; }
   window.__ecsPlan = plan;  // לבדיקות
+  window.__ecsKeyProblems = keyProblems;
+  window.__ecsWithoutConflicts = withoutConflicts;
 
   // ---------- SharePoint ----------
   const q = (s) => encodeURIComponent(s.replace(/'/g, "''"));
@@ -115,6 +179,24 @@
     if (!r.ok) throw new Error(`${r.status} local ${f.path}`);
     return r.arrayBuffer();
   }
+  // לכל מטלה שהטבלה שלה בוואן דרייב שונה מזו שבמחשב (גודל או זמן): {תיקיית המטלה: [מה לא מתאים]}
+  async function keyCheck(base, local, remote) {
+    const out = {};
+    for (const f of local) {
+      if (!(f.path === KEY_NAME || f.path.endsWith("/" + KEY_NAME))) continue;
+      const r = remote[f.path];
+      if (!r || (r.size === f.size && Math.abs(r.mtime - f.mtime) <= CLOCK_SLACK_MS)) continue;
+      const dir = f.path.slice(0, Math.max(0, f.path.length - KEY_NAME.length - 1));
+      const there = await fetch(SITE + `/_api/web/GetFileByServerRelativeUrl('${q(base + "/" + f.path)}')/$value`);
+      if (!there.ok) { out[dir] = [`אי אפשר לקרוא את טבלת המפתח שבוואן דרייב (${there.status})`]; continue; }
+      out[dir] = keyProblems(new TextDecoder().decode(await localBytes(f)), await there.text());
+    }
+    return out;
+  }
+  const keyReport = (problems) => Object.entries(problems).filter(([, p]) => p.length)
+    .map(([dir, p]) => `${dir || "התיקייה"}: לא הועלתה. טבלת המפתח במחשב הזה לא מתאימה לזו שבוואן דרייב (מחשב אחר משך את ` +
+      `המטלה): ${p.join("; ")}. צריך לאחד את הטבלאות לפני שמעלים, אחרת סטודנטים היו נעלמים או מקבלים מספר של מישהו אחר.`);
+
   async function localJson(what) {
     const r = await fetch(LOCAL + what);
     if (!r.ok) throw new Error(`${r.status} local ${what}`);
@@ -175,13 +257,18 @@
     Object.assign(state, { stage: "comparing", course, local: local.length });
     say(`משווה ${local.length} קבצים ב-"${course}" לוואן דרייב...`);
     try {
-      const p = plan(local, await listRemote(base));
-      todo = p.upload;
+      const remote = await listRemote(base);
+      const p = plan(local, remote);
+      const kp = await keyCheck(base, local, remote);
+      const conflicts = keyReport(kp);
+      todo = withoutConflicts(p.upload, kp);
+      state.keyConflicts = conflicts;
       const bytes = todo.reduce((s, f) => s + f.size, 0);
       const news = todo.filter((f) => f.why === "new").length;
       Object.assign(state, { stage: "planned", upload: todo.map((f) => [f.path, f.why]), same: p.same.length, remoteNewer: p.remoteNewer });
       say(`תיקייה: ${course}\nחדשים: ${news}\nהשתנו: ${todo.length - news}\nזהים, לא נוגעים: ${p.same.length}\n` +
         (p.remoteNewer.length ? `חדשים יותר בוואן דרייב, לא נדרסים: ${p.remoteNewer.length}\n  ${p.remoteNewer.slice(0, 8).join("\n  ")}\n` : "") +
+        (conflicts.length ? conflicts.join("\n") + "\n" : "") +
         `סה"כ להעלאה: ${(bytes / 1e6).toFixed(1)} MB`);
       if (todo.length) { $("ecs-go").textContent = `העלאה של ${todo.length} קבצים`; $("ecs-go").style.display = ""; }
       else say($("ecs-status").textContent + "\n\nהכל כבר בוואן דרייב. אין מה להעלות.");
@@ -220,9 +307,13 @@
       const label = c || "התיקייה הראשית";
       say(`${label}: משווה...`);
       const local = (await localJson(`list?course=${encodeURIComponent(c)}`)).files.map((f) => ({ ...f, course: c }));
-      const p = plan(local, await listRemote(cbase, c !== ""));
+      const remote = await listRemote(cbase, c !== "");
+      const p = plan(local, remote);
+      const kp = await keyCheck(cbase, local, remote);
+      p.upload = withoutConflicts(p.upload, kp);
       const row = { course: label, local: local.length, new: p.upload.filter((f) => f.why === "new").length,
-        changed: p.upload.filter((f) => f.why === "changed").length, same: p.same.length, remoteNewer: p.remoteNewer };
+        changed: p.upload.filter((f) => f.why === "changed").length, same: p.same.length, remoteNewer: p.remoteNewer,
+        keyConflicts: keyReport(kp) };
       report.push(row);
       if (dryRun) row.wouldUpload = p.upload.map((f) => [f.path, f.why]);
       else if (p.upload.length) {
@@ -233,7 +324,8 @@
     state.stage = "done";
     say(report.map((r) => `${r.course}: ${r.new} חדשים, ${r.changed} השתנו, ${r.same} זהים` +
       (r.remoteNewer.length ? `, ${r.remoteNewer.length} חדשים יותר בוואן דרייב (לא נדרסו)` : "") +
-      (r.missing && r.missing.length ? `\n  לא הגיעו: ${r.missing.length}` : "")).join("\n") + "\n\nהסתיים.");
+      (r.missing && r.missing.length ? `\n  לא הגיעו: ${r.missing.length}` : "") +
+      (r.keyConflicts.length ? "\n  " + r.keyConflicts.join("\n  ") : "")).join("\n") + "\n\nהסתיים.");
     return state;
   }
   window.__ecsSyncAll = syncAll;

@@ -1,8 +1,8 @@
 """מה שהאתר המחובר עושה, במקום אחד. השלבים עצמם הם הקוד של אורי ב-`moodle/`:
 
   משיכה  → claude_driver.ClaudeChromeDriver.download + moodle.ingest.ingest(<מזהה מטלה>)
-           אם אין בתיקיית ההורדות (Downloads) ZIP שנגמר ב-"-<מזהה>.zip", Claude בכרום מוריד אותו ממודל
-           והמערכת מחכה שיגיע. אחר כך: שומר אותו בתיקיית המטלה, מחלץ עם 7-Zip, ממספר ומעדכן את טבלת המפתח.
+           רק ממודל האמיתי: קודם בודקים שהתוסף של Claude בכרום מחובר ושכרום מחובר למודל, ואז Claude בכרום
+           מוריד את ההגשות ממודל והמערכת מחכה שיגיעו. אחר כך: שומר בתיקיית המטלה, מחלץ עם 7-Zip, ממספר ומעדכן את טבלת המפתח.
   בדיקה  → grading.grade.grade_assignment (שלב 2): שולח את ההגשות הממוספרות ל-Claude (API או Claude Code), כותב
            "Grades by <שם>.csv" ועבודות מסומנות. רץ ברקע, והאתר שואל מה המצב.
   חלוקה  → moodle.claims: כל בודק מסמן אילו עבודות הוא לוקח, וכולם רואים (דרך OneDrive) מי לקח מה.
@@ -36,11 +36,11 @@ import pymupdf
 
 from copying import check as copying
 from grading import grade as grading
-from moodle import (anonymize as moodle_anonymize, claims, claude_driver, grades as moodle_grades,
+from moodle import (anonymize as moodle_anonymize, claims, claude_driver, grades as moodle_grades, pull_check,
                     ingest as moodle_ingest, lock as moodle_lock, paths, send as moodle_send, upload as moodle_upload,
                     upload_log)
 
-from . import folder_view, settings as cfg, shared_folder
+from . import folder_view, onedrive_check, settings as cfg, shared_folder, usage as grading_usage
 
 
 def root_info() -> tuple[Path | None, str | None]:
@@ -164,6 +164,37 @@ def _title_from_zip(a: folder_view.Assignment, zip_path: Path, mid: str) -> None
         _write_info(a, info)
 
 
+DUE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")
+
+
+def _due_from_moodle(a: folder_view.Assignment, listing: dict) -> None:
+    """מועד ההגשה כמו שמודל מראה אותו (download_parts.js קורא אותו מעמוד המטלה): נשמר בפרטי המטלה, וממנו המשיכה
+    הלילית (dashboard/scheduler.py) יודעת מתי המטלה נסגרת, בלי שמישהו יקליד. מועד שמודל שינה (הארכה) מתעדכן."""
+    due = listing.get("due")
+    info = a.details()
+    if not info or not isinstance(due, str) or not DUE.fullmatch(due):
+        return
+    if str(info.get("due") or "")[:16] != due[:16]:
+        info["due"] = due
+        _write_info(a, info)
+
+
+SINCE_MARGIN_S = 60 * 60  # משיכה חוזרת מבקשת גם את מה שהשתנה בשעה שלפני המשיכה הקודמת: הגשה שנכנסה בזמן שהיא רצה
+
+
+def _since(a: folder_view.Assignment) -> int:
+    """ממתי לבקש ממודל רק את מה שהשתנה (מילישניות מ-1970): המשיכה האחרונה ב-Pull log.csv, פחות שעה.
+    0 (את כולם) כשאין משיכה קודמת או שאין עוד אף הגשה ממוספרת."""
+    pulled = moodle_ingest.pulls(a.dir, complete_only=True)  # a pull cut to N students left others out: ask for all
+    if not pulled or not a.key_rows():
+        return 0
+    try:
+        last = datetime.fromisoformat(pulled[-1])
+    except ValueError:
+        return 0
+    return max(0, int((last.timestamp() - SINCE_MARGIN_S) * 1000))
+
+
 # ---------- כמה התקדמה המשיכה ----------
 # הבקשה POST /api/pull נשארת פתוחה עד סוף המשיכה (גם 25 דקות של הורדה). בינתיים האתר שואל GET /api/pull
 # ומראה מד התקדמות: phase הוא find (מחפש ZIP בהורדות), claude (Claude מבקש את ה-ZIP ממודל),
@@ -178,7 +209,7 @@ class PullProgress:
     phase: str = ""
     done: int = 0
     total: int = 0  # 0 בהורדה: לא ידוע כמה גדול ה-ZIP (אין הורדה קודמת להשוות אליה)
-    downloaded: bool = False  # ה-ZIP הורד עכשיו ממודל (ולא חיכה מוכן בתיקיית ההורדות)
+    downloaded: bool = False  # ההורדה ממודל כבר התחילה
     summary: str = ""
     error: str = ""
     started_at: str = ""
@@ -248,14 +279,18 @@ def _backup_dir(a: folder_view.Assignment) -> Path | None:
         return None
 
 
-def pull(root: Path, course: str, assignment: str, moodle_id: str | None = None) -> dict:
+def pull(root: Path, course: str, assignment: str, moodle_id: str | None = None, full: bool = False,
+         limit: int = 0) -> dict:
+    """`full`: ask Moodle for everyone. Otherwise, after a first pull, only for students whose submission changed since
+    the last one (minutes instead of GBs); the others keep what they have. `limit`: at most that many students (the
+    first in Moodle's grading table that have a submission); a later pull without it brings the rest."""
     global _pull
     with _pull_lock:
         _pull = PullProgress(course, assignment, running=True, phase="find",
                              started_at=datetime.now().isoformat(timespec="seconds"))
         job = _pull
     try:
-        rep = _do_pull(root, course, assignment, moodle_id)
+        rep = _do_pull(root, course, assignment, moodle_id, full, limit)
         job.summary = rep["summary"]
         if rep["result"]["new"]:
             # new submissions: the copying check (no Claude, no tokens) starts by itself, instead of a click on its page
@@ -273,16 +308,10 @@ def pull(root: Path, course: str, assignment: str, moodle_id: str | None = None)
             job.running = False
 
 
-NOT_SHARED = ("במחשב הזה תיקיית המערכת היא עותק מקומי ({root}), לא התיקייה המשותפת של הקורס ב-OneDrive, ולכן "
-              "לא מושכים ממנו. טבלת המפתח של כל מטלה נמצאת בתיקייה המשותפת: משיכה מעותק מקומי לא הייתה רואה את "
-              "המספרים שמחשב אחר כבר נתן, ושני סטודנטים היו מקבלים אותו מספר. מושכים ממחשב שהתיקייה YallaLinearit "
-              "מסונכרנת בו (OneDrive ← \"הוסף קיצור דרך לקבצים שלי\"), למשל של יוסי.")
-
-
-def _do_pull(root: Path, course: str, assignment: str, moodle_id: str | None) -> dict:
-    # Pull only into the synced shared folder (moodle/paths.py in_shared_folder); the demo has no Moodle and no OneDrive
-    if not paths.in_shared_folder(root) and os.environ.get("MOODLE_DRIVER") != "simulate":
-        raise UserError(NOT_SHARED.format(root=root))
+def _do_pull(root: Path, course: str, assignment: str, moodle_id: str | None, full: bool = False,
+             limit: int = 0) -> dict:
+    # Any computer may pull, a local data folder too (Ori, the pull owner, 2026-10-29): the key table of the folder it
+    # pulls into is the one that counts, and anonymize.prepare keeps every number in it
     a = new_assignment(root, course, assignment, moodle_id) if moodle_id else find_assignment(root, course, assignment)
     _take_task_if_free(a.dir.parent, assignment, "pull")
     mid = _moodle_id(a)
@@ -302,15 +331,28 @@ def _do_pull(root: Path, course: str, assignment: str, moodle_id: str | None) ->
         raise UserError(_hebrew_error(e, mid)) from e
     if target is None or target.resolve() != a.dir.resolve():
         raise UserError(f"מזהה המודל {mid} לא מוביל לתיקייה של {a.title}, ולכן לא משכתי. כדאי לרענן את הדף.")
+    _pull_report("connect")
+    try:
+        require_moodle(root, a.dir.parent.name, a.dir.name, "משכתי")
+    except RuntimeError as e:  # an upload or another check is using Chrome right now
+        raise UserError(str(e)) from e
     old_rows = a.key_rows()
     before = {r["number"] for r in old_rows}
     lock = _take_lock(a)
     try:
-        zip_path = _zip_from_moodle(a, mid)
+        zip_path = _zip_from_moodle(a, mid, 0 if full else _since(a), limit)
         _title_from_zip(a, zip_path, mid)
+        listing = _listing(zip_path)
+        _due_from_moodle(a, listing)
         without_file = _without_file(zip_path)
         listed = _listed_users(zip_path)
+        changed = int(listing.get("changed") or 0) if int(listing.get("since") or 0) > 0 else None
+        available = int(listing.get("available") or 0)
+        cut = int(listing.get("limit") or 0) if int(listing.get("limit") or 0) and available > int(listing.get("limit") or 0) else 0
         rows = moodle_ingest.ingest(mid, zip_path, on_progress=_pull_report)
+    except pull_check.PullCheckFailed as e:
+        raise UserError("הבדיקה שבסוף המשיכה מצאה בעיה, ולכן המשיכה בוטלה: כל קובץ חזר למקומו וטבלת המפתח לא השתנתה. "
+                        f"מושכים שוב; אם זה חוזר, שולחים את ההודעה הזו לאורי. ({e})") from e
     except (FileNotFoundError, ValueError) as e:
         raise UserError(_hebrew_error(e, mid)) from e
     finally:
@@ -321,7 +363,14 @@ def _do_pull(root: Path, course: str, assignment: str, moodle_id: str | None) ->
         "course": course, "assignment": assignment,
         "result": {"total": len(numbers), "new": len(new), "files": len(rows)},
         "summary": f"{len(numbers)} הגשות" + (f", {len(new)} חדשות" if new else ", אין חדשות"),
-        "notes": [f"הקבצים נשמרו ב-\"{paths.TO_GRADE}\". ה-ZIP של מודל נשמר רק במחשב הזה, ב-\"{paths.BACKUP}\"."]
+        "changed": changed,
+        "notes": ([f"המשיכה הוגבלה ל-{cut} הגשות מתוך {available} שהיו במודל. משיכה בלי הגבלה תביא את כל השאר, "
+                   "וכל מי שכבר נמשך שומר על המספר שלו."] if cut else [])
+                 + ([f"ממודל הורדו רק {changed} סטודנטים שההגשה שלהם השתנתה מאז המשיכה הקודמת. כל השאר נשארו כמו שהיו."
+                     if changed else "שום הגשה לא השתנתה במודל מאז המשיכה הקודמת, ולכן שום קובץ לא השתנה."]
+                    if changed is not None else [])
+                 + _check_notes(a)
+                 + [f"הקבצים נשמרו ב-\"{paths.TO_GRADE}\". ה-ZIP של מודל נשמר רק במחשב הזה, ב-\"{paths.BACKUP}\"."]
                  + ([f"{without_file} סטודנטים בטבלת ההגשות במודל הגיעו בלי קובץ (לא הגישו קובץ, או שמודל לא שלח אותו)."]
                     if without_file else [])
                  + ([f"בטבלת ההגשות במודל הופיעו רק {listed} סטודנטים, ובטבלת המפתח יש {known}. אף אחד לא נמחק ואף מספר לא השתנה, "
@@ -329,6 +378,33 @@ def _do_pull(root: Path, course: str, assignment: str, moodle_id: str | None) ->
                     if listed and listed < (known := len({r["participant_id"] for r in old_rows})) else []),
         "pulled_at": datetime.now().isoformat(timespec="seconds"),
     }
+
+
+def _listing(download: Path) -> dict:
+    """הרשימה של הורדה בחלקים (moodle/download_parts.js), או {} ל-ZIP אחד ולרשימה שאי אפשר לקרוא."""
+    if download.suffix.lower() != moodle_ingest.LIST:
+        return {}
+    try:
+        listed = json.loads(download.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return listed if isinstance(listed, dict) else {}
+
+
+def _check_notes(a: folder_view.Assignment) -> list[str]:
+    """מה הבדיקה שבסוף המשיכה מצאה (moodle/pull_check.py, "Pull check.json"), במילים: מספרים בלבד."""
+    c = pull_check.read(a.dir)
+    if not c or not c.get("ok"):
+        return []
+    lines = [f"נבדק אחרי המשיכה: אף קובץ לא נעלם ואף סטודנט לא איבד או החליף מספר. "
+             f"{c.get('students_before', 0)} סטודנטים היו, {c.get('students_after', 0)} יש עכשיו"
+             + (f"; {c['files_written']} קבצים נכתבו, {c.get('files_moved_to_earlier', 0)} גרסאות קודמות עברו ל-\"{paths.EARLIER}\""
+                if c.get("files_written") or c.get("files_moved_to_earlier") else "")
+             + f"; {c.get('files_unchanged', c.get('files_in_folder', 0))} קבצים לא השתנו."]
+    if c.get("with_date_no_file"):
+        lines.append(f"במודל {c['with_date_no_file']} סטודנטים יותר מופיעים עם תאריך הגשה ממה שהגיע מהם קבצים "
+                     "(אולי הגישו טקסט בלי קובץ). כדאי לבדוק במודל.")
+    return lines
 
 
 def _without_file(download: Path) -> int:
@@ -360,34 +436,23 @@ DOWNLOAD_WAIT_S = 25 * 60  # הכי הרבה שמחכים להורדה: פחות
 PARTS_LIST_WAIT_S = 180
 
 
-def _download_safely(downloader, a: folder_view.Assignment) -> dict:
-    """downloader.download, בלי לזרוק: התשובה חוזרת מה-thread כמו כל תשובה אחרת."""
+def _download_safely(downloader, a: folder_view.Assignment, since: int = 0, limit: int = 0) -> dict:
+    """downloader.download, בלי לזרוק: התשובה חוזרת מה-thread כמו כל תשובה אחרת. `since`: רק מה שהשתנה מאז.
+    `limit`: לא יותר מכמה סטודנטים."""
     try:
-        return downloader.download(paths.read_info(a.dir))
+        info = paths.read_info(a.dir)
+        return downloader.download({**info, **({"since": since} if since else {}), **({"limit": limit} if limit else {})})
     except Exception as e:  # noqa: BLE001 — מוצג באתר
         return {"status": "error", "message": f"ההורדה נכשלה ({type(e).__name__})."}
 
 
-class _SimDownloader:
-    """הדגמה (MOODLE_DRIVER=simulate): אין מודל, אז אין ממה להוריד."""
-
-    def download(self, info: dict) -> dict:
-        return {"status": "error", "message": "בהדגמה אין מודל. שמים ZIP של המטלה בתיקיית ההורדות ומושכים שוב."}
-
-
 def _make_downloader():
-    return _SimDownloader() if os.environ.get("MOODLE_DRIVER") == "simulate" else claude_driver.ClaudeChromeDriver()
+    return claude_driver.ClaudeChromeDriver()
 
 
-def _zip_from_moodle(a: folder_view.Assignment, mid: str) -> Path:
-    """ה-ZIP של כל ההגשות: מה שכבר מחכה בתיקיית ההורדות (מישהו הוריד ידנית), ואם אין, Claude בכרום מוריד אותו עכשיו.
-
-    ingest מעביר כל ZIP שנקלט מתיקיית ההורדות לתיקיית המטלה, כך ש-ZIP שנשאר שם עוד לא נקלט."""
-    global _checking
-    try:
-        return moodle_ingest.find_download(mid)
-    except FileNotFoundError:
-        pass
+def _zip_from_moodle(a: folder_view.Assignment, mid: str, since: int = 0, limit: int = 0) -> Path:
+    """ההגשות, ממודל עצמו: Claude בכרום מוריד אותן עכשיו. ZIP ישן שמחכה בתיקיית ההורדות לא נלקח: משיכה היא
+    תמיד הורדה טרייה ממודל, אחרי שהבדיקה (require_moodle) ראתה שהתוסף והמודל מחוברים."""
     with _send_lock:  # ההורדה, הבדיקה וההעלאה היו מפעילות את אותו כרום
         if _send.running:
             raise UserError("העלאה למודל רצה עכשיו בכרום. אפשר למשוך כשהיא תסתיים.")
@@ -401,7 +466,7 @@ def _zip_from_moodle(a: folder_view.Assignment, mid: str) -> Path:
         raise UserError(f"{e.who} מושך עכשיו הגשות ממודל במחשב הזה (התחיל ב-{e.since:%H:%M}). "
                         "משיכה אחת בכל פעם: כדאי לחכות שתסתיים ולנסות שוב.") from e
     try:
-        return _download_with_chrome(a, mid)
+        return _download_with_chrome(a, mid, since, limit)
     finally:
         chrome_lock.unlink(missing_ok=True)
 
@@ -415,19 +480,22 @@ def _work_dir() -> Path:
     return d
 
 
-def _download_with_chrome(a: folder_view.Assignment, mid: str) -> Path:
-    """Claude בכרום מוריד ממודל בחלקים, ומחכים שהכול יגיע לתיקיית ההורדות."""
+def _download_with_chrome(a: folder_view.Assignment, mid: str, changed_since: int = 0, limit: int = 0) -> Path:
+    """Claude בכרום מוריד ממודל בחלקים, ומחכים שהכול יגיע לתיקיית ההורדות. `changed_since`: רק מה שהשתנה מאז.
+    `limit`: לא יותר מכמה סטודנטים."""
     global _checking
     with _send_lock:
         _checking = True
-    since = time.time()
     _pull_report("claude")
     # Claude's run lasts until every part is in (it waits for the page's script), so it runs in a thread and
     # the parts that reach Downloads meanwhile move the progress bar
     answer: dict = {}
     downloader = _make_downloader()
-    worker = threading.Thread(target=lambda: answer.update(_download_safely(downloader, a)), daemon=True)
+    worker = threading.Thread(target=lambda: answer.update(_download_safely(downloader, a, changed_since, limit)), daemon=True)
     try:
+        if isinstance(downloader, claude_driver.ClaudeChromeDriver):
+            claude_driver.open_chrome()  # closed Chrome (the night pull, nobody at the computer): open it first
+        since = time.time()
         worker.start()
         while worker.is_alive():
             worker.join(DOWNLOAD_POLL_S)
@@ -470,8 +538,7 @@ def _download_with_chrome(a: folder_view.Assignment, mid: str) -> Path:
         if "did not start" in str(e):
             raise UserError("Claude ביקש ממודל את ה-ZIP, אבל ההורדה לא התחילה בכרום. אם כרום שואל איפה לשמור, "
                             "מכבים בהגדרות שלו את \"שאל איפה לשמור כל קובץ\" ומושכים שוב.") from e
-        raise UserError("ההורדה ממודל לא הסתיימה בזמן. כשהיא תסתיים בכרום, לוחצים שוב \"משוך הגשות\": "
-                        "ה-ZIP שבתיקיית ההורדות ייקלט בלי להוריד שוב.") from e
+        raise UserError("ההורדה ממודל לא הסתיימה בזמן. כדאי לבדוק בכרום שמודל פתוח ומחובר, וללחוץ שוב \"משוך הגשות\".") from e
 
 
 # ---------- החזרה ----------
@@ -527,7 +594,8 @@ class GradeJob:
 
 _job = GradeJob()
 _job_lock = threading.Lock()
-_stop = threading.Event()  # הדגל שהבדיקה שרצה בודקת לפני כל הגשה
+# הדגל שהבדיקה שרצה בודקת לפני כל הגשה. נפרד מ-_stop של ההעלאה: עצירה של אחת לא עוצרת את השנייה
+_grade_stop = threading.Event()
 
 
 def stop_grading() -> dict:
@@ -535,7 +603,7 @@ def stop_grading() -> dict:
     with _job_lock:
         if _job.running:
             _job.stopping = True
-            _stop.set()
+            _grade_stop.set()
     return grade_status()
 
 
@@ -559,7 +627,7 @@ def start_grading(root: Path, course: str, assignment: str, numbers: list[str] |
         _job = GradeJob(course, assignment, todo, running=bool(todo),
                         started_at=datetime.now().isoformat(timespec="seconds"))
         job = _job
-        _stop.clear()
+        _grade_stop.clear()
     if not todo:
         job.summary = "אין הגשות שמחכות לבדיקה."
         job.finished_at = job.started_at
@@ -571,7 +639,7 @@ def start_grading(root: Path, course: str, assignment: str, numbers: list[str] |
 
     def run() -> None:
         try:
-            rep = grading.grade_assignment(a.dir, todo, ask=ask, on_progress=progress, stop=_stop, **opts)
+            rep = grading.grade_assignment(a.dir, todo, ask=ask, on_progress=progress, stop=_grade_stop, **opts)
             job.report, job.summary = asdict(rep), rep.summary()
         except (grading.NoApiKey, grading.ClaudeLimit) as e:
             job.error = str(e)
@@ -720,7 +788,7 @@ def _take_task_if_free(course_dir: Path, assignment: str, stage: str) -> None:
 # ---------- מה השתנה בתיקייה ----------
 # האתר שואל כל כמה שניות (GET /api/changes) ומקבל חתימה של התיקייה: שמות, זמני שינוי וגדלים של הקבצים שהמצב
 # נבנה מהם. כשמשהו השתנה (בודק אחר לקח עבודות, OneDrive הביא ציונים, מישהו משך), החתימה משתנה והאתר טוען מחדש.
-_WATCHED = (paths.TO_GRADE, paths.MARKED, paths.UPLOAD, paths.NOTES, paths.CLAIMS)
+_WATCHED = (paths.TO_GRADE, paths.MARKED, paths.UPLOAD, paths.NOTES, paths.CLAIMS, paths.OFFICIAL_KEY)
 
 
 def _scan(h, folder: Path) -> None:
@@ -736,19 +804,47 @@ def _scan(h, folder: Path) -> None:
         h.update(b"-\n")
 
 
+def _watched_dirs(root: Path) -> list[Path]:
+    """התיקיות שהמצב שהאתר מציג נבנה מהן: תיקיית הקורס, "Who does what", ובכל מטלה התיקייה ו-_WATCHED."""
+    out: list[Path] = []
+    for course_dir in folder_view.courses(root):
+        out += [course_dir, course_dir / paths.TASKS]
+        for a in folder_view.assignments(course_dir):
+            out += [a.dir, *(a.dir / sub for sub in _WATCHED)]
+    return out
+
+
 def changes(root: Path) -> str:
     h = hashlib.sha1()
-    for course_dir in folder_view.courses(root):
-        h.update(f"#{course_dir.name}\n".encode("utf-8", "surrogatepass"))
-        _scan(h, course_dir)
-        _scan(h, course_dir / paths.TASKS)
-        for a in folder_view.assignments(course_dir):
-            _scan(h, a.dir)
-            for sub in _WATCHED:
-                _scan(h, a.dir / sub)
+    for folder in _watched_dirs(root):
+        if folder.parent == root:
+            h.update(f"#{folder.name}\n".encode("utf-8", "surrogatepass"))
+        _scan(h, folder)
     with _job_lock:  # הבדיקה שרצה כאן: כל עבודה שנגמרה משנה את מה שהאתר מציג
         h.update(f"{_job.running}|{len(_job.done)}\n".encode())
     return h.hexdigest()
+
+
+# ---------- "סנכרון": קוראים מחדש מ-OneDrive ----------
+UNREADABLE = ("תיקיית OneDrive לא נקראת עכשיו ({error}). בדרך כלל זה אומר ש-OneDrive צריך להתחבר מחדש לאוניברסיטה: "
+              "מפעילים את הקיצור \"חיבור OneDrive BGU\" בשולחן העבודה, מתחברים ומאשרים בטלפון, ולוחצים שוב על סנכרון.")
+
+
+def refresh(root: Path) -> dict:
+    """הכפתור "סנכרון" באתר: קורא מחדש את כל התיקייה מהדיסק, בלי שום זיכרון מהקריאה הקודמת, ובודק ש-OneDrive
+    עצמו מסנכרן אותה במחשב הזה (onedrive_check). מחזיר את המצב המלא, את החתימה שלו (כדי שהאתר לא יטען שוב
+    בסיבוב הבא) ומה מצב OneDrive."""
+    _notes.clear()
+    try:
+        dirs = _watched_dirs(root)
+    except OSError as e:
+        raise UserError(UNREADABLE.format(error=e.strerror or e)) from e
+    od = onedrive_check.status(root, dirs)
+    try:
+        st = state(root)
+    except OSError as e:
+        raise UserError(UNREADABLE.format(error=e.strerror or e)) from e
+    return {"state": st, "sig": changes(root), "onedrive": od, "at": datetime.now().isoformat(timespec="seconds")}
 
 
 def claims_view(root: Path, course: str, assignment: str) -> dict:
@@ -783,9 +879,6 @@ def change_claims(root: Path, course: str, assignment: str, take: list[str] | No
 # הכנה (prepare_send) בונה אצווה ורושמת אותה ב-Upload batch.json. ההעלאה עצמה (start_send) רצה ברקע,
 # ואחרי "כן" של אדם: האתר שולח את ה-id של האצווה שהאדם ראה, ואם בינתיים הוכנה אצווה אחרת, לא מעלים.
 # רק העלאה אחת בכל פעם בתהליך הזה, ובין מחשבים הנעילה Upload in progress.txt (moodle/send.py) שומרת.
-SIMULATE_DELAY = 1.0  # שניות לכל ZIP כש-MOODLE_DRIVER=simulate, כדי שיראו התקדמות באתר
-
-
 def _upload_lock_holder(a: folder_view.Assignment) -> str | None:
     """מי מעלה עכשיו את המטלה (נעילה שלא התיישנה, של מישהו אחר או של תהליך אחר שלי שעוד רץ), או None. בלי ה-pid."""
     held = moodle_lock.holder(a.dir / moodle_send.UPLOAD_LOCK)
@@ -811,7 +904,7 @@ class SendJob:
 
 _send = SendJob()
 _send_lock = threading.Lock()
-_stop = threading.Event()
+_stop = threading.Event()  # "עצור" של ההעלאה: ה-ZIP הבא לא מתחיל (לבדיקה יש _grade_stop משלה)
 
 
 def send_status() -> dict:
@@ -848,8 +941,6 @@ def prepare_send(root: Path, course: str, assignment: str) -> dict:
 
 
 def _make_driver() -> moodle_send.MoodleDriver:
-    if os.environ.get("MOODLE_DRIVER") == "simulate":  # הדגמה: לא נוגעים במודל
-        return moodle_send.SimulatedDriver(delay=SIMULATE_DELAY)
     return claude_driver.ClaudeChromeDriver()
 
 
@@ -873,6 +964,7 @@ def start_send(root: Path, course: str, assignment: str, batch_id: str,
     ו-ValueError("stale") אם האצווה כבר לא זו שבקובץ Upload batch.json (הוכנה אחרת מאז)."""
     global _send
     a = find_assignment(root, course, assignment)
+    require_moodle(root, course, assignment, "העליתי")
     base_driver = driver if driver is not None else _make_driver()
     with _send_lock:
         if _send.running:
@@ -932,12 +1024,9 @@ LOGIN_MINUTES = 10  # התחברות שלא נגמרה אחרי זמן הזה נ
 INSTALL_MINUTES = 20  # וכך גם התקנה (היא מורידה קובץ, ויכולה לקחת יותר)
 LOGIN_STARTED = "נפתח דף התחברות בדפדפן. אחרי ההתחברות המערכת תזהה לבד שזה הסתיים."
 INSTALL_COMMAND = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "irm https://claude.ai/install.ps1 | iex"]
-SIM_LOGIN_SECONDS = 2.0  # MOODLE_READY=simulate: כמה זמן "ההתחברות" נמשכת
-
 _moodle_cache: tuple[float, dict] | None = None
 _ready_cache: dict[tuple[str, str], tuple[float, dict, str]] = {}  # (קורס, מטלה) → (מתי, התשובה של check, מתי בשעון)
 _checking = False  # בדיקת כרום רצה עכשיו (תחת _send_lock): היא והעלאה היו מפעילות את אותו כרום
-_sim_login_at: float | None = None
 
 
 class _Background:
@@ -998,23 +1087,8 @@ _login = _Background(LOGIN_MINUTES)
 _install = _Background(INSTALL_MINUTES)
 
 
-def _simulated_ready() -> bool:
-    """הדגמה (tests/serve_demo): התחברות מדומה, בלי `claude` אמיתי. רק יחד עם MOODLE_DRIVER=simulate."""
-    return os.environ.get("MOODLE_READY") == "simulate" and os.environ.get("MOODLE_DRIVER") == "simulate"
-
-
-def _sim_logged_in() -> bool:
-    return _sim_login_at is not None and time.monotonic() - _sim_login_at >= SIM_LOGIN_SECONDS
-
-
-class _SimChecker:
-    def check(self, info: dict) -> dict:
-        time.sleep(1.0)
-        return {"chrome": True, "moodle": True, "message": "Chrome ו-Moodle מוכנים.", "answered": True}
-
-
 def _make_checker():
-    return _SimChecker() if _simulated_ready() else claude_driver.ClaudeChromeDriver()
+    return claude_driver.ClaudeChromeDriver()
 
 
 def moodle_status() -> dict:
@@ -1093,14 +1167,9 @@ def _fresh_check(course: str, assignment: str) -> tuple[dict, str] | None:
 def readiness(root: Path, course: str, assignment: str) -> dict:
     """האם המחשב הזה מוכן להעלות את המטלה. מהירה: לא מפעילה בדיקת כרום, רק קוראת את התוצאה האחרונה (אם טרייה)."""
     find_assignment(root, course, assignment)
-    if _simulated_ready():
-        installed, status = True, {"logged_in": _sim_logged_in(), "message": "Claude Code מחובר." if _sim_logged_in() else claude_driver.NOT_LOGGED_IN}
-        login_running = _sim_login_at is not None and not status["logged_in"]
-        installing = False
-    else:
-        installed = claude_driver.find_claude() is not None
-        status = moodle_status() if installed else {"logged_in": False, "message": claude_driver.NOT_INSTALLED}
-        login_running, installing = _login.running(), _install.running()
+    installed = claude_driver.find_claude() is not None
+    status = moodle_status() if installed else {"logged_in": False, "message": claude_driver.NOT_INSTALLED}
+    login_running, installing = _login.running(), _install.running()
     out = {"installed": installed, "logged_in": bool(status["logged_in"]), "chrome": None, "moodle": None,
            "checked_at": None, "message": status["message"], "login_running": login_running, "installing": installing}
     fresh = _fresh_check(course, assignment) if installed and out["logged_in"] else None
@@ -1148,15 +1217,30 @@ def check_ready(root: Path, course: str, assignment: str) -> dict:
     return out
 
 
+def require_moodle(root: Path, course: str, assignment: str, verb: str) -> None:
+    """משיכה והעלאה רק מול מודל האמיתי: התוסף של Claude בכרום מחובר, וכרום מחובר למודל.
+
+    בדיקה מוצלחת מ-30 הדקות האחרונות מספיקה. אחרת בודקים עכשיו (ריצה קצרה של Claude; כרום סגור, למשל במשיכת
+    לילה, נפתח קודם). `verb` נכנס להודעה: "משכתי" / "העליתי". זורק UserError כשמשהו לא מחובר, ו-RuntimeError
+    כשהעלאה או בדיקה אחרת מפעילות עכשיו את הכרום."""
+    fresh = _fresh_check(course, assignment)
+    result = fresh[0] if fresh else None
+    if not (result and result.get("chrome") and result.get("moodle")):
+        claude_driver.open_chrome()
+        result = check_moodle(root, course, assignment)
+    if result.get("answered") is False or not result.get("chrome"):
+        raise UserError(f"התוסף של Claude בכרום לא מחובר, ולכן לא {verb} כלום. פותחים את כרום, מוודאים שהתוסף Claude "
+                        f"פעיל ומחובר, ומנסים שוב. ({result.get('message') or 'אין פרטים'})")
+    if not result.get("moodle"):
+        raise UserError(f"כרום לא מחובר למודל, ולכן לא {verb} כלום. נכנסים למודל בכרום (moodle.bgu.ac.il) ומנסים שוב. "
+                        f"({result.get('message') or 'אין פרטים'})")
+
+
 def start_claude_login(restart: bool = False) -> dict:
     """פותח התחברות ל-Claude ברקע: `claude auth login` פותח דפדפן, האדם מתחבר עם החשבון שלו, והתהליך נגמר לבד.
 
     בלי --email: כל אחד מתחבר לחשבון שלו. תהליך אחד בכל פעם; עם restart=True הקודם נהרג ומתחיל חדש."""
-    global _moodle_cache, _sim_login_at
-    if _simulated_ready():
-        if _sim_login_at is None or restart:
-            _sim_login_at = time.monotonic()
-        return {"started": True, "running": True, "message": LOGIN_STARTED}
+    global _moodle_cache
     claude = claude_driver.find_claude()
     if not claude:
         return {"started": False, "running": False, "message": claude_driver.NOT_INSTALLED}
@@ -1176,8 +1260,6 @@ def start_claude_login(restart: bool = False) -> dict:
 def start_claude_install() -> dict:
     """מתקין את Claude Code ברקע, עם ההתקנה הרשמית של Anthropic. האתר שואל את האדם לפני שהוא קורא לזה."""
     global _moodle_cache
-    if _simulated_ready():
-        return {"started": False, "running": False, "message": "Claude Code כבר מותקן."}
     if claude_driver.find_claude():
         return {"started": False, "running": False, "message": "Claude Code כבר מותקן."}
     try:
@@ -1402,6 +1484,7 @@ def state(root: Path) -> dict:
                 "rubric": [{"label": q.label, "points": q.points, "criteria": q.criteria, "deductions": q.deductions}
                            for q in ctx.questions],
                 "noRubric": ctx.no_rubric, "maxGrade": ctx.max_grade, "solution": (a.dir / grading.SOLUTION).is_file(),
+                "rubricFile": rubric_file_state(a.dir, root), "officialKey": official_key_state(a.dir, root),
                 "notes": d.get("notes") or "", "rules": d.get("submission_rules") or [],
                 "warnings": [f"עותק כפול של טבלת המפתח: {c}" for c in key_conflicts(a)]
                             + [f"עותק כפול של הגשה: {c}" for c in moodle_anonymize.submission_conflicts(a.dir)]
@@ -1411,7 +1494,151 @@ def state(root: Path) -> dict:
                 "subs": subs, "log": _activity(a, log), "owners": owners, "copying": copying_state(a.dir),
             })
     return {"root": str(root), "courses": courses, "assignments": out, "me": me(),
-            "moodle": False, "claude": quick_via() is not None, "claudeVia": quick_via(), "grading": grade_status(), "sending": send_status(), "copyCheck": copying_status()}
+            "moodle": False, "claude": quick_via() is not None, "claudeVia": quick_via(), "grading": grade_status(), "sending": send_status(), "copyCheck": copying_status(),
+            "usage": grading_usage.summary(root)}
+
+
+RUBRIC_PDF = "Rubric.pdf"
+RUBRIC_MD = "Rubric.md"
+RUBRIC_LOG = "Rubric PDF changelog.md"
+NO_RUBRIC_FILE = {"pdf": False, "pdfAt": None, "path": None, "md": None, "approved": False, "rounds": 0}
+
+
+def rubric_file_state(a_dir: Path, root: Path | None = None) -> dict:
+    """מה המצב של המחוון שבנה הסקיל rubric-builder בתיקיית "פדגוגי" של המטלה: יש Rubric.pdf (ומתי נבנה), האם Rubric.md
+    של הבוט מיוצר מאותו מקור (rubric.json) או ישן (מהמועצה), כמה סבבי ועדה היו, והאם אושר (לפי היומן ב-Working notes).
+    מספרים ותאריכים בלבד."""
+    ped = next((a_dir / n for n in paths.PEDAGOGY if (a_dir / n).is_dir()), None)
+    if ped is None:
+        return dict(NO_RUBRIC_FILE)
+    pdf = ped / RUBRIC_PDF
+    md = ped / RUBRIC_MD
+    md_kind = None
+    if md.is_file():
+        head = md.read_text(encoding="utf-8-sig", errors="replace")[:600]
+        md_kind = "rendered" if "rubric.json" in head else "council"
+    rounds = approved = 0
+    log = ped / "Working notes" / RUBRIC_LOG
+    if log.is_file():
+        lines = [l for l in log.read_text(encoding="utf-8-sig", errors="replace").splitlines() if l.startswith("- ")]
+        rounds = len({m.group(1) for l in lines for m in re.finditer(r"(?:round|סבב) (\d+)", l, re.I)})
+        approved = any("approved" in l.lower() or "מאושר" in l for l in lines)
+    rel = None
+    if pdf.is_file() and root is not None:
+        try:
+            rel = pdf.relative_to(root).as_posix()
+        except ValueError:
+            rel = None
+    return {"pdf": pdf.is_file(),
+            "pdfAt": datetime.fromtimestamp(pdf.stat().st_mtime).isoformat(timespec="minutes") if pdf.is_file() else None,
+            "path": rel, "md": md_kind, "approved": bool(approved), "rounds": rounds}
+
+
+# ---------- המכוון הרשמי של המרצה (grading.official_key) ----------
+KEY_FILE_TYPES = (*grading.KEY_MEDIA, ".docx", ".txt", ".md")
+MAX_KEY_BYTES = 30_000_000
+MAX_KEY_TEXT = 200_000
+
+
+def official_key_state(a_dir: Path, root: Path | None = None) -> dict | None:
+    """מה האתר מציג על המכוון: הקבצים (עם נתיב לצפייה), אם יש טקסט, הניקוד שהוזן, מי העלה ומתי. None אם אין מכוון."""
+    key = grading.official_key(a_dir)
+    if key is None:
+        return None
+    folder = a_dir / paths.OFFICIAL_KEY
+    every = sorted(p for p in folder.iterdir() if p.is_file()) if folder.is_dir() else []
+    d = grading.read_details(a_dir)
+    rel = lambda f: f.relative_to(root).as_posix() if root is not None and f.is_relative_to(root) else None
+    return {"files": [{"name": f.name, "path": rel(f), "sent": f.suffix.lower() in grading.KEY_MEDIA} for f in every],
+            "text": key.text[:MAX_KEY_TEXT], "points": key.points,
+            "by": d.get("official_key_by"), "at": d.get("official_key_at")}
+
+
+def _write_details(a_dir: Path, d: dict) -> None:
+    tmp = a_dir / (paths.INFO + ".tmp")
+    tmp.write_text(json.dumps(d, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.replace(tmp, a_dir / paths.INFO)
+
+
+def _retire_key(a_dir: Path) -> None:
+    """המכוון הקודם (הקבצים והטקסט) עובר ל-"Earlier official keys/<תאריך>/". שום דבר לא נמחק."""
+    old = [p for p in ((a_dir / paths.OFFICIAL_KEY), (a_dir / paths.OFFICIAL_KEY_TEXT)) if p.exists()]
+    if not old:
+        return
+    dest = a_dir / paths.OFFICIAL_KEY_OLD / datetime.now().strftime("%Y-%m-%d %H-%M-%S")
+    while dest.exists():
+        dest = dest.with_name(dest.name + " (2)")
+    dest.mkdir(parents=True)
+    for p in old:
+        os.replace(p, dest / p.name)
+
+
+def save_official_key(root: Path, course: str, assignment: str, *, file_name: str | None = None,
+                      data: bytes | None = None, text: str | None = None, points: dict | None = None,
+                      remove: bool = False) -> dict:
+    """שומר את המכוון שהגיע מהמרצה. קובץ חדש או טקסט חדש מחליפים את המכוון הקודם (שעובר ל-Earlier official keys).
+    Word: הקובץ נשמר כמו שהוא, והטקסט שלו נשלח ל-Claude. points: {שם שאלה: ניקוד}, רק לשאלות של המטלה.
+    remove: המכוון יוצא מהבדיקה (גם הוא עובר ל-Earlier official keys)."""
+    a = find_assignment(root, course, assignment)
+    if _job.running and _job.assignment == assignment and _job.course == course:
+        raise UserError("בדיקה של המטלה הזאת רצה עכשיו. מחליפים מכוון אחרי שהיא נגמרת (או עוצרים אותה), "
+                        "כדי שכל העבודות ייבדקו לפי אותו מכוון.")
+    d = grading.read_details(a.dir)
+    if remove:
+        _retire_key(a.dir)
+        for k in ("official_key_points", "official_key_by", "official_key_at"):
+            d.pop(k, None)
+        _write_details(a.dir, d)
+        return {"officialKey": None}
+    text = (text or "").strip() if text is not None else None
+    if data is not None:
+        name = Path(str(file_name or "")).name.strip()
+        ext = Path(name).suffix.lower()
+        if not name or ext not in KEY_FILE_TYPES:
+            raise UserError("המכוון צריך להיות PDF, תמונה (PNG/JPG), Word (.docx) או קובץ טקסט.")
+        if not data or len(data) > MAX_KEY_BYTES:
+            raise UserError(f"הקובץ ריק או גדול מ-{MAX_KEY_BYTES // 1_000_000} MB.")
+        extracted = ""
+        if ext == ".docx":
+            try:
+                extracted = grading.docx_text(data)
+            except ValueError as e:
+                raise UserError(str(e)) from e
+        elif ext in (".txt", ".md"):
+            extracted = data.decode("utf-8-sig", errors="replace").strip()
+        _retire_key(a.dir)
+        folder = a.dir / paths.OFFICIAL_KEY
+        folder.mkdir()
+        (folder / name).write_bytes(data)
+        if extracted or text:
+            (a.dir / paths.OFFICIAL_KEY_TEXT).write_text(
+                "\n\n".join(t for t in (extracted, text) if t) + "\n", encoding="utf-8")
+    elif text is not None:
+        if len(text) > MAX_KEY_TEXT:
+            raise UserError("הטקסט של המכוון ארוך מדי.")
+        if text:
+            (a.dir / paths.OFFICIAL_KEY_TEXT).write_text(text + "\n", encoding="utf-8")
+        else:
+            (a.dir / paths.OFFICIAL_KEY_TEXT).unlink(missing_ok=True)
+    if grading.official_key(a.dir) is None:
+        raise UserError("עוד אין מכוון: מעלים קובץ או מדביקים את הטקסט שלו.")
+    if points is not None:
+        labels = {q.label for q in grading.load_context(a.dir, send_solution=False).questions}
+        clean = {}
+        for label, v in points.items():
+            if label not in labels:
+                raise UserError(f"אין במטלה שאלה בשם \"{label}\".")
+            if v in (None, ""):
+                continue
+            x = grading._num(v, -1)
+            if x <= 0 or x > 1000:
+                raise UserError(f"הניקוד של \"{label}\" צריך להיות מספר חיובי.")
+            clean[label] = x
+        d["official_key_points"] = clean
+    d["official_key_by"] = claims.me()
+    d["official_key_at"] = datetime.now().isoformat(timespec="minutes")
+    _write_details(a.dir, d)
+    return {"officialKey": official_key_state(a.dir, root)}
 
 
 def _slots(course_dir: Path) -> list[folder_view.Assignment | int]:
@@ -1434,7 +1661,7 @@ def _empty_slot(cid: str, course_dir: Path, ai: int, n: int) -> dict:
         "courseFolder": course_dir.name, "folder": folder_view.slot_folder(n), "title": folder_view.slot_title(n),
         "n": ai + 1, "due": None, "questions": 4, "questionLabels": [], "pulledAt": None, "returnedAt": None,
         "moodleId": None, "gradedAt": None, "rubric": [], "maxGrade": None, "solution": False, "notes": "", "rules": [],
-        "warnings": [], "subs": [], "log": [], "empty": True,
+        "rubricFile": dict(NO_RUBRIC_FILE), "officialKey": None, "warnings": [], "subs": [], "log": [], "empty": True,
     }
 
 

@@ -51,6 +51,13 @@ README = "README.txt"
 # The lecturer's or TA's grading material, in the assignment folder: rubric, solutions, accepted methods (.md/.txt).
 # Grading sends all of it to Claude. "פדגוגי" is the name the team gave it; "Pedagogy" works too.
 PEDAGOGY = ("Pedagogy", "פדגוגי")
+# The lecturer's official grading key (המכוון), uploaded from the site's grading step. In the assignment folder:
+# "Official key/" holds the file as given (PDF, image, Word or text) and "Official key.txt" the text sent to Claude
+# (pasted, or read out of a Word file). The points per question go in Assignment details.json, "official_key_points".
+# When there is a key, grading follows it before any other rubric. A replaced key moves to "Earlier official keys/<date>/"
+OFFICIAL_KEY = "Official key"
+OFFICIAL_KEY_TEXT = "Official key.txt"
+OFFICIAL_KEY_OLD = "Earlier official keys"
 # A pull never deletes or overwrites a submission: a file that a newer download replaces (a resubmission, or a
 # second file that is gone) moves here first, "Earlier versions/<date>/0001.pdf". The key before every change goes
 # to "Key history" (not next to the key: a "Key - number to student*.csv" there counts as an OneDrive conflict copy)
@@ -63,8 +70,8 @@ BACKUP = "Backup - Moodle downloads"
 # In the assignment folder: one row per pull (when, who, how many), so every computer sees when it was pulled
 PULL_LOG = "Pull log.csv"
 # The shared folder is the course's OneDrive folder ("YallaLinearit", or "<owner> - YallaLinearit" as OneDrive names
-# it): pulls write the one key there. A copy outside it (a local folder) must not pull: its key would not see the
-# numbers another computer gave, and two students would get one number
+# it). in_shared_folder says whether a folder is inside it; since 2026-10-29 a local copy may pull too (the pull
+# owner's key is the one key), so nothing refuses a pull by it any more
 SHARED_COURSE_FOLDER = "YallaLinearit"
 PULL_LOCK = "Pull in progress.txt"      # in the assignment folder while a pull runs (see lock.py)
 UPLOAD_LOCK = "Upload in progress.txt"  # in the assignment folder while an upload to Moodle runs

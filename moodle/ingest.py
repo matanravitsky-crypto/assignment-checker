@@ -17,7 +17,7 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 
-from moodle import anonymize, guide, lock, paths
+from moodle import anonymize, guide, lock, paths, pull_check
 
 SEVEN_ZIP_PATHS = [r"C:\Program Files\7-Zip\7z.exe", r"C:\Program Files (x86)\7-Zip\7z.exe"]
 
@@ -275,10 +275,13 @@ def ingest(assignment_id: str, zip_path: Path | None = None,
     "number" in student folders.
 
     `zip_path` is one ZIP of all submissions, or the list of parts from moodle/download_parts.js (each part is a
-    ZIP of some of the students, all in Moodle's folder per student), which are extracted into the same folder."""
+    ZIP of some of the students, all in Moodle's folder per student), which are extracted into the same folder.
+    A list of only what changed (its "since") holds only those students: everyone else keeps what they have."""
     report = on_progress or (lambda *_: None)
     zip_path = zip_path or find_download(assignment_id)
     in_parts = zip_path.suffix.lower() == LIST
+    if in_parts and nothing_changed(zip_path):
+        return _log_unchanged(assignment_id, zip_path, course, name)
     zips = gather_parts(zip_path) if in_parts else [zip_path]
     report("check", 0, 100)
     for i, z in enumerate(zips):
@@ -316,33 +319,120 @@ def ingest(assignment_id: str, zip_path: Path | None = None,
         if code:
             raise subprocess.CalledProcessError(code, ["7z", *args])
 
-    before = set(anonymize.existing_numbers(target).values())
-    rows = anonymize.prepare(original, target, on_folder=on_progress and (lambda done, total: report("number", done, total)))
-    log_pull(target, rows, before, len(zips))
+    known = anonymize.existing_numbers(target)
+    before = set(known.values())
+    # Moodle's side of the check: the students whose ZIPs came are exactly the folders that were extracted
+    listing = _read_list(kept_dir / "parts.json") if in_parts else {}
+    extracted = {anonymize.parse_folder(f.name) for f in original.iterdir() if f.is_dir()}
+    moodle, problems = pull_check.moodle_side(listing, extracted)
+    if problems:
+        raise pull_check.PullCheckFailed("; ".join(problems))
+    check: dict = {}
+    rows = anonymize.prepare(original, target, on_folder=on_progress and (lambda done, total: report("number", done, total)),
+                             check=check)
+    pull_check.write(target, {"by": lock.me(), "ok": True, **check, **moodle})
+    log_pull(target, rows, before, len(zips), partial=partial_of(zip_path, kept_dir / "parts.json" if in_parts else None))
     guide.write_guides(paths.data_dir())
     return rows
 
 
-PULL_LOG_FIELDS = ["pulled_at", "by", "students", "new", "files", "parts"]
+def _read_list(path: Path) -> dict:
+    try:
+        listed = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return listed if isinstance(listed, dict) else {}
 
 
-def log_pull(target: Path, rows: list[dict], before: set[int], parts: int) -> None:
-    """One row in the assignment's "Pull log.csv": when, who (as in the lock files), and how many. Numbers only."""
+def nothing_changed(list_path: Path) -> bool:
+    """A list from download_parts.js that asked only for what changed since the last pull, and nothing had."""
+    try:
+        listed = json.loads(list_path.read_text(encoding="utf-8"))
+        return int(listed.get("since") or 0) > 0 and listed.get("files") == [] and not listed.get("failed")
+    except (OSError, ValueError, TypeError, AttributeError):
+        return False
+
+
+def _log_unchanged(assignment_id: str, list_path: Path, course: str | None, name: str | None) -> list[dict]:
+    """Nothing changed in Moodle: no file is touched, the list is kept with the other downloads, and the pull is logged
+    (the next one asks only for what changes after it)."""
+    target = assignment_folder(assignment_id, list_path, course, name)
+    anonymize.check_key(target)
+    backup = paths.backup_dir(target)
+    backup.mkdir(parents=True, exist_ok=True)
+    shutil.move(list_path, backup / f"{paths.DOWNLOAD_PREFIX} {_free_stamp(backup)} (no changes).json")
+    rows = anonymize.existing_rows(target)
+    files = pull_check.snapshot(target / paths.TO_GRADE, anonymize.is_numbered)
+    pull_check.write(target, {"by": lock.me(), "ok": True, "nothing_changed": True,
+                              "students_before": len({r["participant_id"] for r in rows}),
+                              "students_after": len({r["participant_id"] for r in rows}), "new_students": 0,
+                              "files_in_folder": len(files)})
+    log_pull(target, rows, {int(r["number"]) for r in rows}, 0)
+    return rows
+
+
+PULL_LOG_FIELDS = ["pulled_at", "by", "students", "new", "files", "parts", "partial"]
+
+
+def partial_of(*lists: Path | None) -> int:
+    """How many students a capped pull was limited to (the "limit" of the list from download_parts.js), 0 when the pull
+    was not cut: no cap, or fewer students than the cap. `lists`: where the list may be (the one Chrome saved, or the
+    copy kept with the parts)."""
+    for path in lists:
+        try:
+            listed = json.loads(path.read_text(encoding="utf-8")) if path and path.suffix.lower() == LIST else None
+        except (OSError, ValueError):
+            continue
+        if isinstance(listed, dict):
+            limit, available = int(listed.get("limit") or 0), int(listed.get("available") or 0)
+            return limit if limit and available > limit else 0
+    return 0
+
+
+def log_pull(target: Path, rows: list[dict], before: set[int], parts: int, partial: int = 0) -> None:
+    """One row in the assignment's "Pull log.csv": when, who (as in the lock files), and how many. Numbers only.
+    `partial`: the cap the pull was cut to (0 = it brought everyone it asked for): the next pull must then ask for
+    everyone, not only for what changed since this one (`pulls(complete_only=True)`)."""
     numbers = {int(r["number"]) for r in rows}
     log = target / paths.PULL_LOG
+    _add_log_columns(log)
     new_file = not log.exists()
     with open(log, "a", newline="", encoding="utf-8-sig" if new_file else "utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=PULL_LOG_FIELDS)
         if new_file:
             writer.writeheader()
         writer.writerow({"pulled_at": datetime.now().isoformat(timespec="seconds"), "by": lock.me(),
-                         "students": len(numbers), "new": len(numbers - before), "files": len(rows), "parts": parts})
+                         "students": len(numbers), "new": len(numbers - before), "files": len(rows), "parts": parts,
+                         "partial": partial or ""})
 
 
-def pulls(target: Path) -> list[str]:
-    """When the assignment was pulled (pulled_at of every row in "Pull log.csv"), oldest first."""
+def _add_log_columns(log: Path) -> None:
+    """A log written before the column "partial" existed gets it (empty), so the new rows line up with the header."""
+    if not log.exists():
+        return
+    try:
+        with open(log, encoding="utf-8-sig", newline="") as f:
+            reader = csv.DictReader(f)
+            old = reader.fieldnames or []
+            rows = list(reader)
+        if "partial" in old or not old:
+            return
+        tmp = log.with_name(log.name + ".tmp")
+        with open(tmp, "w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.DictWriter(f, fieldnames=PULL_LOG_FIELDS, extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows({**r, "partial": ""} for r in rows)
+        os.replace(tmp, log)
+    except (OSError, csv.Error):
+        pass
+
+
+def pulls(target: Path, complete_only: bool = False) -> list[str]:
+    """When the assignment was pulled (pulled_at of every row in "Pull log.csv"), oldest first. `complete_only`: leave
+    out the pulls that were cut to a number of students, since later pulls may not trust them as "everyone is here"."""
     try:
         with open(target / paths.PULL_LOG, encoding="utf-8-sig", newline="") as f:
-            return sorted(r["pulled_at"] for r in csv.DictReader(f) if r.get("pulled_at"))
+            return sorted(r["pulled_at"] for r in csv.DictReader(f)
+                          if r.get("pulled_at") and not (complete_only and (r.get("partial") or "").strip()))
     except (OSError, csv.Error):
         return []

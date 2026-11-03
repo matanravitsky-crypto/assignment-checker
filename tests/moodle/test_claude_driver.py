@@ -479,3 +479,50 @@ def test_download_prompt_holds_the_script_with_its_hash():
     prompt = claude_driver.download_prompt(INFO)
     assert "String.raw`" + script + "`" in prompt and f'H !== "{sha}"' in prompt
     assert prompt.rstrip().endswith("await (0, eval)(T);")
+
+
+def test_the_parts_script_asks_only_for_what_changed_since():
+    """A re-pull asks Moodle only for students whose submission changed since the last pull (0 = everyone)."""
+    everyone, _ = claude_driver.parts_script("3438636")
+    assert 'const SINCE = Number("0");' in everyone and "__SINCE__" not in everyone
+    changed, sha = claude_driver.parts_script("3438636", 1761200000000)
+    assert 'const SINCE = Number("1761200000000");' in changed
+    prompt = claude_driver.download_prompt({**INFO, "since": 1761200000000})
+    assert f'H !== "{sha}"' in prompt and '"parts" is 0 when no submission changed' in prompt
+
+
+def test_the_parts_script_can_be_capped_to_a_number_of_students():
+    """A cap (the site's "how many submissions?"): at most that many students; the list says what the cap was."""
+    everyone, everyone_sha = claude_driver.parts_script("3438636")
+    assert 'const LIMIT = Number("0");' in everyone and "__LIMIT__" not in everyone
+    capped, sha = claude_driver.parts_script("3438636", 0, 30)
+    assert 'const LIMIT = Number("30");' in capped and sha != everyone_sha
+    assert "changed.length = LIMIT" in capped and "limit: LIMIT, available" in capped
+    both, _ = claude_driver.parts_script("3438636", 1761200000000, 5)  # a cap on top of "only what changed"
+    assert 'const SINCE = Number("1761200000000");' in both and 'const LIMIT = Number("5");' in both
+    assert claude_driver.parts_script("3438636", 0, -4)[0] == everyone  # a nonsense cap is no cap
+    prompt = claude_driver.download_prompt({**INFO, "limit": 30})
+    assert f'H !== "{sha}"' in prompt
+
+
+class FakeTasks:
+    def __init__(self, out):
+        self.out, self.calls = out, []
+
+    def __call__(self, cmd, **kwargs):
+        self.calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout=self.out)
+
+
+def test_closed_chrome_is_opened_on_moodle(monkeypatch, tmp_path):
+    exe = tmp_path / "chrome.exe"
+    exe.write_bytes(b"")
+    monkeypatch.setattr(claude_driver.os, "name", "nt")
+    monkeypatch.setattr(claude_driver, "CHROME_PATHS", (str(exe),))
+    opened, slept = [], []
+    popen = lambda cmd, **k: opened.append(cmd)
+    assert claude_driver.open_chrome(FakeTasks("INFO: No tasks are running"), popen, slept.append) is True
+    assert opened == [[str(exe), claude_driver.HOME_URL]] and slept == [claude_driver.CHROME_START_S]
+    opened.clear()
+    assert claude_driver.open_chrome(FakeTasks("chrome.exe  1234 Console"), popen, slept.append) is False
+    assert opened == []  # already open: nothing to do

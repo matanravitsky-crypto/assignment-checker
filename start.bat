@@ -21,10 +21,14 @@ if exist ".git" (
 rem Claude Code (grading, and pulling from / uploading to Moodle) must be recent: an old version refuses the new models
 set "CLAUDE_EXE=%USERPROFILE%\.local\bin\claude.exe"
 if not exist "%CLAUDE_EXE%" set "CLAUDE_EXE=claude"
+rem The update can hang (2026-11-03: over 5 minutes, and the site and the night pull stayed down until someone killed it),
+rem so it gets CLAUDE_UPDATE_WAIT_S seconds and is then stopped, and the version already on this computer runs
+if not defined CLAUDE_UPDATE_WAIT_S set "CLAUDE_UPDATE_WAIT_S=120"
 "%CLAUDE_EXE%" --version >nul 2>nul
 if not errorlevel 1 (
   echo Updating Claude Code...
-  "%CLAUDE_EXE%" update >nul 2>nul
+  powershell -NoProfile -Command "$p = Start-Process -FilePath (Get-Command $env:CLAUDE_EXE).Source -ArgumentList 'update' -WindowStyle Hidden -PassThru; if ($p.WaitForExit([int]$env:CLAUDE_UPDATE_WAIT_S * 1000)) { exit 0 }; taskkill /T /F /PID $p.Id | Out-Null; exit 3" >nul 2>nul
+  if errorlevel 3 echo Claude Code did not finish updating within %CLAUDE_UPDATE_WAIT_S% seconds. Skipped: the version on this computer is used.
 )
 
 if not exist ".venv\Scripts\python.exe" (

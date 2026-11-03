@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 
+import base64
 import json
 import mimetypes
 import os
@@ -23,6 +24,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from grading import grade as grading
+from moodle import paths
 
 from . import actions, folder_view, scheduler, settings as cfg, sync
 
@@ -211,11 +213,18 @@ class Handler(SimpleHTTPRequestHandler):
             query = parse_qs(url.query)
             rel = query.get("path", [""])[0]
             target = (root / rel).resolve()
-            # רק קבצים של הגשות (תיקיות 1-2-3): PDF, ובהגשות גם תמונות. טבלת המפתח, עם השמות, לא יוצאת מהתיקייה
+            # רק קבצים של הגשות (תיקיות 1-2-3): PDF, ובהגשות גם תמונות; וגם המחוון המודפס, Rubric.pdf שבתיקייה "פדגוגי".
+            # טבלת המפתח, עם השמות, לא יוצאת מהתיקייה
             allowed = (folder_view.SUBMISSIONS, folder_view.GRADED, folder_view.READY)
             kinds = FILE_TYPES if target.parent.name == folder_view.SUBMISSIONS else (".pdf",)
+            rubric_pdf = target.parent.name in paths.PEDAGOGY and target.name == actions.RUBRIC_PDF
+            # המכוון הרשמי שהועלה מהאתר: "Official key/" שבתיקיית המטלה
+            key_file = target.parent.name == paths.OFFICIAL_KEY and target.suffix.lower() in actions.KEY_FILE_TYPES
+            if key_file:
+                kinds = actions.KEY_FILE_TYPES
             if (not target.is_file() or not target.is_relative_to(root.resolve())
-                    or target.suffix.lower() not in kinds or target.parent.name not in allowed):
+                    or target.suffix.lower() not in kinds
+                    or (target.parent.name not in allowed and not rubric_pdf and not key_file)):
                 return self.send_error(HTTPStatus.NOT_FOUND)
             data = target.read_bytes()
             self.send_response(HTTPStatus.OK)
@@ -288,6 +297,12 @@ class Handler(SimpleHTTPRequestHandler):
         root = self._root()
         if not root:
             return
+        if url.path == "/api/refresh":
+            # הכפתור "סנכרון": קורא מחדש את כל התיקייה ובודק ש-OneDrive מסנכרן אותה (מפעיל אותו אם הוא לא רץ)
+            try:
+                return self._json(actions.refresh(root))
+            except actions.UserError as e:
+                return self._json({"error": str(e)}, HTTPStatus.SERVICE_UNAVAILABLE)
         if url.path in _LOCKED_STEPS:
             # משיכה: moodle ingest. החזרה: moodle upload. הכנת העלאה: moodle send. אחת בכל פעם
             course, assignment = body.get("course"), body.get("assignment")
@@ -299,6 +314,11 @@ class Handler(SimpleHTTPRequestHandler):
             try:
                 # הגשה שעוד לא נמשכה: המשיכה הראשונה שולחת גם את מזהה המטלה במודל
                 extra = {"moodle_id": str(body["moodleId"])} if url.path == "/api/pull" and body.get("moodleId") else {}
+                if url.path == "/api/pull" and body.get("full") is True:  # את כולם, לא רק מה שהשתנה מאז המשיכה הקודמת
+                    extra["full"] = True
+                if url.path == "/api/pull" and not extra.get("full") and isinstance(body.get("limit"), int) \
+                        and not isinstance(body.get("limit"), bool) and body["limit"] > 0:
+                    extra["limit"] = body["limit"]  # רק כמה הגשות (למשל לניסוי), לא את כולן
                 return self._json(getattr(actions, run)(root, course, assignment, **extra))
             except actions.UserError as e:
                 return self._json({"error": str(e)}, HTTPStatus.UNPROCESSABLE_ENTITY)
@@ -315,6 +335,8 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json({"error": "חסרים קורס, מטלה ומזהה אצווה"}, HTTPStatus.BAD_REQUEST)
             try:
                 return self._json(actions.start_send(root, course, assignment, batch_id), HTTPStatus.ACCEPTED)
+            except actions.UserError as e:  # למשל התוסף בכרום או מודל לא מחוברים (actions.require_moodle)
+                return self._json({"error": str(e)}, HTTPStatus.UNPROCESSABLE_ENTITY)
             except ValueError as e:
                 if str(e) == "stale":
                     return self._json({"error": STALE_UPLOAD}, HTTPStatus.CONFLICT)
@@ -367,6 +389,29 @@ class Handler(SimpleHTTPRequestHandler):
             except RuntimeError as e:
                 return self._json({"error": str(e)}, HTTPStatus.CONFLICT)
             return self._json(job, HTTPStatus.ACCEPTED)
+        if url.path == "/api/official-key":
+            # המכוון הרשמי של המרצה: קובץ (base64), טקסט מודבק, ניקוד לכל שאלה, או remove
+            course, assignment = body.get("course"), body.get("assignment")
+            if not course or not isinstance(assignment, str) or not assignment or "/" in assignment or "\\" in assignment:
+                return self._json({"error": "חסרים קורס ומטלה"}, HTTPStatus.BAD_REQUEST)
+            points = body.get("points")
+            if points is not None and not (isinstance(points, dict) and all(isinstance(k, str) for k in points)):
+                return self._json({"error": "הניקוד לא תקין"}, HTTPStatus.BAD_REQUEST)
+            text = body.get("text")
+            try:
+                data = base64.b64decode(body["data"], validate=True) if isinstance(body.get("data"), str) else None
+            except ValueError:
+                return self._json({"error": "הקובץ לא הגיע שלם"}, HTTPStatus.BAD_REQUEST)
+            try:
+                return self._json(actions.save_official_key(
+                    root, course, assignment, file_name=body.get("fileName"), data=data,
+                    text=text if isinstance(text, str) else None, points=points, remove=body.get("remove") is True))
+            except actions.UserError as e:
+                return self._json({"error": str(e)}, HTTPStatus.UNPROCESSABLE_ENTITY)
+            except FileNotFoundError as e:
+                return self._json({"error": str(e)}, HTTPStatus.NOT_FOUND)
+            except OSError as e:  # OneDrive באמצע סנכרון, קובץ פתוח
+                return self._json({"error": f"המכוון לא נשמר: {e}"}, HTTPStatus.CONFLICT)
         if url.path == "/api/copying":
             # בדיקת העתקות (copying/check.py): בלי Claude, רצה ברקע, והאתר שואל על המצב ב-GET /api/copying
             course, assignment = body.get("course"), body.get("assignment")

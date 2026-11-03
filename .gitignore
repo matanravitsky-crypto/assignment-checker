@@ -13,6 +13,9 @@ Thumbs.db
 # Student submissions and grades from Moodle: never commit (the repo is public)
 data/
 *.zip
+# rubric-builder work folders (student page images), also when a shell left %USERPROFILE% unexpanded
+.rubric-work/
+%USERPROFILE%/
 
 # Vercel CLI link
 .vercel

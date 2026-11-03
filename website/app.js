@@ -1,7 +1,7 @@
 (() => {
   // כל מה שהאתר מציג אמיתי: הנתונים מגיעים מהמערכת שרצה במחשב (start.bat, dashboard/web_server.py),
   // שקוראת את תיקיית OneDrive של הקורס. בלי המערכת אין מספרים במסך
-  const D = { courses: [], assignments: [], rubrics: {}, runs: [] };
+  const D = { courses: [], assignments: [], rubrics: {}, runs: [], usage: null };
   // באתר הציבורי (Vercel) פונים למערכת שבמחשב. כשהאתר נפתח מהמערכת עצמה, לאותה כתובת
   const ON_LOCAL_HOST = ["localhost", "127.0.0.1"].includes(location.hostname);
   const BASE = ON_LOCAL_HOST ? "" : "http://127.0.0.1:8765/";
@@ -27,6 +27,7 @@
     rd: null,          // מוכנות המחשב להעלאה (Claude Code, התחברות, כרום ומודל), למטלה הנוכחית
     probing: false,    // מנסים עכשיו להתחבר למערכת במחשב
     me: null,          // השם שלי בצוות: {name, set}. set=false עד שבחרו שם באתר (אז זה שם המשתמש של Windows)
+    syncing: false, syncedAt: null,  // הכפתור "סנכרון": רץ עכשיו, ומתי סונכרן לאחרונה
   };
   const $ = (sel, root = document) => root.querySelector(sel);
   const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -50,6 +51,7 @@
     tab: { pull: "list", grade: "list", ret: "list" },
     filter: "all",
     query: { pull: "", grade: "", ret: "" },
+    keyDraft: {},     // assignmentId -> המכוון שעוד לא נשמר: { file, text, points: {שאלה: ניקוד} }
     moodleDraft: {},  // assignmentId -> מה שהוקלד בשדה "מזהה המטלה במודל" של הגשה שעוד לא נמשכה
     run: {},          // assignmentId -> { stage, steps[] }
     seenDone: {},     // assignmentId:stage -> true, כדי להנפיש את ה-V רק ברגע ההשלמה
@@ -57,6 +59,8 @@
     instr: { grade: store.get("instr.grade", DEFAULT_GRADE_INSTR) },  // נשלחות ל-Claude עם כל בדיקה
     claude: store.get("claude", { model: "claude-opus-5-5", parallel: 5, sendSolution: true }),
     loading: false,
+    pullPick: null,  // מזהה המטלה שחלונית "כמה הגשות למשוך" פתוחה בה
+    pullLimit: 0,  // כמה הגשות למשוך (0 = את כולן). לא נשמר בין ביקורים: הגבלה ששכחו הייתה מפתיעה את המשיכה הבאה
     teamCount: store.get("teamCount", 20),  // כמה עבודות פנויות לוקחים בלחיצה אחת
     gradePick: null,  // assignmentId שהחלונית "כמה לבדוק" של כפתור הבדיקה פתוחה בו
     gradeCount: store.get("gradeCount", 100),  // כמה עבודות בודקים בלחיצה אחת
@@ -266,7 +270,14 @@
   // כל כפתור מפעיל את הקוד האמיתי במחשב. המספרים מתעדכנים רק ממה שנכתב בתיקייה
   function runStage(stage) {
     if (!LOCAL.on || !cur()) return;
-    if (stage === "pull") runLocalPull();
+    if (stage === "pull") {
+      // הגשה שעוד לא נמשכה ועוד אין לה קישור: ההודעה "קודם מדביקים את הקישור" באה מיד, בלי חלונית
+      if (cur().empty && !parseMoodleId(state.moodleDraft[cur().id])) { runLocalPull(); return; }
+      state.pullPick = state.pullPick === cur().id ? null : cur().id;
+      state.pullLimit = 0;
+      render();
+      return;
+    }
     if (stage === "grade") { state.gradePick = state.gradePick === cur().id ? null : cur().id; render(); $("#grade-count")?.select(); }
     if (stage === "ret") startSendFlow();
   }
@@ -340,17 +351,44 @@
       if (LOCAL.sending?.running && sendingHere()) { text = sendProgressText(); spinning = true; }
       if (LOCAL.rd?.flow && LOCAL.rd.assignmentId === A.id && !mine) { text = "בודק שהמחשב מוכן…"; spinning = true; disabled = true; }
     }
-    // משיכה והחזרה שמישהו אחר בצוות לקח: הכפתור אצלו. אפשר להעביר אליך מלוח המשימות
+    // החזרה שמישהו אחר בצוות לקח: הכפתור אצלו. אפשר להעביר אליך מלוח המשימות. משיכה: כל אחד יכול למשוך, גם כשהיא
+    // רשומה על מישהו אחר (רק המשיכה הלילית נשארת שלו); הבדיקה שבסוף כל משיכה (moodle/pull_check.py) מוודאת ששום דבר לא אבד
     const owner = ownerOf(A, stage);
-    if (owner && owner.who !== myName() && !spinning) { text = `אצל ${owner.who}`; disabled = true; primary = false; }
+    if (stage !== "pull" && owner && owner.who !== myName() && !spinning) { text = `אצל ${owner.who}`; disabled = true; primary = false; }
     const icon = spinning ? ICON.spin : ICON[stage === "ret" ? "ret" : stage];
     const why = LOCAL.on && stage === "grade" && !LOCAL.health?.claude ? ` title="${esc(NO_KEY)}"` : "";
     // בזמן בדיקה: כפתור עצירה. מה שכבר נשלח ל-Claude מסתיים ונשמר, והשאר נשאר "ממתינה לבדיקה"
     const stopBtn = mine && stage === "grade" ? `<button class="btn danger ${big ? "lg" : ""}" data-act="grade-stop" ${run.stopping ? "disabled" : ""}
       title="העבודות שכבר נשלחו ל-Claude יסתיימו ויישמרו. השאר יחכו ללחיצה הבאה על 'בדוק'">${run.stopping ? ICON.spin : ICON.stop}${run.stopping ? "עוצר…" : "עצור בדיקה"}</button>` : "";
     const btn = `<button class="btn ${primary ? "primary" : "secondary"} ${big ? "lg" : ""}" data-run="${stage}" ${disabled ? "disabled" : ""}${why}
-      ${stage === "grade" ? `aria-expanded="${state.gradePick === A.id}"` : ""}>${icon}${text}</button>${stopBtn}`;
+      ${stage === "grade" ? `aria-expanded="${state.gradePick === A.id}"` : ""}${stage === "pull" && LOCAL.on ? `aria-expanded="${state.pullPick === A.id}" aria-haspopup="dialog"` : ""}>${icon}${text}${stage === "pull" && LOCAL.on && !mine ? `<span class="caret" aria-hidden="true">▾</span>` : ""}</button>${stopBtn}`;
+    if (stage === "pull" && LOCAL.on) return `<span class="pick-wrap">${btn}${disabled ? "" : pullPickHTML()}</span>`;
     return stage === "grade" ? `<span class="pick-wrap">${btn}${disabled ? "" : gradePickHTML()}</span>` : btn;
+  }
+
+  // "כמה הגשות למשוך": חלונית שנפתחת מתחת לכפתור המשיכה, כמו "כמה לבדוק". המשיכה לוקחת את ההגשות הראשונות בטבלת
+  // ההגשות במודל שיש להן הגשה; משיכה בלי מספר מביאה אחר כך את כל השאר, והמספרים של מי שכבר נמשך נשמרים
+  const PULL_CHIPS = [10, 25, 50, 100];
+  const pullGoLabel = () => (state.pullLimit > 0 ? `משוך ${state.pullLimit}` : "משוך הכול");
+  function pullPickHTML() {
+    const A = cur(), n = state.pullLimit > 0 ? state.pullLimit : 0;
+    if (state.pullPick !== A.id || state.run[A.id]) return "";
+    const known = n && !PULL_CHIPS.includes(n);
+    const chip = (v, label) => `<button type="button" class="chip" data-pull-chip="${v}" aria-pressed="${n === v}">${label}</button>`;
+    const again = A.pulledAt
+      ? "המשיכה הזו כבר נעשתה פעם: נמשכים רק מי שההגשה שלו השתנתה מאז, ובתוכם לא יותר מהמספר שבחרת."
+      : "נמשכות ההגשות הראשונות בטבלת ההגשות במודל. משיכה בלי מספר מביאה אחר כך את כל השאר, והמספרים של מי שכבר נמשך נשמרים.";
+    return `<div class="grade-pick pull-pick" role="dialog" aria-label="כמה הגשות למשוך">
+      <div class="pp-title">כמה הגשות למשוך?</div>
+      <div class="chips pp-chips">${PULL_CHIPS.map((c) => chip(c, c)).join("")}${chip(0, "הכול")}</div>
+      <label class="team-count pp-custom">או מספר אחר
+        <input type="number" id="pull-limit" data-pull-limit min="1" step="1" inputmode="numeric" placeholder="למשל 30" value="${known ? n : ""}"></label>
+      <p class="hint">${again}</p>
+      <div class="gp-act">
+        <button class="btn primary small" data-act="pull-pick-go">${ICON.pull}<span data-pull-go>${pullGoLabel()}</span></button>
+        <button class="btn ghost small" data-act="pull-pick-close">ביטול</button>
+      </div>
+    </div>`;
   }
 
   function stageState(stage) {
@@ -523,6 +561,7 @@
     // האחוז מבודד גם הוא: אחרי "ZIP" הדפדפן היה מצמיד אותו למילה האנגלית ומזיז אותו
     const f = p.total ? Math.min(p.done / p.total, 1) : 0, pct = `⁦${Math.round(100 * f)}%⁩`;
     switch (p.phase) {
+      case "connect": return { step: 0, pct: null, short: "בודק חיבור למודל…", text: "בודק שהתוסף של Claude בכרום מחובר ושכרום מחובר למודל (בדרך כלל עד דקה)…", hint: LONG_WAIT };
       case "claude": return { step: 0, pct: null, short: "Claude פותח את מודל…", text: "Claude פותח את מודל בכרום ומכין את ההורדה (בדרך כלל עד דקה)…", hint: LONG_WAIT };
       case "download": return {
         step: 0, pct: p.total ? Math.round(Math.min(58, 60 * f)) : null, short: "מוריד ממודל…",
@@ -538,7 +577,7 @@
       case "check": return { step: 1, pct: Math.round(60 + 10 * f), short: "בודק את ה-ZIP…", text: `בודק שה-ZIP שלם: ${pct}%`, hint: HERE };
       case "extract": return { step: 2, pct: Math.round(70 + 20 * f), short: "מחלץ…", text: `מחלץ את ה-ZIP: ${pct}%`, hint: HERE };
       case "number": return { step: 3, pct: Math.round(90 + 10 * f), short: "ממספר הגשות…", text: `ממספר הגשות: ${p.done} מתוך ${p.total}`, hint: HERE };
-      default: return { step: 0, pct: 1, short: "מתחיל…", text: "מחפש ZIP של המטלה בתיקיית ההורדות…", hint: LONG_WAIT };
+      default: return { step: 0, pct: 1, short: "מתחיל…", text: "מתחיל משיכה ממודל…", hint: LONG_WAIT };
     }
   }
   function elapsed(since) {
@@ -550,7 +589,7 @@
     run.pull = p;
     const v = pullView(p);
     run.steps = STAGES.pull.steps.map((_, i) => (i < v.step ? "done" : i === v.step ? "running" : "pending"));
-    run.notes = [p.downloaded ? "הורד ממודל" : "ה-ZIP כבר חיכה בתיקיית ההורדות"];
+    run.notes = ["הורד ממודל"];
     run.progress = [v.short, v.pct == null ? "" : `${v.pct}%`, v.soon ? `· ${v.soon}` : ""].filter(Boolean).join(" ");
   }
   function pullBarHTML(compact = false) {
@@ -1161,7 +1200,12 @@
     if (state.gradeKey !== key) { state.gradeKey = key; state.gradeShown = GRADE_PAGE; }
     const rows = found.slice(0, state.gradeShown);
     const more = found.length - rows.length;
+    const K = A.officialKey;
+    const keyLine = `<div class="notice ${K ? "ok" : ""}">${K ? ICON.check : ICON.warn}<div>${K
+      ? `<b>הבדיקה הולכת לפי המכוון הרשמי</b>${K.at ? ` (הועלה ${esc(when(K.at))})` : ""}. כדאי להתחיל ב"בדוק" על כמה עבודות ולעבור עליהן לפני שבודקים את כולן.`
+      : `<b>עוד אין מכוון רשמי.</b> כשהוא מגיע מהמרצה מעלים אותו`} <button class="btn ghost small" data-tab="grade:instr">${K ? "לצפייה במכוון" : "בלשונית \"מחוון והנחיות\""}</button></div></div>`;
     return `${teamHTML()}
+      ${keyLine}
       <section class="panel">
         <div class="panel-head">
           <div class="chips" role="group" aria-label="סינון לפי מצב">
@@ -1253,9 +1297,11 @@
         <div class="panel-body">
           <ol class="todo">
             <li><b>Claude בכרום מוריד ממודל.</b> בכרום שלך, עם ההתחברות שלך: עמוד ההגשות של המטלה ← "הורדת כל ההגשות", כש"הורדת הגשות בתיקיות" מסומן. הוא לא מקליד כלום ולא משנה שום הגדרה של המטלה. ה-ZIP נשמר בתיקיית ההורדות, והמערכת מחכה עד שההורדה מסתיימת.</li>
-            <li><b>הורדתם בעצמכם?</b> אם בתיקיית ההורדות כבר מחכה ZIP ששמו נגמר ב-<code dir="ltr">-${esc(A.moodleId || "<מזהה המטלה>")}.zip</code>, המערכת קולטת אותו ולא מורידה שוב.</li>
+            <li><b>משיכה חוזרת מורידה רק מה שהשתנה.</b> אחרי המשיכה הראשונה, Claude מבקש ממודל רק את מי שהגיש או החליף קובץ מאז המשיכה הקודמת: כמה דקות במקום כמה GB. כל השאר נשארים כמו שהם. "משוך הכול מחדש" מוריד את כולם.</li>
+            <li><b>בלילה זה קורה לבד.</b> מועד ההגשה נקרא ממודל בכל משיכה. בלילה שאחריו (00:05), ובכל לילה בשבוע שאחריו (הגשות מאוחרות והארכות), המחשב של מי שלקח את "משיכה" מושך בעצמו: פותח את כרום אם הוא סגור, ומנסה שוב אחרי חצי שעה אם מודל לא ענה. רק המחשב שלו, כדי ששני מחשבים לא ימשכו יחד.</li>
+            <li><b>רק ממודל האמיתי.</b> לפני כל משיכה המערכת בודקת שהתוסף של Claude בכרום מחובר ושכרום מחובר למודל. אם משהו לא מחובר, לא מושכים כלום ומקבלים הודעה מה לתקן. ZIP שכבר נמצא בתיקיית ההורדות לא נקלט: כל משיכה מורידה ממודל מחדש.</li>
             <li><b>שומרת אותו רק במחשב הזה</b>, בתיקייה <code dir="ltr">Moodle originals/Backup - Moodle downloads</code>, ולא ב-OneDrive (יש בו שמות, וכמה GB בכל משיכה). כל הורדה נשמרת, כך שהורדה מאוחרת לא מוחקת את הקודמת. בתיקיית המטלה נרשמת שורה ב-<code dir="ltr">Pull log.csv</code>: מתי, מי וכמה.</li>
-            <li><b>מושכים רק ממחשב שהתיקייה המשותפת מסונכרנת בו</b> (YallaLinearit ב-OneDrive). ממחשב עם עותק מקומי המשיכה נעצרת, כי טבלת המפתח שלו לא רואה מספרים שמחשב אחר כבר נתן.</li>
+            <li><b>אפשר למשוך רק חלק.</b> בשדה "כמה הגשות?" ליד הכפתור כותבים מספר (למשל 30, לניסוי): נמשכות ההגשות הראשונות בטבלת ההגשות במודל. משיכה בלי מספר מביאה אחר כך את כל השאר, ומי שכבר נמשך שומר על המספר שלו.</li>
             <li><b>מחלצת אותו עם 7-Zip במחשב שלך בלבד.</b> התיקיות עם שמות הסטודנטים לא עולות ל-OneDrive.</li>
             <li><b>נותנת לכל סטודנט מספר קבוע</b> (0001, 0002…) ומעתיקה את הקבצים ל-"1 - Submissions to grade". מי שכבר נמשך שומר על המספר שלו, ומי שהגיש מאז מקבל את המספר הפנוי הבא.</li>
             <li><b>מעדכנת את טבלת המפתח</b> (מספר ← מזהה המשתתף במודל). זה המקום היחיד שמקשר מספר לסטודנט, והוא נשאר בתיקיית המטלה.</li>
@@ -1263,6 +1309,7 @@
           <div class="row-start">
             ${moodleLink(A, "small")}
             <button class="btn secondary small" data-act="open-inbox">${ICON.folder}פתח את תיקיית ההורדות</button>
+            ${LOCAL.on && !A.empty && A.pulledAt ? `<button class="btn secondary small" data-act="pull-full">משוך הכול מחדש</button>` : ""}
           </div>
         </div>
       </section>
@@ -1307,6 +1354,7 @@
       `השאלות והניקוד (מתוך ${A.maxGrade || 100}):`,
       ...R.questions.map((q) => `${q.req || `שאלה ${q.n}`}: ${q.pts} נק'${q.criteria ? `. ${q.criteria}` : ""}`),
       "",
+      ...(A.officialKey ? ["המכוון הרשמי של המרצה מצורף, והבדיקה הולכת לפיו (הוא גובר על המחוון)."] : []),
       state.claude.sendSolution && A.solution ? "מצורפים: הפתרון הרשמי ועמודי ההגשה כתמונות." : "מצורפים: עמודי ההגשה כתמונות.",
       "Claude מחזיר JSON לפי הסכמה.",
     ].join("\n");
@@ -1325,12 +1373,100 @@
   "review_reason": ""
 }`;
 
+  // המחוון שבנה הסקיל rubric-builder: Rubric.pdf לאנשים ו-Rubric.md לבוט, שניהם מ-rubric.json. המצב לפי היומן ב-Working notes
+  function rubricFilePanel(A) {
+    const r = A.rubricFile || {};
+    if (!r.pdf) return `<section class="panel">
+      <div class="panel-head"><h3>המחוון (PDF)</h3><span class="end tag warn">אין מחוון</span></div>
+      <div class="panel-body"><p class="lead" style="margin:0">עוד אין מחוון למטלה הזאת.${r.md === "council" ? " יש בתיקייה \"פדגוגי\" Rubric.md ישן, והבוט עובד לפיו בינתיים." : ""}
+        <span class="muted" style="display:block">בונים אותו ב-Claude Code בתיקיית הריפו: "מחוון לדף תרגילים X, תמשוך Y עבודות". כשייבנה, ה-PDF יופיע כאן.</span></p></div>
+    </section>`;
+    const url = `${BASE}api/file?path=${encodeURIComponent(r.path)}`;
+    const bot = r.md === "rendered" ? "הבוט בודק לפי אותו מחוון (Rubric.md מיוצר מאותו מקור)."
+      : r.md === "council" ? "שימו לב: Rubric.md של הבוט ישן ולא מאותו מקור." : "אין Rubric.md לבוט.";
+    return `<section class="panel">
+      <div class="panel-head"><h3>המחוון (PDF)</h3><span class="end tag ${r.approved ? "ok" : "warn"}">${r.approved ? "מאושר" : "ממתין לאישור"}</span></div>
+      <div class="panel-body">
+        <p class="lead" style="margin:0 0 8px">נבנה ${esc(when(r.pdfAt))}${r.rounds ? `, ${r.rounds} סבבי ועדה` : ""}. ${bot}
+          ${r.approved ? "" : " הוועדה ממתינה להערות המתרגל; \"מאושר\" סוגר את הלופ."}</p>
+        <div class="row-start" style="margin-bottom:8px"><a class="btn secondary small" href="${url}" target="_blank" rel="noopener">${ICON.folder}פתח את ה-PDF</a></div>
+        <object data="${url}" type="application/pdf" style="width:100%;height:520px;border:1px solid var(--line,#ddd);border-radius:8px"><p class="muted">הדפדפן לא מציג PDF בתוך הדף. <a href="${url}" target="_blank" rel="noopener">פתחו אותו בלשונית חדשה</a>.</p></object>
+      </div>
+    </section>`;
+  }
+
+  // המכוון הרשמי של המרצה (grading.official_key): קובץ (PDF, תמונה, Word, טקסט) או טקסט מודבק, וניקוד לכל שאלה.
+  // כשיש מכוון, כל "בדוק" שולח אותו ל-Claude עם כל עבודה, והוא גובר על המחוון. נשמר בתיקיית המטלה, אז כל הצוות רואה אותו
+  const KEY_ACCEPT = ".pdf,.png,.jpg,.jpeg,.docx,.txt,.md";
+  function keyDraft(A) {
+    const k = A.officialKey;
+    return (state.keyDraft[A.id] ||= { file: null, text: k?.text || "", points: { ...(k?.points || {}) } });
+  }
+  function officialKeyPanel(A) {
+    const k = A.officialKey, d = keyDraft(A), qs = A.rubric?.length ? A.rubric : (A.questionLabels || []).map((l) => ({ label: l, points: 0 }));
+    const missing = qs.filter((q) => !(Number(d.points[q.label]) > 0) && !(q.points > 0));
+    const files = (k?.files || []).map((f) => f.path
+      ? `<a class="btn secondary small" href="${BASE}api/file?path=${encodeURIComponent(f.path)}" target="_blank" rel="noopener">${ICON.folder}${esc(f.name)}</a>`
+      : `<span class="tag">${esc(f.name)}</span>`).join(" ");
+    return `<section class="panel" id="official-key">
+      <div class="panel-head"><h2>המכוון הרשמי</h2><span class="end tag ${k ? "ok" : "warn"}">${k ? "פעיל: הבדיקה לפיו" : "עוד לא הועלה"}</span></div>
+      <div class="panel-body">
+        <p class="lead" style="margin:0 0 10px">${k
+          ? `הועלה${k.by ? ` על ידי ${esc(k.by)}` : ""}${k.at ? ` ב-${esc(when(k.at))}` : ""}. כל לחיצה על "בדוק" שולחת אותו ל-Claude עם כל עבודה, והוא גובר על המחוון ועל הפתרון.`
+          : "כשהמכוון מגיע מהמרצה, מעלים אותו כאן (PDF, תמונה, Word או טקסט) או מדביקים את הטקסט שלו. מאותו רגע כל בדיקה הולכת לפיו."}</p>
+        ${files ? `<div class="row-start" style="margin-bottom:10px;flex-wrap:wrap;gap:6px">${files}</div>` : ""}
+        <div class="field"><label for="ok-file">${k ? "להחליף בקובץ אחר" : "קובץ המכוון"}</label>
+          <input id="ok-file" type="file" accept="${KEY_ACCEPT}" data-key-file>
+          ${d.file ? `<p class="hint">נבחר: <b>${esc(d.file.name)}</b> (${Math.ceil(d.file.size / 1024)} KB). יישמר בלחיצה על "שמור".</p>` : ""}
+          <p class="hint">PDF ותמונות נשלחים ל-Claude כמו שהם. מ-Word נשלח הטקסט (נוסחאות מורכבות עדיף לשמור כ-PDF).</p></div>
+        <div class="field"><label for="ok-text">טקסט המכוון${k?.files?.length ? " (לא חובה, נוסף לקובץ)" : ""}</label>
+          <textarea id="ok-text" rows="6" data-key-text placeholder="אפשר להדביק כאן את המכוון, או הערות נוספות של המרצה לבדיקה">${esc(d.text)}</textarea></div>
+        <div class="field"><label>ניקוד לכל שאלה לפי המכוון</label>
+          ${qs.length ? qs.map((q) => `<div class="rubric-row">
+              <span>${esc(q.label)}${q.points ? `<small class="muted" style="display:block">עכשיו: ${q.points} נק׳</small>` : ""}</span>
+              <span class="rpts"><input type="number" min="0" step="0.5" style="width:80px" data-key-pt="${esc(q.label)}" value="${d.points[q.label] ?? ""}" placeholder="${q.points || ""}"><span>נק׳</span></span>
+            </div>`).join("") : `<p class="muted">למטלה עוד אין רשימת שאלות.</p>`}
+          <p class="hint">${missing.length ? `אין ציונים בלי ניקוד לכל שאלה: חסר ל${esc(missing.map((q) => q.label).join(", "))}.` : "ריק = הניקוד מהמחוון."}</p></div>
+        <div class="row-start" style="gap:8px">
+          <button class="btn primary small" data-act="key-save">${ICON.check}${k ? "שמור שינויים" : "שמור מכוון"}</button>
+          ${k ? `<button class="btn ghost small" data-act="key-remove">הוצא את המכוון מהבדיקה</button>` : ""}
+        </div>
+      </div>
+    </section>`;
+  }
+
+  async function saveOfficialKey(remove) {
+    const A = cur(), d = keyDraft(A);
+    if (remove && !confirm("להוציא את המכוון מהבדיקה? הקבצים לא נמחקים: הם עוברים לתיקייה Earlier official keys.")) return;
+    const body = { course: A.courseFolder, assignment: A.folder };
+    if (remove) body.remove = true;
+    else {
+      if (d.file) {
+        const buf = new Uint8Array(await d.file.arrayBuffer());
+        let bin = "";
+        for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
+        Object.assign(body, { fileName: d.file.name, data: btoa(bin) });
+      }
+      body.text = d.text;
+      body.points = Object.fromEntries(Object.entries(d.points).filter(([, v]) => v !== "" && v != null).map(([k, v]) => [k, Number(v)]));
+    }
+    try {
+      await api("api/official-key", { method: "POST", body: JSON.stringify(body) });
+      delete state.keyDraft[A.id];
+      await loadLocal();
+      toast(remove ? "המכוון הוצא מהבדיקה." : "המכוון נשמר. מעכשיו כל בדיקה הולכת לפיו.");
+    } catch (e) {
+      toast(e.message, ICON.warn);
+    }
+  }
+
   // שלב 2: ההנחיות נשלחות ל-Claude. המחוון והפתרון נקראים מתיקיית המטלה (grading/grade.py)
   function gradeInstr() {
     const R = rubric(), A = cur();
     const total = R.questions.reduce((a, q) => a + q.pts, 0);
     return `<div class="split wide-first">
       <div class="stack">
+        ${officialKeyPanel(A)}
         ${instrBox("grade", "הנחיות לבדיקה", "ההנחיות הכלליות שנשלחות ל-Claude עם כל עבודה, יחד עם המחוון. כדאי לכתוב כאן כל מה שהייתם אומרים למתרגל חדש לפני שהוא מתחיל לבדוק. הן נשמרות בדפדפן הזה ונשלחות בכל לחיצה על \"בדוק\".")}
         <section class="panel">
           <div class="panel-head"><h2>מחוון</h2><span class="meta">${esc(course().name)}, ${esc(A.title)}</span></div>
@@ -1349,6 +1485,7 @@
         </section>
       </div>
       <div class="stack">
+        ${rubricFilePanel(A)}
         <section class="panel">
           <div class="panel-head"><h3>פתרון רשמי</h3><span class="end tag ${A.solution ? "ok" : "warn"}">${A.solution ? "נמצא" : "אין"}</span></div>
           <div class="panel-body"><p class="lead" style="margin:0">${A.solution
@@ -1546,6 +1683,20 @@
     const worst = rates.indexOf(Math.min(...rates));
     return `<ul class="qbars">${qs.map((q, i) => `
       <li class="${i === worst ? "worst" : ""}"><span>שאלה ${q.n}</span><span class="track"><i style="width:${rates[i]}%"></i></span><b class="num">${rates[i]}%</b></li>`).join("")}</ul>${offNote}`;
+  }
+
+  // עלות הבדיקה עד עכשיו, מתוך יומן השימוש של Claude Code. שווה ערך ל-API: הבדיקה רצה במנוי של הצוות, לא מחויבת
+  function usageHTML() {
+    const u = D.usage;
+    if (!u) return "";
+    const share = u.cacheReadShare == null ? "—" : `${Math.round(u.cacheReadShare * 100)}%`;
+    const models = Object.entries(u.models || {}).map(([m, v]) => `<bdi>${esc(m)}</bdi> · ${v.runs} ריצות · <bdi>$${v.costUsd}</bdi>`).join("<br>");
+    return `<section class="panel"><div class="panel-head"><h3>עלות הבדיקה</h3><span class="meta">שווה ערך ל-API, לא חיוב</span></div>
+      <div class="panel-body"><div class="stat-row" style="grid-template-columns:repeat(3,minmax(0,1fr));margin-top:0">
+        <div class="stat"><span class="stat-l">סך הכל</span><b class="stat-v num">$${u.costUsd}</b><span class="stat-s">${u.runs} ריצות</span></div>
+        <div class="stat"><span class="stat-l">לעבודה</span><b class="stat-v num">$${u.avgUsd}</b><span class="stat-s">ממוצע לריצה</span></div>
+        <div class="stat"><span class="stat-l">מהמטמון</span><b class="stat-v num">${share}</b><span class="stat-s">מהקלט נקרא ולא נכתב מחדש</span></div>
+      </div><p class="muted" style="margin:12px 0 0">${models}</p></div></section>`;
   }
 
   function logHTML(limit, onlyHere) {
@@ -2084,6 +2235,7 @@
           </div>
           <div class="stack">
             <section class="panel"><div class="panel-head"><h3>מחוון</h3><a class="end link" href="#/grade" data-goto-tab="grade:instr">פרטים</a></div><div class="panel-body">${rubricSummaryHTML()}</div></section>
+            ${usageHTML()}
             <section class="panel"><div class="panel-head"><h3>פעילות אחרונה</h3><a class="end link" href="#/runs">ליומן המלא</a></div><div class="panel-body tight">${logHTML(4, true)}</div></section>
           </div>
         </div>
@@ -2226,8 +2378,10 @@
   function renderPickers() {
     const cs = $("#course-select"), as = $("#assignment-select");
     const list = D.assignments.filter((a) => a.courseId === state.courseId);
-    cs.innerHTML = D.courses.map((c) => `<option value="${c.id}" ${c.id === state.courseId ? "selected" : ""}>${esc(c.name)}</option>`).join("") || "<option>אין קורסים</option>";
-    as.innerHTML = list.map((a) => `<option value="${a.id}" ${a.id === state.assignmentId ? "selected" : ""}>${esc(a.title)}</option>`).join("") || "<option>אין מטלות</option>";
+    // כותבים מחדש רק כשמשהו השתנה: טעינה מחדש מ-OneDrive לא סוגרת רשימה שפתוחה עכשיו
+    const fill = (el, html) => { if (el.dataset.html !== html) { el.innerHTML = html; el.dataset.html = html; } };
+    fill(cs, D.courses.map((c) => `<option value="${c.id}" ${c.id === state.courseId ? "selected" : ""}>${esc(c.name)}</option>`).join("") || "<option>אין קורסים</option>");
+    fill(as, list.map((a) => `<option value="${a.id}" ${a.id === state.assignmentId ? "selected" : ""}>${esc(a.title)}</option>`).join("") || "<option>אין מטלות</option>");
     cs.disabled = !D.courses.length;
     as.disabled = !list.length;
   }
@@ -2270,6 +2424,9 @@
     if (t.closest("a[data-open-local]")) store.set("openLocal", true);  // מהפעם הבאה הקישור הציבורי מעביר לכאן לבד
     const runBtn = t.closest("[data-run]");
     if (runBtn) { runStage(runBtn.dataset.run); return; }
+    const pChip = t.closest("[data-pull-chip]");
+    if (pChip) { state.pullLimit = Number(pChip.dataset.pullChip); render(); return; }
+    if (state.pullPick && !t.closest(".pull-pick")) { state.pullPick = null; render(); }  // לחיצה מחוץ לחלונית סוגרת אותה
     const gChip = t.closest("[data-grade-chip]");
     if (gChip) { state.gradeCount = Number(gChip.dataset.gradeChip); store.set("gradeCount", state.gradeCount); render(); return; }
     if (state.gradePick && !t.closest(".grade-pick")) { state.gradePick = null; render(); }  // לחיצה מחוץ לחלונית סוגרת אותה
@@ -2318,7 +2475,12 @@
       if (a === "grade-one") gradeOne(id);
       if (a === "grade-stop") stopLocalGrade();
       if (a === "open-folder") openFolder("folder");
+      if (a === "key-save") saveOfficialKey(false);
+      if (a === "key-remove") saveOfficialKey(true);
       if (a === "open-inbox") openFolder("inbox");
+      if (a === "pull-full") runLocalPull(true);
+      if (a === "pull-pick-go") { state.pullPick = null; runLocalPull(); state.pullLimit = 0; }  // הגוף של הבקשה נבנה מיד
+      if (a === "pull-pick-close") { state.pullPick = null; render(); }
       if (a === "open-upload") openFolder("upload");
       if (a === "recheck") { if (LOCAL.on) location.reload(); else connect(true); }
       if (a === "send-confirm" && LOCAL.batch?.assignmentId === cur().id) startLocalSend(LOCAL.batch.id);
@@ -2392,6 +2554,8 @@
   document.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && reviewSub()) { e.preventDefault(); saveReview(state.review.id); return; }
     if (e.key === "Enter" && e.target.matches?.("[data-grade-count]")) { gradePicked(); return; }
+    if (e.key === "Enter" && e.target.matches?.("[data-pull-limit]")) { state.pullPick = null; runLocalPull(); state.pullLimit = 0; return; }
+    if (e.key === "Escape" && state.pullPick) { state.pullPick = null; render(); return; }
     if (e.key === "Escape" && state.gradePick) { state.gradePick = null; render(); return; }
     if (e.key === "Escape") { closeDrawer(); $("#sidebar").classList.remove("open"); }
     if (e.key === "Enter" && e.target.matches("[data-open]")) openDrawer(e.target.dataset.open);
@@ -2426,6 +2590,8 @@
     }
     if (t.dataset.query) { state.query[t.dataset.query] = t.value; render(); return; }
     if (t.dataset.moodleId) { state.moodleDraft[t.dataset.moodleId] = t.value; return; }
+    if (t.matches("[data-key-text]")) { keyDraft(cur()).text = t.value; return; }
+    if (t.dataset.keyPt != null) { keyDraft(cur()).points[t.dataset.keyPt] = t.value; return; }
     if (t.matches("[data-name-draft]")) { state.nameDraft = t.value; return; }
     if (t.matches("[data-grade-count]")) {
       state.gradeCount = Math.max(1, parseInt(t.value, 10) || 1);
@@ -2433,6 +2599,14 @@
       // רק התווית של הכפתור משתנה, בלי לצייר מחדש: הסמן נשאר בשדה
       const go = $("[data-act=grade-pick-go]");
       if (go) go.innerHTML = `${ICON.grade}בדוק ${Math.min(state.gradeCount, Number(t.max) || state.gradeCount)}`;
+      return;
+    }
+    if (t.matches("[data-pull-limit]")) {
+      state.pullLimit = Math.max(0, parseInt(t.value, 10) || 0);
+      // רק התווית והסימון משתנים, בלי לצייר מחדש: הסמן נשאר בשדה
+      const go = $("[data-pull-go]");
+      if (go) go.textContent = pullGoLabel();
+      document.querySelectorAll("[data-pull-chip]").forEach((b) => b.setAttribute("aria-pressed", String(Number(b.dataset.pullChip) === state.pullLimit)));
       return;
     }
     if (t.matches("[data-team-count]")) { state.teamCount = Math.max(1, parseInt(t.value, 10) || 1); store.set("teamCount", state.teamCount); return; }
@@ -2450,6 +2624,8 @@
     const t = e.target;
     if (t.dataset.set && (t.type === "checkbox" || t.tagName === "SELECT")) { setPath(t.dataset.set, t.type === "checkbox" ? t.checked : t.value); updatePrompt(); }
     if (t.dataset.rvPts != null && reviewSub()) render();
+    if (t.matches("[data-key-file]")) { keyDraft(cur()).file = t.files[0] || null; render(); }
+    if (t.dataset.keyPt != null) render();  // הודעת "חסר ניקוד" מתעדכנת כשיוצאים מהשדה
   });
 
   function persistSetting(key) { store.set(key, state[key]); }
@@ -2533,9 +2709,10 @@
     }, 2500);
   }
 
-  async function loadLocal() {
+  // given: מצב שכבר הגיע (הכפתור "סנכרון" מקבל אותו מ-api/refresh), במקום לבקש את api/state
+  async function loadLocal(given = null) {
     try {
-      const [data, health] = await Promise.all([api("api/state"), api("api/health").catch(() => null)]);
+      const [data, health] = given ? [given, null] : await Promise.all([api("api/state"), api("api/health").catch(() => null)]);
       LOCAL.sig = JSON.stringify(data);
       D.courses.splice(0, D.courses.length, ...data.courses);
       D.assignments.splice(0, D.assignments.length, ...data.assignments.map((a) => ({
@@ -2553,6 +2730,7 @@
       // מודל מחובר = Claude Code מחובר במחשב (דרכו Claude in Chrome עובד במודל)
       LOCAL.health = { ...LOCAL.health, ...(health || {}), root: data.root, claude: data.claude, claudeVia: data.claudeVia };
       LOCAL.me = data.me || null;
+      D.usage = data.usage || null;
       if (health?.checking) followHealth();
       if (!LOCAL.polling) LOCAL.sending = data.sending || null;
       // בדיקה שרצה כשהדף נטען: מציגים את ההתקדמות ואת כפתור העצירה
@@ -2579,7 +2757,8 @@
   // מה שנמשך, נבדק או הועלה במחשב אחר (ההגשות מגיעות דרך OneDrive) מופיע לבד, בלי רענון: כל 20 שניות וכשחוזרים
   // ללשונית. רק כשהלשונית גלויה, שום דבר לא רץ כאן ולא מקלידים, ומציירים מחדש רק אם משהו בתיקייה השתנה
   // "משוך הגשות" אמיתי: השרת מושך ממודל (אם יש טוקן) ומקובצי ZIP בקליטה, ישר לתיקיית OneDrive
-  async function runLocalPull() {
+  // full: את כל ההגשות ממודל. בלי: אחרי משיכה ראשונה, רק מי שההגשה שלו השתנתה מאז המשיכה הקודמת
+  async function runLocalPull(full = false) {
     const A = cur();
     if (!A || state.run[A.id] || !LOCAL.health?.root) return;
     // הגשה שעוד לא נמשכה: המשיכה הראשונה שומרת את מזהה המטלה במודל (dashboard/actions.py new_assignment)
@@ -2595,7 +2774,7 @@
     render();
     // השרת עונה רק בסוף המשיכה (הורדה של ZIP גדול: כמה דקות). בינתיים שואלים אותו כל שנייה כמה התקדמה
     let settled = false;
-    const post = api("api/pull", { method: "POST", body: JSON.stringify({ course: A.courseFolder, assignment: A.folder, ...(moodleId && { moodleId }) }) })
+    const post = api("api/pull", { method: "POST", body: JSON.stringify({ course: A.courseFolder, assignment: A.folder, ...(moodleId && { moodleId }), ...(full && { full: true }), ...(!full && state.pullLimit > 0 && { limit: state.pullLimit }) }) })
       .finally(() => { settled = true; });
     followPull(A, run, () => settled);
     try {
@@ -2773,10 +2952,18 @@
   // מה שקורה בתיקיית OneDrive (בודקים אחרים לוקחים עבודות, ציונים מגיעים, מישהו משך או העלה) מופיע לבד:
   // כל כמה שניות שואלים את המערכת על חתימת התיקייה, וכשהיא משתנה טוענים מחדש. רק כשהדף גלוי
   let changesBusy = false, lastSig = null;
+  // בזמן הקלדה או בחירה לא מציירים מחדש (רשימה פתוחה הייתה נסגרת). אבל הפוקוס נשאר על השדה גם אחרי שסיימו (למשל
+  // אחרי שבחרו מטלה ברשימה למעלה), ואז האתר הפסיק להתעדכן עד שלחצו במקום אחר. לכן חוסמים רק בשניות שאחרי שנגעו בשדה
+  let fieldTouched = 0;
+  ["pointerdown", "keydown", "input"].forEach((t) => document.addEventListener(t, (e) => {
+    if (e.target.matches?.("input, textarea, select")) fieldTouched = Date.now();
+  }, true));
+  const FIELD_IDLE_MS = 15000;
+  const editing = () => !!document.activeElement?.matches?.("input, textarea, select") && Date.now() - fieldTouched < FIELD_IDLE_MS;
   async function pollChanges() {
-    if (changesBusy || !LOCAL.on || !LOCAL.health?.root || document.hidden) return;
+    if (changesBusy || LOCAL.syncing || !LOCAL.on || !LOCAL.health?.root || document.hidden) return;
     // לא באמצע ריצה ולא בזמן הקלדה: הסיבוב שאחרי יטען
-    if (LOCAL.polling || Object.keys(state.run).length || document.activeElement?.matches?.("input, textarea, select")) return;
+    if (LOCAL.polling || Object.keys(state.run).length || editing()) return;
     changesBusy = true;
     try {
       const { sig } = await api("api/changes");
@@ -2789,6 +2976,95 @@
     }
   }
   const CHANGES_POLL_MS = 5000;
+
+  // ---------- "סנכרון": קוראים מחדש את כל תיקיית OneDrive ומראים מה השתנה ----------
+  // השרת (POST api/refresh) קורא הכול מהדיסק ובודק ש-OneDrive עצמו עובד במחשב: רץ, מחובר לאוניברסיטה, ואין קבצים
+  // מכאן שעוד לא עלו. מה שהמסך מציג לכל מטלה נספר לפני ואחרי, כדי לומר בדיוק מה התעדכן
+  function stageCounts() {
+    const out = {};
+    D.assignments.filter((a) => !a.empty).forEach((a) => {
+      const I = info(a);
+      out[`${a.courseFolder}/${a.folder}`] = { a, pulled: I.subs.length, graded: I.graded.length, returned: I.returned.length };
+    });
+    return out;
+  }
+
+  function syncChanges(before, after) {
+    const what = [["pulled", "נמשכו"], ["graded", "נבדקו"], ["returned", "הוחזרו"]];
+    return Object.entries(after).flatMap(([k, n]) => {
+      const o = before[k] || { pulled: 0, graded: 0, returned: 0 };
+      const parts = what.filter(([f]) => n[f] !== o[f]).map(([f, w]) => `${w} ${n[f]} (קודם ${o[f]})`);
+      return parts.length ? [`${n.a.title}, ${n.a.course}: ${parts.join(", ")}`] : [];
+    });
+  }
+
+  function oneDriveNotes(od) {
+    if (!od) return [];
+    const out = [];
+    if (od.synced === false) out.push({ warn: true, text: "התיקייה במחשב הזה היא עותק מקומי ולא תיקייה של OneDrive: מה שאחרים בצוות עושים לא מגיע אליה לבד." });
+    if (od.signin) out.push({ warn: true, text: "OneDrive לא מצליח להתחבר לאוניברסיטה (צריך אימות דו-שלבי), ולכן לא מביא את מה שהשתנה בענן. מפעילים את הקיצור \"חיבור OneDrive BGU\" בשולחן העבודה, מתחברים ומאשרים בטלפון, ולוחצים שוב על סנכרון." });
+    if (od.started) out.push({ warn: true, text: "OneDrive לא רץ במחשב, אז הפעלתי אותו. עד שיביא את מה שהשתנה בענן יכולות לעבור כמה דקות: כדאי ללחוץ שוב על סנכרון בעוד דקה." });
+    else if (od.running === false) out.push({ warn: true, text: "OneDrive לא רץ במחשב ולא הצלחתי להפעיל אותו. מפעילים אותו מתפריט התחל ולוחצים שוב על סנכרון." });
+    if (od.pending) out.push({ warn: true, text: `${plural(od.pending, "קובץ אחד מהמחשב הזה עוד לא עלה", "קבצים מהמחשב הזה עוד לא עלו")} ל-OneDrive (למשל ${od.pendingFiles?.[0] || ""}). שאר הצוות יראה אותם כשיעלו, בדרך כלל תוך דקה.` });
+    if (!out.length && od.synced) out.push({ warn: false, text: "האפליקציה של OneDrive רצה ומחוברת, וכל הקבצים של המחשב הזה כבר בענן." });
+    return out;
+  }
+
+  let syncPopTimer = null;
+  function showSyncPop(title, lines, notes, warn) {
+    const pop = $("#sync-pop");
+    pop.className = `sync-pop${warn ? " warn" : ""}`;
+    pop.innerHTML = `<button class="btn ghost small sync-x" aria-label="סגור">✕</button>
+      <h3>${warn ? ICON.warn : ICON.check}<span>${esc(title)}</span></h3>
+      ${lines.length ? `<ul>${lines.slice(0, 8).map((l) => `<li>${esc(l)}</li>`).join("")}</ul>` : ""}
+      ${lines.length > 8 ? `<p class="sync-more">ועוד ${lines.length - 8}</p>` : ""}
+      ${notes.map((n) => `<p class="sync-od${n.warn ? " warn" : ""}">${esc(n.text)}</p>`).join("")}`;
+    pop.hidden = false;
+    $(".sync-x", pop).addEventListener("click", () => { pop.hidden = true; });
+    clearTimeout(syncPopTimer);
+    if (!warn) syncPopTimer = setTimeout(() => { pop.hidden = true; }, 15000);
+  }
+
+  function renderSyncBtn() {
+    const b = $("#sync-btn");
+    b.hidden = !LOCAL.on;
+    b.disabled = LOCAL.syncing;
+    b.classList.toggle("busy", LOCAL.syncing);
+    $("span", b).textContent = LOCAL.syncing ? "מסנכרן…" : "סנכרון";
+    b.title = (LOCAL.syncedAt ? `סונכרן לאחרונה ב-${LOCAL.syncedAt.slice(11, 16)}. ` : "")
+      + "קורא מחדש את תיקיית OneDrive ומעדכן את כל המספרים במסך";
+  }
+
+  async function syncNow() {
+    if (LOCAL.syncing || !LOCAL.on) return;
+    LOCAL.syncing = true;
+    renderSyncBtn();
+    const hadRoot = !!LOCAL.health?.root, before = stageCounts();
+    try {
+      const rep = await api("api/refresh", { method: "POST", body: "{}" });
+      await loadLocal(rep.state);
+      lastSig = rep.sig;
+      LOCAL.syncedAt = rep.at;
+      refreshDrawer();
+      renderStatus();
+      const lines = hadRoot ? syncChanges(before, stageCounts()) : [];
+      const notes = oneDriveNotes(rep.onedrive);
+      const title = !hadRoot ? "המערכת מחוברת לתיקיית OneDrive"
+        : lines.length ? `${plural(lines.length, "מטלה אחת התעדכנה", "מטלות התעדכנו")} מתיקיית OneDrive`
+        : "הכול מעודכן: המספרים במסך זהים לתיקיית OneDrive";
+      showSyncPop(title, lines, notes, notes.some((n) => n.warn));
+    } catch (e) {
+      showSyncPop("הסנכרון לא הצליח", [], [{ warn: true, text: e.message }], true);
+    } finally {
+      LOCAL.syncing = false;
+      renderSyncBtn();
+    }
+  }
+  $("#sync-btn").addEventListener("click", syncNow);
+  document.addEventListener("click", (e) => {
+    const pop = $("#sync-pop");
+    if (!pop.hidden && !e.target.closest?.("#sync-pop, #sync-btn")) pop.hidden = true;
+  });
 
   function openFolder(which) {
     const A = cur();
@@ -2813,6 +3089,7 @@
     set("#conn-moodle", !!LOCAL.health?.moodle, LOCAL.health?.moodle ? "דרך Claude בכרום" : LOCAL.on ? "צריך להתחבר" : "לא מחובר");
     set("#conn-claude", !!LOCAL.health?.claude, LOCAL.health?.claude ? "מחובר" : LOCAL.on ? "עוד לא מחובר" : "לא מחובר");
     set("#conn-drive", live, live ? "מחובר" : "לא מחובר");
+    renderSyncBtn();
     $("#proto-note").textContent = live
       ? (LOCAL.health?.claude ? "כל המספרים במסך נקראים מתיקיית OneDrive של הקורס." : "כל המספרים במסך נקראים מתיקיית OneDrive של הקורס. הבדיקה עם Claude עוד לא מחוברת (מחברים את Claude Code במחשב, או ANTHROPIC_API_KEY ב-.env).")
       : "האתר מציג רק נתונים אמיתיים, מהמערכת שרצה במחשב (start.bat). כרגע היא לא מחוברת.";

@@ -17,7 +17,7 @@ upload (their whole number stays out), resubmitted numbers, and numbers nobody a
 Unapproved work is still uploaded: that list is for the person who confirms the batch.
 
 `run_batch` then hands each ZIP to a driver, which does the upload in Moodle (the driver of Claude in Chrome
-comes separately; `SimulatedDriver` stands in for it in tests and in the site's demo). A ZIP goes into the log
+is `moodle/claude_driver.py`; tests use a fake one, `tests/fakes.py`). A ZIP goes into the log
 (`upload_log.record_zip`) only when the driver's answer matches the number of files in it. Right before each upload
 and again before logging it, the ZIP is hashed: if it is no longer the one the person confirmed, the run stops
 ("stale") and logs nothing. Moodle imported but the numbers are off: "mismatch", which a person checks in Moodle
@@ -29,7 +29,6 @@ Nothing in `prepare_batch` talks to Moodle or writes the log.
 """
 
 import csv
-import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -223,29 +222,6 @@ class MoodleDriver(Protocol):
         `sha256` is the ZIP's hash in the batch list (run_batch always passes it): a driver that copies the ZIP checks its copy against it.
         """
         ...
-
-
-class SimulatedDriver:
-    """A driver that never touches Moodle: gives `results` one by one, then says every ZIP went through.
-
-    For tests, and for the site with MOODLE_DRIVER=simulate. `delay` seconds per ZIP make progress visible.
-    """
-
-    def __init__(self, results: list[UploadResult] | None = None, delay: float = 0.0):
-        self.results = list(results or [])
-        self.delay = delay
-        self.calls: list[str] = []  # names of the ZIPs it was given
-
-    def upload_zip(self, info: dict, zip_path: Path, expected: int, dry_run: bool,
-                   sha256: str | None = None) -> UploadResult:
-        self.calls.append(zip_path.name)
-        if self.delay:
-            time.sleep(self.delay)
-        if self.results:
-            return self.results.pop(0)
-        if dry_run:
-            return UploadResult("dry_run_ok", rows=expected)
-        return UploadResult("imported", rows=expected, imported=expected)
 
 
 @dataclass

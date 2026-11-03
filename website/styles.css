@@ -349,6 +349,16 @@ th.qcol { text-align: center; }
 .team-act .field { min-width: 220px; }
 .team-count { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; color: var(--ink-2); }
 .team-count input { width: 76px; padding: 6px 8px; border: 1px solid var(--rule-strong); border-radius: var(--r-sm); background: var(--sheet); color: var(--ink); font: inherit; text-align: center; }
+/* "כמה הגשות למשוך": נפתחת בעדינות מתחת לכפתור, עם מספרים עגולים ושדה למספר אחר */
+.pull-pick { width: min(360px, calc(100vw - 32px)); animation: pull-pick-in .16s ease-out; transform-origin: top; }
+@keyframes pull-pick-in { from { opacity: 0; transform: translateY(-6px) scale(.98); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .pull-pick { animation: none; } }
+.pull-pick .pp-title { font-weight: 650; font-size: 15px; color: var(--ink); }
+.pull-pick .pp-chips { gap: 8px; }
+.pull-pick .pp-chips .chip { padding: 8px 18px; font-size: 15px; min-width: 56px; text-align: center; }
+.pull-pick .pp-custom { justify-content: space-between; }
+.pull-pick .pp-custom input { width: 110px; }
+[data-run="pull"] .caret { margin-inline-start: 8px; font-size: 11px; opacity: .8; }
 .team-count input:focus { outline: none; border-color: var(--blue); box-shadow: 0 0 0 3px var(--blue-soft); }
 /* "כמה לבדוק": חלונית קטנה שנפתחת מתחת לכפתור הבדיקה */
 .pick-wrap { position: relative; display: inline-flex; }
@@ -471,6 +481,8 @@ textarea:focus, .field input:focus, .field select:focus, .rreq:focus, .rpts inpu
 
 .notice { display: flex; gap: 12px; padding: 12px 14px; margin-bottom: 16px; border-radius: var(--r-md); background: var(--warn-soft); color: var(--ink); font-size: 13.5px; }
 .notice svg { color: var(--warn); margin-top: 2px; }
+.notice.ok { background: var(--ok-soft); }
+.notice.ok svg { color: var(--ok); }
 .secret { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px dashed var(--rule); }
 .secret:last-of-type { border-bottom: 0; }
 .secret svg { color: var(--ink-3); }
@@ -958,3 +970,24 @@ span.rv-arrow { visibility: hidden; }
 .graded-with { display: flex; align-items: center; gap: 6px; margin: 10px 0 0; font-size: 12.5px; color: var(--ink-3); line-height: 1.5; }
 .graded-with svg { width: 14px; height: 14px; flex: none; }
 .graded-with b { color: var(--ink-2); font-weight: 600; }
+
+/* "סנכרון" בשורה העליונה: קורא מחדש את תיקיית OneDrive, והחלונית שמתחתיו אומרת מה השתנה ומה מצב OneDrive */
+.top-actions { position: relative; }
+.sync-btn[hidden], .sync-pop[hidden] { display: none; }
+.sync-btn svg { width: 16px; height: 16px; }
+.sync-btn.busy svg { animation: spin 1s linear infinite; }
+.sync-pop {
+  position: absolute; top: calc(100% + 10px); inset-inline-end: 0; z-index: 30;
+  width: min(400px, calc(100vw - 32px)); padding: 14px 16px 12px;
+  background: var(--sheet); border: 1px solid var(--rule); border-radius: var(--r-md); box-shadow: var(--lift);
+  font-size: 14px; line-height: 1.6; color: var(--ink);
+}
+.sync-pop h3 { margin: 0 0 6px; padding-inline-end: 28px; font-size: 14.5px; display: flex; align-items: flex-start; gap: 8px; }
+.sync-pop h3 svg { width: 18px; height: 18px; color: var(--ok); margin-top: 2px; }
+.sync-pop.warn h3 svg { color: var(--warn); }
+.sync-pop ul { margin: 0 0 4px; padding-inline-start: 20px; }
+.sync-pop .sync-more { margin: 0; color: var(--ink-3); font-size: 13px; }
+.sync-pop .sync-od { margin: 8px 0 0; font-size: 13px; color: var(--ink-2); }
+.sync-pop .sync-od.warn { padding: 8px 10px; border-radius: var(--r-sm); background: var(--warn-soft); color: var(--ink); }
+.sync-pop .sync-x { position: absolute; top: 6px; inset-inline-end: 6px; padding: 4px 8px; font-size: 13px; }
+@media (max-width: 560px) { .sync-btn span { display: none; } }
