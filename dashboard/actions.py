@@ -1157,6 +1157,21 @@ def _drop_status_cache() -> None:
     _moodle_cache = None
 
 
+def running_jobs() -> list[str]:
+    """מה רץ עכשיו במחשב הזה. dashboard/updater.py לא מעדכן (ומפעיל מחדש) באמצע אף אחד מהם."""
+    jobs = []
+    with _pull_lock:
+        jobs += ["pull"] if _pull.running else []
+    with _job_lock:
+        jobs += ["grading"] if _job.running else []
+    with _copy_lock:
+        jobs += ["copying"] if _copy.running else []
+    with _send_lock:
+        jobs += (["upload"] if _send.running else []) + (["chrome check"] if _checking else [])
+    jobs += (["claude login"] if _login.running() else []) + (["claude install"] if _install.running() else [])
+    return jobs
+
+
 def _fresh_check(course: str, assignment: str) -> tuple[dict, str] | None:
     hit = _ready_cache.get((course, assignment))
     if hit and time.monotonic() - hit[0] < READY_MINUTES * 60:

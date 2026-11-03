@@ -3024,7 +3024,15 @@
     if (LOCAL.polling || Object.keys(state.run).length || editing()) return;
     changesBusy = true;
     try {
-      const { sig } = await api("api/changes");
+      const { sig, version } = await api("api/changes");
+      // המערכת התעדכנה לבד מ-GitHub (dashboard/updater.py) ועלתה מחדש: טוענים את הדף, כדי שגם האתר יהיה החדש.
+      // רק כאן, כשלא רץ כלום ולא מקלידים (התנאים שלמעלה)
+      if (version && LOCAL.version && version !== LOCAL.version) {
+        toast("המערכת התעדכנה לגרסה חדשה. טוען מחדש…", ICON.check);
+        setTimeout(() => location.reload(), 1500);
+        return;
+      }
+      if (version) LOCAL.version = version;
       if (lastSig !== null && sig !== lastSig) { await loadLocal(); refreshDrawer(); }
       lastSig = sig;
     } catch {

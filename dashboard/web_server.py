@@ -26,7 +26,7 @@ from urllib.parse import parse_qs, urlparse
 from grading import grade as grading
 from moodle import paths
 
-from . import actions, folder_view, scheduler, settings as cfg, sync
+from . import actions, folder_view, scheduler, settings as cfg, sync, updater
 
 WEBSITE = cfg.REPO_DIR / "website"
 HEADER = "X-Assignment-Checker"
@@ -138,7 +138,7 @@ class Handler(SimpleHTTPRequestHandler):
             st, via = actions.quick_status(), actions.quick_via()
             return self._json({"ok": True, "root": str(root) if root else None, "error": err,
                                "moodle": bool(st and st.get("logged_in")), "claude": via is not None, "claudeVia": via,
-                               "checking": st is None and via is None})
+                               "checking": st is None and via is None, "version": updater.version()})
         if url.path == "/api/upload":
             return self._json(actions.send_status())
         if url.path == "/api/moodle":
@@ -160,9 +160,10 @@ class Handler(SimpleHTTPRequestHandler):
             root = self._root()
             return root and self._json(actions.state(root))
         if url.path == "/api/changes":
-            # חתימה של התיקייה. האתר שואל כל כמה שניות, וטוען מחדש רק כשהיא משתנה
+            # חתימה של התיקייה. האתר שואל כל כמה שניות, וטוען מחדש רק כשהיא משתנה. version: המערכת התעדכנה
+            # (dashboard/updater.py), והאתר טוען את עצמו מחדש כדי לקבל גם את הקבצים החדשים שלו
             root = self._root()
-            return root and self._json({"sig": actions.changes(root)})
+            return root and self._json({"sig": actions.changes(root), "version": updater.version()})
         if url.path == "/api/grade":
             return self._json(actions.grade_status())
         if url.path == "/api/pull":  # כמה התקדמה המשיכה, בזמן שה-POST שלה עוד רץ
@@ -494,6 +495,9 @@ def serve(port: int = 8765, open_browser: bool = True) -> None:
         print("\nהאתר יעלה בכל זאת, ויציג את ההסבר הזה עד שהתיקייה תסתנכרן.")
     httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     scheduler.start(_lock)  # משיכה מתוזמנת ביום שההגשה נגמרת (dashboard/scheduler.py)
+    # מתעדכנת לבד מ-GitHub כשאף אחד לא עובד עליה (dashboard/updater.py): נעצרת, ו-autostart.vbs מעלה אותה מעודכנת
+    updater.start(port, httpd.shutdown, _lock,
+                  lambda: actions.running_jobs() + (["night pull"] if scheduler.in_night_window() else []))
     actions.refresh_status_soon()  # כבר עכשיו, כדי שהתשובה תהיה מוכנה כשהאתר נפתח
     url = f"http://localhost:{port}/"
     print(f"\nבודק חכם פועל: {url}\nכדי לעצור: Ctrl+C או לסגור את החלון.")
