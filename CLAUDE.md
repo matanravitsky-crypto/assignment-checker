@@ -233,7 +233,15 @@ with size and mtime, file bytes; only from inside a course folder of `ASSIGNMENT
 `https://bgu365-my.sharepoint.com`), so they go computer → browser → OneDrive and not through Claude (few tokens, no
 10 MB limit). It never deletes, never overwrites a OneDrive file newer than the local one (a team's `Grades.csv`),
 skips locks and temp files, and checks sizes after uploading. Don't sync while `Grading part N in progress.txt` exists.
-Once per computer Chrome asks to allow the site to reach the local network: the user clicks "Allow".
+Once per computer Chrome asks to allow the site to reach the local network: the user clicks "Allow" (each new port
+asks again).
+**Archived grading stays archived.** On 2026-11-03 Ori's test grading of 23/10-30/10 (Discrete Assignment 0, LA
+Assignment 0: marked PDFs, `Grading notes`, `Who grades what`, `Grades*.csv`) was moved in OneDrive to
+`<assignment>/Old test grading/` (its README says how to restore), so the site counts 0 graded there. A local copy that
+still has those files in their old places would upload them again as "new", so `plan` holds back a grading file that
+is missing in OneDrive when that assignment has `Old test grading/README.txt` in OneDrive and the file was saved before
+that README (`archived` in the report, with advice to move them locally too). Grading saved after it uploads as usual.
+`tests/onedrive/test_sync_plan.py` runs `plan` in Node.
 Checked 2026-10-23: 12 MB from the computer in 10 s, byte-identical; a dry run found Discrete Mathematics identical.
 
 When working with this data:
