@@ -39,6 +39,12 @@ TRIES = 3  # ניסיונות בלילה אחד
 RETRY_AFTER = timedelta(minutes=30)
 
 _ES_CONTINUOUS, _ES_SYSTEM_REQUIRED = 0x80000000, 0x00000001
+_awake = False  # משיכת לילה קרובה או רצה (מההתראה ועד שהיא נגמרת): המחשב לא נרדם, והמערכת לא מתעדכנת
+
+
+def in_night_window() -> bool:
+    """dashboard/updater.py לא מפעיל את השרת מחדש מחצי שעה לפני משיכת לילה ועד שהיא נגמרת."""
+    return _awake
 
 
 def enabled() -> bool:
@@ -208,6 +214,7 @@ def start(lock: threading.Lock) -> None:
         return {"text": "המשיכה הסתיימה: " + rep["summary"], "new": rep["result"]["new"]}
 
     def loop() -> None:
+        global _awake
         state, awake = _load(), False
         stop = threading.Event()
         while not stop.is_set():
@@ -216,6 +223,7 @@ def start(lock: threading.Lock) -> None:
                 now_awake = bool(root) and tick(root, datetime.now(), state, run_pull)
             except Exception:  # noqa: BLE001 - תזמון שנפל לא מפיל את השרת
                 now_awake = awake
+            _awake = now_awake
             if now_awake != awake:
                 keep_awake(now_awake)
                 awake = now_awake

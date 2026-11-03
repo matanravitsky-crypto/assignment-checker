@@ -8,7 +8,7 @@ from http.server import ThreadingHTTPServer
 import pytest
 
 from moodle import claude_driver, ingest, paths
-from dashboard import actions, onedrive_check
+from dashboard import actions, onedrive_check, updater
 from tests.sample_files import homework_pdf
 
 from tests.dashboard.helpers import COURSE, HW, MID, NAMES, write_key
@@ -33,6 +33,8 @@ def fresh_dashboard_state(monkeypatch, tmp_path):
     monkeypatch.setenv("ASSIGNMENT_WORK", str(tmp_path / "Moodle originals"))
     # no test starts a login or an installer, whatever is installed on this computer
     monkeypatch.setattr(actions.subprocess, "Popen", lambda *a, **k: pytest.fail("a test started a real process"))
+    # the version /api/health and /api/changes report (dashboard/updater.py): known, without running git
+    monkeypatch.setattr(updater, "_version", "test")
     # the "סנכרון" button's OneDrive check: never the real OneDrive of this computer. Healthy, unless a test says otherwise
     monkeypatch.setattr(onedrive_check, "_cloud_files", lambda: None)
     monkeypatch.setattr(onedrive_check, "running", lambda: True)

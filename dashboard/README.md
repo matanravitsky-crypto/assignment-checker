@@ -14,6 +14,7 @@ python -m dashboard serve
 | `folder_view.py` | קורא את המבנה לתצוגה: קורסים, מטלות ומספרי הגשות. בלי שמות |
 | `actions.py` | הפעולות: משיכה (`moodle ingest`) עם נעילה ובדיקת עותקים כפולים, בדיקה ברקע (`grading/`), בדיקת העתקות ברקע (`copying/`), הכנת החזרה (`moodle upload`), העלאה למודל ברקע (`moodle send`), והמצב לאתר |
 | `web_server.py` | השרת: מגיש את האתר ואת `/api/...` |
+| `updater.py` | עדכון עצמי: פעם בשעה שואל את GitHub אם `main` התקדם. כשכן, והתיקייה על `main` בלי שינויים, שום דבר לא רץ, ו-`autostart.vbs` רץ, השרת נעצר והוא מעלה אותו מעודכן. `version` ב-`/api/health` וב-`/api/changes`, והאתר נטען מחדש כשהיא משתנה. `AUTO_UPDATE=off` ב-`.env` מכבה |
 | `settings.py` | קורא את `.env` (מפתח Claude) |
 
 ## ה-API של השרת
