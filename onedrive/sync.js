@@ -26,15 +26,41 @@
   const SKIP = /(^|\/)(desktop\.ini|thumbs\.db|~\$[^/]*|[^/]*\.tmp|[^/]* in progress\.txt|[^/]*\.zip)$/i;
   // שעון המחשב ושעון השרת לא מסונכרנים בדיוק: הפרש קטן מזה לא נחשב "חדש יותר"
   const CLOCK_SLACK_MS = 2 * 60 * 1000;
+  // בדיקות שהוצאו מהספירה עוברות בוואן דרייב ל-"<מטלה>/Old test grading/", עם README.txt שנכתב ברגע ההעברה
+  // (2026-11-03: בדיקות הניסיון של 23/10-30/10). עותק מקומי שעוד מחזיק אותן במקומן הקודם לא מחזיר אותן:
+  // קובץ של בדיקה (עבודה מסומנת, הערות, מי לקח מה, קובץ ציונים) שחסר בוואן דרייב ונכתב לפני ההעברה לא עולה.
+  // מה שנבדק אחרי ההעברה עולה כרגיל
+  const ARCHIVE = "Old test grading";
+  const GRADING_OUTPUT = /^(2 - Graded with comments\/(?!README\.txt$)[^/]+|Grading notes\/[^/]+|Who grades what\/[^/]+|Grades[^/]*\.csv)$/i;
+
+  // מטלה → מתי הועברו הבדיקות שלה לארכיון (זמן ה-README שבארכיון בוואן דרייב)
+  const ARCHIVE_README = new RegExp(`^([^/]+)/${ARCHIVE}/README\\.txt$`);
+  const ARCHIVED_NOTE = (n) => `${n} קבצים של בדיקות ישנות לא הועלו: בוואן דרייב הן הועברו ל-"${ARCHIVE}". ` +
+    `כדאי להעביר אותם גם במחשב הזה לתיקייה "${ARCHIVE}" של המטלה.`;
+  function archivedAt(remote) {
+    const out = {};
+    for (const [path, r] of Object.entries(remote)) {
+      const m = path.match(ARCHIVE_README);
+      if (m) out[m[1]] = r.mtime;
+    }
+    return out;
+  }
 
   // ---------- ההשוואה (בלי רשת, כדי שאפשר לבדוק אותה לבד) ----------
   // local: [{path, size, mtime}] (path יחסי לתיקיית הקורס, mtime במילישניות)
   // remote: {path: {size, mtime}}
   function plan(local, remote) {
-    const out = { upload: [], same: [], remoteNewer: [], skipped: [] };
+    const out = { upload: [], same: [], remoteNewer: [], skipped: [], archived: [] };
+    const archived = archivedAt(remote);
     for (const f of local) {
       if (SKIP.test(f.path)) { out.skipped.push(f.path); continue; }
       const r = remote[f.path];
+      const slash = f.path.indexOf("/"), assignment = f.path.slice(0, slash);
+      if (!r && slash > 0 && archived[assignment] !== undefined && GRADING_OUTPUT.test(f.path.slice(slash + 1))
+          && f.mtime <= archived[assignment] + CLOCK_SLACK_MS) {
+        out.archived.push(f.path);
+        continue;
+      }
       if (!r) { out.upload.push({ ...f, why: "new" }); continue; }
       const localNewer = f.mtime > r.mtime + CLOCK_SLACK_MS;
       if (f.size !== r.size || localNewer) {
@@ -265,9 +291,10 @@
       state.keyConflicts = conflicts;
       const bytes = todo.reduce((s, f) => s + f.size, 0);
       const news = todo.filter((f) => f.why === "new").length;
-      Object.assign(state, { stage: "planned", upload: todo.map((f) => [f.path, f.why]), same: p.same.length, remoteNewer: p.remoteNewer });
+      Object.assign(state, { stage: "planned", upload: todo.map((f) => [f.path, f.why]), same: p.same.length, remoteNewer: p.remoteNewer, archived: p.archived.length });
       say(`תיקייה: ${course}\nחדשים: ${news}\nהשתנו: ${todo.length - news}\nזהים, לא נוגעים: ${p.same.length}\n` +
         (p.remoteNewer.length ? `חדשים יותר בוואן דרייב, לא נדרסים: ${p.remoteNewer.length}\n  ${p.remoteNewer.slice(0, 8).join("\n  ")}\n` : "") +
+        (p.archived.length ? `${ARCHIVED_NOTE(p.archived.length)}\n` : "") +
         (conflicts.length ? conflicts.join("\n") + "\n" : "") +
         `סה"כ להעלאה: ${(bytes / 1e6).toFixed(1)} MB`);
       if (todo.length) { $("ecs-go").textContent = `העלאה של ${todo.length} קבצים`; $("ecs-go").style.display = ""; }
@@ -313,7 +340,7 @@
       p.upload = withoutConflicts(p.upload, kp);
       const row = { course: label, local: local.length, new: p.upload.filter((f) => f.why === "new").length,
         changed: p.upload.filter((f) => f.why === "changed").length, same: p.same.length, remoteNewer: p.remoteNewer,
-        keyConflicts: keyReport(kp) };
+        archived: p.archived.length, keyConflicts: keyReport(kp) };
       report.push(row);
       if (dryRun) row.wouldUpload = p.upload.map((f) => [f.path, f.why]);
       else if (p.upload.length) {
@@ -324,6 +351,7 @@
     state.stage = "done";
     say(report.map((r) => `${r.course}: ${r.new} חדשים, ${r.changed} השתנו, ${r.same} זהים` +
       (r.remoteNewer.length ? `, ${r.remoteNewer.length} חדשים יותר בוואן דרייב (לא נדרסו)` : "") +
+      (r.archived ? `\n  ${ARCHIVED_NOTE(r.archived)}` : "") +
       (r.missing && r.missing.length ? `\n  לא הגיעו: ${r.missing.length}` : "") +
       (r.keyConflicts.length ? "\n  " + r.keyConflicts.join("\n  ") : "")).join("\n") + "\n\nהסתיים.");
     return state;
