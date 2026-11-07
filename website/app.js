@@ -1250,7 +1250,7 @@
               <td>${who(s)}</td>
               <td>${statusPill(s)}</td>
               <td class="claim-cell">${claimCell(s)}</td>
-              <td>${scoreHTML(s)}</td>
+              <td><span class="score-cell">${scoreHTML(s)}${editLinkHTML(s)}</span></td>
               ${qs.map((q, i) => `<td class="col-hide qcol num">${s.q ? `<span class="qv ${s.q[i] < q.pts ? "lost" : ""}">${s.q[i]}</span>` : `<span class="muted">·</span>`}</td>`).join("")}
               <td class="col-hide-sm">${s.issue ? `<span class="flag">${esc(s.issue)}</span>` : needsReview(s) ? `<span class="flag" title="${esc(s.failed || s.review)}">לבדיקה ידנית: ${esc(REVIEW_KIND[kindOf(s)][0])}</span>` : s.q ? (lost ? `<span class="pen-count">${ICON.pen}${plural(lost, "הערה אחת", "הערות")}</span>` : `<span class="muted">ללא הערות</span>`) : `<span class="muted">—</span>`}</td>
             </tr>`;
@@ -2012,6 +2012,8 @@
 
   // עריכה של ציון קיים (לא אישור ראשון מהתור, ולא ציון ראשון לעבודה שנכשלה): חייבים לכתוב סיבה, כמו grade_edit.kind_of
   const isEdit = (s) => s.score != null && !needsReview(s);
+  // לכל עבודה שנבדקה יש "ערוך ציון" ישר בשורה שלה בטבלה (וגם בחלונית העבודה), לכל אחד בצוות, לא משנה מי בדק
+  const editLinkHTML = (s) => (s.score == null ? "" : `<a class="row-edit" data-row-link href="#/review?n=${s.id}" title="${needsReview(s) ? "לבדיקה ידנית" : "ערוך ציון"} (עבודה ${s.id})">${ICON.pen}${needsReview(s) ? "לבדיקה" : "ערוך ציון"}</a>`);
 
   // יומן העריכות של הציון (api/grade-log): מי, מתי, מאיזה ציון לאיזה ולמה
   function gradeLog(A, s) {
@@ -2673,6 +2675,7 @@
     const as = t.closest("[data-assign]");
     if (as) { state.assignmentId = as.dataset.assign; state.filter = "all"; resetOpen(); renderPickers(); render(); window.scrollTo({ top: 0, behavior: "smooth" }); return; }
 
+    if (t.closest("[data-row-link]")) return;  // "ערוך ציון" בשורה: הקישור עצמו פותח את העמוד, בלי החלונית
     const row = t.closest("[data-open]");
     if (row) { openDrawer(row.dataset.open); return; }
 
