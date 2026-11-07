@@ -757,6 +757,27 @@ def test_note_goes_to_free_paper_not_over_the_writing():
     assert ink.density(*norm) < 0.25
 
 
+def test_every_note_on_a_page_is_written_not_only_the_first():
+    # באג אמיתי (2026-11-07): ההערה השנייה בעמוד לא נכתבה. _note_rect חישב חפיפה עם r.intersect(t),
+    # שמשנה את r עצמו, אז המקום שנבחר להערה התכווץ או התהפך והכתיבה נכשלה בשקט
+    doc, page = _scan_page((100, 200, 300, 230))
+    for y in range(380, 410, 3):  # שורה כתובה שנייה, רחוקה מהראשונה
+        page.draw_line((100, y), (350, y), color=(0, 0, 0.3), width=1.2)
+    for y in range(560, 590, 3):  # ושלישית
+        page.draw_line((100, y), (320, y), color=(0, 0, 0.3), width=1.2)
+    ctx = grading.Context("מטלה", "קורס", [grading.Question("שאלה 1", 100)])
+    notes = ["הערה ראשונה", "הערה שנייה", "הערה שלישית"]
+    g = grading.Graded([90], [""], 90, "", [
+        grading.Mark(1, 168, 237, 504, 273, notes[0]),
+        grading.Mark(1, 168, 451, 588, 487, notes[1]),
+        grading.Mark(1, 168, 665, 538, 701, notes[2]),
+    ])
+    with pymupdf.open(stream=grading.mark_pdf(doc.tobytes(), g, ctx), filetype="pdf") as out:
+        written = text(out[1])
+    assert len(g.marks) == 3
+    assert all(n in written for n in notes)
+
+
 def test_shrinking_does_not_blacken_pages_with_several_images():
     # באג אמיתי: rewrite_images שיבש תמונה שנייה בעמוד (פס שחור במקום השאלה)
     rnd = random.Random(3)
