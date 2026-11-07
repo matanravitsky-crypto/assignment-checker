@@ -874,6 +874,21 @@ span.rv-arrow { visibility: hidden; }
 .rv-fb { border-top: 1px solid var(--rule); padding: 10px 18px; }
 .rv-fb summary { cursor: pointer; font-weight: 600; font-size: 14px; color: var(--ink-2); }
 .rv-fb textarea { margin-top: 8px; resize: vertical; line-height: 1.55; }
+.rv-reason { border-top: 1px solid var(--rule); padding: 10px 18px; display: grid; gap: 6px; }
+.rv-reason label { font-weight: 600; font-size: 14px; color: var(--ink-2); }
+.rv-reason label em { font-style: normal; font-weight: 600; font-size: 12px; color: var(--warn); margin-inline-start: 6px; }
+.rv-reason textarea { width: 100%; border: 1px solid var(--rule); border-radius: var(--r-md); background: var(--sheet); padding: 8px 12px; font-size: 13.5px; line-height: 1.55; resize: vertical; }
+.rv-reason textarea:focus { outline: none; border-color: var(--blue); box-shadow: 0 0 0 3px var(--blue-soft); }
+.rv-reason small { color: var(--ink-2); font-size: 12px; }
+.rv-hist { border-top: 1px solid var(--rule); padding: 10px 18px; font-size: 13px; }
+.rv-hist summary { cursor: pointer; font-weight: 600; font-size: 14px; color: var(--ink-2); }
+.rv-hist ol { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 8px; max-height: 220px; overflow-y: auto; }
+.rv-hist li { border-inline-start: 3px solid var(--rule); padding-inline-start: 10px; }
+.rv-hist li.failed { border-color: var(--warn); }
+.rv-hist-top { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; }
+.rv-hist-top span { color: var(--ink-2); font-size: 12px; }
+.rv-hist p { margin: 2px 0 0; }
+.rv-hist-err { color: var(--warn); }
 .rv-bar { display: flex; align-items: center; gap: 12px; padding: 12px 18px; border-top: 1px solid var(--rule); }
 .rv-total { display: flex; align-items: baseline; gap: 4px; margin-inline-end: auto; }
 .rv-total b { font: 900 32px/1 var(--font-display); color: var(--red); }

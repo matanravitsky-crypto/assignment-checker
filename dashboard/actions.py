@@ -35,7 +35,7 @@ from pathlib import Path
 import pymupdf
 
 from copying import check as copying
-from grading import grade as grading
+from grading import grade as grading, grade_edit
 from moodle import (anonymize as moodle_anonymize, claims, claude_driver, grades as moodle_grades, pull_check,
                     ingest as moodle_ingest, lock as moodle_lock, paths, send as moodle_send, upload as moodle_upload,
                     upload_log)
@@ -1312,10 +1312,17 @@ def returned_numbers(assignment_dir: Path, marked: dict[str, list[Path]]) -> set
 
 # ---------- בדיקה ידנית ----------
 def save_review(root: Path, course: str, assignment: str, number: str, points: list, comments: list, feedback: str,
-                mistakes: list | None = None) -> dict:
-    """אדם אישר עבודה בתור הבדיקה הידנית (או תיקן ציון): grading.save_review, עם מי שאישר."""
+                mistakes: list | None = None, reason: str = "") -> dict:
+    """אדם אישר עבודה בתור הבדיקה הידנית או ערך ציון (עם סיבה): grading.save_review, עם מי שאישר."""
     a = find_assignment(root, course, assignment)
-    return grading.save_review(a.dir, number, points, comments, feedback, by=moodle_lock.me(), mistakes=mistakes)
+    return grading.save_review(a.dir, number, points, comments, feedback, by=moodle_lock.me(), mistakes=mistakes,
+                               reason=reason)
+
+
+def grade_history(root: Path, course: str, assignment: str, number: str) -> list[dict]:
+    """יומן העריכות של ציון עבודה אחת (grading/grade_edit.history), מהישנה לחדשה."""
+    a = find_assignment(root, course, assignment)
+    return grade_edit.history(a.dir, number)
 
 
 # Grading notes של כל העבודות נקראים בכל טעינה של האתר. קובץ שלא השתנה לא נקרא שוב
@@ -1431,6 +1438,13 @@ def _activity(a: folder_view.Assignment, log: list[dict]) -> list[dict]:
         n = len(u["numbers"])
         out.append({"at": u["at"], "kind": "return", "actor": u["by"],
                     "text": f"הועלו למודל {n} עבודות מסומנות" + (f" ({zip_name})" if zip_name else "")})
+    for e in grade_edit.history_all(a.dir):  # עריכות ציון מהיומן (activity_log): מי, מאיזה ציון לאיזה ולמה
+        why = (e.get("reason") or "").strip()
+        why = f": {why[:120]}" if why else ""
+        failed = e.get("action") == grade_edit.ACTION_FAILED
+        out.append({"at": (e.get("at") or "")[:16], "kind": "error" if failed else "grade", "actor": e.get("by") or "",
+                    "text": (f"עריכת הציון של עבודה {e.get('number')} לא הושלמה" if failed
+                             else f"ציון עבודה {e.get('number')}: {e.get('from') or '—'} ← {e.get('to')}") + why})
     return out
 
 

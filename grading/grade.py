@@ -1176,50 +1176,9 @@ def _resummarize(marked_pdf: bytes, g: Graded, ctx: Context) -> bytes:
 
 
 def save_review(assignment_dir: Path, number: str, points: list, comments: list, feedback: str, by: str,
-                mistakes: list | None = None) -> dict:
-    """מה שאדם החליט בבדיקה הידנית: ניקוד והערה לכל שאלה ומשוב. מחשב את הציון, מעדכן את עמוד הסיכום בעבודה
-    המסומנת וכותב שורה מאושרת (approved = מי ומתי), שהבדיקה האוטומטית לא דורסת, לקובץ הציונים של מי שבמחשב הזה
-    (moodle/grades.py: שורה מאושרת גוברת על כל הקבצים). מחזיר את הציון."""
-    n = number_key(number)
-    files = submission_files(assignment_dir)
-    if n not in files:
-        raise GradingError(f"אין הגשה {n} בתיקייה \"{paths.TO_GRADE}\".")
-    ctx = load_context(assignment_dir, send_solution=False)
-    require_rubric(ctx)
-    if not isinstance(points, list) or len(points) != len(ctx.questions):
-        raise GradingError(f"צריך ניקוד לכל אחת מ-{len(ctx.questions)} השאלות.")
-    pts = [_round_half_up(_num(p)) for p in points]
-    over = [f"{q.label}: {_pts(p)} מתוך {_pts(q.points)}" for p, q in zip(pts, ctx.questions) if p > q.points]
-    if over:  # לא חותכים בשקט: מי שמאשר רואה שהניקוד עובר את המחוון
-        raise GradingError(f"הניקוד עובר את המחוון ({'; '.join(over)}). {RUBRIC_RULE}")
-    texts = [str(c or "").strip()[:500] for c in (comments if isinstance(comments, list) else [])]
-    texts = (texts + [""] * len(pts))[:len(pts)]
-    picked = [_mistakes(m) for m in mistakes] if isinstance(mistakes, list) and len(mistakes) == len(pts) else None
-    with _write_lock:
-        note = read_notes(assignment_dir, n)
-        g = Graded(pts, texts, compute_grade(pts, ctx), str(feedback or "").strip()[:3000],
-                   [Mark(**m) for m in note.get("marks") or [] if isinstance(m, dict) and set(m) == {"page", "x0", "y0", "x1", "y1", "text"}],
-                   mistakes=picked or note.get("mistakes") or [])
-        scrub_graded(g, student_names(assignment_dir).get(n, []))
-        marked = assignment_dir / paths.MARKED / f"{n}.pdf"
-        if marked.exists() and "marks" not in note:
-            out = _resummarize(marked.read_bytes(), g, ctx)  # נבדקה לפני שהיו Grading notes: הסימונים רק ב-PDF
-        else:
-            pdf, _ = submission_pdf(files[n])
-            out = mark_pdf(pdf, g, ctx) if pdf else None
-        if out:
-            marked.parent.mkdir(exist_ok=True)
-            tmp = marked.with_suffix(".pdf.tmp")
-            tmp.write_bytes(out)
-            tmp.replace(marked)
-        at = _now()
-        note.pop("error", None)
-        write_notes(assignment_dir, n, {**note, "comments": g.comments, "mistakes": g.mistakes,
-                                        "reviewed": {"by": by, "at": at, "points": pts}})
-        mine = grades.own_file(assignment_dir)
-        own = grades.read_file(mine)
-        own[n] = {**read_grades(assignment_dir).get(n, {}), "number": n, "grade": _pts(g.grade), "feedback": g.feedback,
-                  "points": ";".join(_pts(p) for p in pts), "approved": f"{by} {at[:16].replace('T', ' ')}",
-                  "graded_at": at, "graded_by": by}
-        grades.write_file(mine, own)
-    return {"number": n, "grade": g.grade}
+                mistakes: list | None = None, reason: str = "") -> dict:
+    """מה שאדם החליט בבדיקה הידנית או בעריכת ציון: ניקוד והערה לכל שאלה, משוב, וסיבה (חובה כשמשנים ציון קיים).
+    הכול עובר דרך grading/grade_edit.edit_grade: הציון מתעדכן בכל היעדים (PDF מסומן, Grading notes, קובץ הציונים
+    של מי שבמחשב הזה כשורה מאושרת, ובעתיד מסד הנתונים), והשינוי נרשם ביומן. מחזיר את הציון."""
+    from .grade_edit import edit_grade  # grade_edit מייבא את הקובץ הזה
+    return edit_grade(assignment_dir, number, points, comments, feedback, by, reason=reason, mistakes=mistakes)

@@ -70,7 +70,7 @@
     // לוח הבקרה: טעות נפוצה שנפתחה
     mistakeOpen: null,
     // הבדיקה הידנית: העבודה שפתוחה, סינון לפי סוג הבעיה, מה מוצג (מסומנת/מקורית) והטיוטה של כל עבודה עד השמירה
-    review: { id: null, edits: {}, saving: false, pages: {}, marks: true, open: {}, fbOpen: false },
+    review: { id: null, edits: {}, saving: false, pages: {}, marks: true, open: {}, fbOpen: false, log: {} },
     // העתקות: איזו שכבה מוצגת, איזה זוג פתוח, ובדיקה שרצה עכשיו
     copy: { filter: "all", open: null, running: false, progress: "" },
   };
@@ -1988,6 +1988,7 @@
       comments: qs.map((q, i) => s.comments?.[i] || ""),
       picks: qs.map((q, i) => [...(s.mistakes?.[i] || [])]),
       feedback: s.feedback || "",
+      reason: "",
       changed: false,
     };
     return d;
@@ -2007,6 +2008,32 @@
     d.points[qi] = Math.max(0, half(q.pts - lost));
     d.comments[qi] = picks.length ? picks.join(". ") + "." : "";
     d.changed = true;
+  }
+
+  // עריכה של ציון קיים (לא אישור ראשון מהתור, ולא ציון ראשון לעבודה שנכשלה): חייבים לכתוב סיבה, כמו grade_edit.kind_of
+  const isEdit = (s) => s.score != null && !needsReview(s);
+
+  // יומן העריכות של הציון (api/grade-log): מי, מתי, מאיזה ציון לאיזה ולמה
+  function gradeLog(A, s) {
+    const key = `${A.id}:${s.id}`, known = state.review.log[key];
+    if (known !== undefined) return known;
+    state.review.log[key] = null;
+    api(`api/grade-log?course=${encodeURIComponent(A.courseFolder)}&assignment=${encodeURIComponent(A.folder)}&number=${s.id}`)
+      .then((r) => { state.review.log[key] = r.entries || []; }, () => { state.review.log[key] = []; })
+      .then(() => { if (route() === "/review") render(); });
+    return null;
+  }
+  const KIND_TEXT = { edit: "עריכה", review: "אישור מהבדיקה הידנית", first: "ציון ראשון" };
+  function historyHTML(A, s) {
+    const log = gradeLog(A, s);
+    if (!log?.length) return "";
+    return `<details class="rv-hist"><summary>היסטוריית הציון (${log.length})</summary><ol>${log.slice().reverse().map((e) => `
+      <li class="${e.action === "grade_edit_failed" ? "failed" : ""}">
+        <div class="rv-hist-top"><b class="num">${e.from == null ? "—" : esc(e.from)} ← ${esc(e.to)}</b>
+          <span>${esc(KIND_TEXT[e.kind] || "")} · ${esc(e.by || "")} · ${esc(when(e.at))}</span></div>
+        ${e.reason ? `<p>${esc(e.reason)}</p>` : ""}
+        ${e.action === "grade_edit_failed" ? `<p class="rv-hist-err">לא הגיע לכל המקומות: ${esc(e.error || "")}</p>` : ""}
+      </li>`).join("")}</ol></details>`;
   }
 
   // העמודים של ההגשה כתמונות (api/page), והסימונים של Claude מצוירים מעליהם במקום שלהם
@@ -2115,7 +2142,8 @@
     const at = list.indexOf(s), prev = list[at - 1], next = list[at + 1];
     const k = kindOf(s), flagged = needsReview(s) || s.review || s.failed;
     const unsure = (s.unsure || []).map((u, i) => (u ? i : -1)).filter((i) => i >= 0);
-    const over = overRubric(d.points), blocked = !!noRubric() || over.length > 0;
+    const over = overRubric(d.points), edit = isEdit(s), noReason = edit && !d.reason.trim();
+    const blocked = !!noRubric() || over.length > 0 || noReason;
     // הכלל קודם לכל: בלי מחוון אין טופס ניקוד, וניקוד שעובר את המחוון לא מאושר
     const rule = noRubric() ? rubricNoticeHTML()
       : over.length ? `<div class="notice rule-notice">${ICON.warn}<div><b>הניקוד בעבודה הזו לא לפי המחוון.</b>
@@ -2146,9 +2174,13 @@
           ${noRubric() ? "" : `<ol class="rq-list">${qs.map((q, qi) => questionHTML(s, d, qi, open.has(qi))).join("")}</ol>
           <details class="rv-fb" ${state.review.fbOpen ? "open" : ""}><summary>משוב לסטודנט</summary>
             <textarea id="rv-fb" data-rv-feedback rows="4" aria-label="משוב לסטודנט">${esc(d.feedback)}</textarea></details>`}
+          ${edit && !noRubric() ? `<div class="rv-reason"><label for="rv-reason">סיבה לשינוי <em>חובה</em></label>
+            <textarea id="rv-reason" data-rv-reason rows="2" maxlength="1000" placeholder="למשל: ערעור, הנימוק בשאלה 12 נמצא בעמוד 2" aria-required="true">${esc(d.reason)}</textarea>
+            <small>נרשם ביומן עם השם שלך, השעה, הציון הקודם והחדש.</small></div>` : ""}
+          ${historyHTML(A, s)}
           <div class="rv-bar">
             <div class="rv-total"><b class="num" id="rv-total">${noRubric() ? "—" : draftTotal(d)}</b><span>/ ${max}</span></div>
-            <button type="submit" class="btn primary" ${state.review.saving || blocked ? "disabled" : ""} title="${blocked ? "אפשר לאשר רק ניקוד לפי המחוון" : "Ctrl+Enter"}">${state.review.saving ? ICON.spin : ICON.check}${needsReview(s) ? (next ? "אשר ועבור לבאה" : "אשר") : "שמור"}</button>
+            <button type="submit" class="btn primary" ${state.review.saving || blocked ? "disabled" : ""} title="${noReason && !noRubric() && !over.length ? "צריך לכתוב סיבה לשינוי" : blocked ? "אפשר לאשר רק ניקוד לפי המחוון" : "Ctrl+Enter"}" data-rv-submit>${state.review.saving ? ICON.spin : ICON.check}${needsReview(s) ? (next ? "אשר ועבור לבאה" : "אשר") : edit ? "שמור שינוי" : "שמור"}</button>
           </div>
         </form>
       </div>`;
@@ -2159,6 +2191,7 @@
     if (!s || state.review.saving) return;
     const d = draft(s), wasQueued = needsReview(s);
     if (noRubric() || overRubric(d.points).length) { toast(noRubric() || `אפשר לאשר רק ניקוד לפי המחוון. ${RUBRIC_RULE}`, ICON.warn); return; }
+    if (isEdit(s) && !d.reason.trim()) { toast("צריך לכתוב סיבה לשינוי הציון", ICON.warn); $("#rv-reason")?.focus(); return; }
     const { queue } = reviewList(A);
     const at = queue.findIndex((x) => x.id === id);
     const next = wasQueued ? (queue[at + 1] || queue.find((x) => x.id !== id)) : null;
@@ -2167,16 +2200,18 @@
     try {
       const r = await api("api/review", { method: "POST", body: JSON.stringify({
         course: A.courseFolder, assignment: A.folder, number: id,
-        points: d.points, comments: d.comments, feedback: d.feedback, mistakes: d.picks,
+        points: d.points, comments: d.comments, feedback: d.feedback, mistakes: d.picks, reason: d.reason,
       }) });
       delete state.review.edits[id];
-      toast(`עבודה ${id} נשמרה: ${r.grade}`);
+      delete state.review.log[`${A.id}:${id}`];
+      toast(r.from != null && String(r.from) !== String(r.grade) ? `עבודה ${id}: הציון שונה מ-${r.from} ל-${r.grade}` : `עבודה ${id} נשמרה: ${r.grade}`);
       state.review.saving = false;
       await loadLocal();
       const target = next ? `#/review?n=${next.id}` : wasQueued ? "#/review" : location.hash;
       if (location.hash === target) render(); else location.hash = target;
     } catch (e) {
       state.review.saving = false;
+      delete state.review.log[`${A.id}:${id}`];  // גם עריכה שנכשלה באמצע נרשמת ביומן
       render();
       toast(e.message, ICON.warn);
     }
@@ -2687,6 +2722,16 @@
     const t = e.target;
     // בבדיקה הידנית לא מציירים מחדש בכל הקשה: רק הציון הכולל מתעדכן
     const rvs = reviewSub();
+    if (rvs && t.matches("[data-rv-reason]")) {
+      const d = draft(rvs);
+      d.reason = t.value;
+      const btn = $("[data-rv-submit]");
+      if (btn && !noRubric() && !overRubric(d.points).length) {
+        btn.disabled = state.review.saving || !t.value.trim();
+        btn.title = t.value.trim() ? "Ctrl+Enter" : "צריך לכתוב סיבה לשינוי";
+      }
+      return;
+    }
     if (rvs && (t.dataset.rvPts != null || t.dataset.rvComment != null || t.matches("[data-rv-feedback]"))) {
       const d = draft(rvs);
       if (t.dataset.rvPts != null) {

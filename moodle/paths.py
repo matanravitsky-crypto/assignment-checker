@@ -44,6 +44,9 @@ TASKS = "Who does what"                  # in the COURSE folder: who took the pu
 # on the pages, and why it needs a person. Numbers only, never names. The site's manual review reads it
 NOTES = "Grading notes"
 KEY = "Key - number to student.csv"
+# The activity log (activity_log/): who did what and when, e.g. every grade edit with its reason. A folder in the
+# assignment folder with one "<who>.jsonl" per writer, so OneDrive never merges two versions of a file
+ACTIVITY_LOG = "Activity log"
 # Suspected copying: pairs of numbers whose files, PDF metadata or page images match, and what each file looked like
 # (hashes only: no names, no metadata values). Written by copying/check.py, read by the site's "העתקות" page
 COPYING = "Copying check.json"
