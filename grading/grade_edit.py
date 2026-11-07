@@ -16,6 +16,7 @@ connect_database(store), כש-store הוא אובייקט עם save_grade(edit: 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
@@ -224,7 +225,9 @@ def edit_grade(assignment_dir: Path, number: str, points: list, comments: list, 
                             if isinstance(m, dict) and set(m) == {"page", "x0", "y0", "x1", "y1", "text"}],
                            mistakes=picked or note.get("mistakes") or [])
         g_.scrub_graded(graded, names)
-        edit = GradeEdit(assignment_dir, n, ctx, graded, files[n], old, note, by, g_._now(), why, kind)
+        # graded_at עד המיקרו-שנייה: שתי עריכות באותה שנייה (שני אנשים, או אחד שתיקן מיד) - האחרונה גוברת במיזוג
+        at = datetime.now().isoformat(timespec="microseconds")
+        edit = GradeEdit(assignment_dir, n, ctx, graded, files[n], old, note, by, at, why, kind)
         base = {"number": n, "from": edit.old_grade, "to": edit.new_grade, "points_from": old.get("points") or None,
                 "points_to": ";".join(g_._pts(p) for p in pts), "reason": why, "kind": kind}
         updated: list[str] = []

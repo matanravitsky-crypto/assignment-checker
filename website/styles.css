@@ -1001,3 +1001,9 @@ span.rv-arrow { visibility: hidden; }
 .sync-pop .sync-od.warn { padding: 8px 10px; border-radius: var(--r-sm); background: var(--warn-soft); color: var(--ink); }
 .sync-pop .sync-x { position: absolute; top: 6px; inset-inline-end: 6px; padding: 4px 8px; font-size: 13px; }
 @media (max-width: 560px) { .sync-btn span { display: none; } }
+
+/* "ערוך ציון" בשורה של עבודה שנבדקה */
+.score-cell { display: inline-flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.row-edit { display: inline-flex; align-items: center; gap: 4px; font-size: 12.5px; font-weight: 600; color: var(--blue); text-decoration: none; padding: 2px 8px; border: 1px solid var(--rule); border-radius: 999px; background: var(--sheet); white-space: nowrap; }
+.row-edit:hover, .row-edit:focus-visible { border-color: var(--blue); }
+.row-edit svg { width: 13px; height: 13px; }
