@@ -505,7 +505,7 @@ def test_save_review_approves_with_who_and_rewrites_the_summary_page(root):
     grading.grade_assignment(a.dir, ["0001"], ask=lambda req: detailed(review="לא בטוח", kind="uncertain"))
     out = grading.save_review(a.dir, "1", [20, 14.7, 20, 20, 0], ["", "חסר נימוק.", "", "", "השאלה לא נמצאה"],
                               "עבודה טובה.", by="dana (PC)", mistakes=[[], ["חסר נימוק"], [], [], []])
-    assert out == {"number": "0001", "grade": 75}  # 14.7 → 14.5
+    assert (out["number"], out["grade"], out["from"]) == ("0001", 75, "85")  # 14.7 → 14.5
     row = grading.read_grades(a.dir)["0001"]
     assert row["points"] == "20;14.5;20;20;0" and row["grade"] == "75" and row["feedback"] == "עבודה טובה."
     assert row["approved"].startswith("dana (PC) ") and row["review"] == "לא בטוח" and grading.is_approved(row)
@@ -527,7 +527,7 @@ def test_save_review_of_work_graded_before_notes_keeps_its_marks(root):
     grading.notes_path(a.dir, "0002").unlink()
     with pymupdf.open(a.dir / paths.MARKED / "0002.pdf") as doc:
         pages, marked_page = doc.page_count, len(doc[1].get_drawings())
-    grading.save_review(a.dir, "0002", [20] * 5, [], "", by="x")
+    grading.save_review(a.dir, "0002", [20] * 5, [], "", by="x", reason="ערעור התקבל")
     with pymupdf.open(a.dir / paths.MARKED / "0002.pdf") as doc:
         assert doc.page_count == pages and "ציון: 100 מתוך 100" in text(doc[0]) and len(doc[1].get_drawings()) == marked_page
 
@@ -545,7 +545,7 @@ def test_server_review_and_downloads(root, server):
     a = asg(root)
     st, out = call(server, "POST", "/api/review", {"course": COURSE, "assignment": HW, "number": "0003",
                                                      "points": [20, 20, 20, 20, 10], "comments": [], "feedback": "יפה"})
-    assert st == 200 and out == {"number": "0003", "grade": 90}
+    assert st == 200 and (out["number"], out["grade"], out["from"]) == ("0003", 90, None)
     assert grading.read_grades(a.dir)["0003"]["approved"]
     for bad in ({"number": "../1", "points": [20] * 5}, {"number": "0003", "points": ["20"] * 5}, {"number": "0003", "points": [True] * 5}):
         st, _ = call(server, "POST", "/api/review", {"course": COURSE, "assignment": HW, **bad})

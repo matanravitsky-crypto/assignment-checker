@@ -42,6 +42,7 @@ Each folder has a README.md that explains it.
 | `moodle/` | Steps 1 and 3: Moodle ZIP → numbered submissions (`ingest`), grades + marked files → ZIPs (`upload`), and the automatic upload to Moodle (`send`, `record`). `python -m moodle ingest|status|upload|send|record <id>`, `guide` |
 | `moodle/paths.py` | Every folder and file name in the shared folder (constants). Everything else imports names from here |
 | `grading/` | Step 2: grading with Claude. `python -m grading <id>` or the dashboard's "Grade" button. Through the API with `ANTHROPIC_API_KEY`, otherwise through the logged-in Claude Code (`grading/claude_cli.py`). Its README has the input/output contract, the rubric format and the `Grades.csv` columns |
+| `activity_log/` | The activity log: `record(folder, action, by, **details)` and `read(folder, action, **match)`. `<folder>/Activity log/<who>.jsonl`, one file per writer, lines only added. Grade edits write `grade_edit` / `grade_edit_failed` |
 | `copying/` | Suspected copying between submissions, no Claude and no tokens: `python -m copying <id>` or the site's "העתקות" page (`#/copying`). Layer 0: the same file, or the same PDF document id / author / creation time. Layer 1: the same page (dHash for scans, rare shared 3-word sequences for typed pages). Writes `Copying check.json` (numbers and hashes only). Its README has the thresholds and what it can't catch |
 | `.claude/skills/rubric-builder/` | "מחוון לדף X, תמשוך Y עבודות": the one rubric skill (the older `rubric` skill and its workflow were retired on 2026-10-29). A committee of agents builds the rubric from the full solution and all Y submissions, with `rubric.json` as the one source, and writes everything into `פדגוגי/`: `Solutions.md`, `Solution methods.md`, `Manual review rules.md`, and `Working notes/` (`rubric.json`, `findings.md`, the agents' reports). `scripts/make_pdf.py` renders from it both `פדגוגי/Rubric.md` (the grading bot's rubric; the bot deducts by רגיל) and `פדגוגי/Rubric.pdf` (people: steps and points, error tables with רגיל/מחמיר = רגיל + 1, alternative methods) in the course's fixed format. A council `Rubric.md` from the `rubric` skill is an input (its numbers) and is archived on delivery. Then a committee loop on the TA's remarks until approved. Needs MiKTeX once per computer (`setup/check.ps1`, `setup/install-windows.ps1 -NoPerl -NoUpdate`). Its README.md explains it to people |
 | `dashboard/` | Local server that connects the website to the shared folder: `python -m dashboard serve` (or `start.bat`) |
@@ -464,6 +465,15 @@ and a line in a spreadsheet. So per submission the grader writes:
 and `review_kind`) and every work whose grading failed to the site's "בדיקה ידנית" queue (`#/review`). There a TA picks ready-made
 comments (the rubric's `deductions`, the assignment's common mistakes, Claude's own), the points follow, and "approve" calls
 `grading.save_review`: it writes `approved = "<user> (<PC>) <time>"` in `Grades.csv` and redraws the marked PDF's summary page.
+
+**Editing a grade** ("ערוך ציון", Matan 2026-11-07): the same page, with a required "סיבה לשינוי" for any work that
+already has a grade (not for a first approval from the queue). Every save goes through one function,
+`grading/grade_edit.edit_grade`, which updates each place in `TARGETS` in order (the database, the marked PDF's summary
+page, `Grading notes`, the editor's `Grades by <name>.csv` as an approved row, which wins the merge and is what goes to
+Moodle) and logs who, when, from, to and why to `activity_log/` (`<assignment>/Activity log/<who>.jsonl`, one file per
+writer; any other action may write there too). A new place to update is one more target, not a change to the function.
+**There is no database yet**: `DatabaseTarget` stays off until `grade_edit.connect_database(store)` is called with an
+object that has `save_grade(edit)`.
 
 `python -m moodle upload` takes it from there.
 

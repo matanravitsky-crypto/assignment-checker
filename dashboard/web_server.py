@@ -23,7 +23,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from grading import grade as grading
+from grading import grade as grading, grade_edit
 from moodle import paths
 
 from . import actions, folder_view, public_status, scheduler, settings as cfg, sync, updater
@@ -185,6 +185,19 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json({"error": str(e)}, HTTPStatus.NOT_FOUND)
         if url.path == "/api/pull":  # כמה התקדמה המשיכה, בזמן שה-POST שלה עוד רץ
             return self._json(actions.pull_status())
+        if url.path == "/api/grade-log":
+            # יומן העריכות של ציון עבודה אחת: מי, מתי, מאיזה ציון לאיזה ולמה (activity_log)
+            root = self._root()
+            if not root:
+                return
+            q = {k: v[0] for k, v in parse_qs(url.query).items()}
+            course, assignment, number = q.get("course", ""), q.get("assignment", ""), q.get("number", "")
+            if not course or not assignment or not number.isdigit():
+                return self._json({"error": "חסרים קורס, מטלה ומספר הגשה"}, HTTPStatus.BAD_REQUEST)
+            try:
+                return self._json({"entries": actions.grade_history(root, course, assignment, number)})
+            except FileNotFoundError as e:
+                return self._json({"error": str(e)}, HTTPStatus.NOT_FOUND)
         if url.path in ("/api/pages", "/api/page"):
             # עמודי הגשה כתמונות, לבדיקה הידנית: /api/pages אומר כמה עמודים, /api/page מחזיר עמוד אחד
             root = self._root()
@@ -462,9 +475,14 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json({"error": "הניקוד לא תקין"}, HTTPStatus.BAD_REQUEST)
             try:
                 return self._json(actions.save_review(root, course, assignment, number, points, body.get("comments") or [],
-                                                      str(body.get("feedback") or ""), body.get("mistakes")))
+                                                      str(body.get("feedback") or ""), body.get("mistakes"),
+                                                      reason=str(body.get("reason") or "")))
             except FileNotFoundError as e:
                 return self._json({"error": str(e)}, HTTPStatus.NOT_FOUND)
+            except grade_edit.ReasonRequired as e:
+                return self._json({"error": str(e), "needReason": True}, HTTPStatus.UNPROCESSABLE_ENTITY)
+            except grade_edit.EditIncomplete as e:  # חלק מהמקומות עודכנו: האתר אומר איפה, ושמירה חוזרת משלימה
+                return self._json({"error": str(e), "updated": e.updated, "failed": e.failed}, HTTPStatus.CONFLICT)
             except grading.GradingError as e:
                 return self._json({"error": str(e)}, HTTPStatus.UNPROCESSABLE_ENTITY)
             except Exception as e:
