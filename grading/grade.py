@@ -758,7 +758,9 @@ def _note_rect(box: pymupdf.Rect, page: pymupdf.Rect, text: str = "", size: floa
 
     def cost(r: pymupdf.Rect) -> float:
         norm = (r.x0 / page.width * 1000, r.y0 / page.height * 1000, r.x1 / page.width * 1000, r.y1 / page.height * 1000)
-        clash = sum(max(r.intersect(t).get_area(), 0) for t in taken or []) / max(r.get_area(), 1)
+        # r & t is a new rectangle. r.intersect(t) changes r itself in PyMuPDF: from the second note on a page the
+        # candidate shrank to the overlap (or turned inside out) and the note was never written
+        clash = sum(max((r & t).get_area(), 0) for t in taken or []) / max(r.get_area(), 1)
         return ink.density(*norm) + 5 * clash
 
     pool = fits or [_clamp(r, inside) for r in cands]
