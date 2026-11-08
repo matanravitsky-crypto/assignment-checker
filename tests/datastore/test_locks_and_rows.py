@@ -139,7 +139,7 @@ def test_three_real_processes_of_one_grader_write_the_same_file_without_losing_r
              for k in (1, 2, 3)]
     for p in procs:
         out, err = p.communicate(timeout=180)
-        assert p.returncode == 0 and "done" in out, err[-800:]
+        assert p.returncode == 0 and "done" in (out or ""), (err or "")[-800:]  # a failed process shows its stderr, not a TypeError
     rows = grades.read_file(grades.own_file(a))
     assert len(rows) == 75 and {r["grade"] for r in rows.values()} == {str(i) for i in range(25)}
     with grades.own_file(a).open(encoding="utf-8-sig", newline="") as fh:
