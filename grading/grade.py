@@ -1110,16 +1110,20 @@ def grade_assignment(assignment_dir: Path, numbers: list[str] | None = None, *, 
             tmp = marked / f"{n}.pdf.tmp"
             tmp.write_bytes(out)
             tmp.replace(marked / f"{n}.pdf")
+            at = _now()
             grades.update_own(assignment_dir, n, {**rows.get(n, {}), "number": n, "grade": _pts(g.grade), "feedback": g.feedback,
                                                   "points": ";".join(_pts(p) for p in g.points), "approved": "", "review": g.review,
-                                                  "graded_at": _now(), "graded_by": who},
+                                                  "graded_at": at, "graded_by": who},
                               who=who, max_grade=ctx.max_grade, question_points=[q.points for q in ctx.questions])
+            _ledger(assignment_dir, "grade_set", who, number=n, grade=_pts(g.grade), points=";".join(_pts(p) for p in g.points),
+                    review=bool(g.review), model=model, graded_at=at)
             return True
 
     def failed(n: str, why: str) -> None:
         # עבודה שהבדיקה שלה נכשלה מגיעה לתור הבדיקה הידנית עם הסיבה (ואפשר גם לנסות לבדוק אותה שוב)
         with _write_lock:
             write_notes(assignment_dir, n, {**read_notes(assignment_dir, n), "error": why, "failed_at": _now()})
+        _ledger(assignment_dir, "grade_failed", who, number=n, error=why[:300])
 
     with ThreadPoolExecutor(max_workers=max(1, min(parallel, 20))) as pool:
         futures = {pool.submit(work, n): n for n in todo}
@@ -1193,6 +1197,16 @@ def save_review(assignment_dir: Path, number: str, points: list, comments: list,
     של מי שבמחשב הזה כשורה מאושרת, ובעתיד מסד הנתונים), והשינוי נרשם ביומן. מחזיר את הציון."""
     from .grade_edit import edit_grade  # grade_edit מייבא את הקובץ הזה
     return edit_grade(assignment_dir, number, points, comments, feedback, by, reason=reason, mistakes=mistakes)
+
+
+def _ledger(assignment_dir: Path, action: str, by: str, **details) -> None:
+    """רושם אירוע ציון ביומן (datastore/ledger.py). היומן הוא שכבת ביקורת ושחזור: כישלון בכתיבה אליו לא מפיל בדיקה."""
+    try:
+        import activity_log
+        activity_log.record(assignment_dir, action, by, **details)
+    except Exception as e:  # noqa: BLE001
+        import sys
+        print(f"היומן לא נכתב: {e}", file=sys.stderr)
 
 
 def _update_stats(assignment_dir: Path) -> None:

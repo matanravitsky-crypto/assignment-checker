@@ -1,5 +1,7 @@
 """python -m datastore check <מזהה מטלה> | check --all      בדיקת שלמות (ראו doctor.py)
 python -m datastore fix <מזהה מטלה> [--yes]                 תיקון של מה שבטוח; בלי --yes רק מראה מה היה נעשה
+python -m datastore replay <מזהה מטלה> [--yes]              מה היומן אומר שאבד בקבצים, ושחזור (ledger.py)
+python -m datastore history <מזהה מטלה> <מספר הגשה>         מי נתן לעבודה איזה ציון ומתי
 """
 from __future__ import annotations
 
@@ -9,7 +11,7 @@ from pathlib import Path
 
 from moodle import paths
 
-from . import doctor
+from . import doctor, ledger
 from .schema import INFO, REJECT, WARN
 
 LEVEL_HE = {REJECT: "שגיאה", WARN: "אזהרה", INFO: "ידיעה"}
@@ -40,6 +42,12 @@ def main(argv: list[str] | None = None) -> int:
     f = sub.add_parser("fix", help="תיקון של מה שבטוח לתקן לבד")
     f.add_argument("id")
     f.add_argument("--yes", action="store_true", help="לבצע באמת (בלי זה: רק מה היה נעשה)")
+    r = sub.add_parser("replay", help="השוואת היומן לקבצים, ושחזור של מה שאבד")
+    r.add_argument("id")
+    r.add_argument("--yes", action="store_true")
+    h = sub.add_parser("history", help="כל אירועי הציון של עבודה אחת")
+    h.add_argument("id")
+    h.add_argument("number")
     args = p.parse_args(argv)
     if args.cmd == "check":
         if not args.id and not args.all:
@@ -53,6 +61,20 @@ def main(argv: list[str] | None = None) -> int:
             print(line)
         if not args.yes:
             print("(בדיקה בלבד. עם --yes זה יבוצע)")
+        return 0
+    if args.cmd == "replay":
+        lines = ledger.replay(_target(args.id), dry_run=not args.yes)
+        for line in lines:
+            print(line)
+        if not lines:
+            print("הקבצים תואמים ליומן.")
+        elif not args.yes:
+            print("(בדיקה בלבד. עם --yes זה יבוצע)")
+        return 0
+    if args.cmd == "history":
+        for e in ledger.history(_target(args.id), args.number):
+            what = e.get("grade", e.get("to", e.get("error", "")))
+            print(f"{e.get('at', '')[:19]}  {e.get('action')}  {e.get('by')}  {what}")
         return 0
     return 1
 

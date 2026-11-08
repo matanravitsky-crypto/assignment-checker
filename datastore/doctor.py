@@ -26,7 +26,7 @@ from pathlib import Path
 
 from moodle import claims, grades, lock as moodle_lock, paths
 
-from . import atomic
+from . import atomic, ledger
 from .schema import INFO, REJECT, WARN, Problem, check_details, check_grade_row, check_key_rows, check_notes, summarize
 
 CONFLICT_DIR = "Conflict copies"          # בתוך Earlier versions/: עותקים מתנגשים שמוזגו
@@ -182,6 +182,16 @@ def check(assignment_dir: Path) -> Report:
     batch = a / paths.UPLOAD / "Upload batch.json"
     if batch.is_file():
         atomic.read_json(batch, default=None, problems=problems)
+
+    # יומן האירועים מול הקבצים: ציון שהיומן אומר שניתן ובקובץ אין אותו (עדכון שאבד), ועריכות שהתחילו ולא נגמרו
+    try:
+        for m in ledger.compare(a):
+            problems.append(Problem("ledger_mismatch", f"עבודה {m['number']}: היומן אומר ציון {m['ledger_grade']} ({m['by']}), בקובץ {m['file_grade'] or 'אין ציון'}. אפשר לשחזר מהיומן", WARN, paths.ACTIVITY_LOG, m["number"]))
+            fixable.append("ledger_mismatch")
+        for e in ledger.incomplete_edits(a):
+            problems.append(Problem("incomplete_edit", f"עבודה {e['number']}: עריכה של {e['by']} התחילה ולא נרשמה כגמורה (קריסה באמצע?)", INFO, paths.ACTIVITY_LOG, e["number"]))
+    except Exception as e:  # noqa: BLE001
+        problems.append(Problem("ledger_unreadable", f"יומן האירועים לא נקרא ({type(e).__name__})", WARN, paths.ACTIVITY_LOG))
     return rep
 
 
@@ -264,6 +274,9 @@ def fix(assignment_dir: Path, dry_run: bool = True) -> list[str]:
         done.append(f"{verb} מוחק עותק מתנגש של סטטיסטיקה: {copy.name} (יחושב מחדש)")
         if not dry_run:
             copy.unlink(missing_ok=True)
+
+    # ציונים שהיומן יודע עליהם והקבצים איבדו
+    done += ledger.replay(a, dry_run=dry_run)
     return done
 
 

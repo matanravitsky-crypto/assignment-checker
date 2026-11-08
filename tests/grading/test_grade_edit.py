@@ -34,7 +34,7 @@ def test_editing_an_existing_grade_needs_a_reason_and_changes_nothing_without_on
         with pytest.raises(grade_edit.ReasonRequired):
             grading.save_review(a.dir, "0001", FULL, [], "", by="dana (PC)", reason=reason)
     assert grading.read_grades(a.dir)["0001"]["grade"] == before == "85"
-    assert activity_log.read(a.dir) == []
+    assert activity_log.read(a.dir, "grade_edit") == []
 
 
 def test_an_edit_updates_the_pdf_the_grades_file_and_the_log(root):
@@ -48,7 +48,7 @@ def test_an_edit_updates_the_pdf_the_grades_file_and_the_log(root):
     assert mine["grade"] == "100" and mine["approved"].startswith("dana (PC) ") and mine["points"] == "20;20;20;20;20"
     assert grading.read_grades(a.dir)["0001"]["grade"] == "100"
     # היומן: מי, מתי, מאיזה ציון לאיזה ולמה
-    (e,) = activity_log.read(a.dir)
+    (e,) = activity_log.read(a.dir, "grade_edit")  # the grading run itself logs grade_set events now
     assert (e["action"], e["by"], e["number"], e["from"], e["to"], e["kind"]) == ("grade_edit", "dana (PC)", "0001", "85", "100", "edit")
     assert e["reason"] == "ערעור: הנימוק בשאלה 12 נמצא בעמוד 2" and e["at"]
     assert e["points_from"] == "20;15;20;20;10" and e["points_to"] == "20;20;20;20;20"

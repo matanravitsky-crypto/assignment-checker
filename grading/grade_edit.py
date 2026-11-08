@@ -10,8 +10,9 @@
 
 מקום חדש שצריך לעדכן בו ציון = מחלקה חדשה עם name, label, enabled() ו-apply(edit), ושורה ב-TARGETS. הפונקציה לא משתנה.
 
-מסד הנתונים (DatabaseTarget): עוד אין מסד נתונים, אז היעד כבוי. כשיהיה, מחברים אותו פעם אחת עם
-connect_database(store), כש-store הוא אובייקט עם save_grade(edit: GradeEdit) -> None. מאותו רגע הוא הראשון שמתעדכן.
+מסד הנתונים (DatabaseTarget): כבוי עד ש-connect_database(store) מחבר אליו store עם save_grade(edit: GradeEdit) -> None.
+datastore/ledger.py נותן LedgerStore: רושם "grade_edit_intent" ביומן לפני שאר היעדים (קריסה באמצע = עריכה לא גמורה
+שה-doctor מראה). הדשבורד יחבר אותו בהפעלה (שלב 3 של הצעה A); העריכה הגמורה נרשמת תמיד ("grade_edit").
 """
 from __future__ import annotations
 
