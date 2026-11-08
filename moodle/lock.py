@@ -17,6 +17,8 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from datastore import atomic
+
 LOCK_MINUTES = 30
 SOMEONE_ELSE = "מישהו אחר"  # shown when the lock file is empty
 PID_SUFFIX = re.compile(r"\s+pid=(\d+)\s*$")
@@ -107,11 +109,20 @@ def holder(lock: Path, minutes: int = LOCK_MINUTES) -> tuple[str, datetime] | No
 def take(folder: Path, name: str, minutes: int = LOCK_MINUTES) -> Path:
     """Write my lock into folder/name. Raises Locked if a fresh lock there keeps me out (see blocks_me)."""
     lock = folder / name
+    for _attempt in range(3):
+        held = holder(lock, minutes)
+        if held:
+            raise Locked(*held)
+        # Atomic: O_CREAT|O_EXCL, so two processes that try in the same millisecond cannot both succeed. A lock file
+        # that exists but does not block (stuck, or mine from a dead process) is removed first, then the attempt repeats
+        if atomic.create_exclusive(lock, my_text()):
+            return lock
+        try:
+            lock.unlink()
+        except OSError:
+            pass
     held = holder(lock, minutes)
-    if held:
-        raise Locked(*held)
-    lock.write_text(my_text(), encoding="utf-8")
-    return lock
+    raise Locked(*held) if held else Locked(SOMEONE_ELSE, datetime.now())
 
 
 def refresh(lock: Path) -> None:

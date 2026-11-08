@@ -18,6 +18,7 @@ from datetime import datetime
 from pathlib import Path
 
 from moodle import anonymize, guide, lock, paths, pull_check
+from datastore import atomic
 
 SEVEN_ZIP_PATHS = [r"C:\Program Files\7-Zip\7z.exe", r"C:\Program Files (x86)\7-Zip\7z.exe"]
 
@@ -152,7 +153,7 @@ def assignment_folder(assignment_id: str, zip_path: Path, course: str | None, na
     folder.mkdir(parents=True, exist_ok=True)
     info = {"id": str(assignment_id), "course": course, "name": name,
             "title": name_from_zip(zip_path, assignment_id)}
-    (folder / paths.INFO).write_text(json.dumps(info, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    atomic.write_json_atomic(folder / paths.INFO, info)  # atomic: a crash never leaves half a details file
     return folder
 
 

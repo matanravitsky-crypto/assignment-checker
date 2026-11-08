@@ -7,7 +7,18 @@ each assignment's details file, so they stay right as assignments are added.
 from pathlib import Path
 
 from moodle import paths, status
+from datastore import atomic
 
+
+
+def _write_if_changed(path, text: str) -> None:
+    """Write the README only when its text changed: every pull used to rewrite every README, and OneDrive synced them all."""
+    try:
+        if path.exists() and path.read_text(encoding="utf-8-sig") == text:
+            return
+    except OSError:
+        pass
+    atomic.write_atomic(path, text, encoding="utf-8-sig")
 
 def title(folder: Path) -> str:
     """The assignment's name as Moodle shows it, in Hebrew when known."""
@@ -121,11 +132,11 @@ def write_guides(data_dir: Path) -> list[Path]:
         for folder in assignments:
             for subfolder, note in SUBFOLDER_NOTES.items():
                 (folder / subfolder).mkdir(exist_ok=True)
-                (folder / subfolder / paths.README).write_text(note, encoding="utf-8-sig")
+                _write_if_changed((folder / subfolder / paths.README), note)
             written.append(folder / paths.README)
-            written[-1].write_text(assignment_guide(folder), encoding="utf-8-sig")
+            _write_if_changed(written[-1], assignment_guide(folder))
         written.append(data_dir / course / paths.README)
-        written[-1].write_text(course_guide(course, assignments), encoding="utf-8-sig")
+        _write_if_changed(written[-1], course_guide(course, assignments))
     written.append(data_dir / paths.README)
-    written[-1].write_text(top_guide(courses), encoding="utf-8-sig")
+    _write_if_changed(written[-1], top_guide(courses))
     return written

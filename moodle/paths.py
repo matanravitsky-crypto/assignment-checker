@@ -108,8 +108,17 @@ class TwoFolders(ValueError):
     """Two assignment folders carry the same Moodle id (a copied folder): a pull or upload could go to the wrong one."""
 
 
+def read_info_or_none(assignment_dir: Path) -> dict | None:
+    """The details, or None when the file is unreadable (a broken file is datastore doctor's to report, not a crash here)."""
+    try:
+        d = read_info(assignment_dir)
+    except (OSError, ValueError):
+        return None
+    return d if isinstance(d, dict) else None
+
+
 def find_assignment(assignment_id: str) -> Path | None:
-    found = [f for f in assignment_dirs() if str(read_info(f).get("id")) == str(assignment_id)]
+    found = [f for f in assignment_dirs() if str((read_info_or_none(f) or {}).get("id")) == str(assignment_id)]
     if len(found) > 1:
         raise TwoFolders(f"Moodle id {assignment_id} is in {len(found)} assignment folders: "
                          + ", ".join(str(f.relative_to(data_dir())) for f in found))

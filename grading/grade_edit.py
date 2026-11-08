@@ -148,13 +148,13 @@ class GradesCsvTarget:
         return True
 
     def apply(self, edit: GradeEdit) -> None:
-        mine = grades.own_file(edit.assignment_dir)
-        own = grades.read_file(mine)
-        own[edit.number] = {**edit.old, "number": edit.number, "grade": edit.new_grade, "feedback": edit.graded.feedback,
-                            "points": ";".join(g_._pts(p) for p in edit.points),
-                            "approved": f"{edit.by} {edit.at[:16].replace('T', ' ')}",
-                            "graded_at": edit.at, "graded_by": edit.by}
-        grades.write_file(mine, own)
+        # נעילת תהליך ובדיקת סכמה (datastore): שתי עריכות מאותו מחשב לא דורסות זו את זו, וציון לא חוקי לא נכתב
+        grades.update_own(edit.assignment_dir, edit.number,
+                          {**edit.old, "number": edit.number, "grade": edit.new_grade, "feedback": edit.graded.feedback,
+                           "points": ";".join(g_._pts(p) for p in edit.points),
+                           "approved": f"{edit.by} {edit.at[:16].replace('T', ' ')}",
+                           "graded_at": edit.at, "graded_by": edit.by},
+                          max_grade=edit.ctx.max_grade, question_points=[q.points for q in edit.ctx.questions])
 
 
 # הסדר הוא סדר העדכון. מקום חדש = שורה חדשה כאן

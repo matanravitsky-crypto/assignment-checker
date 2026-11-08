@@ -963,7 +963,8 @@ def submission_pdf(files: list[Path]) -> tuple[bytes, list[str]]:
 
 
 def pending(assignment_dir: Path) -> list[str]:
-    """הגשות שעוד לא נבדקו: אין להן שורה ב-Grades.csv ואין להן קובץ מסומן."""
+    """הגשות שעוד לא נבדקו: אין להן שורה ב-Grades.csv ואין להן קובץ מסומן (PDF שסומן ביד נחשב בדוק; PDF בלי
+    שורה אחרי בדיקה שנקטעה מופיע ב-datastore doctor כ-marked_without_grade, ואדם מחליט)."""
     done = set(read_grades(assignment_dir)) | set(marked_files(assignment_dir))
     return [n for n in submission_numbers(assignment_dir) if n not in done]
 
@@ -1102,15 +1103,17 @@ def grade_assignment(assignment_dir: Path, numbers: list[str] | None = None, *, 
             rows = read_grades(assignment_dir)
             if is_approved(rows.get(n)):  # מישהו אישר בזמן שהבדיקה רצה
                 return False
+            # סדר הכתיבה: הערות, PDF מסומן, ולבסוף שורת הציון. השורה היא נקודת ההתחייבות: בלעדיה העבודה לא נחשבת
+            # בדוקה (pending, האתר, הסטטיסטיקה) ולא תעלה למודל, אז קריסה באמצע משאירה "בדיקה לא גמורה", לא ציון חסר.
+            # השורה נכתבת דרך grades.update_own: נעילת תהליך ובדיקת סכמה (ציון לא חוקי לא נכתב)
+            write_notes(assignment_dir, n, graded_notes(g, model))
             tmp = marked / f"{n}.pdf.tmp"
             tmp.write_bytes(out)
             tmp.replace(marked / f"{n}.pdf")
-            write_notes(assignment_dir, n, graded_notes(g, model))
-            own = grades.read_file(mine)
-            own[n] = {**rows.get(n, {}), "number": n, "grade": _pts(g.grade), "feedback": g.feedback,
-                      "points": ";".join(_pts(p) for p in g.points), "approved": "", "review": g.review,
-                      "graded_at": _now(), "graded_by": who}
-            grades.write_file(mine, own)
+            grades.update_own(assignment_dir, n, {**rows.get(n, {}), "number": n, "grade": _pts(g.grade), "feedback": g.feedback,
+                                                  "points": ";".join(_pts(p) for p in g.points), "approved": "", "review": g.review,
+                                                  "graded_at": _now(), "graded_by": who},
+                              who=who, max_grade=ctx.max_grade, question_points=[q.points for q in ctx.questions])
             return True
 
     def failed(n: str, why: str) -> None:

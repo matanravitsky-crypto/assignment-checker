@@ -164,6 +164,16 @@ class Handler(SimpleHTTPRequestHandler):
             # (dashboard/updater.py), והאתר טוען את עצמו מחדש כדי לקבל גם את הקבצים החדשים שלו
             root = self._root()
             return root and self._json({"sig": actions.changes(root), "version": updater.version()})
+        if url.path == "/api/integrity":
+            # שער השלמות (datastore doctor): בעיות לכל מטלה, או ?course=&assignment=. מספרים בלבד, אף פעם לא שמות
+            root = self._root()
+            if not root:
+                return
+            q = {k: v[0] for k, v in parse_qs(url.query).items()}
+            try:
+                return self._json(actions.integrity_view(root, q.get("course"), q.get("assignment")))
+            except FileNotFoundError as e:
+                return self._json({"error": str(e)}, HTTPStatus.NOT_FOUND)
         if url.path == "/api/stats":
             # מסד הנתונים הסטטיסטי (stats/): כל המטלות, או ?course=<תיקיית הקורס>. מספרים בלבד
             root = self._root()
@@ -432,6 +442,15 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json({"error": str(e)}, HTTPStatus.NOT_FOUND)
             except OSError as e:  # OneDrive באמצע סנכרון, קובץ פתוח
                 return self._json({"error": f"המכוון לא נשמר: {e}"}, HTTPStatus.CONFLICT)
+        if url.path == "/api/integrity/fix":
+            # תיקון של מה ש-datastore doctor יודע לתקן לבד. dryRun (ברירת מחדל) רק אומר מה היה נעשה
+            course, assignment = body.get("course"), body.get("assignment")
+            if not course or not assignment:
+                return self._json({"error": "חסרים קורס ומטלה"}, HTTPStatus.BAD_REQUEST)
+            try:
+                return self._json(actions.fix_integrity(root, course, assignment, dry_run=bool(body.get("dryRun", True))))
+            except FileNotFoundError as e:
+                return self._json({"error": str(e)}, HTTPStatus.NOT_FOUND)
         if url.path == "/api/copying":
             # בדיקת העתקות (copying/check.py): בלי Claude, רצה ברקע, והאתר שואל על המצב ב-GET /api/copying
             course, assignment = body.get("course"), body.get("assignment")
