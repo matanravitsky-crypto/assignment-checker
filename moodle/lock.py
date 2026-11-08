@@ -107,21 +107,33 @@ def holder(lock: Path, minutes: int = LOCK_MINUTES) -> tuple[str, datetime] | No
 
 
 def take(folder: Path, name: str, minutes: int = LOCK_MINUTES) -> Path:
-    """Write my lock into folder/name. Raises Locked if a fresh lock there keeps me out (see blocks_me)."""
+    """Write my lock into folder/name. Raises Locked if a fresh lock there keeps me out (see blocks_me).
+
+    Taking over a lock that does not block (stuck, or mine from a dead process) is check → unlink → create, and between
+    the check and the unlink another process on this computer may already have replaced the stuck file with its own
+    fresh lock, which the unlink would then throw away (four racers on one stuck lock ended with no lock at all). So the
+    whole sequence runs under a per-computer process lock keyed by the lock's path: on one computer only one process
+    takes over at a time, and the others then see its fresh lock. Between computers OneDrive syncs in seconds, so a
+    same-millisecond race there is not a real case.
+    """
     lock = folder / name
-    for _attempt in range(3):
-        held = holder(lock, minutes)
-        if held:
-            raise Locked(*held)
-        # Atomic: O_CREAT|O_EXCL, so two processes that try in the same millisecond cannot both succeed. A lock file
-        # that exists but does not block (stuck, or mine from a dead process) is removed first, then the attempt repeats
-        if atomic.create_exclusive(lock, my_text()):
-            return lock
-        try:
-            lock.unlink()
-        except OSError:
-            pass
-    held = holder(lock, minutes)
+    try:
+        with atomic.process_lock(str(lock.resolve()), timeout=10.0):
+            for _attempt in range(3):
+                held = holder(lock, minutes)
+                if held:
+                    raise Locked(*held)
+                # Atomic: O_CREAT|O_EXCL, so two processes that try in the same millisecond cannot both succeed. A lock
+                # file that exists but does not block is removed first, then the attempt repeats
+                if atomic.create_exclusive(lock, my_text()):
+                    return lock
+                try:
+                    lock.unlink()
+                except OSError:
+                    pass
+            held = holder(lock, minutes)
+    except atomic.LockTimeout:
+        held = None
     raise Locked(*held) if held else Locked(SOMEONE_ELSE, datetime.now())
 
 

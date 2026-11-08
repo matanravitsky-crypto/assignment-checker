@@ -62,7 +62,8 @@ sys.path.insert(0, sys.argv[1])
 from moodle import lock
 try:
     lock.take(__import__("pathlib").Path(sys.argv[2]), "Pull in progress.txt")
-    print("won")
+    print("won", flush=True)
+    __import__("time").sleep(1.5)  # hold the lock while the others try: a racer that exits at once is a dead pid, and my own dead lock may be taken over
 except lock.Locked:
     print("lost")
 """
@@ -76,8 +77,9 @@ def test_four_real_processes_race_for_one_lock_and_exactly_one_wins(tmp_path):
     _age(stuck, lock.LOCK_MINUTES + 5)
     procs = [subprocess.Popen([sys.executable, "-c", RACER, str(REPO), str(tmp_path)], env=env, stdout=subprocess.PIPE, text=True) for _ in range(4)]
     outs = [p.communicate(timeout=60)[0].strip() for p in procs]
-    assert sorted(outs).count("won") >= 1 and all(o in ("won", "lost") for o in outs)
-    # whatever happened, there is exactly one lock file with one process's text in it
+    # exactly one takes over; the others see its fresh lock. Before the takeover ran under the per-computer process
+    # lock, a racer could unlink the winner's fresh lock (CI, 2026-11-08: the test ended with no lock file at all)
+    assert sorted(outs) == ["lost", "lost", "lost", "won"]
     text = stuck.read_text(encoding="utf-8")
     assert "pid=" in text and text != "ישן (PC) pid=1"
 
