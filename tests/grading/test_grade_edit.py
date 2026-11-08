@@ -7,7 +7,8 @@ import pymupdf
 import pytest
 
 import activity_log
-from dashboard import actions
+from dashboard import actions, web_server
+from datastore import ledger
 from grading import grade as grading, grade_edit
 from moodle import grades, paths
 from tests.grading.test_grade import (COURSE, HW, answer, asg, call, no_real_claude, root, server,  # noqa: F401 (fixtures)
@@ -34,7 +35,7 @@ def test_editing_an_existing_grade_needs_a_reason_and_changes_nothing_without_on
         with pytest.raises(grade_edit.ReasonRequired):
             grading.save_review(a.dir, "0001", FULL, [], "", by="dana (PC)", reason=reason)
     assert grading.read_grades(a.dir)["0001"]["grade"] == before == "85"
-    assert activity_log.read(a.dir) == []
+    assert activity_log.read(a.dir, "grade_edit") == []
 
 
 def test_an_edit_updates_the_pdf_the_grades_file_and_the_log(root):
@@ -48,7 +49,7 @@ def test_an_edit_updates_the_pdf_the_grades_file_and_the_log(root):
     assert mine["grade"] == "100" and mine["approved"].startswith("dana (PC) ") and mine["points"] == "20;20;20;20;20"
     assert grading.read_grades(a.dir)["0001"]["grade"] == "100"
     # היומן: מי, מתי, מאיזה ציון לאיזה ולמה
-    (e,) = activity_log.read(a.dir)
+    (e,) = activity_log.read(a.dir, "grade_edit")  # the grading run itself logs grade_set events now
     assert (e["action"], e["by"], e["number"], e["from"], e["to"], e["kind"]) == ("grade_edit", "dana (PC)", "0001", "85", "100", "edit")
     assert e["reason"] == "ערעור: הנימוק בשאלה 12 נמצא בעמוד 2" and e["at"]
     assert e["points_from"] == "20;15;20;20;10" and e["points_to"] == "20;20;20;20;20"
@@ -127,6 +128,29 @@ def test_the_database_is_off_until_connected_and_then_updated_first(root):
         grade_edit.connect_database(None)
     assert store.saved == [("0001", "100", "ערעור")] and out["updated"][0] == "database"
     assert not db.enabled()
+
+
+def test_the_dashboard_connects_the_ledger_and_an_edit_is_intent_then_done(root, server):
+    a = graded(root)
+    web_server.connect_stores()
+    try:
+        (db,) = [t for t in grade_edit.TARGETS if isinstance(t, grade_edit.DatabaseTarget)]
+        assert db.enabled() and isinstance(db.store, ledger.LedgerStore)
+        out = grading.save_review(a.dir, "0001", FULL, [], "", by="dana", reason="ערעור")
+    finally:
+        grade_edit.connect_database(None)
+    assert out["updated"][0] == "database"
+    acts = [e["action"] for e in ledger.history(a.dir, "0001")]
+    assert acts == ["grade_set", "grade_edit_intent", "grade_edit"]
+    assert ledger.incomplete_edits(a.dir) == [] and ledger.compare(a.dir) == []
+    p = ledger.projection(a.dir)["0001"]
+    assert p["grade"] == "100" and p["approved"] and p["by"] == "dana"
+    # ה-API נותן גם את כל ההיסטוריה (לעמוד הבדיקה הידנית), לצד רשימת העריכות
+    q = f"course={quote(COURSE)}&assignment={quote(HW)}&number=0001"
+    st, got = call(server, "GET", f"/api/grade-log?{q}")
+    assert st == 200 and [e["action"] for e in got["history"]] == acts
+    assert [(e["from"], e["to"]) for e in got["entries"]] == [("85", "100")]
+    assert all(e.get("grade") in (None, 85, "85") for e in got["history"] if e["action"] == "grade_set")
 
 
 def test_a_failing_place_stops_says_what_was_updated_and_is_logged(root):

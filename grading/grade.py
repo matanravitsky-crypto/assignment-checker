@@ -963,7 +963,8 @@ def submission_pdf(files: list[Path]) -> tuple[bytes, list[str]]:
 
 
 def pending(assignment_dir: Path) -> list[str]:
-    """הגשות שעוד לא נבדקו: אין להן שורה ב-Grades.csv ואין להן קובץ מסומן."""
+    """הגשות שעוד לא נבדקו: אין להן שורה ב-Grades.csv ואין להן קובץ מסומן (PDF שסומן ביד נחשב בדוק; PDF בלי
+    שורה אחרי בדיקה שנקטעה מופיע ב-datastore doctor כ-marked_without_grade, ואדם מחליט)."""
     done = set(read_grades(assignment_dir)) | set(marked_files(assignment_dir))
     return [n for n in submission_numbers(assignment_dir) if n not in done]
 
@@ -1102,21 +1103,27 @@ def grade_assignment(assignment_dir: Path, numbers: list[str] | None = None, *, 
             rows = read_grades(assignment_dir)
             if is_approved(rows.get(n)):  # מישהו אישר בזמן שהבדיקה רצה
                 return False
+            # סדר הכתיבה: הערות, PDF מסומן, ולבסוף שורת הציון. השורה היא נקודת ההתחייבות: בלעדיה העבודה לא נחשבת
+            # בדוקה (pending, האתר, הסטטיסטיקה) ולא תעלה למודל, אז קריסה באמצע משאירה "בדיקה לא גמורה", לא ציון חסר.
+            # השורה נכתבת דרך grades.update_own: נעילת תהליך ובדיקת סכמה (ציון לא חוקי לא נכתב)
+            write_notes(assignment_dir, n, graded_notes(g, model))
             tmp = marked / f"{n}.pdf.tmp"
             tmp.write_bytes(out)
             tmp.replace(marked / f"{n}.pdf")
-            write_notes(assignment_dir, n, graded_notes(g, model))
-            own = grades.read_file(mine)
-            own[n] = {**rows.get(n, {}), "number": n, "grade": _pts(g.grade), "feedback": g.feedback,
-                      "points": ";".join(_pts(p) for p in g.points), "approved": "", "review": g.review,
-                      "graded_at": _now(), "graded_by": who}
-            grades.write_file(mine, own)
+            at = _now()
+            grades.update_own(assignment_dir, n, {**rows.get(n, {}), "number": n, "grade": _pts(g.grade), "feedback": g.feedback,
+                                                  "points": ";".join(_pts(p) for p in g.points), "approved": "", "review": g.review,
+                                                  "graded_at": at, "graded_by": who},
+                              who=who, max_grade=ctx.max_grade, question_points=[q.points for q in ctx.questions])
+            _ledger(assignment_dir, "grade_set", who, number=n, grade=_pts(g.grade), points=";".join(_pts(p) for p in g.points),
+                    review=bool(g.review), model=model, graded_at=at)
             return True
 
     def failed(n: str, why: str) -> None:
         # עבודה שהבדיקה שלה נכשלה מגיעה לתור הבדיקה הידנית עם הסיבה (ואפשר גם לנסות לבדוק אותה שוב)
         with _write_lock:
             write_notes(assignment_dir, n, {**read_notes(assignment_dir, n), "error": why, "failed_at": _now()})
+        _ledger(assignment_dir, "grade_failed", who, number=n, error=why[:300])
 
     with ThreadPoolExecutor(max_workers=max(1, min(parallel, 20))) as pool:
         futures = {pool.submit(work, n): n for n in todo}
@@ -1140,7 +1147,14 @@ def grade_assignment(assignment_dir: Path, numbers: list[str] | None = None, *, 
                 failed(n, str(e))
                 on_progress and on_progress(n, "failed")
                 continue
-            if save(n, g, out):
+            try:
+                saved = save(n, g, out)
+            except Exception as e:  # השמירה נכשלה (שורה שהסכמה דוחה, דיסק): העבודה נכשלת, השאר ממשיכות
+                rep.failed[n] = str(e)
+                failed(n, str(e))
+                on_progress and on_progress(n, "failed")
+                continue
+            if saved:
                 rep.graded.append(n)
                 if g.review:
                     rep.review.append(n)
@@ -1183,6 +1197,16 @@ def save_review(assignment_dir: Path, number: str, points: list, comments: list,
     של מי שבמחשב הזה כשורה מאושרת, ובעתיד מסד הנתונים), והשינוי נרשם ביומן. מחזיר את הציון."""
     from .grade_edit import edit_grade  # grade_edit מייבא את הקובץ הזה
     return edit_grade(assignment_dir, number, points, comments, feedback, by, reason=reason, mistakes=mistakes)
+
+
+def _ledger(assignment_dir: Path, action: str, by: str, **details) -> None:
+    """רושם אירוע ציון ביומן (datastore/ledger.py). היומן הוא שכבת ביקורת ושחזור: כישלון בכתיבה אליו לא מפיל בדיקה."""
+    try:
+        import activity_log
+        activity_log.record(assignment_dir, action, by, **details)
+    except Exception as e:  # noqa: BLE001
+        import sys
+        print(f"היומן לא נכתב: {e}", file=sys.stderr)
 
 
 def _update_stats(assignment_dir: Path) -> None:

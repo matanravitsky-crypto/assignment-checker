@@ -2,7 +2,7 @@
   // כל מה שהאתר מציג אמיתי: הנתונים מגיעים מהמערכת שרצה במחשב (start.bat, dashboard/web_server.py),
   // שקוראת את תיקיית OneDrive של הקורס. בלי המערכת אין מספרים במסך
   // stats: מסד הנתונים הסטטיסטי (stats/, api/stats): רשומה לכל מטלה, מספרים בלבד
-  const D = { courses: [], assignments: [], rubrics: {}, runs: [], usage: null, stats: [] };
+  const D = { courses: [], assignments: [], rubrics: {}, runs: [], usage: null, stats: [], integrity: [] };
   // באתר הציבורי (Vercel) פונים למערכת שבמחשב. כשהאתר נפתח מהמערכת עצמה, לאותה כתובת
   const ON_LOCAL_HOST = ["localhost", "127.0.0.1"].includes(location.hostname);
   const BASE = ON_LOCAL_HOST ? "" : "http://127.0.0.1:8765/";
@@ -1883,11 +1883,48 @@
   }
 
   // ---------- הגרסה המחוברת: תיקיית OneDrive דרך השרת המקומי ----------
+  // שער השלמות: באנר אחד למטלה הנוכחית עם מה ש-datastore doctor מצא (שגיאות, אזהרות), ו"תקן" למה שהוא יודע לתקן לבד
+  const INTEGRITY_LEVEL = { reject: "שגיאה", warn: "אזהרה", info: "ידיעה" };
+  function integrityOf(A) {
+    return A ? D.integrity.find((r) => r.course === A.courseFolder && r.folder === A.folder) : null;
+  }
+  function integrityBannerHTML() {
+    const A = cur(), R = integrityOf(A);
+    if (!R || !R.problems?.length) return "";
+    const shown = R.problems.filter((p) => p.level !== "info");
+    if (!shown.length) return "";
+    const s = R.summary || {}, open = state.integrityOpen;
+    const fixable = (R.fixable || []).length;
+    return `<div class="banner ${s.reject ? "warn" : ""} integrity" role="status">${ICON.warn}<div>
+        <b>שלמות הנתונים: ${s.reject ? `${s.reject} שגיאות` : ""}${s.reject && s.warn ? ", " : ""}${s.warn ? `${s.warn} אזהרות` : ""}</b>
+        <span class="muted"> · נבדק ${when(R.checked_at)}${fixable ? ` · ${fixable} סוגים אפשר לתקן לבד` : ""}</span>
+        ${open ? `<ul class="integrity-list">${shown.slice(0, 40).map((p) => `<li><span class="chip">${INTEGRITY_LEVEL[p.level] || p.level}</span> ${esc(p.message)}</li>`).join("")}
+          ${shown.length > 40 ? `<li class="muted">ועוד ${shown.length - 40}…</li>` : ""}</ul>` : ""}
+      </div>
+      <button type="button" class="btn secondary small" data-integrity-toggle>${open ? "סגור" : "פרטים"}</button>
+      ${fixable ? `<button type="button" class="btn primary small" data-integrity-fix ${state.integrityFixing ? "disabled" : ""}>${state.integrityFixing ? ICON.spin : ICON.check}תקן מה שאפשר</button>` : ""}
+    </div>`;
+  }
+  async function runIntegrityFix() {
+    const A = cur();
+    if (!A || state.integrityFixing) return;
+    state.integrityFixing = true; render();
+    try {
+      const out = await api("api/integrity/fix", { method: "POST", body: JSON.stringify({ course: A.courseFolder, assignment: A.folder, dryRun: false }) });
+      toast(out.done?.length ? out.done.join(" · ") : "לא היה מה לתקן", ICON.check);
+      await loadLocal();
+    } catch (e) {
+      toast(e.message, ICON.warn);
+    } finally {
+      state.integrityFixing = false; render();
+    }
+  }
+
   function bannerHTML() {
     if (LOCAL.on && !LOCAL.health?.root) {
       return `<div class="banner warn">${ICON.warn}<div><b>המערכת פועלת, אבל תיקיית OneDrive של הקורס עוד לא נמצאה במחשב.</b><pre class="banner-pre">${esc(LOCAL.health?.error || "")}</pre></div><button class="btn secondary small" data-act="recheck">בדוק שוב</button></div>`;
     }
-    return "";
+    return integrityBannerHTML();
   }
 
   function drivePanelHTML() {
@@ -2022,21 +2059,28 @@
     if (known !== undefined) return known;
     state.review.log[key] = null;
     api(`api/grade-log?course=${encodeURIComponent(A.courseFolder)}&assignment=${encodeURIComponent(A.folder)}&number=${s.id}`)
-      .then((r) => { state.review.log[key] = r.entries || []; }, () => { state.review.log[key] = []; })
+      .then((r) => { state.review.log[key] = r.history?.length ? r.history : (r.entries || []); }, () => { state.review.log[key] = []; })
       .then(() => { if (route() === "/review") render(); });
     return null;
   }
   const KIND_TEXT = { edit: "עריכה", review: "אישור מהבדיקה הידנית", first: "ציון ראשון" };
-  function historyHTML(A, s) {
-    const log = gradeLog(A, s);
-    if (!log?.length) return "";
-    return `<details class="rv-hist"><summary>היסטוריית הציון (${log.length})</summary><ol>${log.slice().reverse().map((e) => `
-      <li class="${e.action === "grade_edit_failed" ? "failed" : ""}">
-        <div class="rv-hist-top"><b class="num">${e.from == null ? "—" : esc(e.from)} ← ${esc(e.to)}</b>
-          <span>${esc(KIND_TEXT[e.kind] || "")} · ${esc(e.by || "")} · ${esc(when(e.at))}</span></div>
+  // שורה אחת לכל אירוע ביומן (datastore/ledger.py): בדיקה אוטומטית, כישלון, עריכה, שחזור. "עריכה התחילה" לא מוצגת
+  function histLine(e) {
+    const who = `${esc(e.by || "")} · ${esc(when(e.at))}`;
+    if (e.action === "grade_set") return `<div class="rv-hist-top"><b class="num">${esc(e.grade)}</b><span>בדיקה אוטומטית · ${who}</span></div>`;
+    if (e.action === "grade_failed") return `<div class="rv-hist-top"><b class="num">—</b><span>הבדיקה נכשלה · ${who}</span></div>
+        <p class="rv-hist-err">${esc(e.error || "")}</p>`;
+    if (e.action === "grade_replayed") return `<div class="rv-hist-top"><b class="num">${esc(e.grade)}</b><span>שוחזר מהיומן · ${who}</span></div>`;
+    return `<div class="rv-hist-top"><b class="num">${e.from == null ? "—" : esc(e.from)} ← ${esc(e.to)}</b>
+          <span>${esc(KIND_TEXT[e.kind] || "")} · ${who}</span></div>
         ${e.reason ? `<p>${esc(e.reason)}</p>` : ""}
-        ${e.action === "grade_edit_failed" ? `<p class="rv-hist-err">לא הגיע לכל המקומות: ${esc(e.error || "")}</p>` : ""}
-      </li>`).join("")}</ol></details>`;
+        ${e.action === "grade_edit_failed" ? `<p class="rv-hist-err">לא הגיע לכל המקומות: ${esc(e.error || "")}</p>` : ""}`;
+  }
+  function historyHTML(A, s) {
+    const log = (gradeLog(A, s) || []).filter((e) => e.action !== "grade_edit_intent");
+    if (!log.length) return "";
+    return `<details class="rv-hist"><summary>היסטוריית הציון (${log.length})</summary><ol>${log.slice().reverse().map((e) => `
+      <li class="${["grade_edit_failed", "grade_failed"].includes(e.action) ? "failed" : ""}">${histLine(e)}</li>`).join("")}</ol></details>`;
   }
 
   // העמודים של ההגשה כתמונות (api/page), והסימונים של Claude מצוירים מעליהם במקום שלהם
@@ -2787,6 +2831,10 @@
       render(); toast("ההנחיות חזרו לברירת המחדל"); return;
     }
 
+    // שער השלמות: פרטים ותיקון
+    if (t.closest("[data-integrity-toggle]")) { state.integrityOpen = !state.integrityOpen; render(); return; }
+    if (t.closest("[data-integrity-fix]")) { runIntegrityFix(); return; }
+
     // סטטיסטיקה: מטלה שנבחרה בטבלה
     const sk = t.closest("[data-stats-key]");
     if (sk) { state.statsKey = sk.dataset.statsKey; render(); return; }
@@ -3016,8 +3064,9 @@
     try {
       const [data, health] = given ? [given, null] : await Promise.all([api("api/state"), api("api/health").catch(() => null)]);
       // מסד הנתונים הסטטיסטי (api/stats): נטען עם המצב, גם אחרי "סנכרון"
-      const statsData = await api("api/stats").catch(() => null);
+      const [statsData, integrityData] = await Promise.all([api("api/stats").catch(() => null), api("api/integrity").catch(() => null)]);
       D.stats = Array.isArray(statsData) ? statsData : [];
+      D.integrity = Array.isArray(integrityData) ? integrityData : [];  // שער השלמות (datastore doctor): בעיות לכל מטלה
       LOCAL.sig = JSON.stringify(data);
       D.courses.splice(0, D.courses.length, ...data.courses);
       D.assignments.splice(0, D.assignments.length, ...data.assignments.map((a) => ({
