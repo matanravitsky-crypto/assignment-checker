@@ -1,7 +1,9 @@
 """כתיבה אטומית ונעילות.
 
 write_atomic / write_json_atomic   קובץ זמני ייחודי באותה תיקייה (pid + מספר אקראי), fsync, ואז os.replace. קריסה באמצע
-                                   משאירה לכל היותר קובץ .tmp יתום, אף פעם לא קובץ חצי כתוב.
+                                   משאירה לכל היותר קובץ .tmp יתום, אף פעם לא קובץ חצי כתוב. בווינדוס os.replace נכשל
+                                   ב-"Access is denied" כשתהליך אחר מחזיק את הקובץ פתוח לקריאה באותו רגע (הדשבורד קורא
+                                   את קובצי הציונים כל כמה שניות, אנטי-וירוס, OneDrive), אז מנסים שוב עד REPLACE_RETRY_S.
 read_json                          קריאה סובלנית: JSON שבור, קידוד לא תקין או קובץ חסר = ברירת המחדל, והבעיה נרשמת.
 create_exclusive                   נעילה בתיקייה המשותפת: O_CREAT|O_EXCL, אז שני תהליכים שמנסים באותה אלפית שנייה לא
                                    יכולים שניהם להצליח (בניגוד ל"בדוק ואז כתוב").
@@ -21,8 +23,27 @@ from pathlib import Path
 from typing import Iterator
 
 
+REPLACE_RETRY_S = 5.0  # כמה זמן לנסות שוב os.replace שנכשל כי הקובץ פתוח אצל מישהו אחר (ווינדוס)
+
+
 class LockTimeout(TimeoutError):
     """נעילת התהליך לא התפנתה בזמן: תהליך אחר במחשב הזה כותב את אותו קובץ."""
+
+
+def _replace(src: Path, dst: Path, retry_s: float = REPLACE_RETRY_S) -> None:
+    """os.replace שמנסה שוב כשווינדוס אומר "Access is denied" (קובץ היעד פתוח לקריאה אצל תהליך אחר). הקורא סוגר
+    תוך אלפיות שנייה; אחרי retry_s שניות השגיאה המקורית עולה."""
+    deadline = time.monotonic() + retry_s
+    pause = 0.01
+    while True:
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(pause)
+            pause = min(pause * 2, 0.2)
 
 
 def _tmp_name(path: Path) -> Path:
@@ -45,7 +66,7 @@ def write_atomic(path: Path, data: bytes | str, *, encoding: str = "utf-8") -> N
                 os.fsync(f.fileno())
         except Exception:
             raise
-        os.replace(tmp, path)
+        _replace(tmp, path)
     except Exception:
         try:
             tmp.unlink()

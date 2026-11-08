@@ -135,7 +135,7 @@ print("done")
 def test_three_real_processes_of_one_grader_write_the_same_file_without_losing_rows(tmp_path):
     a = make_assignment(tmp_path)
     env = {**os.environ, "BODEK_LOCK_DIR": str(tmp_path / "locks"), "GRADER_NAME": "אורי", "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
-    procs = [subprocess.Popen([sys.executable, "-c", UPDATER, str(REPO), str(a), str(k)], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    procs = [subprocess.Popen([sys.executable, "-c", UPDATER, str(REPO), str(a), str(k)], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
              for k in (1, 2, 3)]
     for p in procs:
         out, err = p.communicate(timeout=180)

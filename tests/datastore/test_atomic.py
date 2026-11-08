@@ -32,6 +32,41 @@ def test_write_atomic_writes_and_leaves_no_temp_file(tmp_path):
     assert f.read_bytes() == b"\xef\xbb\xbfbytes"
 
 
+def test_a_reader_holding_the_file_open_does_not_fail_the_writer(tmp_path):
+    """ווינדוס: os.replace על קובץ שתהליך אחר קורא = "Access is denied". הדשבורד קורא את קובצי הציונים כל כמה שניות
+    בזמן שהבדיקה כותבת, אז write_atomic מנסה שוב עד שהקורא סוגר (ב-Linux זה פשוט מצליח מיד)."""
+    import threading
+    import time
+    p = tmp_path / "Grades by me.csv"
+    p.write_text("old", encoding="utf-8")
+    fh = p.open(encoding="utf-8")  # a reader in "another process": no FILE_SHARE_DELETE on Windows
+    done = threading.Event()
+
+    def close_later():
+        time.sleep(0.3)
+        fh.close()
+        done.set()
+    threading.Thread(target=close_later).start()
+    atomic.write_atomic(p, "new")
+    done.wait(5)
+    assert p.read_text(encoding="utf-8") == "new" and not list(tmp_path.glob("*.tmp"))
+
+
+def test_replace_gives_up_after_the_retry_window(tmp_path, monkeypatch):
+    calls = []
+
+    def denied(src, dst):
+        calls.append(1)
+        raise PermissionError(5, "Access is denied")
+    monkeypatch.setattr(atomic.os, "replace", denied)
+    src, dst = tmp_path / "a", tmp_path / "b"
+    src.write_text("x")
+    t = time.monotonic()
+    with pytest.raises(PermissionError):
+        atomic._replace(src, dst, retry_s=0.3)
+    assert 0.25 <= time.monotonic() - t < 3 and len(calls) >= 3
+
+
 def test_a_failure_before_the_replace_keeps_the_old_file_and_cleans_up(tmp_path, monkeypatch):
     f = tmp_path / "a.json"
     atomic.write_json_atomic(f, {"v": 1})
