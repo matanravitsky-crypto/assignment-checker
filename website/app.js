@@ -2059,21 +2059,28 @@
     if (known !== undefined) return known;
     state.review.log[key] = null;
     api(`api/grade-log?course=${encodeURIComponent(A.courseFolder)}&assignment=${encodeURIComponent(A.folder)}&number=${s.id}`)
-      .then((r) => { state.review.log[key] = r.entries || []; }, () => { state.review.log[key] = []; })
+      .then((r) => { state.review.log[key] = r.history?.length ? r.history : (r.entries || []); }, () => { state.review.log[key] = []; })
       .then(() => { if (route() === "/review") render(); });
     return null;
   }
   const KIND_TEXT = { edit: "עריכה", review: "אישור מהבדיקה הידנית", first: "ציון ראשון" };
-  function historyHTML(A, s) {
-    const log = gradeLog(A, s);
-    if (!log?.length) return "";
-    return `<details class="rv-hist"><summary>היסטוריית הציון (${log.length})</summary><ol>${log.slice().reverse().map((e) => `
-      <li class="${e.action === "grade_edit_failed" ? "failed" : ""}">
-        <div class="rv-hist-top"><b class="num">${e.from == null ? "—" : esc(e.from)} ← ${esc(e.to)}</b>
-          <span>${esc(KIND_TEXT[e.kind] || "")} · ${esc(e.by || "")} · ${esc(when(e.at))}</span></div>
+  // שורה אחת לכל אירוע ביומן (datastore/ledger.py): בדיקה אוטומטית, כישלון, עריכה, שחזור. "עריכה התחילה" לא מוצגת
+  function histLine(e) {
+    const who = `${esc(e.by || "")} · ${esc(when(e.at))}`;
+    if (e.action === "grade_set") return `<div class="rv-hist-top"><b class="num">${esc(e.grade)}</b><span>בדיקה אוטומטית · ${who}</span></div>`;
+    if (e.action === "grade_failed") return `<div class="rv-hist-top"><b class="num">—</b><span>הבדיקה נכשלה · ${who}</span></div>
+        <p class="rv-hist-err">${esc(e.error || "")}</p>`;
+    if (e.action === "grade_replayed") return `<div class="rv-hist-top"><b class="num">${esc(e.grade)}</b><span>שוחזר מהיומן · ${who}</span></div>`;
+    return `<div class="rv-hist-top"><b class="num">${e.from == null ? "—" : esc(e.from)} ← ${esc(e.to)}</b>
+          <span>${esc(KIND_TEXT[e.kind] || "")} · ${who}</span></div>
         ${e.reason ? `<p>${esc(e.reason)}</p>` : ""}
-        ${e.action === "grade_edit_failed" ? `<p class="rv-hist-err">לא הגיע לכל המקומות: ${esc(e.error || "")}</p>` : ""}
-      </li>`).join("")}</ol></details>`;
+        ${e.action === "grade_edit_failed" ? `<p class="rv-hist-err">לא הגיע לכל המקומות: ${esc(e.error || "")}</p>` : ""}`;
+  }
+  function historyHTML(A, s) {
+    const log = (gradeLog(A, s) || []).filter((e) => e.action !== "grade_edit_intent");
+    if (!log.length) return "";
+    return `<details class="rv-hist"><summary>היסטוריית הציון (${log.length})</summary><ol>${log.slice().reverse().map((e) => `
+      <li class="${["grade_edit_failed", "grade_failed"].includes(e.action) ? "failed" : ""}">${histLine(e)}</li>`).join("")}</ol></details>`;
   }
 
   // העמודים של ההגשה כתמונות (api/page), והסימונים של Claude מצוירים מעליהם במקום שלהם

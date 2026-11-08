@@ -7,7 +7,8 @@ import pymupdf
 import pytest
 
 import activity_log
-from dashboard import actions
+from dashboard import actions, web_server
+from datastore import ledger
 from grading import grade as grading, grade_edit
 from moodle import grades, paths
 from tests.grading.test_grade import (COURSE, HW, answer, asg, call, no_real_claude, root, server,  # noqa: F401 (fixtures)
@@ -127,6 +128,29 @@ def test_the_database_is_off_until_connected_and_then_updated_first(root):
         grade_edit.connect_database(None)
     assert store.saved == [("0001", "100", "ערעור")] and out["updated"][0] == "database"
     assert not db.enabled()
+
+
+def test_the_dashboard_connects_the_ledger_and_an_edit_is_intent_then_done(root, server):
+    a = graded(root)
+    web_server.connect_stores()
+    try:
+        (db,) = [t for t in grade_edit.TARGETS if isinstance(t, grade_edit.DatabaseTarget)]
+        assert db.enabled() and isinstance(db.store, ledger.LedgerStore)
+        out = grading.save_review(a.dir, "0001", FULL, [], "", by="dana", reason="ערעור")
+    finally:
+        grade_edit.connect_database(None)
+    assert out["updated"][0] == "database"
+    acts = [e["action"] for e in ledger.history(a.dir, "0001")]
+    assert acts == ["grade_set", "grade_edit_intent", "grade_edit"]
+    assert ledger.incomplete_edits(a.dir) == [] and ledger.compare(a.dir) == []
+    p = ledger.projection(a.dir)["0001"]
+    assert p["grade"] == "100" and p["approved"] and p["by"] == "dana"
+    # ה-API נותן גם את כל ההיסטוריה (לעמוד הבדיקה הידנית), לצד רשימת העריכות
+    q = f"course={quote(COURSE)}&assignment={quote(HW)}&number=0001"
+    st, got = call(server, "GET", f"/api/grade-log?{q}")
+    assert st == 200 and [e["action"] for e in got["history"]] == acts
+    assert [(e["from"], e["to"]) for e in got["entries"]] == [("85", "100")]
+    assert all(e.get("grade") in (None, 85, "85") for e in got["history"] if e["action"] == "grade_set")
 
 
 def test_a_failing_place_stops_says_what_was_updated_and_is_logged(root):

@@ -23,6 +23,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from datastore import ledger
 from grading import grade as grading, grade_edit
 from moodle import paths
 
@@ -211,7 +212,8 @@ class Handler(SimpleHTTPRequestHandler):
             if not course or not assignment or not number.isdigit():
                 return self._json({"error": "חסרים קורס, מטלה ומספר הגשה"}, HTTPStatus.BAD_REQUEST)
             try:
-                return self._json({"entries": actions.grade_history(root, course, assignment, number)})
+                return self._json({"entries": actions.grade_history(root, course, assignment, number),
+                                   "history": actions.grade_ledger(root, course, assignment, number)})
             except FileNotFoundError as e:
                 return self._json({"error": str(e)}, HTTPStatus.NOT_FOUND)
         if url.path in ("/api/pages", "/api/page"):
@@ -528,8 +530,15 @@ class Handler(SimpleHTTPRequestHandler):
         return self.send_error(HTTPStatus.NOT_FOUND)
 
 
+def connect_stores() -> None:
+    """מחבר את יומן האירועים (datastore/ledger.py) לעריכת ציונים: "עריכה התחילה" נרשמת לפני שאר היעדים, כך שקריסה
+    באמצע עריכה נראית ב-doctor (incomplete_edit). נקרא בהפעלת הדשבורד; connect_database(None) מנתק."""
+    grade_edit.connect_database(ledger.LedgerStore())
+
+
 def serve(port: int = 8765, open_browser: bool = True) -> None:
     cfg.load_env()
+    connect_stores()
     root, err = actions.root_info()
     if root:
         print(f"תיקיית המערכת: {root}")

@@ -1388,6 +1388,14 @@ def grade_history(root: Path, course: str, assignment: str, number: str) -> list
     return grade_edit.history(a.dir, number)
 
 
+def grade_ledger(root: Path, course: str, assignment: str, number: str) -> list[dict]:
+    """כל אירועי הציון של עבודה אחת מיומן האירועים (datastore/ledger.history): בדיקה אוטומטית, כישלון, עריכה,
+    שחזור. מהישן לחדש, מספרים בלבד."""
+    from datastore import ledger
+    a = find_assignment(root, course, assignment)
+    return ledger.history(a.dir, number)
+
+
 # Grading notes של כל העבודות נקראים בכל טעינה של האתר. קובץ שלא השתנה לא נקרא שוב
 _notes: dict[str, tuple[int, int, dict]] = {}
 

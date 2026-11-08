@@ -7,6 +7,7 @@
   grade_edit_intent   עריכה או אישור התחילו (DatabaseTarget, לפני שאר היעדים)
   grade_edit          עריכה או אישור הושלמו בכל היעדים (grade_edit.edit_grade)
   grade_edit_failed   עריכה שלא הגיעה לכל היעדים
+  grade_replayed      replay החזיר לקובץ ציון שהיומן ידע עליו והקובץ איבד
 
 projection(assignment_dir): לכל מספר, מה היומן אומר שהציון צריך להיות: אישור (grade_edit) גובר על בדיקה (grade_set),
 ובתוך אותה מחלקה האירוע המאוחר (`at`), ובשוויון לפי `id`. דטרמיניסטי: אותו יומן = אותה הקרנה בכל מחשב.
@@ -23,7 +24,8 @@ import activity_log
 from moodle import grades
 
 SET, FAILED, INTENT, EDIT, EDIT_FAILED = "grade_set", "grade_failed", "grade_edit_intent", "grade_edit", "grade_edit_failed"
-GRADE_ACTIONS = (SET, FAILED, INTENT, EDIT, EDIT_FAILED)
+REPLAYED = "grade_replayed"
+GRADE_ACTIONS = (SET, FAILED, INTENT, EDIT, EDIT_FAILED, REPLAYED)
 
 
 def _key(e: dict) -> tuple:
@@ -103,7 +105,7 @@ def replay(assignment_dir: Path, dry_run: bool = True, max_grade: float | None =
                "review": "", "feedback": ""}
         old = grades.read(assignment_dir).get(m["number"]) or {}
         grades.update_own(assignment_dir, m["number"], {**old, **row}, who=want["by"], max_grade=max_grade)
-        activity_log.record(assignment_dir, "grade_replayed", want["by"], number=m["number"], grade=want["grade"], source=want["event"])
+        activity_log.record(assignment_dir, REPLAYED, want["by"], number=m["number"], grade=want["grade"], source=want["event"])
     return done
 
 
