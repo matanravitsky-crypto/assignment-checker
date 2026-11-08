@@ -808,7 +808,8 @@ def _watched_dirs(root: Path) -> list[Path]:
     """התיקיות שהמצב שהאתר מציג נבנה מהן: תיקיית הקורס, "Who does what", ובכל מטלה התיקייה ו-_WATCHED."""
     out: list[Path] = []
     for course_dir in folder_view.courses(root):
-        out += [course_dir, course_dir / paths.TASKS]
+        # Statistics/<קורס>: מסד הנתונים הסטטיסטי (stats/), כדי שעדכון ממחשב אחר יגיע לאתר תוך 5 שניות
+        out += [course_dir, course_dir / paths.TASKS, root / paths.STATISTICS / course_dir.name]
         for a in folder_view.assignments(course_dir):
             out += [a.dir, *(a.dir / sub for sub in _WATCHED)]
     return out
@@ -845,6 +846,22 @@ def refresh(root: Path) -> dict:
     except OSError as e:
         raise UserError(UNREADABLE.format(error=e.strerror or e)) from e
     return {"state": st, "sig": changes(root), "onedrive": od, "at": datetime.now().isoformat(timespec="seconds")}
+
+def stats_view(root: Path, course: str | None = None) -> list[dict]:
+    """הסטטיסטיקה של כל המטלות (או של קורס אחד), דרך stats בלבד: הקובץ השמור ב-Statistics/ אם הוא עדיין משקף את
+    התיקייה, אחרת חישוב ושמירה. מטלה שהחישוב שלה נכשל לא מסתירה את האחרות."""
+    import stats
+
+    out = []
+    for a in stats.assignment_dirs(root):
+        if course and a.parent.name != course:
+            continue
+        try:
+            out.append(stats.read(a))
+        except Exception as e:  # noqa: BLE001
+            out.append({"key": stats.compute.assignment_key(a.parent.name, a.name), "course": a.parent.name,
+                        "folder": a.name, "slot": stats.compute.slot(a.name), "error": str(e)})
+    return out
 
 
 def claims_view(root: Path, course: str, assignment: str) -> dict:

@@ -175,7 +175,7 @@ def test_gather_reads_the_folder_and_compute_matches(folder):
     assert [q["points"] for q in s["per_question"]] == [20, 30, 50]
     src = s["sources"]
     assert {f["name"] for f in src["grades"]} == {paths.GRADES_BY.format("אורי"), paths.GRADES_BY.format("מתן")}
-    assert src["notes"] == 5 and src["submitted"] == 7 and src["marked"] == 1
+    assert src["notes"]["count"] == 5 and src["submitted"]["count"] == 7 and src["marked"]["count"] == 1
 
 
 def test_a_limit_error_is_not_a_failure(folder):

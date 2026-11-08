@@ -164,6 +164,12 @@ class Handler(SimpleHTTPRequestHandler):
             # (dashboard/updater.py), והאתר טוען את עצמו מחדש כדי לקבל גם את הקבצים החדשים שלו
             root = self._root()
             return root and self._json({"sig": actions.changes(root), "version": updater.version()})
+        if url.path == "/api/stats":
+            # מסד הנתונים הסטטיסטי (stats/): כל המטלות, או ?course=<תיקיית הקורס>. מספרים בלבד
+            root = self._root()
+            if not root:
+                return
+            return self._json(actions.stats_view(root, parse_qs(url.query).get("course", [None])[0]))
         if url.path == "/api/grade":
             return self._json(actions.grade_status())
         if url.path == "/api/pull":  # כמה התקדמה המשיכה, בזמן שה-POST שלה עוד רץ
