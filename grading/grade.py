@@ -758,7 +758,9 @@ def _note_rect(box: pymupdf.Rect, page: pymupdf.Rect, text: str = "", size: floa
 
     def cost(r: pymupdf.Rect) -> float:
         norm = (r.x0 / page.width * 1000, r.y0 / page.height * 1000, r.x1 / page.width * 1000, r.y1 / page.height * 1000)
-        clash = sum(max(r.intersect(t).get_area(), 0) for t in taken or []) / max(r.get_area(), 1)
+        # r & t is a new rectangle. r.intersect(t) changes r itself in PyMuPDF: from the second note on a page the
+        # candidate shrank to the overlap (or turned inside out) and the note was never written
+        clash = sum(max((r & t).get_area(), 0) for t in taken or []) / max(r.get_area(), 1)
         return ink.density(*norm) + 5 * clash
 
     pool = fits or [_clamp(r, inside) for r in cands]
@@ -905,7 +907,7 @@ def read_notes(assignment_dir: Path, number: str) -> dict:
     path = notes_path(assignment_dir, number)
     try:
         data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError):  # JSON שבור, או קובץ שאינו UTF-8 (UnicodeDecodeError): אין הערות לעבודה הזו
         return {}
     return data if isinstance(data, dict) else {}
 
@@ -961,7 +963,8 @@ def submission_pdf(files: list[Path]) -> tuple[bytes, list[str]]:
 
 
 def pending(assignment_dir: Path) -> list[str]:
-    """הגשות שעוד לא נבדקו: אין להן שורה ב-Grades.csv ואין להן קובץ מסומן."""
+    """הגשות שעוד לא נבדקו: אין להן שורה ב-Grades.csv ואין להן קובץ מסומן (PDF שסומן ביד נחשב בדוק; PDF בלי
+    שורה אחרי בדיקה שנקטעה מופיע ב-datastore doctor כ-marked_without_grade, ואדם מחליט)."""
     done = set(read_grades(assignment_dir)) | set(marked_files(assignment_dir))
     return [n for n in submission_numbers(assignment_dir) if n not in done]
 
@@ -1102,21 +1105,27 @@ def grade_assignment(assignment_dir: Path, numbers: list[str] | None = None, *, 
             rows = read_grades(assignment_dir)
             if is_approved(rows.get(n)):  # מישהו אישר בזמן שהבדיקה רצה
                 return False
+            # סדר הכתיבה: הערות, PDF מסומן, ולבסוף שורת הציון. השורה היא נקודת ההתחייבות: בלעדיה העבודה לא נחשבת
+            # בדוקה (pending, האתר, הסטטיסטיקה) ולא תעלה למודל, אז קריסה באמצע משאירה "בדיקה לא גמורה", לא ציון חסר.
+            # השורה נכתבת דרך grades.update_own: נעילת תהליך ובדיקת סכמה (ציון לא חוקי לא נכתב)
+            write_notes(assignment_dir, n, graded_notes(g, model, via))
             tmp = marked / f"{n}.pdf.tmp"
             tmp.write_bytes(out)
             tmp.replace(marked / f"{n}.pdf")
-            write_notes(assignment_dir, n, graded_notes(g, model, via))
-            own = grades.read_file(mine)
-            own[n] = {**rows.get(n, {}), "number": n, "grade": _pts(g.grade), "feedback": g.feedback,
-                      "points": ";".join(_pts(p) for p in g.points), "approved": "", "review": g.review,
-                      "graded_at": _now(), "graded_by": who}
-            grades.write_file(mine, own)
+            at = _now()
+            grades.update_own(assignment_dir, n, {**rows.get(n, {}), "number": n, "grade": _pts(g.grade), "feedback": g.feedback,
+                                                  "points": ";".join(_pts(p) for p in g.points), "approved": "", "review": g.review,
+                                                  "graded_at": at, "graded_by": who},
+                              who=who, max_grade=ctx.max_grade, question_points=[q.points for q in ctx.questions])
+            _ledger(assignment_dir, "grade_set", who, number=n, grade=_pts(g.grade), points=";".join(_pts(p) for p in g.points),
+                    review=bool(g.review), model=model, graded_at=at)
             return True
 
     def failed(n: str, why: str) -> None:
         # עבודה שהבדיקה שלה נכשלה מגיעה לתור הבדיקה הידנית עם הסיבה (ואפשר גם לנסות לבדוק אותה שוב)
         with _write_lock:
             write_notes(assignment_dir, n, {**read_notes(assignment_dir, n), "error": why, "failed_at": _now()})
+        _ledger(assignment_dir, "grade_failed", who, number=n, error=why[:300])
 
     with ThreadPoolExecutor(max_workers=max(1, min(parallel, 20))) as pool:
         futures = {pool.submit(work, n): n for n in todo}
@@ -1140,7 +1149,14 @@ def grade_assignment(assignment_dir: Path, numbers: list[str] | None = None, *, 
                 failed(n, str(e))
                 on_progress and on_progress(n, "failed")
                 continue
-            if save(n, g, out):
+            try:
+                saved = save(n, g, out)
+            except Exception as e:  # השמירה נכשלה (שורה שהסכמה דוחה, דיסק): העבודה נכשלת, השאר ממשיכות
+                rep.failed[n] = str(e)
+                failed(n, str(e))
+                on_progress and on_progress(n, "failed")
+                continue
+            if saved:
                 rep.graded.append(n)
                 if g.review:
                     rep.review.append(n)
@@ -1156,6 +1172,7 @@ def grade_assignment(assignment_dir: Path, numbers: list[str] | None = None, *, 
         rep.total -= len(late)
         rep.notes.append(f"{len(late)} עבודות נלקחו בינתיים על ידי בודק אחר ולא נבדקו כאן: {', '.join(sorted(late)[:20])}"
                          + (" ועוד" if len(late) > 20 else ""))
+    _update_stats(assignment_dir)
     if limit:  # מה שכבר היה אצל Claude נשמר; את השאר אפשר להמשיך כשהמכסה מתחדשת
         raise ClaudeLimit(f"Claude הגיע למגבלת השימוש, אז הבדיקה נעצרה אחרי {len(rep.graded)} עבודות. "
                           f"העבודות שלא נבדקו לא סומנו כנכשלות: אפשר להמשיך כשהמכסה מתחדשת. ({limit[0]})")
@@ -1176,50 +1193,31 @@ def _resummarize(marked_pdf: bytes, g: Graded, ctx: Context) -> bytes:
 
 
 def save_review(assignment_dir: Path, number: str, points: list, comments: list, feedback: str, by: str,
-                mistakes: list | None = None) -> dict:
-    """מה שאדם החליט בבדיקה הידנית: ניקוד והערה לכל שאלה ומשוב. מחשב את הציון, מעדכן את עמוד הסיכום בעבודה
-    המסומנת וכותב שורה מאושרת (approved = מי ומתי), שהבדיקה האוטומטית לא דורסת, לקובץ הציונים של מי שבמחשב הזה
-    (moodle/grades.py: שורה מאושרת גוברת על כל הקבצים). מחזיר את הציון."""
-    n = number_key(number)
-    files = submission_files(assignment_dir)
-    if n not in files:
-        raise GradingError(f"אין הגשה {n} בתיקייה \"{paths.TO_GRADE}\".")
-    ctx = load_context(assignment_dir, send_solution=False)
-    require_rubric(ctx)
-    if not isinstance(points, list) or len(points) != len(ctx.questions):
-        raise GradingError(f"צריך ניקוד לכל אחת מ-{len(ctx.questions)} השאלות.")
-    pts = [_round_half_up(_num(p)) for p in points]
-    over = [f"{q.label}: {_pts(p)} מתוך {_pts(q.points)}" for p, q in zip(pts, ctx.questions) if p > q.points]
-    if over:  # לא חותכים בשקט: מי שמאשר רואה שהניקוד עובר את המחוון
-        raise GradingError(f"הניקוד עובר את המחוון ({'; '.join(over)}). {RUBRIC_RULE}")
-    texts = [str(c or "").strip()[:500] for c in (comments if isinstance(comments, list) else [])]
-    texts = (texts + [""] * len(pts))[:len(pts)]
-    picked = [_mistakes(m) for m in mistakes] if isinstance(mistakes, list) and len(mistakes) == len(pts) else None
-    with _write_lock:
-        note = read_notes(assignment_dir, n)
-        g = Graded(pts, texts, compute_grade(pts, ctx), str(feedback or "").strip()[:3000],
-                   [Mark(**m) for m in note.get("marks") or [] if isinstance(m, dict) and set(m) == {"page", "x0", "y0", "x1", "y1", "text"}],
-                   mistakes=picked or note.get("mistakes") or [])
-        scrub_graded(g, student_names(assignment_dir).get(n, []))
-        marked = assignment_dir / paths.MARKED / f"{n}.pdf"
-        if marked.exists() and "marks" not in note:
-            out = _resummarize(marked.read_bytes(), g, ctx)  # נבדקה לפני שהיו Grading notes: הסימונים רק ב-PDF
-        else:
-            pdf, _ = submission_pdf(files[n])
-            out = mark_pdf(pdf, g, ctx) if pdf else None
-        if out:
-            marked.parent.mkdir(exist_ok=True)
-            tmp = marked.with_suffix(".pdf.tmp")
-            tmp.write_bytes(out)
-            tmp.replace(marked)
-        at = _now()
-        note.pop("error", None)
-        write_notes(assignment_dir, n, {**note, "comments": g.comments, "mistakes": g.mistakes,
-                                        "reviewed": {"by": by, "at": at, "points": pts}})
-        mine = grades.own_file(assignment_dir)
-        own = grades.read_file(mine)
-        own[n] = {**read_grades(assignment_dir).get(n, {}), "number": n, "grade": _pts(g.grade), "feedback": g.feedback,
-                  "points": ";".join(_pts(p) for p in pts), "approved": f"{by} {at[:16].replace('T', ' ')}",
-                  "graded_at": at, "graded_by": by}
-        grades.write_file(mine, own)
-    return {"number": n, "grade": g.grade}
+                mistakes: list | None = None, reason: str = "") -> dict:
+    """מה שאדם החליט בבדיקה הידנית או בעריכת ציון: ניקוד והערה לכל שאלה, משוב, וסיבה (חובה כשמשנים ציון קיים).
+    הכול עובר דרך grading/grade_edit.edit_grade: הציון מתעדכן בכל היעדים (PDF מסומן, Grading notes, קובץ הציונים
+    של מי שבמחשב הזה כשורה מאושרת, ובעתיד מסד הנתונים), והשינוי נרשם ביומן. מחזיר את הציון."""
+    from .grade_edit import edit_grade  # grade_edit מייבא את הקובץ הזה
+    return edit_grade(assignment_dir, number, points, comments, feedback, by, reason=reason, mistakes=mistakes)
+
+
+def _ledger(assignment_dir: Path, action: str, by: str, **details) -> None:
+    """רושם אירוע ציון ביומן (datastore/ledger.py). היומן הוא שכבת ביקורת ושחזור: כישלון בכתיבה אליו לא מפיל בדיקה."""
+    try:
+        import activity_log
+        activity_log.record(assignment_dir, action, by, **details)
+    except Exception as e:  # noqa: BLE001
+        import sys
+        print(f"היומן לא נכתב: {e}", file=sys.stderr)
+
+
+def _update_stats(assignment_dir: Path) -> None:
+    """מעדכן את מסד הנתונים הסטטיסטי (stats/, "Statistics/<קורס>/Assignment N.json") אחרי בדיקה או אישור.
+    כישלון שם לא מפיל את הבדיקה: הקובץ נגזר, והקורא הבא יחשב אותו מחדש."""
+    import sys
+
+    try:
+        import stats
+        stats.build(assignment_dir)
+    except Exception as e:  # noqa: BLE001
+        print(f"הסטטיסטיקה לא עודכנה: {e}", file=sys.stderr)

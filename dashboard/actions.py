@@ -29,18 +29,20 @@ import threading
 import time
 from collections import OrderedDict
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pymupdf
 
 from copying import check as copying
-from grading import grade as grading
+from grading import grade as grading, grade_edit
 from moodle import (anonymize as moodle_anonymize, claims, claude_driver, grades as moodle_grades, pull_check,
                     ingest as moodle_ingest, lock as moodle_lock, paths, send as moodle_send, upload as moodle_upload,
                     upload_log)
 
 from . import folder_view, onedrive_check, settings as cfg, shared_folder, usage as grading_usage
+from datastore import atomic
+from datastore import doctor as integrity_doctor
 
 
 def root_info() -> tuple[Path | None, str | None]:
@@ -153,7 +155,7 @@ def new_assignment(root: Path, course: str, assignment: str, moodle_id: str) -> 
 
 
 def _write_info(a: folder_view.Assignment, info: dict) -> None:
-    (a.dir / paths.INFO).write_text(json.dumps(info, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    atomic.write_json_atomic(a.dir / paths.INFO, info)  # atomic: a crash never leaves half a details file
 
 
 def _title_from_zip(a: folder_view.Assignment, zip_path: Path, mid: str) -> None:
@@ -231,7 +233,25 @@ def pull_status() -> dict:
 PART_S = 12  # בערך כמה שניות לוקח חלק אחד של הורדה בחלקים, עד שיש קצב אמיתי (15 חלקים ב-~3 דקות, 2026-10-23)
 
 
+_pull_lock_state: dict = {"path": None, "at": 0.0}
+PULL_LOCK_REFRESH_S = 60
+
+
+def _refresh_pull_lock() -> None:
+    """A pull longer than LOCK_MINUTES used to look stuck: the lock's time moves with every progress report (once a minute)."""
+    path = _pull_lock_state.get("path")
+    if path is None or time.monotonic() - _pull_lock_state.get("at", 0.0) < PULL_LOCK_REFRESH_S:
+        return
+    _pull_lock_state["at"] = time.monotonic()
+    try:
+        if Path(path).exists():
+            moodle_lock.refresh(Path(path))
+    except OSError:
+        pass
+
+
 def _pull_report(phase: str, done: int = 0, total: int = 0) -> None:
+    _refresh_pull_lock()
     with _pull_lock:
         now = time.time()
         if phase != _pull.phase or done < _pull.phase_done:
@@ -339,6 +359,7 @@ def _do_pull(root: Path, course: str, assignment: str, moodle_id: str | None, fu
     old_rows = a.key_rows()
     before = {r["number"] for r in old_rows}
     lock = _take_lock(a)
+    _pull_lock_state.update(path=lock, at=time.monotonic())
     try:
         zip_path = _zip_from_moodle(a, mid, 0 if full else _since(a), limit)
         _title_from_zip(a, zip_path, mid)
@@ -808,7 +829,8 @@ def _watched_dirs(root: Path) -> list[Path]:
     """התיקיות שהמצב שהאתר מציג נבנה מהן: תיקיית הקורס, "Who does what", ובכל מטלה התיקייה ו-_WATCHED."""
     out: list[Path] = []
     for course_dir in folder_view.courses(root):
-        out += [course_dir, course_dir / paths.TASKS]
+        # Statistics/<קורס>: מסד הנתונים הסטטיסטי (stats/), כדי שעדכון ממחשב אחר יגיע לאתר תוך 5 שניות
+        out += [course_dir, course_dir / paths.TASKS, root / paths.STATISTICS / course_dir.name]
         for a in folder_view.assignments(course_dir):
             out += [a.dir, *(a.dir / sub for sub in _WATCHED)]
     return out
@@ -845,6 +867,47 @@ def refresh(root: Path) -> dict:
     except OSError as e:
         raise UserError(UNREADABLE.format(error=e.strerror or e)) from e
     return {"state": st, "sig": changes(root), "onedrive": od, "at": datetime.now().isoformat(timespec="seconds")}
+
+def _fresh_lock_holder(lock: Path) -> str | None:
+    """Who holds a lock that is still alive (younger than LOCK_MINUTES), or None. A stuck lock is not "in progress"."""
+    try:
+        if not lock.exists() or datetime.now() - datetime.fromtimestamp(lock.stat().st_mtime) >= timedelta(minutes=moodle_lock.LOCK_MINUTES):
+            return None
+        return moodle_lock.parse(lock.read_text(encoding="utf-8", errors="replace"))[0]
+    except OSError:
+        return None
+
+
+def integrity_view(root: Path, course: str | None = None, assignment: str | None = None) -> list[dict]:
+    """datastore doctor for every assignment (or one): problems by code and level, numbers only, never names."""
+    out = []
+    for a in integrity_doctor.check_all(root) if not (course and assignment) else [integrity_doctor.check(find_assignment(root, course, assignment).dir)]:
+        out.append(a.as_dict())
+    return out
+
+
+def fix_integrity(root: Path, course: str, assignment: str, dry_run: bool = True) -> dict:
+    """What datastore doctor can repair by itself (stuck locks, graders' and claims conflict copies, statistics copies)."""
+    a = find_assignment(root, course, assignment)
+    done = integrity_doctor.fix(a.dir, dry_run=dry_run)
+    return {"done": done, "dryRun": dry_run, "report": integrity_doctor.check(a.dir).as_dict()}
+
+
+def stats_view(root: Path, course: str | None = None) -> list[dict]:
+    """הסטטיסטיקה של כל המטלות (או של קורס אחד), דרך stats בלבד: הקובץ השמור ב-Statistics/ אם הוא עדיין משקף את
+    התיקייה, אחרת חישוב ושמירה. מטלה שהחישוב שלה נכשל לא מסתירה את האחרות."""
+    import stats
+
+    out = []
+    for a in stats.assignment_dirs(root):
+        if course and a.parent.name != course:
+            continue
+        try:
+            out.append(stats.read(a))
+        except Exception as e:  # noqa: BLE001
+            out.append({"key": stats.compute.assignment_key(a.parent.name, a.name), "course": a.parent.name,
+                        "folder": a.name, "slot": stats.compute.slot(a.name), "error": str(e)})
+    return out
 
 
 def claims_view(root: Path, course: str, assignment: str) -> dict:
@@ -1157,6 +1220,21 @@ def _drop_status_cache() -> None:
     _moodle_cache = None
 
 
+def running_jobs() -> list[str]:
+    """מה רץ עכשיו במחשב הזה. dashboard/updater.py לא מעדכן (ומפעיל מחדש) באמצע אף אחד מהם."""
+    jobs = []
+    with _pull_lock:
+        jobs += ["pull"] if _pull.running else []
+    with _job_lock:
+        jobs += ["grading"] if _job.running else []
+    with _copy_lock:
+        jobs += ["copying"] if _copy.running else []
+    with _send_lock:
+        jobs += (["upload"] if _send.running else []) + (["chrome check"] if _checking else [])
+    jobs += (["claude login"] if _login.running() else []) + (["claude install"] if _install.running() else [])
+    return jobs
+
+
 def _fresh_check(course: str, assignment: str) -> tuple[dict, str] | None:
     hit = _ready_cache.get((course, assignment))
     if hit and time.monotonic() - hit[0] < READY_MINUTES * 60:
@@ -1297,10 +1375,25 @@ def returned_numbers(assignment_dir: Path, marked: dict[str, list[Path]]) -> set
 
 # ---------- בדיקה ידנית ----------
 def save_review(root: Path, course: str, assignment: str, number: str, points: list, comments: list, feedback: str,
-                mistakes: list | None = None) -> dict:
-    """אדם אישר עבודה בתור הבדיקה הידנית (או תיקן ציון): grading.save_review, עם מי שאישר."""
+                mistakes: list | None = None, reason: str = "") -> dict:
+    """אדם אישר עבודה בתור הבדיקה הידנית או ערך ציון (עם סיבה): grading.save_review, עם מי שאישר."""
     a = find_assignment(root, course, assignment)
-    return grading.save_review(a.dir, number, points, comments, feedback, by=moodle_lock.me(), mistakes=mistakes)
+    return grading.save_review(a.dir, number, points, comments, feedback, by=moodle_lock.me(), mistakes=mistakes,
+                               reason=reason)
+
+
+def grade_history(root: Path, course: str, assignment: str, number: str) -> list[dict]:
+    """יומן העריכות של ציון עבודה אחת (grading/grade_edit.history), מהישנה לחדשה."""
+    a = find_assignment(root, course, assignment)
+    return grade_edit.history(a.dir, number)
+
+
+def grade_ledger(root: Path, course: str, assignment: str, number: str) -> list[dict]:
+    """כל אירועי הציון של עבודה אחת מיומן האירועים (datastore/ledger.history): בדיקה אוטומטית, כישלון, עריכה,
+    שחזור. מהישן לחדש, מספרים בלבד."""
+    from datastore import ledger
+    a = find_assignment(root, course, assignment)
+    return ledger.history(a.dir, number)
 
 
 # Grading notes של כל העבודות נקראים בכל טעינה של האתר. קובץ שלא השתנה לא נקרא שוב
@@ -1419,6 +1512,13 @@ def _activity(a: folder_view.Assignment, log: list[dict]) -> list[dict]:
         n = len(u["numbers"])
         out.append({"at": u["at"], "kind": "return", "actor": u["by"],
                     "text": f"הועלו למודל {n} עבודות מסומנות" + (f" ({zip_name})" if zip_name else "")})
+    for e in grade_edit.history_all(a.dir):  # עריכות ציון מהיומן (activity_log): מי, מאיזה ציון לאיזה ולמה
+        why = (e.get("reason") or "").strip()
+        why = f": {why[:120]}" if why else ""
+        failed = e.get("action") == grade_edit.ACTION_FAILED
+        out.append({"at": (e.get("at") or "")[:16], "kind": "error" if failed else "grade", "actor": e.get("by") or "",
+                    "text": (f"עריכת הציון של עבודה {e.get('number')} לא הושלמה" if failed
+                             else f"ציון עבודה {e.get('number')}: {e.get('from') or '—'} ← {e.get('to')}") + why})
     return out
 
 
@@ -1489,7 +1589,7 @@ def state(root: Path) -> dict:
                 "warnings": [f"עותק כפול של טבלת המפתח: {c}" for c in key_conflicts(a)]
                             + [f"עותק כפול של הגשה: {c}" for c in moodle_anonymize.submission_conflicts(a.dir)]
                             + [f"עותק כפול של יומן ההעלאה: {c}" for c in upload_log.log_conflicts(a.dir)]
-                            + ([f"משיכה בתהליך: {moodle_lock.parse((a.dir / LOCK_FILE).read_text(encoding='utf-8'))[0]}"] if (a.dir / LOCK_FILE).exists() else [])
+                            + ([f"משיכה בתהליך: {who_pull}"] if (who_pull := _fresh_lock_holder(a.dir / LOCK_FILE)) else [])
                             + ([f"העלאה בתהליך: {who}"] if (who := _upload_lock_holder(a)) else []),
                 "subs": subs, "log": _activity(a, log), "owners": owners, "copying": copying_state(a.dir),
             })

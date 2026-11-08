@@ -505,7 +505,7 @@ def test_save_review_approves_with_who_and_rewrites_the_summary_page(root):
     grading.grade_assignment(a.dir, ["0001"], ask=lambda req: detailed(review="לא בטוח", kind="uncertain"))
     out = grading.save_review(a.dir, "1", [20, 14.7, 20, 20, 0], ["", "חסר נימוק.", "", "", "השאלה לא נמצאה"],
                               "עבודה טובה.", by="dana (PC)", mistakes=[[], ["חסר נימוק"], [], [], []])
-    assert out == {"number": "0001", "grade": 75}  # 14.7 → 14.5
+    assert (out["number"], out["grade"], out["from"]) == ("0001", 75, "85")  # 14.7 → 14.5
     row = grading.read_grades(a.dir)["0001"]
     assert row["points"] == "20;14.5;20;20;0" and row["grade"] == "75" and row["feedback"] == "עבודה טובה."
     assert row["approved"].startswith("dana (PC) ") and row["review"] == "לא בטוח" and grading.is_approved(row)
@@ -528,7 +528,7 @@ def test_save_review_of_work_graded_before_notes_keeps_its_marks(root):
     grading.notes_path(a.dir, "0002").unlink()
     with pymupdf.open(a.dir / paths.MARKED / "0002.pdf") as doc:
         pages, marked_page = doc.page_count, len(doc[1].get_drawings())
-    grading.save_review(a.dir, "0002", [20] * 5, [], "", by="x")
+    grading.save_review(a.dir, "0002", [20] * 5, [], "", by="x", reason="ערעור התקבל")
     with pymupdf.open(a.dir / paths.MARKED / "0002.pdf") as doc:
         assert doc.page_count == pages and "ציון: 100 מתוך 100" in text(doc[0]) and len(doc[1].get_drawings()) == marked_page
 
@@ -546,7 +546,7 @@ def test_server_review_and_downloads(root, server):
     a = asg(root)
     st, out = call(server, "POST", "/api/review", {"course": COURSE, "assignment": HW, "number": "0003",
                                                      "points": [20, 20, 20, 20, 10], "comments": [], "feedback": "יפה"})
-    assert st == 200 and out == {"number": "0003", "grade": 90}
+    assert st == 200 and (out["number"], out["grade"], out["from"]) == ("0003", 90, None)
     assert grading.read_grades(a.dir)["0003"]["approved"]
     for bad in ({"number": "../1", "points": [20] * 5}, {"number": "0003", "points": ["20"] * 5}, {"number": "0003", "points": [True] * 5}):
         st, _ = call(server, "POST", "/api/review", {"course": COURSE, "assignment": HW, **bad})
@@ -756,6 +756,27 @@ def test_note_goes_to_free_paper_not_over_the_writing():
     assert note.y1 <= box.y0  # מתחת יש כתב, אז ההערה מעל
     norm = (note.x0 / 595 * 1000, note.y0 / 842 * 1000, note.x1 / 595 * 1000, note.y1 / 842 * 1000)
     assert ink.density(*norm) < 0.25
+
+
+def test_every_note_on_a_page_is_written_not_only_the_first():
+    # באג אמיתי (2026-11-07): ההערה השנייה בעמוד לא נכתבה. _note_rect חישב חפיפה עם r.intersect(t),
+    # שמשנה את r עצמו, אז המקום שנבחר להערה התכווץ או התהפך והכתיבה נכשלה בשקט
+    doc, page = _scan_page((100, 200, 300, 230))
+    for y in range(380, 410, 3):  # שורה כתובה שנייה, רחוקה מהראשונה
+        page.draw_line((100, y), (350, y), color=(0, 0, 0.3), width=1.2)
+    for y in range(560, 590, 3):  # ושלישית
+        page.draw_line((100, y), (320, y), color=(0, 0, 0.3), width=1.2)
+    ctx = grading.Context("מטלה", "קורס", [grading.Question("שאלה 1", 100)])
+    notes = ["הערה ראשונה", "הערה שנייה", "הערה שלישית"]
+    g = grading.Graded([90], [""], 90, "", [
+        grading.Mark(1, 168, 237, 504, 273, notes[0]),
+        grading.Mark(1, 168, 451, 588, 487, notes[1]),
+        grading.Mark(1, 168, 665, 538, 701, notes[2]),
+    ])
+    with pymupdf.open(stream=grading.mark_pdf(doc.tobytes(), g, ctx), filetype="pdf") as out:
+        written = text(out[1])
+    assert len(g.marks) == 3
+    assert all(n in written for n in notes)
 
 
 def test_shrinking_does_not_blacken_pages_with_several_images():

@@ -4,6 +4,35 @@ University project (BGU) that grades student assignments with Claude:
 pull submissions from Moodle → grade by rubric → TA approves → return grades and marked files to Moodle.
 Courses are large (up to ~1,000 students per assignment). The team works in Hebrew.
 
+## Any teammate's computer
+
+The system runs on the computer of whoever uses it, not on a server, and every teammate's computer can pull, grade
+and return once it is set up. Nothing is tied to one person's PC: "Matan's PC" or "Ori's laptop" below says where
+something was first seen or checked, not the only place it works. Names in tests and `docs/Roadmap.md` (יוסי and
+the like) are made up. Never tell a teammate "it only works on Matan's computer"; find which of these is missing on
+theirs, in this order, and say how to fix it:
+1. **The repo on this computer, and its server up**: `curl http://127.0.0.1:8765/api/health`. If not, `start.bat`
+   (once, `install-autostart.bat`). Setup of a new computer: README.md, "הפעלה אצל כל אחד מהצוות".
+2. **The shared folder**: `/api/health` names it, or `python -m moodle status <id>`. The site and the commands find
+   the synced OneDrive folder the same way (`shared_folder.find_root`, `use_for_commands`; before 2026-11-03 the
+   commands looked only in `~/Exercise Checking System` and failed on every computer that only syncs OneDrive).
+3. **Claude Code signed in to this person's own Claude account** (`claude auth status`): grading, pull and upload.
+4. **Chrome with the Claude in Chrome extension, signed in to Moodle**: pull and upload.
+5. **`GRADER_NAME` in the repo's `.env`** (the site asks for it): whose claims and grades these are.
+
+**A Claude that sees only GitHub** (claude.ai with the GitHub connector, Claude Code on the web, any cloud session)
+runs on Anthropic's machines, not on the user's computer. It can read and change the code and open PRs, but it cannot
+reach the OneDrive folder, Moodle, Chrome or the local server, so it cannot pull, grade, check copying or upload. Say
+so plainly and send the user to Claude Code on their own computer: the Claude desktop app → Code → the
+`assignment-checker` folder they cloned (or `claude` in a terminal there).
+
+**GitHub**: every teammate has write access (orimes-source, ezraariel, noa-rodnizky, tikochin; Shazumi178 is
+Nadav). Work on a branch and open a PR. The first push from a new computer opens a GitHub sign-in in the browser
+(Git Credential Manager); `gh auth login` once for PRs from the command line.
+
+**Moodle uploads are on hold** (Matan, 2026-10-22, and the team's setup issue #22): nothing goes up to Moodle, not
+even a dry run of `send`, until Matan says the course staff approved returning feedback through the system.
+
 ## Repo layout
 
 Each folder has a README.md that explains it.
@@ -13,6 +42,9 @@ Each folder has a README.md that explains it.
 | `moodle/` | Steps 1 and 3: Moodle ZIP → numbered submissions (`ingest`), grades + marked files → ZIPs (`upload`), and the automatic upload to Moodle (`send`, `record`). `python -m moodle ingest|status|upload|send|record <id>`, `guide` |
 | `moodle/paths.py` | Every folder and file name in the shared folder (constants). Everything else imports names from here |
 | `grading/` | Step 2: grading with Claude. `python -m grading <id>` or the dashboard's "Grade" button. Through the API with `ANTHROPIC_API_KEY`, otherwise through the logged-in Claude Code (`grading/claude_cli.py`). Its README has the input/output contract, the rubric format and the `Grades.csv` columns |
+| `activity_log/` | The activity log: `record(folder, action, by, **details)` and `read(folder, action, **match)`. `<folder>/Activity log/<who>.jsonl`, one file per writer, lines only added. Grade edits write `grade_edit` / `grade_edit_failed` |
+| `stats/` | The statistics database: per assignment and per question, averages, distribution, common mistakes, review counts. Numbers only. Saved as a derived `Statistics/<course>/Assignment N.json` in the data folder (recomputed when the grades or notes change, after every grading run and approval), shown in the site's "סטטיסטיקה" tab (`#/stats`, `GET /api/stats`), read from the CLI with `python -m stats show <id>` / `show --all --brief` / `rebuild` / `export --sqlite`. The skill `stats-db` explains it. Claude reads statistics only through it, never from `Grades by` or `Grading notes` by hand. Plan and phases: `docs/Statistics database plan.md` |
+| `datastore/` | The integrity gate of the file "database" (DB_UPGRADE_PLAN.md, proposal B): `atomic` (atomic writes, O_EXCL lock files, a local process lock around read-modify-write), `schema` (what a valid grade row, notes file, details file and key table are; `reject` for new writes, `warn` for old rows), `doctor` (`python -m datastore check <id>` / `fix`, `GET /api/integrity`, the site's integrity banner): duplicates, marked PDF without a grade row, conflict copies of every kind, stuck locks, invalid files. Grades are written only through `grades.update_own`. `ledger` (proposal A): every grade change is an event in `activity_log` (`grade_set`, `grade_failed`, `grade_edit_intent`, `grade_edit`, `grade_edit_failed`, `grade_replayed`; deterministic `id`, per-writer `seq`); `projection` says what the grade should be (approval wins, then time, then id), `compare`/`replay` (`python -m datastore replay <id> [--yes]`, also inside `fix`) put a lost row back into the original writer's file, `history <id> <number>` lists a work's grade events (also `/api/grade-log` → `history`, shown on the review page). The dashboard connects `LedgerStore` at startup (`web_server.connect_stores`) so an edit writes "started" before the other targets |
 | `copying/` | Suspected copying between submissions, no Claude and no tokens: `python -m copying <id>` or the site's "העתקות" page (`#/copying`). Layer 0: the same file, or the same PDF document id / author / creation time. Layer 1: the same page (dHash for scans, rare shared 3-word sequences for typed pages). Writes `Copying check.json` (numbers and hashes only). Its README has the thresholds and what it can't catch |
 | `.claude/skills/rubric-builder/` | "מחוון לדף X, תמשוך Y עבודות": the one rubric skill (the older `rubric` skill and its workflow were retired on 2026-10-29). A committee of agents builds the rubric from the full solution and all Y submissions, with `rubric.json` as the one source, and writes everything into `פדגוגי/`: `Solutions.md`, `Solution methods.md`, `Manual review rules.md`, and `Working notes/` (`rubric.json`, `findings.md`, the agents' reports). `scripts/make_pdf.py` renders from it both `פדגוגי/Rubric.md` (the grading bot's rubric; the bot deducts by רגיל) and `פדגוגי/Rubric.pdf` (people: steps and points, error tables with רגיל/מחמיר = רגיל + 1, alternative methods) in the course's fixed format. A council `Rubric.md` from the `rubric` skill is an input (its numbers) and is archived on delivery. Then a committee loop on the TA's remarks until approved. Needs MiKTeX once per computer (`setup/check.ps1`, `setup/install-windows.ps1 -NoPerl -NoUpdate`). Its README.md explains it to people |
 | `dashboard/` | Local server that connects the website to the shared folder: `python -m dashboard serve` (or `start.bat`) |
@@ -20,8 +52,10 @@ Each folder has a README.md that explains it.
 | `website/` | The dashboard site "בודק חכם" (static HTML/JS, Hebrew RTL). Published to Vercel (project `bodek-hacham`, root dir `website`, https://bodek-hacham.vercel.app) from `main` through Vercel's Git integration. No demo data: it shows only what `dashboard/` reads from the shared folder, and the Vercel page connects to the dashboard on the same PC at `http://127.0.0.1:8765` (CORS for that exact origin only, `SITE_ORIGINS` in `dashboard/web_server.py`) |
 | `pages-redirect/` | The old address `matanravitsky-crypto.github.io/assignment-checker` (GitHub Pages) kept serving the demo site with fake data after the move to Vercel. It now only forwards to bodek-hacham.vercel.app (`.github/workflows/pages-redirect.yml`). Never publish the site there again |
 | `tests/` | All tests (`tests/moodle/`, `tests/dashboard/`). Run `python -m pytest` from the repo root; CI runs them on every PR |
-| `install-autostart.bat`, `autostart.vbs` | Once per computer: a shortcut in the Windows Startup folder runs `autostart.vbs` at every sign-in, a watchdog that checks `/api/health` every minute and runs `start.bat background` hidden when the system is down (no browser, no pause; output to `%TEMP%odek-hacham.log`). Chrome blocks the public site from reaching 127.0.0.1 (permission `loopback-network`, denied on Matan's Chrome 155), so the Vercel page forwards to `http://localhost:8765` by itself once the user has clicked "פתח את המערכת" there (localStorage `ac:openLocal`; `?stay` turns it off). Installed on Matan's PC on 2026-10-22 |
+| `install-autostart.bat`, `autostart.vbs` | Once per computer: a shortcut in the Windows Startup folder runs `autostart.vbs` at every sign-in, a watchdog that checks `/api/health` every minute and runs `start.bat background` hidden when the system is down (no browser, no pause; output to `%TEMP%odek-hacham.log`). The Vercel page talks to the local system directly (`BASE` = `http://127.0.0.1:8765/`, CORS for that origin only), so the address bar stays bodek-hacham.vercel.app (Matan, 2026-11-03). Chrome asks once per computer to allow it (Local Network Access, `loopback-network`; "prompt" on Matan's Chrome 156 on 2026-11-03). From 10-23 to 11-03 the page forwarded to `http://localhost:8765` instead (localStorage `ac:openLocal`, no longer read): teammates whose system was down at that moment (just booted, or the self-update restart) got Chrome's error page with no way back to the instructions. The not-connected page now reads the permission state (`localAccess`) and says which step is missing. Installed on Matan's PC on 2026-10-22 |
 | `start.bat` | Double-click: updates from GitHub (`git pull --ff-only`, skipped with a message if it can't), runs `claude update` (an old Claude Code refuses the new models; stopped after `CLAUDE_UPDATE_WAIT_S`, default 120 seconds), sets up `.venv` once, installs `requirements.txt`, starts the dashboard. Teammate setup (folder shortcut, Python, 7-Zip, Git, `git clone`) is in `README.md` and on the site's not-connected page |
+| `dashboard/public_status.py` | The public numbers board (Matan, 2026-11-03: "numbers only, for everyone"). The public site shows nothing of the shared folder by itself, so one computer, the one with `PUBLIC_STATUS_GIST=<gist id>` in its `.env` (Matan's PC: gist f1d11991473c2ece643fc479ed963117) and `gh` signed in, publishes a summary of numbers only to that gist (`gh api --method PATCH gists/<id>`): per course and assignment, how many were pulled, graded, wait for manual review, approved and returned, when, and who pulls. No submission numbers, grades, averages, comments, copying, files or anything about one student (`tests/dashboard/test_public_status.py` checks it). Checked every 2 minutes against `actions.changes`; published only when the numbers changed, and hourly anyway as a heartbeat. The site (`PUBLIC_STATUS_URL` in `website/app.js`, the gist's raw URL) shows it as "מצב העבודה" to anyone without a connected system, refreshed every minute, and says the numbers may be old after 3 hours without an update |
+| `website/connect.ps1` | Teammate setup in one command, shown with a copy button on the site's not-connected page: `irm https://bodek-hacham.vercel.app/connect.ps1 \| iex`. Installs what is missing (Git, Python 3.12, 7-Zip with winget; Claude Code with Anthropic's installer, the same `INSTALL_COMMAND` the site's button runs), clones to `%USERPROFILE%\Bodek Hacham\assignment-checker` (a computer whose Startup shortcut already exists keeps that folder; a running server skips all of it), runs `install-autostart.bat quiet` (no `pause`), waits up to 8 minutes for `/api/health`, and opens the site, where Chrome asks once to allow it to reach the system on this computer. ASCII-only English output: Hebrew prints backwards in a PowerShell window. `website/vercel.json` serves it as UTF-8 text. It cannot add the OneDrive shortcut; it says so when `/api/health` has no root |
 
 ## Student data: never in the repo
 
@@ -32,7 +66,7 @@ them in Hebrew). The names are constants
 in `moodle/paths.py`, so code never spells them out by hand:
 
 ```
-Exercise Checking System/                  the data folder (ASSIGNMENT_DATA, default ~/Exercise Checking System)
+Exercise Checking System/                  the data folder (the synced one, found by itself; else ASSIGNMENT_DATA, default ~/Exercise Checking System)
   README.txt
   Linear Algebra/                           a folder per course
     README.txt
@@ -164,6 +198,13 @@ Each teammate grades on their own computer with their own Claude subscription, s
   (pulled, graded, returned). It also checks OneDrive itself on this computer (`dashboard/onedrive_check.py`): the
   folder is inside OneDrive (Cloud Files API), OneDrive.exe runs (started if not), no AADSTS50076 in the AAD log in the
   last 20 minutes (BGU wants MFA, see the shortcut "חיבור OneDrive BGU"), and how many files from here are not uploaded yet.
+  That shortcut exists only on Matan's PC (`%LOCALAPPDATA%\BodekHacham\onedrive-signin`, not in the repo); elsewhere
+  the person signs in to OneDrive themselves. "Not synced" has three causes, checked in this order: a stale tab
+  (`/api/state` already has it), a server still running old code (see "Problems already solved"), or OneDrive stuck.
+  The button shows for everyone on the public site, also without a system on that computer (until 2026-11-03 it was
+  hidden there, so only Matan saw it): then it fetches the public numbers board fresh from the gist (`syncPublic`,
+  a `?t=` URL no cache has seen) and says what changed and when the publishing computer last published. A system from
+  before the button answers 404 on `/api/refresh`; the site then says it is old and updates when it restarts.
 - **Grading** skips numbers someone else holds and claims what it grades. Once anyone took something, the site's "Grade"
   button grades only my claimed, ungraded work; with no claims at all it grades everything pending, as before.
 - **Grades never share a file**: grading writes `Grades by <name>.csv` (with `graded_at`, `graded_by`). Every reader
@@ -179,10 +220,11 @@ Each teammate grades on their own computer with their own Claude subscription, s
 https://bgu365-my.sharepoint.com/personal/mein_bgu_ac_il/_layouts/15/onedrive.aspx?id=%2Fpersonal%2Fmein%5Fbgu%5Fac%5Fil%2FDocuments%2FYallaLinearit%2FExercise%20Checking%20System
 Next to it, `YallaLinearit/Course Material (tex)/exercises and solutions/` has the linear algebra questions and solutions as .tex.
 
-The folder is **synced** on Matan's PC (`C:\Users\PC\BGU\<owner> - YallaLinearit`). Syncing works through
-"Add shortcut to My files" on the shared folder (the older note that the button fails is out of date), and the dashboard
-finds the synced folder by itself (`dashboard/shared_folder.py`). To point at another path, set `ASSIGNMENT_CHECKER_ROOT`
-(the dashboard) or `ASSIGNMENT_DATA` (the `moodle` commands) to the synced path of `Exercise Checking System`, and check
+Each teammate **syncs** the folder on their own computer through "Add shortcut to My files" on the shared folder (the
+older note that the button fails is out of date); OneDrive names it `<owner> - YallaLinearit`, e.g. on Matan's PC
+`C:\Users\PC\BGU\נדב מאיר - YallaLinearit`. The dashboard and the `moodle`/`grading`/`copying` commands find the synced
+folder by themselves (`dashboard/shared_folder.py`). To point at another path, set `ASSIGNMENT_CHECKER_ROOT` (both; also
+in `.env`) to the synced path of `Exercise Checking System`, or `ASSIGNMENT_DATA` (the commands only; it wins), and check
 with `python -m moodle status <id>`.
 - A teammate without the shortcut can still open the link above (the lecturer shares it) and view or download what
   they need, e.g. `Linear Algebra/Assignment 0 - Sets and Complex Numbers/1 - Submissions to grade/0023.pdf`.
@@ -199,7 +241,15 @@ with size and mtime, file bytes; only from inside a course folder of `ASSIGNMENT
 `https://bgu365-my.sharepoint.com`), so they go computer → browser → OneDrive and not through Claude (few tokens, no
 10 MB limit). It never deletes, never overwrites a OneDrive file newer than the local one (a team's `Grades.csv`),
 skips locks and temp files, and checks sizes after uploading. Don't sync while `Grading part N in progress.txt` exists.
-Once per computer Chrome asks to allow the site to reach the local network: the user clicks "Allow".
+Once per computer Chrome asks to allow the site to reach the local network: the user clicks "Allow" (each new port
+asks again).
+**Archived grading stays archived.** On 2026-11-03 Ori's test grading of 23/10-30/10 (Discrete Assignment 0, LA
+Assignment 0: marked PDFs, `Grading notes`, `Who grades what`, `Grades*.csv`) was moved in OneDrive to
+`<assignment>/Old test grading/` (its README says how to restore), so the site counts 0 graded there. A local copy that
+still has those files in their old places would upload them again as "new", so `plan` holds back a grading file that
+is missing in OneDrive when that assignment has `Old test grading/README.txt` in OneDrive and the file was saved before
+that README (`archived` in the report, with advice to move them locally too). Grading saved after it uploads as usual.
+`tests/onedrive/test_sync_plan.py` runs `plan` in Node.
 Checked 2026-10-23: 12 MB from the computer in 10 s, byte-identical; a dry run found Discrete Mathematics identical.
 
 When working with this data:
@@ -233,6 +283,20 @@ There is **no Moodle API**. Claude in Chrome works in the user's own logged-in C
   renames a broken one to `... (incomplete).zip`, so it is never taken again.
 - **An expired Moodle session shows nginx "404 Not Found"**, not a login page. Opening `https://moodle.bgu.ac.il/moodle/my/`
   signs Chrome in again by itself (SSO). Every Claude prompt does that once before giving up (`SESSION_RULE`).
+- **The pull button runs through the Claude of whoever clicks it** (2026-11-03, Matan: "the system tells the Claude on that
+  user's computer to pull and put the files in the right place in the Drive"). On the site, "משוך" and "משוך הכול מחדש"
+  first go through the same readiness list as the upload (`startPullFlow` → `readyLoop`, `then: "pull"`): Claude Code
+  installed (button, after a yes), signed in to this person's account (the sign-in page opens by itself), the Claude in
+  Chrome extension and Moodle connected (the short check, cached 30 minutes, so a connected computer pulls at once). When
+  all are ✓ the pull starts with no further click, through `claude -p --chrome` on that computer. An empty slot (first pull,
+  with its link) goes straight to `POST /api/pull`, where `require_moodle` checks the same. A computer that is not connected
+  sees `website/connect.ps1` on the not-connected page.
+- **A Claude Code that fails to start is run once more.** On 2026-11-03 at 12:01 a pull from the button failed with
+  "Claude Code נכשל (קוד יציאה 4294967295)", right after a `claude update` that hung, and looked like it did nothing.
+  `ClaudeChromeDriver.execute(again_if_crashed=True)` (the check and the download only, never an upload: Moodle may have
+  imported) runs the same command again after `CRASH_PAUSE_S` when it ended with an error code and no output within
+  `CRASH_WINDOW_S` (20 s; reaching Moodle takes Claude several turns, so the parts script cannot have started). A failure's
+  message now carries the last line Claude Code wrote to stderr.
 - **The pull button downloads by itself, in parts.** `POST /api/pull` first takes an unconsumed ZIP (or list of parts) of
   the assignment in Downloads. If there is none, `ClaudeChromeDriver.download` runs one locked-down `claude -p --chrome`
   (`--tools ""`, an empty temp folder, `download_prompt`): it opens the grading page, ticks the folders checkbox if it is off
@@ -351,6 +415,9 @@ in the assignment.
 | Students name files anything ("Untitled (7).pdf", their own name, ...) | Ignore filenames. Only the folder's participant id matters |
 | A name with words after the extension ("x.pdf דיסקרטית מתוקן") or none at all became "0044.pdf דיסקרטית מתוקן" / "0474", which grading can't open as a PDF (2026-11-03) | `anonymize.extension`: a real extension stays; otherwise the file's first bytes decide (PDF, JPEG, PNG). The next pull of such a student writes `0044.pdf` and moves the old name to `Earlier versions` |
 | `claude update` in `start.bat` hung for over 5 minutes (2026-11-03): nothing after it ran, so the site and the night pull stayed down until someone killed it | `start.bat` runs the update through PowerShell and stops it (with its children) after `CLAUDE_UPDATE_WAIT_S` seconds (default 120), says so, and starts the version already on the computer |
+| A test through the site ran old code (2026-11-02: the server was 69 commits behind `main`), and every merge reached a teammate only when their computer restarted | `dashboard/updater.py` (2026-11-03): the server asks GitHub every `UPDATE_CHECK_MINUTES` (default 60; first check 10 minutes after it starts). When `main` moved forward, the checkout is on `main` with no edits to tracked files, nothing runs (`actions.running_jobs`, no night pull in `scheduler.in_night_window`), it serves port 8765 and this checkout's `autostart.vbs` runs, it takes the buttons' lock and stops (`httpd.shutdown`). The watchdog runs `start.bat` within a minute (git pull, claude update, pip), and the site reloads itself when `/api/changes` reports a new `version`. A version it already tried (`Self update.json` in the work folder) is not tried again, so a failing `git pull` can't restart it every hour. `AUTO_UPDATE=off` in `.env` turns it off. A server from before this change still needs one restart. Before a real test now: wait for it, or stop the server's python process (the watchdog brings it back within a minute) |
+| After a pull cut to N students ("כמה?"), the next pull (also the night pulls) asked Moodle for everyone (2026-11-03) | By design: `_since` counts only complete pulls. Release the pull task after a cut pull unless the rest is wanted |
+| Stopping the headless `claude -p --chrome` of a pull did not stop the download | `download_parts.js` keeps running in its Moodle tab and parts keep landing in Downloads until the tab is closed. Close it, and move those parts aside before the next pull |
 | Chrome left the ZIP as "Unconfirmed *.crdownload" | Chrome was asking where to save. Turn off "Ask where to save each file" in Chrome settings |
 | Re-running ingest failed deleting folders 7-Zip extracted as read-only | `ingest.remove_tree` clears read-only and retries |
 | A pull that failed halfway could leave an empty key (the next pull renumbered everyone) or lose the files of students not in the next download; two pulls in one minute overwrote the kept download | `anonymize.prepare` updates "1 - Submissions to grade" in place, only what changed, each file and the key via `.tmp` + `os.replace`; `check_key` refuses to pull (before Chrome opens) when the key is empty or broken but submissions exist; kept downloads are named to the second, with " (2)" when taken. `tests/moodle/test_repeated_pulls.py` pulls 8 times in a row with changing submissions |
@@ -400,6 +467,15 @@ and a line in a spreadsheet. So per submission the grader writes:
 and `review_kind`) and every work whose grading failed to the site's "בדיקה ידנית" queue (`#/review`). There a TA picks ready-made
 comments (the rubric's `deductions`, the assignment's common mistakes, Claude's own), the points follow, and "approve" calls
 `grading.save_review`: it writes `approved = "<user> (<PC>) <time>"` in `Grades.csv` and redraws the marked PDF's summary page.
+
+**Editing a grade** ("ערוך ציון", Matan 2026-11-07): the same page, with a required "סיבה לשינוי" for any work that
+already has a grade (not for a first approval from the queue). Every save goes through one function,
+`grading/grade_edit.edit_grade`, which updates each place in `TARGETS` in order (the database, the marked PDF's summary
+page, `Grading notes`, the editor's `Grades by <name>.csv` as an approved row, which wins the merge and is what goes to
+Moodle) and logs who, when, from, to and why to `activity_log/` (`<assignment>/Activity log/<who>.jsonl`, one file per
+writer; any other action may write there too). A new place to update is one more target, not a change to the function.
+**There is no database yet**: `DatabaseTarget` stays off until `grade_edit.connect_database(store)` is called with an
+object that has `save_grade(edit)`.
 
 `python -m moodle upload` takes it from there.
 

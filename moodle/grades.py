@@ -13,6 +13,10 @@ import csv
 import io
 from pathlib import Path
 
+from datastore import atomic, schema
+
+from datastore import atomic, schema
+
 from . import claims, paths
 
 # number, grade, feedback are what the return step reads. The rest are the system's:
@@ -46,7 +50,8 @@ def is_approved(row: dict | None) -> bool:
 def read_file(path: Path) -> dict[str, dict]:
     if not path.exists():
         return {}
-    with path.open(encoding="utf-8-sig", newline="") as fh:
+    # errors="replace": a grades file that is not UTF-8 (a hand edit in Excel) must not stop every reader (the site, the upload)
+    with path.open(encoding="utf-8-sig", errors="replace", newline="") as fh:
         return {number_key(r["number"]): r for r in csv.DictReader(fh) if (r.get("number") or "").strip()}
 
 
@@ -73,7 +78,21 @@ def write_file(path: Path, rows: dict[str, dict]) -> None:
     w.writeheader()
     for n in sorted(rows):
         w.writerow({**rows[n], "number": n})
-    # BOM so Excel shows Hebrew. Write a temp file and swap it in, so a half-written file never stays behind
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(buf.getvalue(), encoding="utf-8-sig", newline="")
-    tmp.replace(path)
+    # BOM so Excel shows Hebrew. Atomic: a unique temp file, fsync, replace, so a half-written file never stays behind
+    atomic.write_atomic(path, buf.getvalue(), encoding="utf-8-sig")
+
+
+def update_own(assignment_dir: Path, number: str, row: dict, *, who: str | None = None,
+               max_grade: float | None = None, question_points: list[float] | None = None) -> dict:
+    """Write one row into my own grades file: a process lock around the read-modify-write (the CLI and the dashboard
+    of the same grader on one PC never overwrite each other), and the schema check first (an invalid row is refused
+    with schema.Invalid, never written). Returns the row as written."""
+    n = number_key(number)
+    row = {**row, "number": n}
+    mine = own_file(assignment_dir, who)
+    schema.require(schema.check_grade_row(row, max_grade=max_grade, question_points=question_points, where=mine.name))
+    with atomic.process_lock(str(mine.resolve())):
+        own = read_file(mine)
+        own[n] = row
+        write_file(mine, own)
+    return row

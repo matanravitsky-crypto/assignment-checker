@@ -24,6 +24,7 @@ from datetime import datetime
 from pathlib import Path
 
 from moodle import paths, upload
+from datastore import atomic
 
 LOG_FILE = "Upload log.csv"
 BATCH_FILE = "Upload batch.json"
@@ -50,16 +51,23 @@ def write_batch(assignment_dir: Path, batch: dict) -> None:
                "zips": [{"name", "sha256", "files": [{"number", "file", "sha256"}]}]}."""
     folder = assignment_dir / paths.UPLOAD
     folder.mkdir(parents=True, exist_ok=True)
-    with open(folder / BATCH_FILE, "w", encoding="utf-8-sig") as f:
-        json.dump(batch, f, ensure_ascii=False, indent=2)
+    atomic.write_json_atomic(folder / BATCH_FILE, batch, bom=True)  # never a half-written batch list
+
+
+class BatchUnreadable(ValueError):
+    """Upload batch.json is not valid JSON (a crash mid-write before this fix, or a half-synced file)."""
 
 
 def read_batch(assignment_dir: Path) -> dict | None:
     path = assignment_dir / paths.UPLOAD / BATCH_FILE
     if not path.exists():
         return None
-    with open(path, encoding="utf-8-sig") as f:
-        return json.load(f)
+    try:
+        with open(path, encoding="utf-8-sig") as f:
+            data = json.load(f)
+    except (ValueError, UnicodeDecodeError) as e:
+        raise BatchUnreadable(f"{BATCH_FILE} פגום ({type(e).__name__}): מכינים את ההחזרה מחדש כדי לבנות אותו") from e
+    return data if isinstance(data, dict) else None
 
 
 def batch_dir_name(batch_id: str) -> str:

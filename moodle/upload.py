@@ -24,6 +24,7 @@ import zipfile
 from pathlib import Path
 
 from moodle import anonymize, grades, paths
+from datastore import schema
 
 # The worksheet's headers follow the Moodle language the user downloaded it in
 GRADE_HEADERS = {"Grade", "ציון"}
@@ -69,8 +70,10 @@ def find_column(header: list[str], names: set[str]) -> int:
     raise ValueError(f"Worksheet has none of {sorted(names)}; its columns are {header}")
 
 
-def fill_worksheet(worksheet: Path, out: Path, results: dict, mapping: dict) -> int:
-    """Write the worksheet with grades filled in. Returns how many rows were filled."""
+def fill_worksheet(worksheet: Path, out: Path, results: dict, mapping: dict, max_grade: float | None = None,
+                   skipped: list | None = None) -> int:
+    """Write the worksheet with grades filled in. Returns how many rows were filled. A result whose grade is not a
+    valid number (or is out of 0..max_grade) is left empty and its number goes to `skipped`: never a bad grade in Moodle."""
     by_participant = {mapping[n]["participant_id"]: r for n, r in results.items() if n in mapping}
 
     with open(worksheet, encoding="utf-8-sig", newline="") as f:
@@ -83,6 +86,10 @@ def fill_worksheet(worksheet: Path, out: Path, results: dict, mapping: dict) -> 
     for row in body:
         result = by_participant.get(participant_from_identifier(row[0]))
         if result is None:
+            continue
+        if schema.valid_grade(result, max_grade) is None:
+            if skipped is not None:
+                skipped.append(str(result.get("number") or ""))
             continue
         row[grade_col] = result["grade"]
         row[feedback_col] = result.get("feedback", "")
@@ -225,7 +232,9 @@ def prepare_upload(assignment_dir: Path, worksheet: Path | None = None, max_byte
         "too_big": [],
     }
     if worksheet:
-        report["grades_filled"] = fill_worksheet(worksheet, upload / GRADES_FOR_MOODLE, results, mapping)
+        report["grades_skipped_invalid"] = []
+        report["grades_filled"] = fill_worksheet(worksheet, upload / GRADES_FOR_MOODLE, results, mapping,
+                                                 skipped=report["grades_skipped_invalid"])
     marked = assignment_dir / paths.MARKED
     if marked.is_dir():
         report["feedback_zips"], report["too_big"] = build_feedback_zips(marked, upload, mapping, max_bytes)

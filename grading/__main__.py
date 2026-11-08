@@ -10,7 +10,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from dashboard.settings import load_env
+from dashboard import shared_folder
 from moodle import paths
 
 from . import grade
@@ -19,7 +19,7 @@ from . import grade
 def main(argv: list[str] | None = None) -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
-    load_env()
+    shared_folder.use_for_commands()
     p = argparse.ArgumentParser(prog="python -m grading", description="בדיקת הגשות עם Claude")
     p.add_argument("assignment_id", help="מזהה המטלה במודל (id ב-Assignment details.json)")
     p.add_argument("--ids", nargs="*", help="מספרי הגשות לבדיקה (ברירת מחדל: כל מה שעוד לא נבדק)")

@@ -1,13 +1,16 @@
 (() => {
   // כל מה שהאתר מציג אמיתי: הנתונים מגיעים מהמערכת שרצה במחשב (start.bat, dashboard/web_server.py),
   // שקוראת את תיקיית OneDrive של הקורס. בלי המערכת אין מספרים במסך
-  const D = { courses: [], assignments: [], rubrics: {}, runs: [], usage: null };
+  // stats: מסד הנתונים הסטטיסטי (stats/, api/stats): רשומה לכל מטלה, מספרים בלבד
+  const D = { courses: [], assignments: [], rubrics: {}, runs: [], usage: null, stats: [], integrity: [] };
   // באתר הציבורי (Vercel) פונים למערכת שבמחשב. כשהאתר נפתח מהמערכת עצמה, לאותה כתובת
   const ON_LOCAL_HOST = ["localhost", "127.0.0.1"].includes(location.hostname);
   const BASE = ON_LOCAL_HOST ? "" : "http://127.0.0.1:8765/";
   // אותו אתר, ישירות מהמערכת: עובד בלי הרשאת "גישה למכשיר" של כרום
   const LOCAL_SITE = "http://localhost:8765/";
   const REPO_URL = "https://github.com/matanravitsky-crypto/assignment-checker";
+  // מחבר מחשב של מישהו מהצוות בפקודה אחת (website/connect.ps1, מתפרסם עם האתר)
+  const CONNECT_COMMAND = "irm https://bodek-hacham.vercel.app/connect.ps1 | iex";
   const DEFAULT_GRADE_INSTR = [
     "לבדוק כל שאלה בנפרד, לפי המחוון ולפי הפתרון הרשמי.",
     "פתרון נכון בדרך אחרת מקבל ניקוד מלא.",
@@ -28,6 +31,7 @@
     probing: false,    // מנסים עכשיו להתחבר למערכת במחשב
     me: null,          // השם שלי בצוות: {name, set}. set=false עד שבחרו שם באתר (אז זה שם המשתמש של Windows)
     syncing: false, syncedAt: null,  // הכפתור "סנכרון": רץ עכשיו, ומתי סונכרן לאחרונה
+    access: null,      // באתר הציבורי: מה כרום אומר על הגישה למערכת שבמחשב ("granted" / "prompt" / "denied")
   };
   const $ = (sel, root = document) => root.querySelector(sel);
   const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -37,12 +41,10 @@
     set(k, v) { try { localStorage.setItem("ac:" + k, JSON.stringify(v)); } catch {} },
   };
 
-  // כרום חוסם לאתר הציבורי גישה למחשב (הרשאת "גישה למכשיר", loopback-network), אבל מעבר לכתובת המקומית מותר תמיד.
-  // מי שפתח פעם את המערכת מכאן ("פתח את המערכת") מועבר אליה לבד בכל כניסה. ?stay משאיר באתר הציבורי ומבטל את המעבר
-  if (!ON_LOCAL_HOST) {
-    if (new URLSearchParams(location.search).has("stay")) store.set("openLocal", false);
-    else if (store.get("openLocal", false)) { location.replace(LOCAL_SITE + location.hash); return; }
-  }
+  // האתר הציבורי (Vercel) עובד ישירות מול המערכת שבמחשב (BASE), והכתובת למעלה נשארת bodek-hacham.vercel.app
+  // (מתן, 2026-11-03). כרום שואל פעם אחת בכל מחשב אם לאפשר לאתר לגשת לאפליקציות ולשירותים במכשיר: לוחצים "אפשר".
+  // עד אז מי שלחץ פעם "פתח את המערכת" הועבר בכל כניסה ל-localhost:8765 (openLocal), ומי שהמערכת שלו לא רצה באותו רגע
+  // קיבל שגיאה של כרום בלי שום הסבר. אין יותר מעבר, ו-openLocal הישן לא נקרא. localhost:8765 עדיין עובד גם ישירות
 
   // ---------- State ----------
   const state = {
@@ -69,7 +71,7 @@
     // לוח הבקרה: טעות נפוצה שנפתחה
     mistakeOpen: null,
     // הבדיקה הידנית: העבודה שפתוחה, סינון לפי סוג הבעיה, מה מוצג (מסומנת/מקורית) והטיוטה של כל עבודה עד השמירה
-    review: { id: null, edits: {}, saving: false, pages: {}, marks: true, open: {}, fbOpen: false },
+    review: { id: null, edits: {}, saving: false, pages: {}, marks: true, open: {}, fbOpen: false, log: {} },
     // העתקות: איזו שכבה מוצגת, איזה זוג פתוח, ובדיקה שרצה עכשיו
     copy: { filter: "all", open: null, running: false, progress: "" },
   };
@@ -349,7 +351,10 @@
       if (!mine) text = n ? `העלה ${n} למודל` : I.done.ret ? "הכל הועלה" : "אין עבודות להעלאה";
       if (LOCAL.sending?.running || LOCAL.starting) disabled = true;  // העלאה אחת בכל פעם, גם אם היא של מטלה אחרת
       if (LOCAL.sending?.running && sendingHere()) { text = sendProgressText(); spinning = true; }
-      if (LOCAL.rd?.flow && LOCAL.rd.assignmentId === A.id && !mine) { text = "בודק שהמחשב מוכן…"; spinning = true; disabled = true; }
+      if (LOCAL.rd?.flow && LOCAL.rd.then === "send" && LOCAL.rd.assignmentId === A.id && !mine) { text = "בודק שהמחשב מוכן…"; spinning = true; disabled = true; }
+    }
+    if (LOCAL.on && stage === "pull" && LOCAL.rd?.flow && LOCAL.rd.then === "pull" && LOCAL.rd.assignmentId === A.id && !mine) {
+      text = "מחבר את המחשב ל-Claude…"; spinning = true; disabled = true;
     }
     // החזרה שמישהו אחר בצוות לקח: הכפתור אצלו. אפשר להעביר אליך מלוח המשימות. משיכה: כל אחד יכול למשוך, גם כשהיא
     // רשומה על מישהו אחר (רק המשיכה הלילית נשארת שלו); הבדיקה שבסוף כל משיכה (moodle/pull_check.py) מוודאת ששום דבר לא אבד
@@ -361,7 +366,7 @@
     const stopBtn = mine && stage === "grade" ? `<button class="btn danger ${big ? "lg" : ""}" data-act="grade-stop" ${run.stopping ? "disabled" : ""}
       title="העבודות שכבר נשלחו ל-Claude יסתיימו ויישמרו. השאר יחכו ללחיצה הבאה על 'בדוק'">${run.stopping ? ICON.spin : ICON.stop}${run.stopping ? "עוצר…" : "עצור בדיקה"}</button>` : "";
     const btn = `<button class="btn ${primary ? "primary" : "secondary"} ${big ? "lg" : ""}" data-run="${stage}" ${disabled ? "disabled" : ""}${why}
-      ${stage === "grade" ? `aria-expanded="${state.gradePick === A.id}"` : ""}${stage === "pull" && LOCAL.on ? `aria-expanded="${state.pullPick === A.id}" aria-haspopup="dialog"` : ""}>${icon}${text}${stage === "pull" && LOCAL.on && !mine ? `<span class="caret" aria-hidden="true">▾</span>` : ""}</button>${stopBtn}`;
+      ${stage === "grade" ? `aria-expanded="${state.gradePick === A.id}"` : ""}${stage === "pull" && LOCAL.on ? `aria-expanded="${state.pullPick === A.id}" aria-haspopup="dialog"` : ""}>${icon}${text}${stage === "pull" && LOCAL.on && !spinning ? `<span class="caret" aria-hidden="true">▾</span>` : ""}</button>${stopBtn}`;
     if (stage === "pull" && LOCAL.on) return `<span class="pick-wrap">${btn}${disabled ? "" : pullPickHTML()}</span>`;
     return stage === "grade" ? `<span class="pick-wrap">${btn}${disabled ? "" : gradePickHTML()}</span>` : btn;
   }
@@ -538,7 +543,7 @@
           ${stageButton(stage, { big: true })}
         </div>
       </section>
-      ${stage === "pull" ? pullBarHTML() : ""}
+      ${stage === "pull" ? `${readyPanelHTML("pull")}${pullBarHTML()}` : ""}
       ${runStepsHTML(stage)}`;
   }
 
@@ -911,8 +916,8 @@
   const readyUrl = (A) => `api/ready?course=${encodeURIComponent(A.courseFolder)}&assignment=${encodeURIComponent(A.folder)}`;
   const readyAssignment = (rd) => D.assignments.find((a) => a.id === rd.assignmentId);
   const allReady = (d) => !!d && d.installed && d.logged_in && d.chrome === true && d.moodle === true;
-  const newReady = (A, flow) => ({
-    assignmentId: A.id, flow, data: null, looping: false, fetchedAt: 0, checking: false, checkTried: false, checkError: "",
+  const newReady = (A, flow, then = "send") => ({
+    assignmentId: A.id, flow, then, data: null, looping: false, fetchedAt: 0, checking: false, checkTried: false, checkError: "",
     loginTried: false, loginError: "", installAsk: false, installTried: false, installError: "",
   });
 
@@ -934,7 +939,7 @@
       return;
     }
     delete state.run[A.id];
-    if (allReady(rd.data)) { rd.flow = false; prepareLocalSend(); return; }
+    if (allReady(rd.data)) { readyDone(rd); return; }
     render();
     readyLoop(rd);
   }
@@ -949,7 +954,7 @@
         const d = (rd.data = await api(readyUrl(readyAssignment(rd))));
         let acted = false;
         if (rd.flow) {
-          if (allReady(d)) { rd.flow = false; render(); prepareLocalSend(); break; }
+          if (allReady(d)) { readyDone(rd); break; }
           if (d.installed && !d.logged_in && !d.login_running && !rd.loginTried) { acted = true; await startReadyLogin(rd, false); }
           if (d.installed && d.logged_in && d.chrome == null && !rd.checking && !rd.checkTried) { acted = true; rd.checkTried = true; checkReady(rd); }
         }
@@ -1031,6 +1036,40 @@
     return rd;
   }
 
+  // ---------- משיכה דרך ה-Claude של מי שלוחץ ----------
+  // "משוך" עובר באותה רשימת מוכנות כמו ההעלאה: כל אחד בצוות שלוחץ מושך דרך Claude Code שמותקן ומחובר במחשב שלו,
+  // והתוסף Claude in Chrome בכרום שלו. מה שחסר מותקן או מתחבר כאן (התחברות נפתחת לבד; התקנה רק אחרי "כן"),
+  // וכשהכול ✓ המשיכה מתחילה בלי לחיצה נוספת. בדיקה מ-30 הדקות האחרונות מספיקה, אז במחשב מחובר זה מיידי.
+  // הגשה שעוד אין לה תיקייה (הגשה ריקה, משיכה ראשונה) הולכת ישר לשרת, וגם שם require_moodle בודק את כרום ומודל
+  async function startPullFlow({ full = false, limit = 0 } = {}) {
+    const A = cur();
+    if (!A || state.run[A.id] || !LOCAL.health?.root || (LOCAL.rd?.flow && LOCAL.rd.assignmentId === A.id)) return;
+    if (A.empty) { runLocalPull(full, limit); return; }
+    const rd = (LOCAL.rd = newReady(A, true, "pull"));
+    rd.full = full;
+    rd.limit = limit;
+    render();
+    try {
+      rd.data = await api(readyUrl(A));
+    } catch (e) {
+      LOCAL.rd = null;
+      render();
+      toast(e.message, ICON.warn);
+      return;
+    }
+    if (allReady(rd.data)) { readyDone(rd); return; }
+    render();
+    readyLoop(rd);
+  }
+
+  // הכול ✓: ממשיכים למה שביקשו, משיכה או הכנת ההעלאה
+  function readyDone(rd) {
+    rd.flow = false;
+    render();
+    if (rd.then === "pull") runLocalPull(rd.full, rd.limit);
+    else prepareLocalSend();
+  }
+
   // הרשימה עצמה: ✓ מוכן, ✗ חסר (עם כפתור), ⏳ בעבודה. משמשת גם את חלון ההכנה וגם את הלשונית
   function readyChecklistHTML(rd) {
     const d = rd.data;
@@ -1085,12 +1124,15 @@
     return `<ul class="ready-list">${install}${login}${chrome}</ul>`;
   }
 
-  // חלון ההכנה: מופיע אחרי הלחיצה על "העלה N למודל", ונעלם כשהכול ✓ (ואז עוברים להכנת האצווה)
-  function readyPanelHTML() {
+  // חלון ההכנה: מופיע אחרי הלחיצה על "העלה N למודל" (then: "send") או על "משוך" (then: "pull"), ונעלם כשהכול ✓
+  // (ואז עוברים להכנת האצווה, או שהמשיכה מתחילה)
+  function readyPanelHTML(then = "send") {
     const rd = LOCAL.rd;
-    if (!LOCAL.on || !rd?.flow || rd.assignmentId !== cur()?.id || !rd.data) return "";
+    if (!LOCAL.on || !rd?.flow || rd.then !== then || rd.assignmentId !== cur()?.id || !rd.data) return "";
+    const title = then === "pull" ? "לפני המשיכה: מחברים את המחשב הזה ל-Claude שלך" : "לפני ההעלאה: בודקים שהמחשב הזה מוכן";
     return `<section class="panel report send-panel ready-panel" aria-live="polite">
-      <div class="panel-head"><h3>לפני ההעלאה: בודקים שהמחשב הזה מוכן</h3><button class="btn ghost small end" data-act="ready-close">ביטול</button></div>
+      <div class="panel-head"><h3>${title}</h3><button class="btn ghost small end" data-act="ready-close">ביטול</button></div>
+      ${then === "pull" ? `<p class="hint" style="margin:0 16px">המשיכה רצה דרך Claude Code שבמחשב הזה ודרך התוסף Claude in Chrome בכרום שלך, עם ההתחברות שלך למודל. כשהכול כאן ✓ היא מתחילה לבד.</p>` : ""}
       <div class="panel-body">${readyChecklistHTML(rd)}</div>
     </section>`;
   }
@@ -1221,7 +1263,7 @@
               <td>${who(s)}</td>
               <td>${statusPill(s)}</td>
               <td class="claim-cell">${claimCell(s)}</td>
-              <td>${scoreHTML(s)}</td>
+              <td><span class="score-cell">${scoreHTML(s)}${editLinkHTML(s)}</span></td>
               ${qs.map((q, i) => `<td class="col-hide qcol num">${s.q ? `<span class="qv ${s.q[i] < q.pts ? "lost" : ""}">${s.q[i]}</span>` : `<span class="muted">·</span>`}</td>`).join("")}
               <td class="col-hide-sm">${s.issue ? `<span class="flag">${esc(s.issue)}</span>` : needsReview(s) ? `<span class="flag" title="${esc(s.failed || s.review)}">לבדיקה ידנית: ${esc(REVIEW_KIND[kindOf(s)][0])}</span>` : s.q ? (lost ? `<span class="pen-count">${ICON.pen}${plural(lost, "הערה אחת", "הערות")}</span>` : `<span class="muted">ללא הערות</span>`) : `<span class="muted">—</span>`}</td>
             </tr>`;
@@ -1733,6 +1775,61 @@
       <ul class="criteria">${R.questions.map((q) => `<li><span title="${esc(q.req)}">שאלה ${q.n}</span><span class="track"><i style="width:${q.pts}%"></i></span><b class="num">${q.pts}</b></li>`).join("")}</ul>`;
   }
 
+  // ---------- לוח המספרים הציבורי ----------
+  // מי שאין במחשב שלו מערכת רואה כאן מה נעשה: מחשב אחד בצוות מפרסם סיכום של מספרים בלבד (dashboard/public_status.py)
+  // לקובץ ציבורי, והאתר קורא אותו. בלי שמות, ציונים, הערות או קבצים. מתרענן כל דקה
+  const PUBLIC_STATUS_URL = "https://gist.githubusercontent.com/matanravitsky-crypto/f1d11991473c2ece643fc479ed963117/raw/status.json";
+  const PUBLIC_STALE_H = 3;  // המחשב שמפרסם שולח לפחות פעם בשעה. יותר מזה: כנראה כבוי
+  const PUB = { data: null, error: "", loading: !!PUBLIC_STATUS_URL && !ON_LOCAL_HOST };
+
+  // פעם בדקה מקבלים עותק טרי (ה-CDN של GitHub שומר עותק עד 5 דקות). fresh: הכפתור "סנכרון", כתובת שלא הייתה
+  // בשום מטמון, כדי לקבל את מה שפורסם ממש עכשיו
+  async function fetchPublic(fresh = false) {
+    const q = fresh ? `t=${Date.now()}` : `m=${Math.floor(Date.now() / 60000)}`;
+    const r = await fetch(`${PUBLIC_STATUS_URL}?${q}`, { cache: "no-store" });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return r.json();
+  }
+
+  async function loadPublic() {
+    if (!PUBLIC_STATUS_URL || LOCAL.on) return;
+    try {
+      PUB.data = await fetchPublic();
+      PUB.error = "";
+    } catch (e) {
+      PUB.error = e.message;
+    }
+    PUB.loading = false;
+    if (!LOCAL.on && !cur()) render();
+  }
+
+  function publicBoardHTML() {
+    const d = PUB.data;
+    if (!d?.courses?.length) return PUB.loading ? `<p class="send-line">${ICON.spin}<span>טוען את מצב העבודה…</span></p>` : "";
+    const age = (Date.now() - Date.parse(d.publishedAt)) / 3600000;
+    const stale = age > PUBLIC_STALE_H;
+    const cell = (n, of) => `<td><b class="num">${n}</b>${of && n < of ? `<small class="sub">מתוך ${of}</small>` : ""}</td>`;
+    const courses = d.courses.map((c) => {
+      const rows = c.assignments.filter((a) => !a.empty);
+      const notYet = c.assignments.length - rows.length;
+      const body = rows.map((a) => `<tr>
+          <td><b>${esc(a.title)}</b>${a.due ? `<small class="sub">הגשה עד ${esc(when(a.due))}</small>` : ""}</td>
+          <td><b class="num">${a.pulled}</b>${a.pulledAt ? `<small class="sub">${esc(when(a.pulledAt))}</small>` : ""}</td>
+          ${cell(a.graded, a.pulled)}${cell(a.review)}${cell(a.approved, a.graded)}
+          <td><b class="num">${a.returned}</b>${a.returnedAt ? `<small class="sub">${esc(when(a.returnedAt))}</small>` : ""}</td>
+          <td class="col-hide-sm">${a.pullOwner ? esc(a.pullOwner) : `<span class="muted">—</span>`}</td>
+        </tr>`).join("");
+      return `<section class="panel" style="margin-bottom:24px">
+        <div class="panel-head"><h2>${esc(c.name)}</h2><span class="meta">${rows.length ? plural(rows.length, "מטלה אחת נמשכה", "מטלות נמשכו") : "עוד לא נמשכה אף מטלה"}${notYet ? ` · ${notYet} עוד לא` : ""}</span></div>
+        ${rows.length ? `<div class="table-wrap"><table class="board-table">
+          <thead><tr><th>מטלה</th><th>נמשכו</th><th>נבדקו</th><th>לבדיקה ידנית</th><th>אושרו</th><th>הוחזרו למודל</th><th class="col-hide-sm">מושך/ת</th></tr></thead>
+          <tbody>${body}</tbody></table></div>` : ""}
+      </section>`;
+    }).join("");
+    return `<p class="hint" style="margin:0 0 16px">${stale ? `<span class="tag warn">לא עודכן מאז ${esc(when(d.publishedAt))}</span> המחשב שמפרסם את המספרים כנראה כבוי, אז ייתכן שהם ישנים.`
+      : `עודכן ${esc(when(d.publishedAt))}${d.publishedBy ? `, מהמחשב של ${esc(d.publishedBy)}` : ""}. מתעדכן לבד.`}</p>${courses}`;
+  }
+
   // אין חיבור למערכת שבמחשב, או שאין עדיין מטלות: אין מספרים להציג
   function offlineHTML() {
     const how = `
@@ -1750,44 +1847,96 @@
           <pre class="prompt" dir="ltr">python -m moodle ingest &lt;assignment id&gt; --course "Linear Algebra" --name "Assignment 1 - Vectors"</pre></div></div>${how}`;
     }
     if (LOCAL.on) return `<div class="page-head"><div><h1>תיקיית OneDrive לא נמצאה</h1><p>המערכת פועלת, אבל לא מצאה במחשב הזה את התיקייה של הקורס. ההסבר מופיע למעלה.</p></div></div>${how}`;
+    const board = publicBoardHTML();
     return `
-      <div class="page-head"><div><h1>המערכת לא מחוברת</h1>
-        <p>האתר מציג רק נתונים אמיתיים, מתוך תיקיית OneDrive של הקורס. הם מגיעים מהמערכת שרצה במחשב שלך, ועכשיו היא לא מחוברת.</p></div></div>
+      ${board ? `<div class="page-head"><div><h1>מצב העבודה</h1>
+        <p>כל אחד רואה כאן כמה הגשות נמשכו, נבדקו והוחזרו בכל מטלה. רק מספרים: בלי שמות, בלי ציונים ובלי קבצים. כדי למשוך, לבדוק ולהחזיר מהמחשב שלך, מחברים אותו פעם אחת (למטה).</p></div></div>${board}`
+        : `<div class="page-head"><div><h1>המערכת לא מחוברת</h1>
+        <p>האתר מציג רק נתונים אמיתיים, מתוך תיקיית OneDrive של הקורס. הם מגיעים מהמערכת שרצה במחשב שלך, ועכשיו היא לא מחוברת.</p></div></div>`}
       <section class="panel" style="margin-bottom:24px">
-        <div class="panel-head"><h2>איך מתחברים</h2><span class="end tag warn">${LOCAL.probing ? "מנסה להתחבר…" : "לא מחובר"}</span></div>
+        <div class="panel-head"><h2>איך מתחברים</h2><span class="end tag warn">${LOCAL.probing ? (LOCAL.access === "prompt" ? "מחכה לאישור בכרום…" : "מנסה להתחבר…") : "לא מחובר"}</span></div>
         <div class="panel-body">
           <ol class="todo">
-            <li>המערכת צריכה לרוץ במחשב. אחרי לחיצה אחת על <code dir="ltr">install-autostart.bat</code> בתיקייה assignment-checker היא עולה לבד, בלי חלון, בכל הדלקה של המחשב. (בלי זה: לחיצה כפולה על <code dir="ltr">start.bat</code>, והחלון השחור נשאר פתוח.)</li>
-            <li>לוחצים "פתח את המערכת". אותו אתר נפתח בכתובת <code dir="ltr">http://localhost:8765</code>, עם הנתונים האמיתיים ובלי שום הרשאה. <b>מהפעם הבאה הקישור הזה מעביר לשם לבד.</b></li>
+            <li>המערכת צריכה לרוץ במחשב הזה. <b>פעם ראשונה במחשב הזה?</b> הפקודה שבחלק הבא מתקינה אותה, כך שהיא עולה לבד, בלי חלון, בכל הדלקה. מחשב שכבר מותקן: היא עולה לבד, או בלחיצה כפולה על <code dir="ltr">start.bat</code>.</li>
+            <li>${accessStep()}</li>
           </ol>
           <div class="row-start">
-            <a class="btn primary lg" data-open-local href="${LOCAL_SITE}${esc(location.hash)}">${ICON.chev}פתח את המערכת</a>
-            <button class="btn secondary small" data-act="recheck">${ICON.redo}נסה להתחבר מכאן</button>
+            <button class="btn primary lg" data-act="recheck">${ICON.redo}התחבר</button>
+            <a class="btn secondary small" href="${LOCAL_SITE}${esc(location.hash)}">פתח בכתובת המקומית (localhost:8765)</a>
           </div>
-          <p class="hint">אפשר גם לעבוד מהכתובת הזו: אם כרום שואל אם לאפשר לאתר לגשת לאפליקציות ולשירותים במכשיר, לוחצים "אפשר", והאתר מתחבר לבד תוך כמה שניות.</p>
+          <p class="hint">האתר מתחבר לבד ברגע שהמערכת במחשב עונה, ונשאר בכתובת הזו.</p>
         </div>
       </section>
       <section class="panel" style="margin-bottom:24px">
-        <div class="panel-head"><h2>פעם ראשונה במחשב הזה?</h2><span class="meta">פעם אחת לכל אחד מהצוות</span></div>
+        <div class="panel-head"><h2>פעם ראשונה במחשב הזה? פקודה אחת מחברת אותו</h2><span class="meta">פעם אחת לכל אחד מהצוות</span></div>
         <div class="panel-body">
+          <p class="lead">כל אחד בצוות מושך, בודק ומעלה דרך ה-Claude שלו, במחשב שלו. כדי שהכפתורים כאן יפעילו אותו, מחברים את המחשב פעם אחת:</p>
           <ol class="todo">
+            <li><b>פותחים PowerShell:</b> לוחצים על מקש Windows, כותבים PowerShell ולוחצים Enter.</li>
+            <li><b>מדביקים את השורה הזו ולוחצים Enter:</b>
+              <div class="row-start" style="margin-top:8px"><pre class="prompt" dir="ltr" style="flex:1">${esc(CONNECT_COMMAND)}</pre>
+              <button class="btn primary small" data-act="copy-connect">${ICON.check}העתק</button></div></li>
+            <li><b>זהו.</b> הפקודה מתקינה מה שחסר (Git, Python, 7-Zip ו-Claude Code), מורידה את המערכת, מפעילה אותה כך שתעלה לבד, בלי חלון, בכל הדלקה של המחשב, ופותחת את האתר מחובר. מהפעם הבאה הקישור הזה מעביר לשם לבד.</li>
+            <li><b>בלחיצה הראשונה על "משוך הגשות"</b> האתר מחבר את Claude Code לחשבון Claude שלך (נפתח דף התחברות) ובודק שהתוסף Claude in Chrome מחובר בכרום שלך ושכרום מחובר למודל. מאז כל משיכה רצה דרך ה-Claude שלך, וההגשות נשמרות ממוספרות בתיקיית OneDrive של הקורס.</li>
             <li><b>גישה לתיקייה:</b> מבקשים מהמרצה גישה לתיקייה YallaLinearit. בדפדפן, על התיקייה: Add shortcut to My files. באפליקציית OneDrive במחשב מתחברים עם חשבון האוניברסיטה.</li>
-            <li><b>התוכנות</b>, בחלון PowerShell: <code dir="ltr">winget install Python.Python.3.12</code>, <code dir="ltr">winget install 7zip.7zip</code>, <code dir="ltr">winget install Git.Git</code></li>
-            <li><b>המערכת:</b> בחלון חדש, בתיקייה שבה רוצים לשמור אותה: <code dir="ltr">git clone ${REPO_URL}</code></li>
-            <li><b>מפעילים, פעם אחת:</b> לחיצה כפולה על <code dir="ltr">install-autostart.bat</code> בתיקייה assignment-checker. מעכשיו המערכת עולה לבד, בלי חלון, בכל פעם שהמחשב נדלק, והקישור הזה פשוט עובד. בכל הפעלה היא מתעדכנת מ-GitHub, כך שכולם עובדים על אותה גרסה. (בלי הפעלה אוטומטית: לחיצה כפולה על <code dir="ltr">start.bat</code>, והחלון השחור נשאר פתוח.)</li>
           </ol>
-          <div class="row-start"><a class="btn secondary small" href="${REPO_URL}#readme" target="_blank" rel="noopener">ההסבר המלא ב-GitHub</a></div>
+          <details style="margin-top:12px"><summary>בלי הפקודה: אותו דבר ביד</summary>
+            <ol class="todo" style="margin-top:8px">
+              <li><b>התוכנות</b>, בחלון PowerShell: <code dir="ltr">winget install Python.Python.3.12</code>, <code dir="ltr">winget install 7zip.7zip</code>, <code dir="ltr">winget install Git.Git</code></li>
+              <li><b>המערכת:</b> בחלון חדש, בתיקייה שבה רוצים לשמור אותה: <code dir="ltr">git clone ${REPO_URL}</code></li>
+              <li><b>מפעילים, פעם אחת:</b> לחיצה כפולה על <code dir="ltr">install-autostart.bat</code> בתיקייה assignment-checker. מעכשיו המערכת עולה לבד, בלי חלון, בכל פעם שהמחשב נדלק. בכל הפעלה היא מתעדכנת מ-GitHub, כך שכולם עובדים על אותה גרסה. (בלי הפעלה אוטומטית: לחיצה כפולה על <code dir="ltr">start.bat</code>, והחלון השחור נשאר פתוח.)</li>
+            </ol>
+          </details>
+          <div class="row-start" style="margin-top:12px"><a class="btn secondary small" href="${REPO_URL}#readme" target="_blank" rel="noopener">ההסבר המלא ב-GitHub</a>
+            <a class="btn secondary small" href="connect.ps1" target="_blank" rel="noopener">מה הפקודה עושה</a></div>
         </div>
       </section>
       ${how}`;
   }
 
   // ---------- הגרסה המחוברת: תיקיית OneDrive דרך השרת המקומי ----------
+  // שער השלמות: באנר אחד למטלה הנוכחית עם מה ש-datastore doctor מצא (שגיאות, אזהרות), ו"תקן" למה שהוא יודע לתקן לבד
+  const INTEGRITY_LEVEL = { reject: "שגיאה", warn: "אזהרה", info: "ידיעה" };
+  function integrityOf(A) {
+    return A ? D.integrity.find((r) => r.course === A.courseFolder && r.folder === A.folder) : null;
+  }
+  function integrityBannerHTML() {
+    const A = cur(), R = integrityOf(A);
+    if (!R || !R.problems?.length) return "";
+    const shown = R.problems.filter((p) => p.level !== "info");
+    if (!shown.length) return "";
+    const s = R.summary || {}, open = state.integrityOpen;
+    const fixable = (R.fixable || []).length;
+    return `<div class="banner ${s.reject ? "warn" : ""} integrity" role="status">${ICON.warn}<div>
+        <b>שלמות הנתונים: ${s.reject ? `${s.reject} שגיאות` : ""}${s.reject && s.warn ? ", " : ""}${s.warn ? `${s.warn} אזהרות` : ""}</b>
+        <span class="muted"> · נבדק ${when(R.checked_at)}${fixable ? ` · ${fixable} סוגים אפשר לתקן לבד` : ""}</span>
+        ${open ? `<ul class="integrity-list">${shown.slice(0, 40).map((p) => `<li><span class="chip">${INTEGRITY_LEVEL[p.level] || p.level}</span> ${esc(p.message)}</li>`).join("")}
+          ${shown.length > 40 ? `<li class="muted">ועוד ${shown.length - 40}…</li>` : ""}</ul>` : ""}
+      </div>
+      <button type="button" class="btn secondary small" data-integrity-toggle>${open ? "סגור" : "פרטים"}</button>
+      ${fixable ? `<button type="button" class="btn primary small" data-integrity-fix ${state.integrityFixing ? "disabled" : ""}>${state.integrityFixing ? ICON.spin : ICON.check}תקן מה שאפשר</button>` : ""}
+    </div>`;
+  }
+  async function runIntegrityFix() {
+    const A = cur();
+    if (!A || state.integrityFixing) return;
+    state.integrityFixing = true; render();
+    try {
+      const out = await api("api/integrity/fix", { method: "POST", body: JSON.stringify({ course: A.courseFolder, assignment: A.folder, dryRun: false }) });
+      toast(out.done?.length ? out.done.join(" · ") : "לא היה מה לתקן", ICON.check);
+      await loadLocal();
+    } catch (e) {
+      toast(e.message, ICON.warn);
+    } finally {
+      state.integrityFixing = false; render();
+    }
+  }
+
   function bannerHTML() {
     if (LOCAL.on && !LOCAL.health?.root) {
       return `<div class="banner warn">${ICON.warn}<div><b>המערכת פועלת, אבל תיקיית OneDrive של הקורס עוד לא נמצאה במחשב.</b><pre class="banner-pre">${esc(LOCAL.health?.error || "")}</pre></div><button class="btn secondary small" data-act="recheck">בדוק שוב</button></div>`;
     }
-    return "";
+    return integrityBannerHTML();
   }
 
   function drivePanelHTML() {
@@ -1890,6 +2039,7 @@
       comments: qs.map((q, i) => s.comments?.[i] || ""),
       picks: qs.map((q, i) => [...(s.mistakes?.[i] || [])]),
       feedback: s.feedback || "",
+      reason: "",
       changed: false,
     };
     return d;
@@ -1909,6 +2059,41 @@
     d.points[qi] = Math.max(0, half(q.pts - lost));
     d.comments[qi] = picks.length ? picks.join(". ") + "." : "";
     d.changed = true;
+  }
+
+  // עריכה של ציון קיים (לא אישור ראשון מהתור, ולא ציון ראשון לעבודה שנכשלה): חייבים לכתוב סיבה, כמו grade_edit.kind_of
+  const isEdit = (s) => s.score != null && !needsReview(s);
+  // לכל עבודה שנבדקה יש "ערוך ציון" ישר בשורה שלה בטבלה (וגם בחלונית העבודה), לכל אחד בצוות, לא משנה מי בדק
+  const editLinkHTML = (s) => (s.score == null ? "" : `<a class="row-edit" data-row-link href="#/review?n=${s.id}" title="${needsReview(s) ? "לבדיקה ידנית" : "ערוך ציון"} (עבודה ${s.id})">${ICON.pen}${needsReview(s) ? "לבדיקה" : "ערוך ציון"}</a>`);
+
+  // יומן העריכות של הציון (api/grade-log): מי, מתי, מאיזה ציון לאיזה ולמה
+  function gradeLog(A, s) {
+    const key = `${A.id}:${s.id}`, known = state.review.log[key];
+    if (known !== undefined) return known;
+    state.review.log[key] = null;
+    api(`api/grade-log?course=${encodeURIComponent(A.courseFolder)}&assignment=${encodeURIComponent(A.folder)}&number=${s.id}`)
+      .then((r) => { state.review.log[key] = r.history?.length ? r.history : (r.entries || []); }, () => { state.review.log[key] = []; })
+      .then(() => { if (route() === "/review") render(); });
+    return null;
+  }
+  const KIND_TEXT = { edit: "עריכה", review: "אישור מהבדיקה הידנית", first: "ציון ראשון" };
+  // שורה אחת לכל אירוע ביומן (datastore/ledger.py): בדיקה אוטומטית, כישלון, עריכה, שחזור. "עריכה התחילה" לא מוצגת
+  function histLine(e) {
+    const who = `${esc(e.by || "")} · ${esc(when(e.at))}`;
+    if (e.action === "grade_set") return `<div class="rv-hist-top"><b class="num">${esc(e.grade)}</b><span>בדיקה אוטומטית · ${who}</span></div>`;
+    if (e.action === "grade_failed") return `<div class="rv-hist-top"><b class="num">—</b><span>הבדיקה נכשלה · ${who}</span></div>
+        <p class="rv-hist-err">${esc(e.error || "")}</p>`;
+    if (e.action === "grade_replayed") return `<div class="rv-hist-top"><b class="num">${esc(e.grade)}</b><span>שוחזר מהיומן · ${who}</span></div>`;
+    return `<div class="rv-hist-top"><b class="num">${e.from == null ? "—" : esc(e.from)} ← ${esc(e.to)}</b>
+          <span>${esc(KIND_TEXT[e.kind] || "")} · ${who}</span></div>
+        ${e.reason ? `<p>${esc(e.reason)}</p>` : ""}
+        ${e.action === "grade_edit_failed" ? `<p class="rv-hist-err">לא הגיע לכל המקומות: ${esc(e.error || "")}</p>` : ""}`;
+  }
+  function historyHTML(A, s) {
+    const log = (gradeLog(A, s) || []).filter((e) => e.action !== "grade_edit_intent");
+    if (!log.length) return "";
+    return `<details class="rv-hist"><summary>היסטוריית הציון (${log.length})</summary><ol>${log.slice().reverse().map((e) => `
+      <li class="${["grade_edit_failed", "grade_failed"].includes(e.action) ? "failed" : ""}">${histLine(e)}</li>`).join("")}</ol></details>`;
   }
 
   // העמודים של ההגשה כתמונות (api/page), והסימונים של Claude מצוירים מעליהם במקום שלהם
@@ -2017,7 +2202,8 @@
     const at = list.indexOf(s), prev = list[at - 1], next = list[at + 1];
     const k = kindOf(s), flagged = needsReview(s) || s.review || s.failed;
     const unsure = (s.unsure || []).map((u, i) => (u ? i : -1)).filter((i) => i >= 0);
-    const over = overRubric(d.points), blocked = !!noRubric() || over.length > 0;
+    const over = overRubric(d.points), edit = isEdit(s), noReason = edit && !d.reason.trim();
+    const blocked = !!noRubric() || over.length > 0 || noReason;
     // הכלל קודם לכל: בלי מחוון אין טופס ניקוד, וניקוד שעובר את המחוון לא מאושר
     const rule = noRubric() ? rubricNoticeHTML()
       : over.length ? `<div class="notice rule-notice">${ICON.warn}<div><b>הניקוד בעבודה הזו לא לפי המחוון.</b>
@@ -2049,9 +2235,13 @@
           ${noRubric() ? "" : `<ol class="rq-list">${qs.map((q, qi) => questionHTML(s, d, qi, open.has(qi))).join("")}</ol>
           <details class="rv-fb" ${state.review.fbOpen ? "open" : ""}><summary>משוב לסטודנט</summary>
             <textarea id="rv-fb" data-rv-feedback rows="4" aria-label="משוב לסטודנט">${esc(d.feedback)}</textarea></details>`}
+          ${edit && !noRubric() ? `<div class="rv-reason"><label for="rv-reason">סיבה לשינוי <em>חובה</em></label>
+            <textarea id="rv-reason" data-rv-reason rows="2" maxlength="1000" placeholder="למשל: ערעור, הנימוק בשאלה 12 נמצא בעמוד 2" aria-required="true">${esc(d.reason)}</textarea>
+            <small>נרשם ביומן עם השם שלך, השעה, הציון הקודם והחדש.</small></div>` : ""}
+          ${historyHTML(A, s)}
           <div class="rv-bar">
             <div class="rv-total"><b class="num" id="rv-total">${noRubric() ? "—" : draftTotal(d)}</b><span>/ ${max}</span></div>
-            <button type="submit" class="btn primary" ${state.review.saving || blocked ? "disabled" : ""} title="${blocked ? "אפשר לאשר רק ניקוד לפי המחוון" : "Ctrl+Enter"}">${state.review.saving ? ICON.spin : ICON.check}${needsReview(s) ? (next ? "אשר ועבור לבאה" : "אשר") : "שמור"}</button>
+            <button type="submit" class="btn primary" ${state.review.saving || blocked ? "disabled" : ""} title="${noReason && !noRubric() && !over.length ? "צריך לכתוב סיבה לשינוי" : blocked ? "אפשר לאשר רק ניקוד לפי המחוון" : "Ctrl+Enter"}" data-rv-submit>${state.review.saving ? ICON.spin : ICON.check}${needsReview(s) ? (next ? "אשר ועבור לבאה" : "אשר") : edit ? "שמור שינוי" : "שמור"}</button>
           </div>
         </form>
       </div>`;
@@ -2062,6 +2252,7 @@
     if (!s || state.review.saving) return;
     const d = draft(s), wasQueued = needsReview(s);
     if (noRubric() || overRubric(d.points).length) { toast(noRubric() || `אפשר לאשר רק ניקוד לפי המחוון. ${RUBRIC_RULE}`, ICON.warn); return; }
+    if (isEdit(s) && !d.reason.trim()) { toast("צריך לכתוב סיבה לשינוי הציון", ICON.warn); $("#rv-reason")?.focus(); return; }
     const { queue } = reviewList(A);
     const at = queue.findIndex((x) => x.id === id);
     const next = wasQueued ? (queue[at + 1] || queue.find((x) => x.id !== id)) : null;
@@ -2070,16 +2261,18 @@
     try {
       const r = await api("api/review", { method: "POST", body: JSON.stringify({
         course: A.courseFolder, assignment: A.folder, number: id,
-        points: d.points, comments: d.comments, feedback: d.feedback, mistakes: d.picks,
+        points: d.points, comments: d.comments, feedback: d.feedback, mistakes: d.picks, reason: d.reason,
       }) });
       delete state.review.edits[id];
-      toast(`עבודה ${id} נשמרה: ${r.grade}`);
+      delete state.review.log[`${A.id}:${id}`];
+      toast(r.from != null && String(r.from) !== String(r.grade) ? `עבודה ${id}: הציון שונה מ-${r.from} ל-${r.grade}` : `עבודה ${id} נשמרה: ${r.grade}`);
       state.review.saving = false;
       await loadLocal();
       const target = next ? `#/review?n=${next.id}` : wasQueued ? "#/review" : location.hash;
       if (location.hash === target) render(); else location.hash = target;
     } catch (e) {
       state.review.saving = false;
+      delete state.review.log[`${A.id}:${id}`];  // גם עריכה שנכשלה באמצע נרשמת ביומן
       render();
       toast(e.message, ICON.warn);
     }
@@ -2210,9 +2403,123 @@
     }
   }
 
+  // ---------- סטטיסטיקה: לשונית הדשבורד של מסד הנתונים (stats/, api/stats) ----------
+  // כל מה שבמסד, לכל המטלות: טבלה לכל קורס להשוואה בין מטלות, ולמטלה שנבחרה ההתפלגות, השאלות והטעויות הנפוצות.
+  // המספרים מגיעים מהמודול stats בלבד (אותם מספרים שהאתר מראה בלוח הבקרה), אף פעם לא מחושבים כאן.
+  const KIND_LABEL = (k) => (REVIEW_KIND[k] || [k])[0];
+  const statOf = (key) => D.stats.find((s) => s.key === key);
+  const pctCell = (v) => (v == null ? `<span class="muted">—</span>` : `${v}%`);
+  const numCell = (v) => (v == null ? `<span class="muted">—</span>` : fmt(v));
+
+  function statsView() {
+    if (!LOCAL.on) return offlineHTML();
+    const all = D.stats.filter((s) => !s.error), withData = all.filter((s) => s.counts?.graded);
+    const errors = D.stats.filter((s) => s.error);
+    const curKey = cur() ? `${cur().courseFolder}/Assignment ${cur().n - 1}` : null;
+    if (!statOf(state.statsKey)?.counts?.graded) state.statsKey = (withData.find((s) => s.key === curKey) || withData[0])?.key || null;
+    const S = statOf(state.statsKey);
+    const newest = all.map((s) => s.computed_at).filter(Boolean).sort().pop();
+    const head = `<div class="page-head">
+      <div><h1>סטטיסטיקה</h1>
+        <p>מסד הנתונים של הבדיקה: לכל מטלה ולכל שאלה, ממוצע, התפלגות, טעויות נפוצות וכמה מחכות לאדם. מספרים בלבד, בלי שום פרט מזהה של סטודנט. מתעדכן לבד אחרי כל בדיקה ואישור, בכל המחשבים של הצוות.</p>
+        ${newest ? `<p class="muted">עודכן לאחרונה ${when(newest)} · הקבצים: <code dir="ltr">Statistics/</code> בתיקייה המשותפת · <code dir="ltr">python -m stats show</code> מהמסוף</p>` : ""}</div>
+    </div>
+    ${errors.map((e) => `<div class="notice">${ICON.warn}<div><b>${esc(e.key)}</b>: הסטטיסטיקה לא חושבה. ${esc(e.error)}</div></div>`).join("")}`;
+    if (!withData.length) return `${head}<section class="rv-empty">${ICON.check}<b>עוד אין עבודות בדוקות</b><p>אחרי הבדיקה הראשונה המטלה תופיע כאן עם הממוצע, ההתפלגות והטעויות הנפוצות שלה.</p></section>`;
+    return `${head}${D.courses.map((c) => statsCourseTable(c, all.filter((s) => s.course === c.folder))).join("")}
+      ${S ? statsDetailHTML(S) : ""}`;
+  }
+
+  function statsCourseTable(c, list) {
+    if (!list.length) return "";
+    const rows = list.slice().sort((a, b) => (a.slot ?? 99) - (b.slot ?? 99)).map((s) => {
+      const g = s.grade, k = s.counts, sel = s.key === state.statsKey, has = k.graded > 0;
+      const review = k.needs_review ? `<span class="st-warn">${k.needs_review}</span>` : "0";
+      return `<tr class="${has ? "clickable" : "muted"} ${sel ? "sel" : ""}" ${has ? `data-stats-key="${esc(s.key)}" tabindex="0"` : ""} ${sel ? 'aria-current="true"' : ""}>
+        <td><b>${esc(s.title || `הגשה ${s.slot}`)}</b></td>
+        <td class="num">${k.submitted || `<span class="muted">—</span>`}</td>
+        <td class="num">${has ? `${k.graded}<small class="muted">/${k.submitted}</small>` : `<span class="muted">—</span>`}</td>
+        <td class="num">${numCell(g.mean)}</td>
+        <td class="num col-hide">${numCell(g.median)}</td>
+        <td class="num col-hide">${numCell(g.sd)}</td>
+        <td class="num">${pctCell(g.pass_pct)}</td>
+        <td class="num">${has ? review : `<span class="muted">—</span>`}</td>
+        <td class="num col-hide">${has ? `${k.approved}<small class="muted">/${k.graded}</small>` : `<span class="muted">—</span>`}</td>
+        <td class="col-hide">${s.graders.by.map((x) => esc(x.name)).join(", ") || `<span class="muted">—</span>`}</td>
+      </tr>`;
+    }).join("");
+    return `<section class="panel st-course">
+      <div class="panel-head"><h2>${esc(c.name)}</h2><span class="meta">לחיצה על מטלה פותחת את הפירוט שלה</span></div>
+      <div class="table-wrap"><table class="st-table">
+        <thead><tr><th>מטלה</th><th>הוגשו</th><th>נבדקו</th><th>ממוצע</th><th class="col-hide">חציון</th><th class="col-hide">סטיית תקן</th><th>עוברים</th><th>לבדיקה ידנית</th><th class="col-hide">אושרו</th><th class="col-hide">בודקים</th></tr></thead>
+        <tbody>${rows}</tbody></table></div>
+    </section>`;
+  }
+
+  function statsDetailHTML(S) {
+    const g = S.grade, k = S.counts, H = g.histogram, most = Math.max(...H.counts, 1);
+    const course = D.courses.find((c) => c.folder === S.course)?.name || S.course;
+    const tile = (label, value, sub = "", cls = "") => `<div class="stat ${cls}"><span class="stat-l">${label}</span><b class="stat-v num">${value}</b>${sub ? `<span class="stat-s">${sub}</span>` : ""}</div>`;
+    const kinds = Object.entries(k.review_kinds || {}).map(([kind, n]) => `<span class="chip">${esc(KIND_LABEL(kind))}<span class="c num">${n}</span></span>`).join("");
+    const hist = `<div class="dist-wrap">
+      <div class="dist" role="img" aria-label="התפלגות ציונים">
+        ${H.bins.map((b, i) => `<div class="bar ${b.to <= 0.6 * S.max_grade ? "low" : ""} ${H.counts[i] ? "" : "zero"}"><span class="v num">${H.counts[i] || ""}</span><i style="height:${(H.counts[i] / most) * 100}%"></i><span class="l num">${fmt(b.from)}–${fmt(i === H.bins.length - 1 ? b.to : b.to - (Number.isInteger(b.to) ? 1 : 0))}</span></div>`).join("")}
+      </div>
+      <dl class="kv">
+        <div><dt>מינימום</dt><dd class="num">${numCell(g.min)}</dd></div>
+        <div><dt>מקסימום</dt><dd class="num">${numCell(g.max)}</dd></div>
+        <div><dt>ציון מלא</dt><dd class="num">${g.full_marks}</dd></div>
+        <div><dt>מתחת ל-${fmt(0.6 * S.max_grade)}</dt><dd class="num">${g.n - Math.round(((g.pass_pct ?? 100) / 100) * g.n)}</dd></div>
+        ${g.out_of_range ? `<div><dt title="ציונים מחוץ לטווח 0 עד ${S.max_grade}, לא נספרו">מחוץ לטווח</dt><dd class="num">${g.out_of_range}</dd></div>` : ""}
+      </dl></div>`;
+    const qRows = S.per_question.map((q) => {
+      const top = q.mistakes[0];
+      return `<tr>
+        <td><b>שאלה ${q.index}</b><br><small class="muted">${esc(q.label)}</small></td>
+        <td class="num">${numCell(q.points)}</td>
+        <td class="num">${q.graded}</td>
+        <td class="num">${numCell(q.mean)}</td>
+        <td class="st-bar-cell"><span class="track"><i style="width:${q.success_pct ?? 0}%"></i></span><b class="num">${pctCell(q.success_pct)}</b></td>
+        <td class="num col-hide">${pctCell(q.full_marks_pct)}</td>
+        <td class="num col-hide">${pctCell(q.zero_pct)}</td>
+        <td class="num">${q.unsure ? `<span class="st-warn">${q.unsure}</span>` : "0"}</td>
+        <td>${top ? `${esc(top.text)} <small class="muted num">(${top.count}, ${top.pct}%)</small>` : `<span class="muted">—</span>`}</td>
+      </tr>`;
+    }).join("");
+    const mistakes = S.per_question.flatMap((q) => q.mistakes.map((m) => ({ ...m, q: q.index }))).sort((a, b) => b.count - a.count || a.q - b.q);
+    const top = mistakes.slice(0, 15), mostM = top[0]?.count || 1;
+    const mkList = top.length ? `<ol class="mk-list">${top.map((m) => `<li><div class="mk-row">
+        <span class="mk-text"><b>${esc(m.text)}</b><small>שאלה ${m.q}${m.in_rubric ? " · במחוון" : ""}${m.deduction != null ? ` · בדרך כלל −${fmt(m.deduction)}` : ""}</small></span>
+        <span class="track"><i style="width:${(m.count / mostM) * 100}%"></i></span>
+        <span class="mk-n num">${m.count}<small>${m.pct}%</small></span></div></li>`).join("")}</ol>
+      ${mistakes.length > top.length ? `<p class="hint">ועוד ${mistakes.length - top.length} סוגי טעויות פחות נפוצים.</p>` : ""}` : `<p class="muted empty-line">אין טעויות רשומות.</p>`;
+    return `<section class="st-detail" aria-live="polite">
+      <div class="page-head st-detail-head"><div><h2>${esc(S.title || `הגשה ${S.slot}`)}</h2><p class="muted">${esc(course)}${S.moodle_id ? ` · מזהה מודל ${esc(S.moodle_id)}` : ""} · חושב ${when(S.computed_at)}${S.computed_by ? ` על ידי ${esc(S.computed_by)}` : ""}</p></div></div>
+      <div class="stat-row">
+        ${tile("נבדקו", `${k.graded}<small>/${k.submitted}</small>`, k.submitted ? `${Math.round((100 * k.graded) / k.submitted)}% מההגשות` : "")}
+        ${tile("ממוצע", fmt(g.mean), `מתוך ${S.max_grade}`)}
+        ${tile("חציון", fmt(g.median), g.sd != null ? `סטיית תקן ${fmt(g.sd)}` : "")}
+        ${tile("עוברים", g.pass_pct != null ? `${g.pass_pct}%` : "—", `ציון ${fmt(0.6 * S.max_grade)} ומעלה`)}
+        ${tile("לבדיקה ידנית", k.needs_review, k.failed ? `${k.failed} נכשלו` : "מקרים לאדם", k.needs_review ? "warn" : "ok")}
+        ${tile("אושרו", `${k.approved}<small>/${k.graded}</small>`, "ציונים שאדם אישר")}
+      </div>
+      ${kinds ? `<div class="chips st-kinds">${kinds}</div>` : ""}
+      <div class="st-grid">
+        <section class="panel"><div class="panel-head"><h3>התפלגות ציונים</h3><span class="meta">${g.n} ציונים</span></div><div class="panel-body">${g.n ? hist : `<p class="muted empty-line">אין ציונים.</p>`}</div></section>
+        <section class="panel"><div class="panel-head"><h3>טעויות נפוצות</h3><span class="meta">כמה עבודות עשו כל טעות</span></div><div class="panel-body">${mkList}</div></section>
+      </div>
+      <section class="panel"><div class="panel-head"><h3>לפי שאלה</h3><span class="meta">${S.over_rubric ? `${S.over_rubric} עבודות עם ניקוד מחוץ למחוון לא נספרות כאן · ` : ""}השוואה בין השאלות</span></div>
+        <div class="table-wrap"><table class="st-table st-q">
+          <thead><tr><th>שאלה</th><th>ניקוד</th><th>נבדקו</th><th>ממוצע</th><th>הצלחה</th><th class="col-hide">ניקוד מלא</th><th class="col-hide">אפס</th><th>לא בטוח</th><th>הטעות הנפוצה ביותר</th></tr></thead>
+          <tbody>${qRows || `<tr><td colspan="9" class="muted">אין מחוון, אז אין ניקוד לפי שאלה.</td></tr>`}</tbody></table></div></section>
+      <p class="hint">בודקים: ${S.graders.by.map((x) => `${esc(x.name)} (${x.graded})`).join(", ") || "—"}${S.copying?.pairs != null ? ` · זוגות העתקה חשודים: ${S.copying.pairs}` : ""}</p>
+    </section>`;
+  }
+
   const views = {
     "/review": () => reviewView(),
     "/copying": () => copyingView(),
+    "/stats": () => statsView(),
     "/"() {
       const A = cur(), I = info(A);
       return `
@@ -2404,7 +2711,7 @@
 
     let html;
     if (state.loading && !booted) html = `<div class="loading">${ICON.spin}טוען…</div>`;
-    else if (!cur() && !["/settings", "/runs"].includes(route())) html = offlineHTML();
+    else if (!cur() && !["/settings", "/runs", "/stats"].includes(route())) html = offlineHTML();
     else html = views[route()]();
     $("#main").innerHTML = bannerHTML() + html;
     renderNav();
@@ -2421,7 +2728,6 @@
   // ---------- Events ----------
   document.addEventListener("click", (e) => {
     const t = e.target;
-    if (t.closest("a[data-open-local]")) store.set("openLocal", true);  // מהפעם הבאה הקישור הציבורי מעביר לכאן לבד
     const runBtn = t.closest("[data-run]");
     if (runBtn) { runStage(runBtn.dataset.run); return; }
     const pChip = t.closest("[data-pull-chip]");
@@ -2478,11 +2784,26 @@
       if (a === "key-save") saveOfficialKey(false);
       if (a === "key-remove") saveOfficialKey(true);
       if (a === "open-inbox") openFolder("inbox");
-      if (a === "pull-full") runLocalPull(true);
-      if (a === "pull-pick-go") { state.pullPick = null; runLocalPull(); state.pullLimit = 0; }  // הגוף של הבקשה נבנה מיד
+      if (a === "pull-full") startPullFlow({ full: true });
+      if (a === "pull-pick-go") { state.pullPick = null; startPullFlow({ limit: state.pullLimit }); state.pullLimit = 0; }  // כמה למשוך נשמר בזרימה
       if (a === "pull-pick-close") { state.pullPick = null; render(); }
       if (a === "open-upload") openFolder("upload");
       if (a === "recheck") { if (LOCAL.on) location.reload(); else connect(true); }
+      if (a === "copy-connect") {
+        // הלוח של הדפדפן, ואם הוא מסרב (דפדפן מוטמע, דף לא מאובטח): הדרך הישנה, טקסט מסומן והעתקה
+        (navigator.clipboard ? navigator.clipboard.writeText(CONNECT_COMMAND) : Promise.reject(new Error("no clipboard")))
+          .catch(() => {
+            const t = Object.assign(document.createElement("textarea"), { value: CONNECT_COMMAND });
+            t.style.cssText = "position:fixed;opacity:0";
+            document.body.append(t);
+            t.select();
+            const copied = document.execCommand("copy");
+            t.remove();
+            if (!copied) throw new Error("copy");
+          })
+          .then(() => toast("הפקודה הועתקה. מדביקים אותה ב-PowerShell ולוחצים Enter.", ICON.check))
+          .catch(() => toast("לא הצלחתי להעתיק. מסמנים את השורה ומעתיקים ביד (Ctrl+C).", ICON.warn));
+      }
       if (a === "send-confirm" && LOCAL.batch?.assignmentId === cur().id) startLocalSend(LOCAL.batch.id);
       if (a === "send-cancel") { LOCAL.batch = null; render(); }
       if (a === "send-stop") stopLocalSend();
@@ -2524,9 +2845,18 @@
       render(); toast("ההנחיות חזרו לברירת המחדל"); return;
     }
 
+    // שער השלמות: פרטים ותיקון
+    if (t.closest("[data-integrity-toggle]")) { state.integrityOpen = !state.integrityOpen; render(); return; }
+    if (t.closest("[data-integrity-fix]")) { runIntegrityFix(); return; }
+
+    // סטטיסטיקה: מטלה שנבחרה בטבלה
+    const sk = t.closest("[data-stats-key]");
+    if (sk) { state.statsKey = sk.dataset.statsKey; render(); return; }
+
     const as = t.closest("[data-assign]");
     if (as) { state.assignmentId = as.dataset.assign; state.filter = "all"; resetOpen(); renderPickers(); render(); window.scrollTo({ top: 0, behavior: "smooth" }); return; }
 
+    if (t.closest("[data-row-link]")) return;  // "ערוך ציון" בשורה: הקישור עצמו פותח את העמוד, בלי החלונית
     const row = t.closest("[data-open]");
     if (row) { openDrawer(row.dataset.open); return; }
 
@@ -2554,7 +2884,7 @@
   document.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && reviewSub()) { e.preventDefault(); saveReview(state.review.id); return; }
     if (e.key === "Enter" && e.target.matches?.("[data-grade-count]")) { gradePicked(); return; }
-    if (e.key === "Enter" && e.target.matches?.("[data-pull-limit]")) { state.pullPick = null; runLocalPull(); state.pullLimit = 0; return; }
+    if (e.key === "Enter" && e.target.matches?.("[data-pull-limit]")) { state.pullPick = null; startPullFlow({ limit: state.pullLimit }); state.pullLimit = 0; return; }
     if (e.key === "Escape" && state.pullPick) { state.pullPick = null; render(); return; }
     if (e.key === "Escape" && state.gradePick) { state.gradePick = null; render(); return; }
     if (e.key === "Escape") { closeDrawer(); $("#sidebar").classList.remove("open"); }
@@ -2576,6 +2906,16 @@
     const t = e.target;
     // בבדיקה הידנית לא מציירים מחדש בכל הקשה: רק הציון הכולל מתעדכן
     const rvs = reviewSub();
+    if (rvs && t.matches("[data-rv-reason]")) {
+      const d = draft(rvs);
+      d.reason = t.value;
+      const btn = $("[data-rv-submit]");
+      if (btn && !noRubric() && !overRubric(d.points).length) {
+        btn.disabled = state.review.saving || !t.value.trim();
+        btn.title = t.value.trim() ? "Ctrl+Enter" : "צריך לכתוב סיבה לשינוי";
+      }
+      return;
+    }
     if (rvs && (t.dataset.rvPts != null || t.dataset.rvComment != null || t.matches("[data-rv-feedback]"))) {
       const d = draft(rvs);
       if (t.dataset.rvPts != null) {
@@ -2670,9 +3010,33 @@
     return fetch(BASE + path, { cache: "no-store", ...opts, headers: { "Content-Type": "application/json", "X-Assignment-Checker": "1" } })
       .then(async (r) => {
         const data = await r.json().catch(() => ({}));
-        if (!r.ok) throw new Error(data.error || `המערכת במחשב החזירה שגיאה ${r.status}`);
+        if (!r.ok) throw Object.assign(new Error(data.error || `המערכת במחשב החזירה שגיאה ${r.status}`), { status: r.status });
         return data;
       }, () => { throw new Error("אין חיבור למערכת במחשב. אם המחשב נדלק עכשיו, מחכים דקה; אחרת מפעילים את start.bat."); });
+  }
+
+  // מה כרום אומר על הגישה של האתר הציבורי למערכת שבמחשב (Local Network Access): "granted", "prompt", "denied",
+  // או null כשאין דרך לדעת (אתר מקומי, דפדפן אחר). השם של ההרשאה השתנה בין גרסאות כרום
+  async function localAccess() {
+    if (ON_LOCAL_HOST || !navigator.permissions) return null;
+    for (const name of ["loopback-network", "local-network-access"]) {
+      try { return (await navigator.permissions.query({ name })).state; } catch { /* שם שהגרסה הזו לא מכירה */ }
+    }
+    return null;
+  }
+
+  // השלב השני בדף "לא מחובר", לפי מה שכרום אומר על ההרשאה
+  function accessStep() {
+    if (LOCAL.access === "denied") {
+      return `<b>כרום חוסם לאתר את הגישה למערכת שבמחשב.</b> לוחצים על הסמל שליד הכתובת למעלה, נכנסים ל"הגדרות האתר",
+        ובשורה "אפליקציות ושירותים במכשיר" (או "גישה לרשת המקומית") בוחרים "אפשר". חוזרים לכאן, והאתר מתחבר לבד.`;
+    }
+    if (LOCAL.access === "granted") {
+      return `כרום כבר מאשר לאתר לגשת למערכת שבמחשב, אז <b>המערכת פשוט לא רצה עכשיו</b>: אולי המחשב רק נדלק, או שהיא באמצע
+        עדכון אוטומטי (עד 3 דקות). האתר מתחבר לבד ברגע שהיא עולה. אם זה נמשך, מריצים את הפקודה שלמטה.`;
+    }
+    return `כרום ישאל אם לאפשר לאתר לגשת לאפליקציות ולשירותים במכשיר: לוחצים <b>"אפשר"</b>. זה קורה פעם אחת בכל מחשב.
+      אם החלון לא הופיע, לוחצים "התחבר".`;
   }
 
   // המערכת עונה ב-api/health. באתר הציבורי כרום שואל פעם אחת אם לאפשר גישה למכשיר, ועד התשובה הבקשה מחכה
@@ -2713,6 +3077,10 @@
   async function loadLocal(given = null) {
     try {
       const [data, health] = given ? [given, null] : await Promise.all([api("api/state"), api("api/health").catch(() => null)]);
+      // מסד הנתונים הסטטיסטי (api/stats): נטען עם המצב, גם אחרי "סנכרון"
+      const [statsData, integrityData] = await Promise.all([api("api/stats").catch(() => null), api("api/integrity").catch(() => null)]);
+      D.stats = Array.isArray(statsData) ? statsData : [];
+      D.integrity = Array.isArray(integrityData) ? integrityData : [];  // שער השלמות (datastore doctor): בעיות לכל מטלה
       LOCAL.sig = JSON.stringify(data);
       D.courses.splice(0, D.courses.length, ...data.courses);
       D.assignments.splice(0, D.assignments.length, ...data.assignments.map((a) => ({
@@ -2757,8 +3125,9 @@
   // מה שנמשך, נבדק או הועלה במחשב אחר (ההגשות מגיעות דרך OneDrive) מופיע לבד, בלי רענון: כל 20 שניות וכשחוזרים
   // ללשונית. רק כשהלשונית גלויה, שום דבר לא רץ כאן ולא מקלידים, ומציירים מחדש רק אם משהו בתיקייה השתנה
   // "משוך הגשות" אמיתי: השרת מושך ממודל (אם יש טוקן) ומקובצי ZIP בקליטה, ישר לתיקיית OneDrive
-  // full: את כל ההגשות ממודל. בלי: אחרי משיכה ראשונה, רק מי שההגשה שלו השתנתה מאז המשיכה הקודמת
-  async function runLocalPull(full = false) {
+  // full: את כל ההגשות ממודל. בלי: אחרי משיכה ראשונה, רק מי שההגשה שלו השתנתה מאז המשיכה הקודמת. limit: כמה למשוך (0 = הכול).
+  // הכפתורים קוראים ל-startPullFlow, שבודק קודם שהמחשב מחובר ל-Claude
+  async function runLocalPull(full = false, limit = 0) {
     const A = cur();
     if (!A || state.run[A.id] || !LOCAL.health?.root) return;
     // הגשה שעוד לא נמשכה: המשיכה הראשונה שומרת את מזהה המטלה במודל (dashboard/actions.py new_assignment)
@@ -2774,7 +3143,7 @@
     render();
     // השרת עונה רק בסוף המשיכה (הורדה של ZIP גדול: כמה דקות). בינתיים שואלים אותו כל שנייה כמה התקדמה
     let settled = false;
-    const post = api("api/pull", { method: "POST", body: JSON.stringify({ course: A.courseFolder, assignment: A.folder, ...(moodleId && { moodleId }), ...(full && { full: true }), ...(!full && state.pullLimit > 0 && { limit: state.pullLimit }) }) })
+    const post = api("api/pull", { method: "POST", body: JSON.stringify({ course: A.courseFolder, assignment: A.folder, ...(moodleId && { moodleId }), ...(full && { full: true }), ...(!full && limit > 0 && { limit }) }) })
       .finally(() => { settled = true; });
     followPull(A, run, () => settled);
     try {
@@ -2966,7 +3335,15 @@
     if (LOCAL.polling || Object.keys(state.run).length || editing()) return;
     changesBusy = true;
     try {
-      const { sig } = await api("api/changes");
+      const { sig, version } = await api("api/changes");
+      // המערכת התעדכנה לבד מ-GitHub (dashboard/updater.py) ועלתה מחדש: טוענים את הדף, כדי שגם האתר יהיה החדש.
+      // רק כאן, כשלא רץ כלום ולא מקלידים (התנאים שלמעלה)
+      if (version && LOCAL.version && version !== LOCAL.version) {
+        toast("המערכת התעדכנה לגרסה חדשה. טוען מחדש…", ICON.check);
+        setTimeout(() => location.reload(), 1500);
+        return;
+      }
+      if (version) LOCAL.version = version;
       if (lastSig !== null && sig !== lastSig) { await loadLocal(); refreshDrawer(); }
       lastSig = sig;
     } catch {
@@ -3025,18 +3402,70 @@
     if (!warn) syncPopTimer = setTimeout(() => { pop.hidden = true; }, 15000);
   }
 
+  // הכפתור מופיע אצל כולם באתר הציבורי, גם בלי מערכת במחשב (לפני 2026-11-03 הוא הוסתר שם, ולכן רק מי שהמערכת רצה
+  // אצלו ראה אותו). בלי מערכת הוא מביא מיד את לוח המספרים שהמחשב המפרסם קרא מתיקיית OneDrive (syncPublic)
+  const publicSync = () => !ON_LOCAL_HOST && !!PUBLIC_STATUS_URL;
+
   function renderSyncBtn() {
     const b = $("#sync-btn");
-    b.hidden = !LOCAL.on;
+    b.hidden = !LOCAL.on && !publicSync();
     b.disabled = LOCAL.syncing;
     b.classList.toggle("busy", LOCAL.syncing);
     $("span", b).textContent = LOCAL.syncing ? "מסנכרן…" : "סנכרון";
     b.title = (LOCAL.syncedAt ? `סונכרן לאחרונה ב-${LOCAL.syncedAt.slice(11, 16)}. ` : "")
-      + "קורא מחדש את תיקיית OneDrive ומעדכן את כל המספרים במסך";
+      + (LOCAL.on ? "קורא מחדש את תיקיית OneDrive ומעדכן את כל המספרים במסך" : "מביא את המספרים האחרונים שנקראו מתיקיית OneDrive");
   }
 
+  // המספרים של הלוח הציבורי, באותה צורה כמו stageCounts, כדי ש-syncChanges יאמר מה השתנה
+  function publicCounts(d) {
+    const out = {};
+    (d?.courses || []).forEach((c) => (c.assignments || []).filter((a) => !a.empty).forEach((a) => {
+      out[`${c.name}/${a.title}`] = { a: { title: a.title, course: c.name }, pulled: a.pulled, graded: a.graded, returned: a.returned };
+    }));
+    return out;
+  }
+
+  const localNow = () => { const t = new Date(); return new Date(t - t.getTimezoneOffset() * 60000).toISOString().slice(0, 19); };
+
+  // אין מערכת במחשב הזה: אין ממה לקרוא את OneDrive כאן, אז מביאים את מה שהמחשב המפרסם קרא ממנו. הוא בודק את התיקייה
+  // כל 2 דקות ומפרסם כל שינוי (PUBLISH_CHECK_S ב-dashboard/public_status.py)
+  async function syncPublic() {
+    LOCAL.syncing = true;
+    renderSyncBtn();
+    const had = !!PUB.data, before = publicCounts(PUB.data);
+    try {
+      const d = await fetchPublic(true);
+      PUB.data = d;
+      PUB.error = "";
+      PUB.loading = false;
+      LOCAL.syncedAt = localNow();
+      if (!LOCAL.on && !cur()) render();
+      const lines = had ? syncChanges(before, publicCounts(d)) : [];
+      const stale = (Date.now() - Date.parse(d.publishedAt)) / 3600000 > PUBLIC_STALE_H;
+      const from = d.publishedBy ? `המחשב של ${d.publishedBy}` : "המחשב שמפרסם את המספרים";
+      const notes = [
+        stale ? { warn: true, text: `${from} לא פרסם מספרים מאז ${when(d.publishedAt)}. הוא כנראה כבוי, אז ייתכן שהמספרים ישנים.` }
+          : { warn: false, text: `המספרים כאן מגיעים מ${from}: הוא בודק את תיקיית OneDrive כל 2 דקות ומפרסם כל שינוי. הפרסום האחרון: ${when(d.publishedAt)}.` },
+        { warn: false, text: "כדי לסנכרן ישירות מ-OneDrive במחשב שלך, ולמשוך, לבדוק ולהחזיר ממנו, מחברים אותו פעם אחת (ההוראות בדף, מתחת ללוח)." },
+      ];
+      const title = lines.length ? `${plural(lines.length, "מטלה אחת התעדכנה", "מטלות התעדכנו")} מתיקיית OneDrive`
+        : "הכול מעודכן: אלה המספרים האחרונים מתיקיית OneDrive";
+      showSyncPop(title, lines, notes, stale);
+    } catch (e) {
+      showSyncPop("הסנכרון לא הצליח", [], [{ warn: true, text: `לא הצלחתי להביא את המספרים (${e.message}). בודקים את החיבור לאינטרנט ולוחצים שוב.` }], true);
+    } finally {
+      LOCAL.syncing = false;
+      renderSyncBtn();
+    }
+  }
+
+  // מערכת מלפני הכפתור (2026-11-03) עונה 404 על api/refresh. היא גם מלפני העדכון העצמי, אז היא לא תתעדכן בלי לעלות מחדש
+  const OLD_SYSTEM = "המערכת שרצה במחשב הזה ישנה: היא מלפני כפתור הסנכרון, והיא לא מתעדכנת לבד. היא מתעדכנת מ-GitHub כשהיא עולה, "
+    + "אז מפעילים מחדש את המחשב (או סוגרים את start.bat ומפעילים אותו שוב). מאז היא מתעדכנת לבד, והכפתור יעבוד.";
+
   async function syncNow() {
-    if (LOCAL.syncing || !LOCAL.on) return;
+    if (LOCAL.syncing) return;
+    if (!LOCAL.on) { if (publicSync()) await syncPublic(); return; }
     LOCAL.syncing = true;
     renderSyncBtn();
     const hadRoot = !!LOCAL.health?.root, before = stageCounts();
@@ -3054,7 +3483,8 @@
         : "הכול מעודכן: המספרים במסך זהים לתיקיית OneDrive";
       showSyncPop(title, lines, notes, notes.some((n) => n.warn));
     } catch (e) {
-      showSyncPop("הסנכרון לא הצליח", [], [{ warn: true, text: e.message }], true);
+      const old = e.status === 404;
+      showSyncPop(old ? "המערכת במחשב הזה ישנה" : "הסנכרון לא הצליח", [], [{ warn: true, text: old ? OLD_SYSTEM : e.message }], true);
     } finally {
       LOCAL.syncing = false;
       renderSyncBtn();
@@ -3099,9 +3529,12 @@
   async function connect(manual = false) {
     if (LOCAL.probing || LOCAL.on) return;
     LOCAL.probing = true;
+    LOCAL.access = await localAccess();
     renderStatus();
+    if (manual || !booted) render();  // "מחכה לאישור בכרום" בזמן שכרום שואל
     const ok = await detectLocal(ON_LOCAL_HOST ? 20000 : 60000);  // במחשב עצמו המערכת עונה, גם אם לאט: מחכים, לא "לא מחובר"
     LOCAL.probing = false;
+    LOCAL.access = await localAccess();
     if (ok) {
       LOCAL.on = true;
       if (LOCAL.health.root) await loadLocal();
@@ -3115,6 +3548,10 @@
   (async () => {
     state.loading = ON_LOCAL_HOST;  // באתר הציבורי מראים מיד איך מתחברים, בלי לחכות
     render();
+    if (!ON_LOCAL_HOST) {  // לוח המספרים הציבורי, למי שאין במחשב שלו מערכת. נטען במקביל לניסיון החיבור
+      loadPublic();
+      setInterval(loadPublic, 60000);
+    }
     await connect();
     state.loading = false;
     booted = true;

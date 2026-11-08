@@ -57,6 +57,7 @@ class FakeRun:
 
 
 def driver(run, **kwargs) -> ClaudeChromeDriver:
+    kwargs.setdefault("sleep", lambda s: None)  # the pause before running a crashed check or download again
     return ClaudeChromeDriver(run=run, claude="claude", **kwargs)
 
 
@@ -447,6 +448,65 @@ def test_download_runs_the_parts_script_on_the_grading_page_without_tools():
 def test_download_reports_what_went_wrong(answer, status):
     out = driver(FakeRun(cli_output(answer))).download(INFO)
     assert out["status"] == status and out["message"]
+
+
+class Runs:
+    """subprocess.run that answers each call with the next (returncode, stdout, stderr), and keeps the last for the rest."""
+
+    def __init__(self, *answers):
+        self.answers, self.calls = list(answers), []
+
+    def __call__(self, cmd, **kwargs):
+        self.calls.append((cmd, kwargs))
+        code, out, err = self.answers[min(len(self.calls), len(self.answers)) - 1]
+        return subprocess.CompletedProcess(cmd, code, stdout=out, stderr=err)
+
+
+CRASH = (4294967295, "", "")  # 2026-11-03 12:01: Claude Code ended at once with -1 and printed nothing
+STARTED = (0, cli_output({"status": "started", "users": 69, "parts": 2, "message": "saved"}), "")
+
+
+def test_download_runs_again_once_when_claude_code_crashes_at_start():
+    """The pull button must not look like it did nothing because Claude Code failed to start once."""
+    runs, slept = Runs(CRASH, STARTED), []
+    out = driver(runs, sleep=slept.append).download(INFO)
+    assert out["status"] == "started" and out["parts"] == 2
+    assert len(runs.calls) == 2 and runs.calls[0][0] == runs.calls[1][0]  # the same locked-down command
+    assert slept == [claude_driver.CRASH_PAUSE_S]
+
+
+def test_check_runs_again_once_when_claude_code_crashes_at_start():
+    runs = Runs(CRASH, (0, cli_output({"chrome": True, "moodle_logged_in": True}), ""))
+    out = driver(runs).check(INFO)
+    assert out["chrome"] is True and out["moodle"] is True and len(runs.calls) == 2
+
+
+def test_a_second_crash_is_reported_with_what_claude_code_wrote():
+    runs = Runs(CRASH, (4294967295, "", "warning: x\nError: update in progress\n"))
+    out = driver(runs).download(INFO)
+    assert out["status"] == "error" and len(runs.calls) == 2  # once more only
+    assert "4294967295" in out["message"] and "Error: update in progress" in out["message"]
+
+
+def test_a_crash_after_claude_worked_a_while_is_not_run_again():
+    """After CRASH_WINDOW_S Claude may already be in Moodle (the parts script keeps running in its tab): no second run."""
+    ticks = iter([0, claude_driver.CRASH_WINDOW_S + 1])
+    runs = Runs(CRASH, STARTED)
+    out = driver(runs, clock=lambda: next(ticks)).download(INFO)
+    assert out["status"] == "error" and len(runs.calls) == 1
+
+
+def test_an_answer_with_an_error_code_is_not_a_crash():
+    """Claude answered (not logged in, a failed run): that is the answer, not a reason to run again."""
+    runs = Runs((1, json.dumps({"is_error": True, "result": "Invalid API key · Please run /login"}), ""), STARTED)
+    assert driver(runs).download(INFO) == {"status": "error", "message": NOT_LOGGED_IN}
+    assert len(runs.calls) == 1
+
+
+def test_an_upload_never_runs_twice_by_itself(tmp_path):
+    runs = Runs(CRASH, (0, cli_output(), ""))
+    r = driver(runs).upload_zip(INFO, a_zip(tmp_path), 6, False)
+    assert r.status == "error" and len(runs.calls) == 1  # Moodle may have imported: a person decides
 
 
 def test_download_never_raises():

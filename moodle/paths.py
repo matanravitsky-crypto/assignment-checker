@@ -44,6 +44,9 @@ TASKS = "Who does what"                  # in the COURSE folder: who took the pu
 # on the pages, and why it needs a person. Numbers only, never names. The site's manual review reads it
 NOTES = "Grading notes"
 KEY = "Key - number to student.csv"
+# The activity log (activity_log/): who did what and when, e.g. every grade edit with its reason. A folder in the
+# assignment folder with one "<who>.jsonl" per writer, so OneDrive never merges two versions of a file
+ACTIVITY_LOG = "Activity log"
 # Suspected copying: pairs of numbers whose files, PDF metadata or page images match, and what each file looked like
 # (hashes only: no names, no metadata values). Written by copying/check.py, read by the site's "העתקות" page
 COPYING = "Copying check.json"
@@ -73,6 +76,12 @@ PULL_LOG = "Pull log.csv"
 # it). in_shared_folder says whether a folder is inside it; since 2026-10-29 a local copy may pull too (the pull
 # owner's key is the one key), so nothing refuses a pull by it any more
 SHARED_COURSE_FOLDER = "YallaLinearit"
+# The statistics database (stats/): in the data folder, next to the courses. One JSON per assignment, by slot
+# ("Statistics/<course>/Assignment N.json"), derived from the grades and notes and recomputed whenever they change,
+# plus one CSV of every assignment and question. Numbers only
+STATISTICS = "Statistics"
+STATS_FILE = "Assignment {}.json"
+STATS_EXPORT = "All assignments.csv"
 PULL_LOCK = "Pull in progress.txt"      # in the assignment folder while a pull runs (see lock.py)
 UPLOAD_LOCK = "Upload in progress.txt"  # in the assignment folder while an upload to Moodle runs
 
@@ -99,8 +108,17 @@ class TwoFolders(ValueError):
     """Two assignment folders carry the same Moodle id (a copied folder): a pull or upload could go to the wrong one."""
 
 
+def read_info_or_none(assignment_dir: Path) -> dict | None:
+    """The details, or None when the file is unreadable (a broken file is datastore doctor's to report, not a crash here)."""
+    try:
+        d = read_info(assignment_dir)
+    except (OSError, ValueError):
+        return None
+    return d if isinstance(d, dict) else None
+
+
 def find_assignment(assignment_id: str) -> Path | None:
-    found = [f for f in assignment_dirs() if str(read_info(f).get("id")) == str(assignment_id)]
+    found = [f for f in assignment_dirs() if str((read_info_or_none(f) or {}).get("id")) == str(assignment_id)]
     if len(found) > 1:
         raise TwoFolders(f"Moodle id {assignment_id} is in {len(found)} assignment folders: "
                          + ", ".join(str(f.relative_to(data_dir())) for f in found))

@@ -23,10 +23,11 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from grading import grade as grading
+from datastore import ledger
+from grading import grade as grading, grade_edit
 from moodle import paths
 
-from . import actions, folder_view, scheduler, settings as cfg, sync
+from . import actions, folder_view, public_status, scheduler, settings as cfg, sync, updater
 
 WEBSITE = cfg.REPO_DIR / "website"
 HEADER = "X-Assignment-Checker"
@@ -138,7 +139,7 @@ class Handler(SimpleHTTPRequestHandler):
             st, via = actions.quick_status(), actions.quick_via()
             return self._json({"ok": True, "root": str(root) if root else None, "error": err,
                                "moodle": bool(st and st.get("logged_in")), "claude": via is not None, "claudeVia": via,
-                               "checking": st is None and via is None})
+                               "checking": st is None and via is None, "version": updater.version()})
         if url.path == "/api/upload":
             return self._json(actions.send_status())
         if url.path == "/api/moodle":
@@ -160,9 +161,26 @@ class Handler(SimpleHTTPRequestHandler):
             root = self._root()
             return root and self._json(actions.state(root))
         if url.path == "/api/changes":
-            # חתימה של התיקייה. האתר שואל כל כמה שניות, וטוען מחדש רק כשהיא משתנה
+            # חתימה של התיקייה. האתר שואל כל כמה שניות, וטוען מחדש רק כשהיא משתנה. version: המערכת התעדכנה
+            # (dashboard/updater.py), והאתר טוען את עצמו מחדש כדי לקבל גם את הקבצים החדשים שלו
             root = self._root()
-            return root and self._json({"sig": actions.changes(root)})
+            return root and self._json({"sig": actions.changes(root), "version": updater.version()})
+        if url.path == "/api/integrity":
+            # שער השלמות (datastore doctor): בעיות לכל מטלה, או ?course=&assignment=. מספרים בלבד, אף פעם לא שמות
+            root = self._root()
+            if not root:
+                return
+            q = {k: v[0] for k, v in parse_qs(url.query).items()}
+            try:
+                return self._json(actions.integrity_view(root, q.get("course"), q.get("assignment")))
+            except FileNotFoundError as e:
+                return self._json({"error": str(e)}, HTTPStatus.NOT_FOUND)
+        if url.path == "/api/stats":
+            # מסד הנתונים הסטטיסטי (stats/): כל המטלות, או ?course=<תיקיית הקורס>. מספרים בלבד
+            root = self._root()
+            if not root:
+                return
+            return self._json(actions.stats_view(root, parse_qs(url.query).get("course", [None])[0]))
         if url.path == "/api/grade":
             return self._json(actions.grade_status())
         if url.path == "/api/pull":  # כמה התקדמה המשיכה, בזמן שה-POST שלה עוד רץ
@@ -184,6 +202,20 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json({"error": str(e)}, HTTPStatus.NOT_FOUND)
         if url.path == "/api/pull":  # כמה התקדמה המשיכה, בזמן שה-POST שלה עוד רץ
             return self._json(actions.pull_status())
+        if url.path == "/api/grade-log":
+            # יומן העריכות של ציון עבודה אחת: מי, מתי, מאיזה ציון לאיזה ולמה (activity_log)
+            root = self._root()
+            if not root:
+                return
+            q = {k: v[0] for k, v in parse_qs(url.query).items()}
+            course, assignment, number = q.get("course", ""), q.get("assignment", ""), q.get("number", "")
+            if not course or not assignment or not number.isdigit():
+                return self._json({"error": "חסרים קורס, מטלה ומספר הגשה"}, HTTPStatus.BAD_REQUEST)
+            try:
+                return self._json({"entries": actions.grade_history(root, course, assignment, number),
+                                   "history": actions.grade_ledger(root, course, assignment, number)})
+            except FileNotFoundError as e:
+                return self._json({"error": str(e)}, HTTPStatus.NOT_FOUND)
         if url.path in ("/api/pages", "/api/page"):
             # עמודי הגשה כתמונות, לבדיקה הידנית: /api/pages אומר כמה עמודים, /api/page מחזיר עמוד אחד
             root = self._root()
@@ -412,6 +444,15 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json({"error": str(e)}, HTTPStatus.NOT_FOUND)
             except OSError as e:  # OneDrive באמצע סנכרון, קובץ פתוח
                 return self._json({"error": f"המכוון לא נשמר: {e}"}, HTTPStatus.CONFLICT)
+        if url.path == "/api/integrity/fix":
+            # תיקון של מה ש-datastore doctor יודע לתקן לבד. dryRun (ברירת מחדל) רק אומר מה היה נעשה
+            course, assignment = body.get("course"), body.get("assignment")
+            if not course or not assignment:
+                return self._json({"error": "חסרים קורס ומטלה"}, HTTPStatus.BAD_REQUEST)
+            try:
+                return self._json(actions.fix_integrity(root, course, assignment, dry_run=bool(body.get("dryRun", True))))
+            except FileNotFoundError as e:
+                return self._json({"error": str(e)}, HTTPStatus.NOT_FOUND)
         if url.path == "/api/copying":
             # בדיקת העתקות (copying/check.py): בלי Claude, רצה ברקע, והאתר שואל על המצב ב-GET /api/copying
             course, assignment = body.get("course"), body.get("assignment")
@@ -461,9 +502,14 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json({"error": "הניקוד לא תקין"}, HTTPStatus.BAD_REQUEST)
             try:
                 return self._json(actions.save_review(root, course, assignment, number, points, body.get("comments") or [],
-                                                      str(body.get("feedback") or ""), body.get("mistakes")))
+                                                      str(body.get("feedback") or ""), body.get("mistakes"),
+                                                      reason=str(body.get("reason") or "")))
             except FileNotFoundError as e:
                 return self._json({"error": str(e)}, HTTPStatus.NOT_FOUND)
+            except grade_edit.ReasonRequired as e:
+                return self._json({"error": str(e), "needReason": True}, HTTPStatus.UNPROCESSABLE_ENTITY)
+            except grade_edit.EditIncomplete as e:  # חלק מהמקומות עודכנו: האתר אומר איפה, ושמירה חוזרת משלימה
+                return self._json({"error": str(e), "updated": e.updated, "failed": e.failed}, HTTPStatus.CONFLICT)
             except grading.GradingError as e:
                 return self._json({"error": str(e)}, HTTPStatus.UNPROCESSABLE_ENTITY)
             except Exception as e:
@@ -484,8 +530,15 @@ class Handler(SimpleHTTPRequestHandler):
         return self.send_error(HTTPStatus.NOT_FOUND)
 
 
+def connect_stores() -> None:
+    """מחבר את יומן האירועים (datastore/ledger.py) לעריכת ציונים: "עריכה התחילה" נרשמת לפני שאר היעדים, כך שקריסה
+    באמצע עריכה נראית ב-doctor (incomplete_edit). נקרא בהפעלת הדשבורד; connect_database(None) מנתק."""
+    grade_edit.connect_database(ledger.LedgerStore())
+
+
 def serve(port: int = 8765, open_browser: bool = True) -> None:
     cfg.load_env()
+    connect_stores()
     root, err = actions.root_info()
     if root:
         print(f"תיקיית המערכת: {root}")
@@ -494,6 +547,11 @@ def serve(port: int = 8765, open_browser: bool = True) -> None:
         print("\nהאתר יעלה בכל זאת, ויציג את ההסבר הזה עד שהתיקייה תסתנכרן.")
     httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     scheduler.start(_lock)  # משיכה מתוזמנת ביום שההגשה נגמרת (dashboard/scheduler.py)
+    # מתעדכנת לבד מ-GitHub כשאף אחד לא עובד עליה (dashboard/updater.py): נעצרת, ו-autostart.vbs מעלה אותה מעודכנת
+    updater.start(port, httpd.shutdown, _lock,
+                  lambda: actions.running_jobs() + (["night pull"] if scheduler.in_night_window() else []))
+    # לוח המספרים הציבורי באתר: רק במחשב שיש ב-.env שלו PUBLIC_STATUS_GIST (dashboard/public_status.py)
+    public_status.start()
     actions.refresh_status_soon()  # כבר עכשיו, כדי שהתשובה תהיה מוכנה כשהאתר נפתח
     url = f"http://localhost:{port}/"
     print(f"\nבודק חכם פועל: {url}\nכדי לעצור: Ctrl+C או לסגור את החלון.")

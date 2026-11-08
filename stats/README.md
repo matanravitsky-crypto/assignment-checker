@@ -1,0 +1,64 @@
+# stats/: מסד הנתונים הסטטיסטי
+
+המקום האחד שמרכז את המספרים של הבדיקה, לכל המטלות בשני הקורסים: כמה הוגשו ונבדקו, ממוצע, חציון, סטיית תקן,
+אחוז עוברים, התפלגות, ולכל שאלה ממוצע, אחוז הצלחה, "לא בטוח" והטעויות הנפוצות; כמה מחכות לאדם ולמה; מי בדק כמה.
+**רק מספרים**: אין מספרי הגשה, אין מזהי משתתף, אין שמות של סטודנטים (`tests/stats` נופל אם משהו כזה מופיע).
+
+התוכנית המלאה ונקודות הוידוא: `docs/Statistics database plan.md`. ההסבר ל-Claude ולצוות: הסקיל `stats-db`.
+
+## איך קוראים
+
+```bash
+python -m stats show 3438636                       # מטלה אחת, JSON מלא
+python -m stats show --course "Linear Algebra" --brief
+python -m stats show --all --brief                  # שורה לכל מטלה בשני הקורסים
+python -m stats build 3438636                       # מחשב ושומר מטלה אחת
+python -m stats rebuild                             # כל המטלות, וגם All assignments.csv
+python -m stats export --sqlite ~/stats.sqlite      # SQLite לניתוח, במחשב שלך (לא בתיקייה המשותפת)
+```
+
+באתר: הלשונית "סטטיסטיקה" (`#/stats`), מ-`GET /api/stats` (או `?course=<תיקיית הקורס>`). מ-Python: `stats.read(assignment_dir)`.
+**האתר, Claude ושורת הפקודה קוראים רק דרך המודול.** לא פותחים את `Statistics/` בעצמנו, לא מחשבים ממוצע מ-`Grades by`.
+
+## איפה זה נשמר, ולמה אפשר למחוק את זה
+
+```
+Exercise Checking System/Statistics/
+  README.txt
+  Linear Algebra/Assignment 0.json        לפי מספר המקום: שם תיקיית המטלה משתנה כשנכנסת הכותרת העברית
+  Discrete Mathematics/Assignment 0.json
+  All assignments.csv                     שורה לכל מטלה ולכל שאלה, לאקסל
+```
+
+הקובץ הוא **תמונת מצב נגזרת** של הקבצים שכבר בתיקיית המטלה (`Grades by <שם>.csv`, `Grading notes/`): הוא נושא `sources`,
+hash של התוכן שממנו חושב, ו-`read` מחשב מחדש ושומר כשהמקור השתנה. לכן אפשר למחוק אותו בכל רגע, שני מחשבים לא
+"רבים" עליו (אותו תוכן = אותם בתים; תוכן אחר = מי שקרא אחרון כתב את הטרי), ועותק מתנגש שלו מ-OneDrive
+(`Assignment 0-<PC>.json`) נמחק לבד. עותקים מתנגשים של כל קובץ אחר לא נוגעים כאן.
+
+## מתי זה מתעדכן
+
+1. בסוף כל ריצת בדיקה (`grading.grade_assignment`) ואחרי כל אישור בבדיקה הידנית (`grading.save_review`): `stats.build`.
+   כישלון שם לא מפיל את הבדיקה (הקובץ נגזר).
+2. בקריאה, אם המקור השתנה מאז (ציון שהוקלד ביד ב-`Grades.csv`, קובץ של בודק אחר שהגיע מ-OneDrive).
+3. `Statistics/` נכנסת ל-hash של `/api/changes`, כך שקובץ שמחשב אחר עדכן מגיע לאתר תוך 5 שניות.
+
+## מפתחות וכפילויות
+
+- מטלה: `"<קורס>/Assignment N"`, שאלה: `"<קורס>/Assignment N/qK"`, טעות: `(K, הניסוח)`.
+- שורה אחת לכל מספר ("7" ו-"0007" הם אותו מספר): המאושרת גוברת, אחריה האחרונה לפי `graded_at`, כמו `moodle/grades.py`.
+- טעות נספרת פעם אחת לכל עבודה גם אם נרשמה פעמיים. אותו קלט נותן אותו פלט בכל סדר (`tests/stats/test_fuzz.py`).
+
+## מה בתיקייה
+
+| קובץ | מה |
+|---|---|
+| `compute.py` | החישוב בלבד, באותן נוסחאות של האתר. בלי קבצים |
+| `store.py` | השמירה והקריאה בלבד: הנתיב, temp+replace, רק כשהתוכן השתנה, מחיקת עותקים מתנגשים, README |
+| `__init__.py` | מה שמחבר: `gather`, `sources`, `build`, `read`, `rebuild`, `export_csv`, `export_sqlite` |
+| `__main__.py` | `python -m stats` |
+
+## מה נבדק
+
+`tests/stats/`: אותם מספרים כמו באתר, רשימת שדות סגורה, בדיקת פרטיות, השמירה והרעננות, כפילויות ועותקים מתנגשים,
+ייצוא, שורת הפקודה, ו-`test_fuzz.py`: מאות מטלות אקראיות עם קלט עוין בכל הרצה (`STATS_FUZZ_SEEDS=100000` להרצה ארוכה).
+`tests/dashboard/test_stats_api.py` ו-`tests/grading/test_stats_hook.py`: ה-API והעדכון אחרי בדיקה ואישור.
