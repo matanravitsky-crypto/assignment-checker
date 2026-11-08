@@ -16,7 +16,7 @@ from datetime import datetime
 REJECT, WARN, INFO = "reject", "warn", "info"
 REVIEW_KINDS = {"", "missing_question", "missing_page", "other_assignment", "unreadable_file",
                 "unreadable", "missing", "uncertain", "format", "other"}
-NUMBER = re.compile(r"\d{1,6}")
+NUMBER = re.compile(r"[0-9]{1,6}")  # ASCII digits only: str.isdigit() accepts Arabic-Indic digits too
 MAX_FEEDBACK = 5000
 
 
@@ -87,20 +87,20 @@ def check_grade_row(row: dict, *, max_grade: float | None = None, question_point
     out: list[Problem] = []
     n = str(row.get("number") or "").strip()
     if not NUMBER.fullmatch(n):
-        out.append(Problem("bad_number", f"מספר הגשה לא תקין: \"{n[:20]}\"", REJECT, where, n or None))
+        out.append(Problem("bad_number", "מספר הגשה לא תקין", REJECT, where, None))  # never echo the bad value, not even as the number
         return out
     raw = str(row.get("grade") or "").strip()
     if raw:
         g = _num(raw)
         if g is None:
-            out.append(Problem("grade_not_numeric", f"עבודה {n}: הציון \"{raw[:20]}\" אינו מספר", REJECT, where, n))
+            out.append(Problem("grade_not_numeric", f"עבודה {n}: הציון אינו מספר", REJECT, where, n))
         elif g < 0 or (max_grade is not None and g > max_grade):
-            out.append(Problem("grade_out_of_range", f"עבודה {n}: ציון {raw} מחוץ לטווח 0 עד {max_grade if max_grade is not None else '∞'}", REJECT, where, n))
+            out.append(Problem("grade_out_of_range", f"עבודה {n}: הציון מחוץ לטווח 0 עד {max_grade if max_grade is not None else '∞'}", REJECT, where, n))
     pts_raw = str(row.get("points") or "").strip()
     if pts_raw:
         pts = parse_points(pts_raw)
         if pts is None:
-            out.append(Problem("points_not_numeric", f"עבודה {n}: הניקוד לפי שאלה \"{pts_raw[:30]}\" אינו מספרים", REJECT, where, n))
+            out.append(Problem("points_not_numeric", f"עבודה {n}: הניקוד לפי שאלה אינו מספרים", REJECT, where, n))
         else:
             if question_points is not None and len(pts) != len(question_points):
                 out.append(Problem("points_length", f"עבודה {n}: {len(pts)} ניקודים במקום {len(question_points)} שאלות במחוון", REJECT, where, n))
@@ -112,7 +112,7 @@ def check_grade_row(row: dict, *, max_grade: float | None = None, question_point
                 out.append(Problem("points_out_of_rubric", f"עבודה {n}: ניקוד שלילי", REJECT, where, n))
     at = str(row.get("graded_at") or "").strip()
     if at and not _iso(at):
-        out.append(Problem("bad_time", f"עבודה {n}: graded_at \"{at[:30]}\" אינו זמן ISO", WARN, where, n))
+        out.append(Problem("bad_time", f"עבודה {n}: graded_at אינו זמן ISO", WARN, where, n))
     if len(str(row.get("feedback") or "")) > MAX_FEEDBACK:
         out.append(Problem("feedback_too_long", f"עבודה {n}: המשוב ארוך מ-{MAX_FEEDBACK} תווים", WARN, where, n))
     return out
@@ -139,7 +139,7 @@ def check_notes(note, *, number: str = "", n_questions: int | None = None, where
         out.append(Problem("notes_points_shape", f"עבודה {number}: points בהערות אינו רשימת מספרים", WARN, where, n))
     kind = note.get("review_kind")
     if kind is not None and (not isinstance(kind, str) or kind not in REVIEW_KINDS):
-        out.append(Problem("notes_review_kind", f"עבודה {number}: סוג בעיה לא מוכר \"{str(kind)[:30]}\"", WARN, where, n))
+        out.append(Problem("notes_review_kind", f"עבודה {number}: סוג בעיה לא מוכר", WARN, where, n))
     marks = note.get("marks")
     if marks is not None and (not isinstance(marks, list) or not all(isinstance(m, dict) for m in marks)):
         out.append(Problem("notes_marks_shape", f"עבודה {number}: marks אינו רשימת סימונים", WARN, where, n))
@@ -153,7 +153,7 @@ def check_details(d, *, where: str = "Assignment details.json") -> list[Problem]
     out: list[Problem] = []
     mid = d.get("id")
     if mid is not None and not str(mid).strip().isdigit():
-        out.append(Problem("details_id", f"מזהה המודל \"{str(mid)[:20]}\" אינו מספר", REJECT, where))
+        out.append(Problem("details_id", "מזהה המודל אינו מספר", REJECT, where))
     for key in ("course", "name"):
         if key in d and not isinstance(d[key], str):
             out.append(Problem("details_type", f"{key} צריך להיות טקסט", REJECT, where))
@@ -161,7 +161,7 @@ def check_details(d, *, where: str = "Assignment details.json") -> list[Problem]
     if mg is not None:
         v = _num(mg)
         if v is None or not 1 <= v <= 1000:
-            out.append(Problem("details_max_grade", f"ציון מרבי לא סביר: {str(mg)[:20]}", REJECT, where))
+            out.append(Problem("details_max_grade", "ציון מרבי לא סביר (צריך להיות בין 1 ל-1000)", REJECT, where))
     rubric = d.get("rubric")
     if isinstance(rubric, dict):
         qs = rubric.get("questions")
@@ -177,7 +177,7 @@ def check_details(d, *, where: str = "Assignment details.json") -> list[Problem]
                 if p is not None:
                     v = _num(p)
                     if v is None or v < 0:
-                        out.append(Problem("details_rubric_points", f"שאלה {i} במחוון: ניקוד לא תקין {str(p)[:20]}", REJECT, where))
+                        out.append(Problem("details_rubric_points", f"שאלה {i} במחוון: ניקוד לא תקין", REJECT, where))
                     else:
                         total += v
                 for dd in q.get("deductions") or []:
@@ -201,10 +201,10 @@ def check_key_rows(rows: list[dict], *, where: str = "Key - number to student.cs
     numbers: dict[str, set[str]] = {}
     for r in rows:
         n, pid = str(r.get("number") or "").strip(), str(r.get("participant_id") or "").strip()
-        if not n.isdigit():
-            out.append(Problem("key_bad_number", f"שורה במפתח בלי מספר תקין (\"{n[:10]}\")", REJECT, where))
+        if not NUMBER.fullmatch(n):
+            out.append(Problem("key_bad_number", "שורה במפתח בלי מספר תקין", REJECT, where))
             continue
-        if not pid.isdigit():
+        if not pid.isascii() or not pid.isdigit():
             out.append(Problem("key_bad_participant", f"עבודה {n}: מזהה המשתתף במפתח אינו מספר", REJECT, where, n))
             continue
         pids.setdefault(n, set()).add(pid)

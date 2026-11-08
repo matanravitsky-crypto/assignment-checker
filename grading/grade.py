@@ -1143,7 +1143,14 @@ def grade_assignment(assignment_dir: Path, numbers: list[str] | None = None, *, 
                 failed(n, str(e))
                 on_progress and on_progress(n, "failed")
                 continue
-            if save(n, g, out):
+            try:
+                saved = save(n, g, out)
+            except Exception as e:  # השמירה נכשלה (שורה שהסכמה דוחה, דיסק): העבודה נכשלת, השאר ממשיכות
+                rep.failed[n] = str(e)
+                failed(n, str(e))
+                on_progress and on_progress(n, "failed")
+                continue
+            if saved:
                 rep.graded.append(n)
                 if g.review:
                     rep.review.append(n)
