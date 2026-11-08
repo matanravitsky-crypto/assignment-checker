@@ -1,7 +1,8 @@
 (() => {
   // כל מה שהאתר מציג אמיתי: הנתונים מגיעים מהמערכת שרצה במחשב (start.bat, dashboard/web_server.py),
   // שקוראת את תיקיית OneDrive של הקורס. בלי המערכת אין מספרים במסך
-  const D = { courses: [], assignments: [], rubrics: {}, runs: [], usage: null };
+  // stats: מסד הנתונים הסטטיסטי (stats/, api/stats): רשומה לכל מטלה, מספרים בלבד
+  const D = { courses: [], assignments: [], rubrics: {}, runs: [], usage: null, stats: [] };
   // באתר הציבורי (Vercel) פונים למערכת שבמחשב. כשהאתר נפתח מהמערכת עצמה, לאותה כתובת
   const ON_LOCAL_HOST = ["localhost", "127.0.0.1"].includes(location.hostname);
   const BASE = ON_LOCAL_HOST ? "" : "http://127.0.0.1:8765/";
@@ -2344,9 +2345,123 @@
     }
   }
 
+  // ---------- סטטיסטיקה: לשונית הדשבורד של מסד הנתונים (stats/, api/stats) ----------
+  // כל מה שבמסד, לכל המטלות: טבלה לכל קורס להשוואה בין מטלות, ולמטלה שנבחרה ההתפלגות, השאלות והטעויות הנפוצות.
+  // המספרים מגיעים מהמודול stats בלבד (אותם מספרים שהאתר מראה בלוח הבקרה), אף פעם לא מחושבים כאן.
+  const KIND_LABEL = (k) => (REVIEW_KIND[k] || [k])[0];
+  const statOf = (key) => D.stats.find((s) => s.key === key);
+  const pctCell = (v) => (v == null ? `<span class="muted">—</span>` : `${v}%`);
+  const numCell = (v) => (v == null ? `<span class="muted">—</span>` : fmt(v));
+
+  function statsView() {
+    if (!LOCAL.on) return offlineHTML();
+    const all = D.stats.filter((s) => !s.error), withData = all.filter((s) => s.counts?.graded);
+    const errors = D.stats.filter((s) => s.error);
+    const curKey = cur() ? `${cur().courseFolder}/Assignment ${cur().n - 1}` : null;
+    if (!statOf(state.statsKey)?.counts?.graded) state.statsKey = (withData.find((s) => s.key === curKey) || withData[0])?.key || null;
+    const S = statOf(state.statsKey);
+    const newest = all.map((s) => s.computed_at).filter(Boolean).sort().pop();
+    const head = `<div class="page-head">
+      <div><h1>סטטיסטיקה</h1>
+        <p>מסד הנתונים של הבדיקה: לכל מטלה ולכל שאלה, ממוצע, התפלגות, טעויות נפוצות וכמה מחכות לאדם. מספרים בלבד, בלי שום פרט מזהה של סטודנט. מתעדכן לבד אחרי כל בדיקה ואישור, בכל המחשבים של הצוות.</p>
+        ${newest ? `<p class="muted">עודכן לאחרונה ${when(newest)} · הקבצים: <code dir="ltr">Statistics/</code> בתיקייה המשותפת · <code dir="ltr">python -m stats show</code> מהמסוף</p>` : ""}</div>
+    </div>
+    ${errors.map((e) => `<div class="notice">${ICON.warn}<div><b>${esc(e.key)}</b>: הסטטיסטיקה לא חושבה. ${esc(e.error)}</div></div>`).join("")}`;
+    if (!withData.length) return `${head}<section class="rv-empty">${ICON.check}<b>עוד אין עבודות בדוקות</b><p>אחרי הבדיקה הראשונה המטלה תופיע כאן עם הממוצע, ההתפלגות והטעויות הנפוצות שלה.</p></section>`;
+    return `${head}${D.courses.map((c) => statsCourseTable(c, all.filter((s) => s.course === c.folder))).join("")}
+      ${S ? statsDetailHTML(S) : ""}`;
+  }
+
+  function statsCourseTable(c, list) {
+    if (!list.length) return "";
+    const rows = list.slice().sort((a, b) => (a.slot ?? 99) - (b.slot ?? 99)).map((s) => {
+      const g = s.grade, k = s.counts, sel = s.key === state.statsKey, has = k.graded > 0;
+      const review = k.needs_review ? `<span class="st-warn">${k.needs_review}</span>` : "0";
+      return `<tr class="${has ? "clickable" : "muted"} ${sel ? "sel" : ""}" ${has ? `data-stats-key="${esc(s.key)}" tabindex="0"` : ""} ${sel ? 'aria-current="true"' : ""}>
+        <td><b>${esc(s.title || `הגשה ${s.slot}`)}</b></td>
+        <td class="num">${k.submitted || `<span class="muted">—</span>`}</td>
+        <td class="num">${has ? `${k.graded}<small class="muted">/${k.submitted}</small>` : `<span class="muted">—</span>`}</td>
+        <td class="num">${numCell(g.mean)}</td>
+        <td class="num col-hide">${numCell(g.median)}</td>
+        <td class="num col-hide">${numCell(g.sd)}</td>
+        <td class="num">${pctCell(g.pass_pct)}</td>
+        <td class="num">${has ? review : `<span class="muted">—</span>`}</td>
+        <td class="num col-hide">${has ? `${k.approved}<small class="muted">/${k.graded}</small>` : `<span class="muted">—</span>`}</td>
+        <td class="col-hide">${s.graders.by.map((x) => esc(x.name)).join(", ") || `<span class="muted">—</span>`}</td>
+      </tr>`;
+    }).join("");
+    return `<section class="panel st-course">
+      <div class="panel-head"><h2>${esc(c.name)}</h2><span class="meta">לחיצה על מטלה פותחת את הפירוט שלה</span></div>
+      <div class="table-wrap"><table class="st-table">
+        <thead><tr><th>מטלה</th><th>הוגשו</th><th>נבדקו</th><th>ממוצע</th><th class="col-hide">חציון</th><th class="col-hide">סטיית תקן</th><th>עוברים</th><th>לבדיקה ידנית</th><th class="col-hide">אושרו</th><th class="col-hide">בודקים</th></tr></thead>
+        <tbody>${rows}</tbody></table></div>
+    </section>`;
+  }
+
+  function statsDetailHTML(S) {
+    const g = S.grade, k = S.counts, H = g.histogram, most = Math.max(...H.counts, 1);
+    const course = D.courses.find((c) => c.folder === S.course)?.name || S.course;
+    const tile = (label, value, sub = "", cls = "") => `<div class="stat ${cls}"><span class="stat-l">${label}</span><b class="stat-v num">${value}</b>${sub ? `<span class="stat-s">${sub}</span>` : ""}</div>`;
+    const kinds = Object.entries(k.review_kinds || {}).map(([kind, n]) => `<span class="chip">${esc(KIND_LABEL(kind))}<span class="c num">${n}</span></span>`).join("");
+    const hist = `<div class="dist-wrap">
+      <div class="dist" role="img" aria-label="התפלגות ציונים">
+        ${H.bins.map((b, i) => `<div class="bar ${b.to <= 0.6 * S.max_grade ? "low" : ""} ${H.counts[i] ? "" : "zero"}"><span class="v num">${H.counts[i] || ""}</span><i style="height:${(H.counts[i] / most) * 100}%"></i><span class="l num">${fmt(b.from)}–${fmt(i === H.bins.length - 1 ? b.to : b.to - (Number.isInteger(b.to) ? 1 : 0))}</span></div>`).join("")}
+      </div>
+      <dl class="kv">
+        <div><dt>מינימום</dt><dd class="num">${numCell(g.min)}</dd></div>
+        <div><dt>מקסימום</dt><dd class="num">${numCell(g.max)}</dd></div>
+        <div><dt>ציון מלא</dt><dd class="num">${g.full_marks}</dd></div>
+        <div><dt>מתחת ל-${fmt(0.6 * S.max_grade)}</dt><dd class="num">${g.n - Math.round(((g.pass_pct ?? 100) / 100) * g.n)}</dd></div>
+        ${g.out_of_range ? `<div><dt title="ציונים מחוץ לטווח 0 עד ${S.max_grade}, לא נספרו">מחוץ לטווח</dt><dd class="num">${g.out_of_range}</dd></div>` : ""}
+      </dl></div>`;
+    const qRows = S.per_question.map((q) => {
+      const top = q.mistakes[0];
+      return `<tr>
+        <td><b>שאלה ${q.index}</b><br><small class="muted">${esc(q.label)}</small></td>
+        <td class="num">${numCell(q.points)}</td>
+        <td class="num">${q.graded}</td>
+        <td class="num">${numCell(q.mean)}</td>
+        <td class="st-bar-cell"><span class="track"><i style="width:${q.success_pct ?? 0}%"></i></span><b class="num">${pctCell(q.success_pct)}</b></td>
+        <td class="num col-hide">${pctCell(q.full_marks_pct)}</td>
+        <td class="num col-hide">${pctCell(q.zero_pct)}</td>
+        <td class="num">${q.unsure ? `<span class="st-warn">${q.unsure}</span>` : "0"}</td>
+        <td>${top ? `${esc(top.text)} <small class="muted num">(${top.count}, ${top.pct}%)</small>` : `<span class="muted">—</span>`}</td>
+      </tr>`;
+    }).join("");
+    const mistakes = S.per_question.flatMap((q) => q.mistakes.map((m) => ({ ...m, q: q.index }))).sort((a, b) => b.count - a.count || a.q - b.q);
+    const top = mistakes.slice(0, 15), mostM = top[0]?.count || 1;
+    const mkList = top.length ? `<ol class="mk-list">${top.map((m) => `<li><div class="mk-row">
+        <span class="mk-text"><b>${esc(m.text)}</b><small>שאלה ${m.q}${m.in_rubric ? " · במחוון" : ""}${m.deduction != null ? ` · בדרך כלל −${fmt(m.deduction)}` : ""}</small></span>
+        <span class="track"><i style="width:${(m.count / mostM) * 100}%"></i></span>
+        <span class="mk-n num">${m.count}<small>${m.pct}%</small></span></div></li>`).join("")}</ol>
+      ${mistakes.length > top.length ? `<p class="hint">ועוד ${mistakes.length - top.length} סוגי טעויות פחות נפוצים.</p>` : ""}` : `<p class="muted empty-line">אין טעויות רשומות.</p>`;
+    return `<section class="st-detail" aria-live="polite">
+      <div class="page-head st-detail-head"><div><h2>${esc(S.title || `הגשה ${S.slot}`)}</h2><p class="muted">${esc(course)}${S.moodle_id ? ` · מזהה מודל ${esc(S.moodle_id)}` : ""} · חושב ${when(S.computed_at)}${S.computed_by ? ` על ידי ${esc(S.computed_by)}` : ""}</p></div></div>
+      <div class="stat-row">
+        ${tile("נבדקו", `${k.graded}<small>/${k.submitted}</small>`, k.submitted ? `${Math.round((100 * k.graded) / k.submitted)}% מההגשות` : "")}
+        ${tile("ממוצע", fmt(g.mean), `מתוך ${S.max_grade}`)}
+        ${tile("חציון", fmt(g.median), g.sd != null ? `סטיית תקן ${fmt(g.sd)}` : "")}
+        ${tile("עוברים", g.pass_pct != null ? `${g.pass_pct}%` : "—", `ציון ${fmt(0.6 * S.max_grade)} ומעלה`)}
+        ${tile("לבדיקה ידנית", k.needs_review, k.failed ? `${k.failed} נכשלו` : "מקרים לאדם", k.needs_review ? "warn" : "ok")}
+        ${tile("אושרו", `${k.approved}<small>/${k.graded}</small>`, "ציונים שאדם אישר")}
+      </div>
+      ${kinds ? `<div class="chips st-kinds">${kinds}</div>` : ""}
+      <div class="st-grid">
+        <section class="panel"><div class="panel-head"><h3>התפלגות ציונים</h3><span class="meta">${g.n} ציונים</span></div><div class="panel-body">${g.n ? hist : `<p class="muted empty-line">אין ציונים.</p>`}</div></section>
+        <section class="panel"><div class="panel-head"><h3>טעויות נפוצות</h3><span class="meta">כמה עבודות עשו כל טעות</span></div><div class="panel-body">${mkList}</div></section>
+      </div>
+      <section class="panel"><div class="panel-head"><h3>לפי שאלה</h3><span class="meta">${S.over_rubric ? `${S.over_rubric} עבודות עם ניקוד מחוץ למחוון לא נספרות כאן · ` : ""}השוואה בין השאלות</span></div>
+        <div class="table-wrap"><table class="st-table st-q">
+          <thead><tr><th>שאלה</th><th>ניקוד</th><th>נבדקו</th><th>ממוצע</th><th>הצלחה</th><th class="col-hide">ניקוד מלא</th><th class="col-hide">אפס</th><th>לא בטוח</th><th>הטעות הנפוצה ביותר</th></tr></thead>
+          <tbody>${qRows || `<tr><td colspan="9" class="muted">אין מחוון, אז אין ניקוד לפי שאלה.</td></tr>`}</tbody></table></div></section>
+      <p class="hint">בודקים: ${S.graders.by.map((x) => `${esc(x.name)} (${x.graded})`).join(", ") || "—"}${S.copying?.pairs != null ? ` · זוגות העתקה חשודים: ${S.copying.pairs}` : ""}</p>
+    </section>`;
+  }
+
   const views = {
     "/review": () => reviewView(),
     "/copying": () => copyingView(),
+    "/stats": () => statsView(),
     "/"() {
       const A = cur(), I = info(A);
       return `
@@ -2538,7 +2653,7 @@
 
     let html;
     if (state.loading && !booted) html = `<div class="loading">${ICON.spin}טוען…</div>`;
-    else if (!cur() && !["/settings", "/runs"].includes(route())) html = offlineHTML();
+    else if (!cur() && !["/settings", "/runs", "/stats"].includes(route())) html = offlineHTML();
     else html = views[route()]();
     $("#main").innerHTML = bannerHTML() + html;
     renderNav();
@@ -2671,6 +2786,10 @@
       store.set(`instr.${st}`, state.instr[st]);
       render(); toast("ההנחיות חזרו לברירת המחדל"); return;
     }
+
+    // סטטיסטיקה: מטלה שנבחרה בטבלה
+    const sk = t.closest("[data-stats-key]");
+    if (sk) { state.statsKey = sk.dataset.statsKey; render(); return; }
 
     const as = t.closest("[data-assign]");
     if (as) { state.assignmentId = as.dataset.assign; state.filter = "all"; resetOpen(); renderPickers(); render(); window.scrollTo({ top: 0, behavior: "smooth" }); return; }
@@ -2896,6 +3015,9 @@
   async function loadLocal(given = null) {
     try {
       const [data, health] = given ? [given, null] : await Promise.all([api("api/state"), api("api/health").catch(() => null)]);
+      // מסד הנתונים הסטטיסטי (api/stats): נטען עם המצב, גם אחרי "סנכרון"
+      const statsData = await api("api/stats").catch(() => null);
+      D.stats = Array.isArray(statsData) ? statsData : [];
       LOCAL.sig = JSON.stringify(data);
       D.courses.splice(0, D.courses.length, ...data.courses);
       D.assignments.splice(0, D.assignments.length, ...data.assignments.map((a) => ({

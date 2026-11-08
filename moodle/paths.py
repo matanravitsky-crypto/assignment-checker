@@ -76,6 +76,12 @@ PULL_LOG = "Pull log.csv"
 # it). in_shared_folder says whether a folder is inside it; since 2026-10-29 a local copy may pull too (the pull
 # owner's key is the one key), so nothing refuses a pull by it any more
 SHARED_COURSE_FOLDER = "YallaLinearit"
+# The statistics database (stats/): in the data folder, next to the courses. One JSON per assignment, by slot
+# ("Statistics/<course>/Assignment N.json"), derived from the grades and notes and recomputed whenever they change,
+# plus one CSV of every assignment and question. Numbers only
+STATISTICS = "Statistics"
+STATS_FILE = "Assignment {}.json"
+STATS_EXPORT = "All assignments.csv"
 PULL_LOCK = "Pull in progress.txt"      # in the assignment folder while a pull runs (see lock.py)
 UPLOAD_LOCK = "Upload in progress.txt"  # in the assignment folder while an upload to Moodle runs
 

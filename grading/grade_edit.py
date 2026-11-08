@@ -244,6 +244,7 @@ def edit_grade(assignment_dir: Path, number: str, points: list, comments: list, 
                                      "אפשר לשמור שוב.", updated, t.name) from e
             updated.append(t.name)
         activity_log.record(assignment_dir, ACTION, by, **base, updated=updated)
+    g_._update_stats(assignment_dir)  # מסד הנתונים הסטטיסטי (stats/): נגזר מקובצי הציונים, מתעדכן אחרי כל עריכה
     return {"number": n, "grade": graded.grade, "from": edit.old_grade, "updated": updated}
 
 

@@ -907,7 +907,7 @@ def read_notes(assignment_dir: Path, number: str) -> dict:
     path = notes_path(assignment_dir, number)
     try:
         data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError):  # JSON שבור, או קובץ שאינו UTF-8 (UnicodeDecodeError): אין הערות לעבודה הזו
         return {}
     return data if isinstance(data, dict) else {}
 
@@ -1156,6 +1156,7 @@ def grade_assignment(assignment_dir: Path, numbers: list[str] | None = None, *, 
         rep.total -= len(late)
         rep.notes.append(f"{len(late)} עבודות נלקחו בינתיים על ידי בודק אחר ולא נבדקו כאן: {', '.join(sorted(late)[:20])}"
                          + (" ועוד" if len(late) > 20 else ""))
+    _update_stats(assignment_dir)
     if limit:  # מה שכבר היה אצל Claude נשמר; את השאר אפשר להמשיך כשהמכסה מתחדשת
         raise ClaudeLimit(f"Claude הגיע למגבלת השימוש, אז הבדיקה נעצרה אחרי {len(rep.graded)} עבודות. "
                           f"העבודות שלא נבדקו לא סומנו כנכשלות: אפשר להמשיך כשהמכסה מתחדשת. ({limit[0]})")
@@ -1182,3 +1183,15 @@ def save_review(assignment_dir: Path, number: str, points: list, comments: list,
     של מי שבמחשב הזה כשורה מאושרת, ובעתיד מסד הנתונים), והשינוי נרשם ביומן. מחזיר את הציון."""
     from .grade_edit import edit_grade  # grade_edit מייבא את הקובץ הזה
     return edit_grade(assignment_dir, number, points, comments, feedback, by, reason=reason, mistakes=mistakes)
+
+
+def _update_stats(assignment_dir: Path) -> None:
+    """מעדכן את מסד הנתונים הסטטיסטי (stats/, "Statistics/<קורס>/Assignment N.json") אחרי בדיקה או אישור.
+    כישלון שם לא מפיל את הבדיקה: הקובץ נגזר, והקורא הבא יחשב אותו מחדש."""
+    import sys
+
+    try:
+        import stats
+        stats.build(assignment_dir)
+    except Exception as e:  # noqa: BLE001
+        print(f"הסטטיסטיקה לא עודכנה: {e}", file=sys.stderr)

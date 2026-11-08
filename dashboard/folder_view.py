@@ -102,7 +102,8 @@ def files_by_number(folder: Path, pattern: str) -> dict[str, list[Path]]:
 
 
 def courses(root: Path) -> list[Path]:
-    return sorted(p for p in root.iterdir() if p.is_dir() and not p.name.startswith("."))
+    """תיקיות הקורסים: כל תיקייה בשורש חוץ מ-Statistics (מסד הנתונים הסטטיסטי, stats/) ותיקיות נסתרות."""
+    return sorted(p for p in root.iterdir() if p.is_dir() and not p.name.startswith(".") and p.name != paths.STATISTICS)
 
 
 def assignments(course_dir: Path) -> list[Assignment]:

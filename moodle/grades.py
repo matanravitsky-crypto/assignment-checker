@@ -46,7 +46,8 @@ def is_approved(row: dict | None) -> bool:
 def read_file(path: Path) -> dict[str, dict]:
     if not path.exists():
         return {}
-    with path.open(encoding="utf-8-sig", newline="") as fh:
+    # errors="replace": a grades file that is not UTF-8 (a hand edit in Excel) must not stop every reader (the site, the upload)
+    with path.open(encoding="utf-8-sig", errors="replace", newline="") as fh:
         return {number_key(r["number"]): r for r in csv.DictReader(fh) if (r.get("number") or "").strip()}
 
 
