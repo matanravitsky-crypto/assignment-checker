@@ -64,7 +64,7 @@ def version(git=git) -> str:
     return _version
 
 
-def waiting_update(git=git) -> str | None:
+def waiting_update(git=git, running: str | None = None) -> str | None:
     """ה-commit של main ב-GitHub, כשהוא לפני התיקייה הזו ואפשר פשוט להתקדם אליו. None בכל מקרה אחר: ענף אחר,
     שינויים מקומיים, בלי git או בלי רשת, היסטוריה שהתפצלה, או שאין שום חדש."""
     if git("rev-parse", "--abbrev-ref", "HEAD") != BRANCH:
@@ -74,8 +74,15 @@ def waiting_update(git=git) -> str | None:
     if git("fetch", "-q", "origin", BRANCH) is None:
         return None
     target = git("rev-parse", f"origin/{BRANCH}")
-    if not target or target == git("rev-parse", "HEAD"):
+    if not target:
         return None
+    if target == git("rev-parse", "HEAD"):
+        # The files are already there, but this server may still run older code: someone ran `git pull` by hand
+        # while it ran (2026-11-10: 70 minutes on 7ba9c79 with the checkout on 44ab7cb). Restart then too.
+        running = version() if running is None else running
+        if not running or target.startswith(running):
+            return None
+        return target
     if git("merge-base", "--is-ancestor", "HEAD", target) is None:  # לא רק התקדמות: git pull --ff-only ייכשל
         return None
     return target
