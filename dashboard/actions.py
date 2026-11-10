@@ -961,7 +961,7 @@ class SendJob:
     current: str = ""  # ה-ZIP שמועלה עכשיו
     stopped: str | None = None  # None: הכול עלה. אחרת: user / needs_login / mismatch / error / stale / locked / not_enabled
     message: str = ""
-    phase: str = "files"  # files: קובצי ה-ZIP. grades: גיליון הציונים, אחרי הקבצים (moodle/send_grades.py)
+    phase: str = "files"  # files: קובצי ה-ZIP. grades: הכפתור "העלה ציונים" (moodle/send_grades.py)
     grades_status: str = ""  # done / nothing / dry_run_ok / not_enabled / needs_login / mismatch / error / locked
     grades_sent: int = 0
     started_at: str = ""
@@ -1003,9 +1003,67 @@ def prepare_send(root: Path, course: str, assignment: str) -> dict:
     rep = asdict(summary)
     rep["summary"] = (f'מטלה "{summary.title}" (מודל {summary.assignment_id}): '
                       f"{summary.files} קבצים של {summary.students} סטודנטים, ב-{len(summary.zips)} קובצי ZIP.")
-    if summary.grades:
-        rep["summary"] += f" ואחריהם {summary.grades} ציונים, דרך גיליון הציונים של מודל."
     return rep
+
+
+def grades_summary(root: Path, course: str, assignment: str) -> dict:
+    """מה הכפתור "העלה ציונים" יעלה: כמה ציונים מחכים (מספרים בלבד). לא נוגע במודל."""
+    a = find_assignment(root, course, assignment)
+    who = _upload_lock_holder(a)
+    numbers = sorted(send_grades.pending(a.dir))
+    info = a.details()
+    title = info.get("title") or info.get("name") or a.dir.name
+    return {"count": len(numbers), "numbers": numbers, "uploading": who,
+            "summary": f'מטלה "{title}" (מודל {info.get("id")}): {len(numbers)} ציונים יעלו למודל.'}
+
+
+def start_grades(root: Path, course: str, assignment: str, driver=None, wait: bool = False,
+                 dry_run: bool = False) -> dict:
+    """הכפתור "העלה ציונים", אחרי "כן" של אדם: מעלה ברקע את הציונים שמחכים (moodle/send_grades.py), באותו מקום
+    של ההעלאה (העלאה אחת בכל פעם). האתר שואל על המצב ב-GET /api/upload, כמו בקבצים. זורק RuntimeError אם משהו רץ."""
+    global _send
+    a = find_assignment(root, course, assignment)
+    require_moodle(root, course, assignment, "העליתי")
+    base_driver = driver if driver is not None else _make_driver()
+    with _send_lock:
+        if _send.running:
+            raise RuntimeError("העלאה אחרת כבר רצה.")
+        if _checking:  # הבדיקה וההעלאה היו מפעילות את אותו כרום
+            raise RuntimeError("בדיקת החיבור למודל רצה עכשיו. אפשר להתחיל בעוד רגע.")
+        count = len(send_grades.pending(a.dir))
+        if not count:
+            raise UserError("אין ציונים חדשים להעלאה.")
+        _send = job = SendJob(course, assignment, "", dry_run, running=True, total=count, phase="grades",
+                              current="ציונים", started_at=datetime.now().isoformat(timespec="seconds"))
+        _stop.clear()
+    _take_task_if_free(a.dir.parent, assignment, "return")
+
+    def run() -> None:
+        try:
+            gr = send_grades.send_grades(a.dir, base_driver, dry_run=dry_run)
+            with _send_lock:
+                job.grades_status, job.grades_sent, job.message = gr.status, gr.sent, gr.message
+                job.done = gr.sent
+                if gr.status not in ("done", "nothing", "dry_run_ok"):
+                    job.stopped = gr.status
+        except Exception as e:  # השגיאה מוצגת באתר במקום שההעלאה תיראה כרצה לנצח
+            with _send_lock:
+                job.stopped, job.message = "error", f"העלאת הציונים נכשלה: {e}"
+        finally:
+            with _send_lock:
+                job.running, job.current = False, ""
+                job.finished_at = datetime.now().isoformat(timespec="seconds")
+
+    t = threading.Thread(target=run, daemon=True)
+    try:
+        t.start()
+    except Exception:
+        with _send_lock:
+            job.running = False
+        raise
+    if wait:
+        t.join()
+    return send_status()
 
 
 def _grades_to_send(assignment_dir: Path, returned: set[str]) -> int:
@@ -1070,17 +1128,6 @@ def start_send(root: Path, course: str, assignment: str, batch_id: str,
                 job.done = len(rep.done_zips)
                 job.total = rep.total_zips or job.total
                 job.stopped, job.message = rep.stopped, rep.message
-            # אחרי הקבצים: הציונים של מה שכבר במודל, דרך גיליון הציונים. רק כשכל הקבצים עלו ולא ביקשו לעצור
-            if rep.stopped is None and not _stop.is_set() and send_grades.can_send(base_driver):
-                with _send_lock:
-                    job.phase, job.current = "grades", "ציונים"
-                gr = send_grades.send_grades(a.dir, base_driver, dry_run=dry_run)
-                with _send_lock:
-                    job.grades_status, job.grades_sent = gr.status, gr.sent
-                    files = "" if not rep.recorded and not dry_run else rep.message
-                    job.message = " ".join(m for m in (files, gr.message) if m)
-                    if gr.status not in ("done", "nothing", "dry_run_ok"):
-                        job.stopped = gr.status
         except Exception as e:  # השגיאה מוצגת באתר במקום שההעלאה תיראה כרצה לנצח
             with _send_lock:
                 job.stopped, job.message = "error", f"ההעלאה נכשלה: {e}"

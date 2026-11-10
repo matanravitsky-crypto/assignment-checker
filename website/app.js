@@ -317,6 +317,22 @@
   }
 
   // ---------- Stage pieces ----------
+  // "העלה ציונים": רק בלחיצה. מעלה את הציונים של עבודות שהקבצים שלהן כבר במודל (moodle/send_grades.py)
+  function gradesButton({ big = false } = {}) {
+    const A = cur();
+    if (!LOCAL.on || !A || A.empty) return "";
+    const I = info(A), n = I.gradesToSend, S = LOCAL.sending;
+    const here = S?.running && sendingHere() && S.phase === "grades";
+    const checking = LOCAL.rd?.flow && LOCAL.rd.then === "grades" && LOCAL.rd.assignmentId === A.id;
+    const owner = ownerOf(A, "ret");
+    const theirs = owner && owner.who !== myName();
+    const disabled = !n || S?.running || LOCAL.starting || checking || theirs || !!state.run[A.id];
+    const text = here ? "מעלה ציונים…" : checking ? "בודק שהמחשב מוכן…" : theirs ? `אצל ${owner.who}`
+      : n ? `העלה ${n} ציונים` : "אין ציונים להעלאה";
+    return `<button class="btn ${n && !I.toReturn.length ? "primary" : "secondary"} ${big ? "lg" : ""}" data-act="grades-flow" ${disabled ? "disabled" : ""}
+      title="הציונים עולים רק בלחיצה הזו, של עבודות שהקבצים הבדוקים שלהן כבר במודל">${here || checking ? ICON.spin : ICON.upload}${text}</button>`;
+  }
+
   function stageButton(stage, { big = false } = {}) {
     const A = cur(), I = info(A), run = state.run[A.id];
     const busy = !!run, mine = run?.stage === stage;
@@ -327,11 +343,7 @@
       label = n ? `בדוק עבודות (${n} זמינות) ▾` : I.toGrade.length ? "כל העבודות שנשארו נלקחו" : "הכל נבדק";
       primary = n > 0;
     }
-    if (stage === "ret") {
-      n = I.toReturn.length + I.gradesToSend;
-      label = I.toReturn.length ? `החזר ${I.toReturn.length} עבודות` : n ? `העלה ${n} ציונים` : I.done.ret ? "הכל הוחזר" : "אין מה להחזיר";
-      primary = n > 0 && !I.toGrade.length;
-    }
+    if (stage === "ret") { n = I.toReturn.length; label = n ? `החזר ${n} עבודות` : I.done.ret ? "הכל הוחזר" : "אין מה להחזיר"; primary = n > 0 && !I.toGrade.length; }
     let disabled = busy || (stage !== "pull" && !n);
     if (LOCAL.on && stage === "grade" && !LOCAL.health?.claude) {
       // בלי מפתח אי אפשר לבדוק. ההסבר מופיע בלשונית "חיבור ל-Claude"
@@ -341,7 +353,7 @@
     }
     let text = mine ? (run.progress || "רץ עכשיו…") : label, spinning = mine;
     if (LOCAL.on && stage === "ret") {
-      if (!mine) text = I.toReturn.length ? `העלה ${I.toReturn.length} למודל` : n ? `העלה ${n} ציונים למודל` : I.done.ret ? "הכל הועלה" : "אין עבודות להעלאה";
+      if (!mine) text = n ? `העלה ${n} למודל` : I.done.ret ? "הכל הועלה" : I.gradesToSend ? "כל העבודות הועלו" : "אין עבודות להעלאה";
       if (LOCAL.sending?.running || LOCAL.starting) disabled = true;  // העלאה אחת בכל פעם, גם אם היא של מטלה אחרת
       if (LOCAL.sending?.running && sendingHere()) { text = sendProgressText(); spinning = true; }
       if (LOCAL.rd?.flow && LOCAL.rd.then === "send" && LOCAL.rd.assignmentId === A.id && !mine) { text = "בודק שהמחשב מוכן…"; spinning = true; disabled = true; }
@@ -473,7 +485,7 @@
             ${st === "pull" ? pullBarHTML(true) : ""}
             ${nums[st][2] ? `<p class="stage-warn">${ICON.warn}${nums[st][2]}</p>` : ""}
             <footer class="stage-foot">
-              ${stageButton(st)}
+              ${stageButton(st)}${st === "ret" ? gradesButton() : ""}
               <a class="link" href="#${S.route}">הנחיות והגדרות</a>
             </footer>
           </article>`;
@@ -533,7 +545,7 @@
         </div>
         <div class="sh-side">
           <span class="stage-status ${ss.kind}">${ss.kind === "running" ? ICON.spin : ss.kind === "done" ? ICON.check : ""}${esc(ss.text)}</span>
-          ${stageButton(stage, { big: true })}
+          ${stageButton(stage, { big: true })}${stage === "ret" ? gradesButton({ big: true }) : ""}
         </div>
       </section>
       ${stage === "pull" ? `${readyPanelHTML("pull")}${pullBarHTML()}` : ""}
@@ -759,7 +771,7 @@
   const sendingHere = () => sendHere() && !!LOCAL.sending.running;
   function sendProgressText() {
     const S = LOCAL.sending;
-    if (S.phase === "grades") return "מעלה את הציונים (גיליון הציונים של מודל)…";
+    if (S.phase === "grades") return "מעלה את הציונים למודל…";
     return `מעלה קובץ ${Math.min((S.done || 0) + 1, S.total || 1)} מתוך ${S.total}…`;
   }
   const numList = (items, max = 20) => (items.length > max ? `${items.slice(0, max).join(", ")} ועוד ${items.length - max}` : items.join(", "));
@@ -774,12 +786,12 @@
       if (!sendHere()) return `<div class="banner">${ICON.spin}<div>העלאה למודל רצה עכשיו במטלה אחרת. אפשר להכין העלאה חדשה כשהיא תסתיים.</div></div>`;
       const pct = S.total ? Math.round((100 * (S.done || 0)) / S.total) : 0;
       return `<section class="panel report send-panel" aria-live="polite">
-        <div class="panel-head"><h3>העלאה למודל</h3><span class="end tag">${S.done || 0} מתוך ${S.total} הועלו</span></div>
+        <div class="panel-head"><h3>${S.phase === "grades" ? "העלאת ציונים למודל" : "העלאה למודל"}</h3>${S.phase === "grades" ? "" : `<span class="end tag">${S.done || 0} מתוך ${S.total} הועלו</span>`}</div>
         <div class="panel-body">
           <p class="send-line">${ICON.spin}<b>${sendProgressText()}</b></p>
           <div class="send-bar" role="progressbar" aria-label="התקדמות ההעלאה" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><i style="width:${pct}%"></i></div>
           ${LOCAL.stopping ? `<p class="hint">ביקשת לעצור: ההעלאה תיעצר אחרי הקובץ הנוכחי.</p>` : ""}
-          <div class="send-actions"><button class="btn secondary" data-act="send-stop" ${LOCAL.stopping ? "disabled" : ""}>עצור אחרי הקובץ הנוכחי</button></div>
+          ${S.phase === "grades" ? "" : `<div class="send-actions"><button class="btn secondary" data-act="send-stop" ${LOCAL.stopping ? "disabled" : ""}>עצור אחרי הקובץ הנוכחי</button></div>`}
         </div>
       </section>`;
     }
@@ -789,7 +801,7 @@
       if (b.too_big?.length) notes.push(`גדולות מדי ולא ייכללו: ${numList(b.too_big)}`);
       if (b.resubmitted?.length) notes.push(`הוגשו מחדש אחרי הבדיקה ולא ייכללו: ${numList(b.resubmitted)}`);
       const noteList = notes.length ? `<ul class="report-lines send-notes">${notes.map((n) => `<li>${esc(n)}</li>`).join("")}</ul>` : "";
-      if (!b.zips?.length && !b.grades) {
+      if (!b.zips?.length) {
         return `<section class="panel report send-panel">
           <div class="panel-head"><h3>העלאה למודל</h3></div>
           <div class="panel-body"><p class="send-line"><b>אין עבודות חדשות להעלאה</b></p>${noteList}
@@ -800,15 +812,35 @@
         <div class="panel-head"><h3>אישור העלאה למודל</h3><span class="end tag warn">ממתין לאישור</span></div>
         <div class="panel-body">
           <p class="send-line"><b>${esc(b.summary)}</b></p>
-          ${b.zips?.length ? `<ul class="send-zips" dir="ltr">${b.zips.map((z) => `<li><code>${esc(z.name)}</code><span>${z.count} files, ${z.mb} MB</span></li>`).join("")}</ul>` : ""}
+          <ul class="send-zips" dir="ltr">${b.zips.map((z) => `<li><code>${esc(z.name)}</code><span>${z.count} files, ${z.mb} MB</span></li>`).join("")}</ul>
           ${noteList}
-          ${b.zips?.length ? `<p class="send-warn">${ICON.warn}<span>אחרי הלחיצה הקבצים נכנסים למודל מיד, בלי מסך אישור נוסף.</span></p>` : ""}
-          ${b.grades ? `<p class="hint">הציונים (${b.grades}) עולים אחרי הקבצים דרך גיליון הציונים של מודל, ונשמרים רק אם התצוגה המקדימה של מודל מראה בדיוק את השינויים שציפינו להם. צריך שבמטלה יהיה מופעל "Offline grading worksheet".</p>` : ""}
+          <p class="send-warn">${ICON.warn}<span>אחרי הלחיצה הקבצים נכנסים למודל מיד, בלי מסך אישור נוסף.</span></p>
           <div class="send-actions">
             <button class="btn primary" data-act="send-confirm" ${LOCAL.starting ? "disabled" : ""}>${LOCAL.starting ? ICON.spin : ICON.upload}העלה למודל</button>
             <button class="btn secondary" data-act="send-cancel" ${LOCAL.starting ? "disabled" : ""}>ביטול</button>
           </div>
         </div>
+      </section>`;
+    }
+    const g = LOCAL.gradesAsk;
+    if (g && g.assignmentId === A.id) {
+      return `<section class="panel report send-panel">
+        <div class="panel-head"><h3>אישור העלאת ציונים</h3><span class="end tag warn">ממתין לאישור</span></div>
+        <div class="panel-body">
+          <p class="send-line"><b>${esc(g.summary)}</b></p>
+          <p class="hint">Claude מוריד ממודל את גיליון הציונים, המערכת ממלאת את הציונים לפי המספרים, ו-Claude מעלה אותו. לפני השמירה מודל מראה רשימה של כל השינויים, והם נשמרים רק אם הרשימה מראה בדיוק את מה שציפינו. אחרת שום ציון לא משתנה.</p>
+          <div class="send-actions">
+            <button class="btn primary" data-act="grades-confirm" ${LOCAL.starting ? "disabled" : ""}>${LOCAL.starting ? ICON.spin : ICON.upload}העלה ציונים</button>
+            <button class="btn secondary" data-act="grades-cancel" ${LOCAL.starting ? "disabled" : ""}>ביטול</button>
+          </div>
+        </div>
+      </section>`;
+    }
+    if (sendHere() && S.stopped && S.phase === "grades") {
+      const message = S.stopped === "needs_login" ? "צריך להתחבר שוב למודל בכרום, ואז ללחוץ שוב על 'העלה ציונים'." : S.message;
+      return `<section class="panel report send-panel">
+        <div class="panel-head"><h3>העלאת הציונים נעצרה</h3></div>
+        <div class="panel-body"><p class="send-line">${ICON.warn}<span>${esc(message)}</span></p></div>
       </section>`;
     }
     if (sendHere() && S.stopped) {
@@ -843,6 +875,39 @@
       delete state.run[A.id];
       render();
       toast(e.message, ICON.warn);
+    }
+  }
+
+  // "העלה ציונים": שואלים את השרת כמה ציונים יעלו ומראים חלון אישור. שום ציון לא עולה לפני ה"כן"
+  async function prepareLocalGrades() {
+    const A = cur();
+    if (!A) return;
+    try {
+      const g = await api(`api/grades?course=${encodeURIComponent(A.courseFolder)}&assignment=${encodeURIComponent(A.folder)}`);
+      if (g.uploading) toast(`${g.uploading} מעלה את המטלה הזו עכשיו.`, ICON.warn);
+      else if (!g.count) toast("אין ציונים חדשים להעלאה.", ICON.check);
+      else LOCAL.gradesAsk = { ...g, assignmentId: A.id };
+    } catch (e) {
+      toast(e.message, ICON.warn);
+    }
+    render();
+  }
+
+  async function startLocalGrades() {
+    const A = cur();
+    if (!A || LOCAL.starting || LOCAL.sending?.running) return;
+    LOCAL.starting = true;
+    render();
+    try {
+      LOCAL.sending = await api("api/grades/start", { method: "POST", body: JSON.stringify({ course: A.courseFolder, assignment: A.folder }) });
+      LOCAL.gradesAsk = null;
+      render();
+      followSend();
+    } catch (e) {
+      toast(e.message, ICON.warn);
+    } finally {
+      LOCAL.starting = false;
+      render();
     }
   }
 
@@ -917,12 +982,14 @@
   });
 
   // הלחיצה על "העלה N למודל". אם הכול כבר מוכן (גם לפי הזיכרון של 30 הדקות), ממשיכים ישר להכנה
-  async function startSendFlow() {
+  async function startSendFlow(then = "send") {
     const A = cur();
     if (!A || state.run[A.id] || LOCAL.sending?.running || LOCAL.starting || (LOCAL.rd?.flow && LOCAL.rd.assignmentId === A.id)) return;
     LOCAL.batch = null;
-    const rd = (LOCAL.rd = newReady(A, true));
-    state.run[A.id] = { stage: "ret", steps: RET_LOCAL_STEPS.map(() => "pending"), progress: "בודק שהמחשב מוכן…" };
+    LOCAL.gradesAsk = null;
+    const rd = (LOCAL.rd = newReady(A, true, then));
+    // הציונים: כפתור משלהם מראה "בודק שהמחשב מוכן…", וכפתור הקבצים לא מסתובב
+    if (then === "send") state.run[A.id] = { stage: "ret", steps: RET_LOCAL_STEPS.map(() => "pending"), progress: "בודק שהמחשב מוכן…" };
     render();
     try {
       rd.data = await api(readyUrl(A));
@@ -1062,6 +1129,7 @@
     rd.flow = false;
     render();
     if (rd.then === "pull") runLocalPull(rd.full, rd.limit);
+    else if (rd.then === "grades") prepareLocalGrades();
     else prepareLocalSend();
   }
 
@@ -1123,7 +1191,8 @@
   // (ואז עוברים להכנת האצווה, או שהמשיכה מתחילה)
   function readyPanelHTML(then = "send") {
     const rd = LOCAL.rd;
-    if (!LOCAL.on || !rd?.flow || rd.then !== then || rd.assignmentId !== cur()?.id || !rd.data) return "";
+    const same = rd?.then === then || (then === "send" && rd?.then === "grades");  // הציונים: אותו חלון בדף ההחזרה
+    if (!LOCAL.on || !rd?.flow || !same || rd.assignmentId !== cur()?.id || !rd.data) return "";
     const title = then === "pull" ? "לפני המשיכה: מחברים את המחשב הזה ל-Claude שלך" : "לפני ההעלאה: בודקים שהמחשב הזה מוכן";
     return `<section class="panel report send-panel ready-panel" aria-live="polite">
       <div class="panel-head"><h3>${title}</h3><button class="btn ghost small end" data-act="ready-close">ביטול</button></div>
@@ -1592,7 +1661,7 @@
           <div class="panel-body">
             <dl class="fields">
               <div><dt>קובץ משוב</dt><dd>העבודה שלו עם ההערות במקום של כל טעות, ובהתחלה עמוד עם הציון, הניקוד לכל שאלה והמשוב</dd></div>
-              <div><dt>הציון</dt><dd>עולה אוטומטית אחרי הקבצים, באותה לחיצה: Claude מוריד ממודל את גיליון הציונים, המערכת ממלאת אותו לפי המספרים, ו-Claude מעלה אותו ומאשר רק אם התצוגה המקדימה של מודל תואמת. צריך שבמטלה יהיה מופעל "Offline grading worksheet" (המרצה מפעיל אותו בהגדרות המטלה)</dd></div>
+              <div><dt>הציון</dt><dd>עולה רק בלחיצה על "העלה ציונים", אחרי שהקבצים הבדוקים כבר במודל: Claude מוריד ממודל את גיליון הציונים, המערכת ממלאת אותו לפי המספרים, ו-Claude מעלה אותו ומאשר רק אם רשימת השינויים של מודל תואמת</dd></div>
             </dl>
           </div>
         </section>
@@ -2799,6 +2868,9 @@
       }
       if (a === "send-confirm" && LOCAL.batch?.assignmentId === cur().id) startLocalSend(LOCAL.batch.id);
       if (a === "send-cancel") { LOCAL.batch = null; render(); }
+      if (a === "grades-flow") startSendFlow("grades");
+      if (a === "grades-confirm" && LOCAL.gradesAsk?.assignmentId === cur().id) startLocalGrades();
+      if (a === "grades-cancel") { LOCAL.gradesAsk = null; render(); }
       if (a === "send-stop") stopLocalSend();
       if (a === "send-resume" && LOCAL.sending?.batch_id) startLocalSend(LOCAL.sending.batch_id);
       if (a === "ready-close" && LOCAL.rd) { LOCAL.rd.flow = false; render(); }

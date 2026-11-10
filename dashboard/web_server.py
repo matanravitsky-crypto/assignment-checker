@@ -142,6 +142,19 @@ class Handler(SimpleHTTPRequestHandler):
                                "checking": st is None and via is None, "version": updater.version()})
         if url.path == "/api/upload":
             return self._json(actions.send_status())
+        if url.path == "/api/grades":
+            # כמה ציונים יעלו בלחיצה על "העלה ציונים" (מספרים בלבד). לא נוגע במודל
+            root = self._root()
+            if not root:
+                return
+            query = parse_qs(url.query)
+            course, assignment = query.get("course", [""])[0], query.get("assignment", [""])[0]
+            if not course or not assignment:
+                return self._json({"error": "חסרים קורס ומטלה"}, HTTPStatus.BAD_REQUEST)
+            try:
+                return self._json(actions.grades_summary(root, course, assignment))
+            except FileNotFoundError as e:
+                return self._json({"error": str(e)}, HTTPStatus.NOT_FOUND)
         if url.path == "/api/moodle":
             return self._json(actions.moodle_status())
         if url.path == "/api/ready":
@@ -373,6 +386,19 @@ class Handler(SimpleHTTPRequestHandler):
                 if str(e) == "stale":
                     return self._json({"error": STALE_UPLOAD}, HTTPStatus.CONFLICT)
                 return self._json({"error": f"ההעלאה לא התחילה: {e}"}, HTTPStatus.UNPROCESSABLE_ENTITY)
+            except FileNotFoundError as e:
+                return self._json({"error": str(e)}, HTTPStatus.NOT_FOUND)
+            except RuntimeError as e:
+                return self._json({"error": str(e)}, HTTPStatus.CONFLICT)
+        if url.path == "/api/grades/start":
+            # הכפתור "העלה ציונים", אחרי "כן" של אדם. רץ ברקע, והאתר שואל על המצב ב-GET /api/upload
+            course, assignment = body.get("course"), body.get("assignment")
+            if not course or not assignment:
+                return self._json({"error": "חסרים קורס ומטלה"}, HTTPStatus.BAD_REQUEST)
+            try:
+                return self._json(actions.start_grades(root, course, assignment), HTTPStatus.ACCEPTED)
+            except actions.UserError as e:
+                return self._json({"error": str(e)}, HTTPStatus.UNPROCESSABLE_ENTITY)
             except FileNotFoundError as e:
                 return self._json({"error": str(e)}, HTTPStatus.NOT_FOUND)
             except RuntimeError as e:

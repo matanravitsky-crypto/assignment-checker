@@ -1,4 +1,5 @@
-"""Upload the grades to Moodle, after the marked files: Moodle's grading worksheet, filled in by number.
+"""Upload the grades to Moodle, only when someone asks for it (the site's "העלה ציונים" button, or `send-grades`):
+Moodle's grading worksheet, filled in by number, for work whose marked files are already in Moodle.
 
 Moodle has no API, and the only safe way to set many grades is its offline grading worksheet ("Offline grading
 worksheet" must be on in the assignment's feedback settings; we never turn it on ourselves). So `send_grades`:
@@ -71,17 +72,12 @@ class GradesDriver(Protocol):
 
 @dataclass
 class GradesReport:
-    """How the grades step ended. status: "done" | "nothing" | "dry_run_ok" | "not_enabled" | "needs_login" |
+    """How the grades upload ended. status: "done" | "nothing" | "dry_run_ok" | "not_enabled" | "needs_login" |
     "mismatch" | "error" | "locked". `sent`: numbers written to the log in this run."""
     status: str
     message: str = ""
     sent: int = 0
     changes: int = 0
-
-
-def can_send(driver) -> bool:
-    """A driver that knows how to upload grades (the tests' small drivers may know only ZIPs)."""
-    return hasattr(driver, "download_worksheet") and hasattr(driver, "upload_grades")
 
 
 # ---------- the log ----------

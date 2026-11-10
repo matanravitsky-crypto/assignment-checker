@@ -163,11 +163,6 @@ def test_wait_for_worksheet_takes_chromes_renamed_copy(downloads):
     assert got.name == "Grading worksheet-555 (1).csv"
 
 
-def test_batch_summary_counts_the_grades_to_come(assignment):
-    write_grades(assignment, [("0001", "80", "yes"), ("0002", "95", "")])
-    assert prepare_batch(assignment).grades == 2
-
-
 # ---------- the Claude in Chrome side (a fake subprocess.run) ----------
 INFO = {"id": "3438636", "title": "הגשה 0"}
 

@@ -10,13 +10,16 @@
     python -m moodle upload <assignment id> [--worksheet PATH] [--for-claude]
         Grades and marked files -> "3 - Ready to upload to Moodle", with upload steps.
 
-    python -m moodle send <assignment id> [--dry-run] [--yes] [--no-grades]
+    python -m moodle send <assignment id> [--dry-run] [--yes]
         Marked files -> Moodle, through Claude in Chrome. Prepares the batch (new or changed work only), prints
         its summary (numbers only), asks "להעלות למודל? (y/N)" unless --yes, uploads ZIP by ZIP and logs each one.
         --dry-run only checks the page and attaches the file, then cancels (Moodle imports at once): nothing is imported or logged.
-        Then the grades of what is in Moodle, through Moodle's grading worksheet (moodle/send_grades.py; a dry run stops
-        at Moodle's preview and cancels); --no-grades skips them.
+        Files only: the grades go up only with send-grades.
         Refused while an upload or a pull of the assignment runs (the lock files). Exit code 1 if it stopped before the end.
+
+    python -m moodle send-grades <assignment id> [--dry-run] [--yes]
+        Grades -> Moodle, only when asked: the numbers whose marked files are in Moodle, through Moodle's grading
+        worksheet (moodle/send_grades.py). Confirmed in Moodle only when its preview matches; --dry-run stops there.
 
     python -m moodle record <assignment id> "<zip name>"
         After uploading a ZIP of the current batch by hand (from its "Upload batch <id>" folder): writes its files to
@@ -60,13 +63,10 @@ def run_send(target: Path, args) -> int:
     except ValueError as blocked:  # includes BatchBlocked
         print(blocked)
         return 1
-    grades_too = not args.no_grades and summary.grades > 0
-    if not summary.zips and not grades_too:
+    if not summary.zips:
         print("אין עבודות חדשות להעלאה")
         return 0
     print_summary(summary)
-    if grades_too:
-        print(f"אחרי הקבצים: {summary.grades} ציונים, דרך גיליון הציונים של מודל")
     if not args.yes:
         try:
             answer = input("להעלות למודל? (y/N) ")
@@ -77,20 +77,34 @@ def run_send(target: Path, args) -> int:
             return 0
     if args.dry_run:
         print("ריצת ניסיון: בודקים את הדף ומצרפים את הקובץ, ואז מבטלים. שום דבר לא יובא ולא נרשם ביומן")
-    driver = make_driver()
     report = send.run_batch(
-        target, summary.id, driver, dry_run=args.dry_run,
+        target, summary.id, make_driver(), dry_run=args.dry_run,
         on_progress=lambda index, total, name: print(f"{index}/{total} {name}"))
     print(f"הושלמו {len(report.done_zips)} מתוך {report.total_zips} ZIP, נרשמו ביומן {report.recorded} קבצים")
     if report.stopped is not None:
         print(f"נעצר ({report.stopped}): {report.message}")
         return 1
-    if not args.no_grades and send_grades.can_send(driver):
-        graded = send_grades.send_grades(target, driver, dry_run=args.dry_run)
-        print(f"ציונים: {graded.message}")
-        if graded.status not in ("done", "nothing", "dry_run_ok"):
-            return 1
     return 0
+
+
+def run_send_grades(target: Path, args) -> int:
+    """Only when asked: the grades of the numbers whose files are in Moodle. Returns the exit code."""
+    todo = send_grades.pending(target)
+    if not todo:
+        print("אין ציונים חדשים להעלאה")
+        return 0
+    print(f"{len(todo)} ציונים יעלו למודל, דרך גיליון הציונים של מודל")
+    if not args.yes:
+        try:
+            answer = input("להעלות את הציונים? (y/N) ")
+        except EOFError:
+            answer = ""
+        if answer.strip().lower() not in ("y", "yes"):
+            print("לא הועלה כלום")
+            return 0
+    report = send_grades.send_grades(target, make_driver(), dry_run=args.dry_run)
+    print(report.message)
+    return 0 if report.status in ("done", "nothing", "dry_run_ok") else 1
 
 
 def main() -> None:
@@ -122,8 +136,10 @@ def main() -> None:
     send_cmd.add_argument("assignment_id")
     send_cmd.add_argument("--dry-run", action="store_true", help="check the page and attach the file, then cancel: import and log nothing")
     send_cmd.add_argument("--yes", action="store_true", help="don't ask before uploading")
-    send_cmd.add_argument("--no-grades", action="store_true",
-                          help="upload the marked files only, not the grades (the grading worksheet)")
+    grades_cmd = commands.add_parser("send-grades", help="upload the grades to Moodle (only when asked)")
+    grades_cmd.add_argument("assignment_id")
+    grades_cmd.add_argument("--dry-run", action="store_true", help="stop at Moodle's preview and cancel: nothing changes")
+    grades_cmd.add_argument("--yes", action="store_true", help="don't ask before uploading")
 
     record_cmd = commands.add_parser("record", help="log a ZIP that was uploaded by hand")
     record_cmd.add_argument("assignment_id")
@@ -148,6 +164,8 @@ def main() -> None:
 
     if args.command == "send":
         raise SystemExit(run_send(target, args))
+    if args.command == "send-grades":
+        raise SystemExit(run_send_grades(target, args))
 
     if args.command == "record":
         try:
