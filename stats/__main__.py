@@ -56,6 +56,8 @@ def main(argv: list[str] | None = None) -> int:
     e.add_argument("--csv", help="נתיב ל-CSV (ברירת מחדל: Statistics/All assignments.csv)")
     e.add_argument("--sqlite", help="נתיב לקובץ SQLite (במחשב שלך, לא בתיקייה המשותפת)")
     args = p.parse_args(argv)
+    from dashboard import shared_folder  # the same folder as the site and the other commands: the synced one
+    shared_folder.use_for_commands()
 
     if args.cmd == "show":
         if not (args.id or args.all or args.course):

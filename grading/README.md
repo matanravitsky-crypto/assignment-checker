@@ -90,10 +90,11 @@ python -m grading <מזהה מטלה> --ids 0001 0002
 
 | יעד | מה |
 |---|---|
-| `DatabaseTarget` | מסד הנתונים. **כבוי עד שיהיה מסד נתונים** (ראו למטה) |
+| `DatabaseTarget` | יומן האירועים (`datastore/ledger.py`, `LedgerStore`): "עריכה התחילה" נרשמת לפני שאר היעדים, כך שקריסה באמצע נראית ב-doctor. מחובר בהפעלת הדשבורד |
 | `MarkedPdfTarget` | עמוד הסיכום ב-`2 - Graded with comments/0001.pdf` |
 | `NotesTarget` | `Grading notes/0001.json` (הערות, טעויות, מי בדק) |
 | `GradesCsvTarget` | `Grades by <name>.csv` של מי שעורך, כשורה מאושרת: היא גוברת על כל שורה אחרת של העבודה בכל קבצי הציונים, ולכן זה הציון שעולה למודל |
+| `StatsTarget` | מסד הנתונים הסטטיסטי בדרייב (`stats/`, `Statistics/<קורס>/Assignment N.json`): ממוצעים, התפלגות, טעויות נפוצות. נגזר מקובצי הציונים, ולכן אחרון. `optional`: כישלון לא מבטל את העריכה, נרשם ב-`not_updated` ביומן ובתשובה, והקורא הבא מחשב מחדש |
 
 אחר כך היא כותבת ליומן (`activity_log/`, פעולה `grade_edit`): מי, מתי, מאיזה ציון לאיזה, הניקוד לפני ואחרי, הסיבה,
 ואיפה עודכן. יעד שנכשל עוצר את השאר, נרשם כ-`grade_edit_failed` עם מה כן עודכן, והאתר אומר לשמור שוב.
@@ -102,14 +103,10 @@ python -m grading <מזהה מטלה> --ids 0001 0002
 **מקום חדש לעדכן בו ציון:** מחלקה עם `name`, `label`, `enabled()` ו-`apply(edit)`, ושורה ב-`TARGETS`. `edit_grade` לא משתנה.
 `edit` (`GradeEdit`) נותן את המספר, הציון הישן והחדש (`old_grade`, `new_grade`), הניקוד, הסיבה, מי ומתי.
 
-**חיבור מסד הנתונים, כשיהיה:** אובייקט עם `save_grade(edit: GradeEdit) -> None`, ופעם אחת בעליית השרת:
+יעד עם `optional = True` לא עוצר את העריכה כשהוא נכשל (מתאים למה שנגזר ואפשר לחשב מחדש); כל השאר עוצרים.
 
-```python
-from grading import grade_edit
-grade_edit.connect_database(MyStore(...))
-```
-
-מאותו רגע מסד הנתונים מתעדכן ראשון בכל עריכה, ו-`updated` ביומן מתחיל ב-`database`.
+**מסד הנתונים** מחובר: `DatabaseTarget` מקבל בהפעלת הדשבורד את `LedgerStore` (`dashboard/web_server.connect_stores`),
+ו-`StatsTarget` מעדכן את הסטטיסטיקה בדרייב. מסד אחר בעתיד: `grade_edit.connect_database(store)` עם `save_grade(edit)`, או יעד חדש ברשימה.
 
 ## כללים
 

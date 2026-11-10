@@ -13,6 +13,9 @@
 מסד הנתונים (DatabaseTarget): כבוי עד ש-connect_database(store) מחבר אליו store עם save_grade(edit: GradeEdit) -> None.
 datastore/ledger.py נותן LedgerStore: רושם "grade_edit_intent" ביומן לפני שאר היעדים (קריסה באמצע = עריכה לא גמורה
 שה-doctor מראה). הדשבורד יחבר אותו בהפעלה (שלב 3 של הצעה A); העריכה הגמורה נרשמת תמיד ("grade_edit").
+
+מסד הנתונים הסטטיסטי בדרייב (StatsTarget, stats/): אחרון ברשימה, כי הוא נגזר מקובצי הציונים. optional: אם הוא נכשל
+העריכה נשמרת בכל השאר, והכישלון נרשם ביומן (not_updated).
 """
 from __future__ import annotations
 
@@ -158,8 +161,25 @@ class GradesCsvTarget:
                           max_grade=edit.ctx.max_grade, question_points=[q.points for q in edit.ctx.questions])
 
 
+@dataclass
+class StatsTarget:
+    """מסד הנתונים הסטטיסטי בדרייב (stats/, "Statistics/<קורס>/Assignment N.json" ו-"All assignments.csv"): ממוצעים,
+    התפלגות, טעויות נפוצות. נגזר מקובצי הציונים, ולכן בא אחרי GradesCsvTarget. optional: כישלון כאן לא מבטל עריכה
+    שכבר נשמרה בכל השאר. הוא נרשם ביומן (not_updated), והקורא הבא של הסטטיסטיקה מחשב אותה מחדש."""
+    name: str = "stats_db"
+    label: str = "מסד הנתונים הסטטיסטי בדרייב"
+    optional: bool = True
+
+    def enabled(self) -> bool:
+        return True
+
+    def apply(self, edit: GradeEdit) -> None:
+        import stats
+        stats.build(edit.assignment_dir, by=edit.by)
+
+
 # הסדר הוא סדר העדכון. מקום חדש = שורה חדשה כאן
-TARGETS: list[Target] = [DatabaseTarget(), MarkedPdfTarget(), NotesTarget(), GradesCsvTarget()]
+TARGETS: list[Target] = [DatabaseTarget(), MarkedPdfTarget(), NotesTarget(), GradesCsvTarget(), StatsTarget()]
 
 
 def connect_database(store: GradeStore | None) -> None:
@@ -232,21 +252,28 @@ def edit_grade(assignment_dir: Path, number: str, points: list, comments: list, 
         base = {"number": n, "from": edit.old_grade, "to": edit.new_grade, "points_from": old.get("points") or None,
                 "points_to": ";".join(g_._pts(p) for p in pts), "reason": why, "kind": kind}
         updated: list[str] = []
+        not_updated: list[dict] = []  # יעדים optional שנכשלו: העריכה נשמרה, והם יתעדכנו בפעם הבאה
         for t in (TARGETS if targets is None else targets):
             if not t.enabled():
                 continue
             try:
                 t.apply(edit)
             except Exception as e:
+                if getattr(t, "optional", False):
+                    not_updated.append({"target": t.name, "error": str(e)[:300]})
+                    continue
                 activity_log.record(assignment_dir, ACTION_FAILED, by, **base, updated=updated, failed=t.name,
                                     error=str(e)[:500])
                 done = ", ".join(_label(x, targets) for x in updated) or "בשום מקום"
                 raise EditIncomplete(f"הציון של עבודה {n} לא עודכן ב{t.label}: {e}. עודכן: {done}. "
                                      "אפשר לשמור שוב.", updated, t.name) from e
             updated.append(t.name)
-        activity_log.record(assignment_dir, ACTION, by, **base, updated=updated)
-    g_._update_stats(assignment_dir)  # מסד הנתונים הסטטיסטי (stats/): נגזר מקובצי הציונים, מתעדכן אחרי כל עריכה
-    return {"number": n, "grade": graded.grade, "from": edit.old_grade, "updated": updated}
+        activity_log.record(assignment_dir, ACTION, by, **base, updated=updated,
+                            **({"not_updated": not_updated} if not_updated else {}))
+    out = {"number": n, "grade": graded.grade, "from": edit.old_grade, "updated": updated}
+    if not_updated:
+        out["not_updated"] = [_label(x["target"], targets) for x in not_updated]
+    return out
 
 
 def _label(name: str, targets: list[Target] | None) -> str:

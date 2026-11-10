@@ -41,7 +41,7 @@ def test_editing_an_existing_grade_needs_a_reason_and_changes_nothing_without_on
 def test_an_edit_updates_the_pdf_the_grades_file_and_the_log(root):
     a = graded(root)
     out = grading.save_review(a.dir, "0001", FULL, [], "יפה מאוד", by="dana (PC)", reason="ערעור: הנימוק בשאלה 12 נמצא בעמוד 2")
-    assert out == {"number": "0001", "grade": 100, "from": "85", "updated": ["marked_pdf", "notes", "grades_csv"]}
+    assert out == {"number": "0001", "grade": 100, "from": "85", "updated": ["marked_pdf", "notes", "grades_csv", "stats_db"]}
     # 2. עמוד הסיכום ב-PDF המסומן
     assert "ציון: 100 מתוך 100" in summary(a)
     # 3. Grades by <name>.csv של מי שערך, ומשם (הקריאה המאוחדת) הציון עולה למודל
@@ -53,7 +53,7 @@ def test_an_edit_updates_the_pdf_the_grades_file_and_the_log(root):
     assert (e["action"], e["by"], e["number"], e["from"], e["to"], e["kind"]) == ("grade_edit", "dana (PC)", "0001", "85", "100", "edit")
     assert e["reason"] == "ערעור: הנימוק בשאלה 12 נמצא בעמוד 2" and e["at"]
     assert e["points_from"] == "20;15;20;20;10" and e["points_to"] == "20;20;20;20;20"
-    assert e["updated"] == ["marked_pdf", "notes", "grades_csv"]
+    assert e["updated"] == ["marked_pdf", "notes", "grades_csv", "stats_db"]
     assert grade_edit.history(a.dir, "1") == [e]
 
 
@@ -205,3 +205,30 @@ def test_anyone_may_edit_a_work_that_someone_else_graded_and_approved(root, monk
     assert grades.read_file(grades.own_file(a.dir, "דנה"))["0001"]["grade"] == "90"  # הקובץ של דנה לא נגעו בו
     assert grading.read_grades(a.dir)["0001"]["grade"] == "100"  # והציון שעולה למודל הוא של העריכה האחרונה
     assert "ציון: 100 מתוך 100" in summary(a)
+
+
+def test_an_edit_updates_the_statistics_database_in_the_drive_as_a_target(root):
+    """מסד הנתונים הסטטיסטי (Statistics/ בתיקייה המשותפת) הוא יעד ברשימה: מתעדכן בכל עריכה ונרשם ב-updated."""
+    import json
+
+    import stats
+    a = graded(root)
+    path = stats.file_for(a.dir)
+    before = json.loads(path.read_text(encoding="utf-8"))
+    out = grading.save_review(a.dir, "0001", FULL, [], "", by="dana (PC)", reason="ערעור")
+    after = json.loads(path.read_text(encoding="utf-8"))
+    assert out["updated"][-1] == "stats_db" and "not_updated" not in out
+    assert before["counts"]["approved"] == 0 and after["counts"]["approved"] == 1
+    assert stats.is_fresh(a.dir, after)  # משקף את קובץ הציונים אחרי העריכה
+    assert grade_edit.history(a.dir, "0001")[-1]["updated"][-1] == "stats_db"
+
+
+def test_a_statistics_failure_keeps_the_edit_and_is_logged(root, monkeypatch):
+    import stats
+    a = graded(root)
+    monkeypatch.setattr(stats, "build", lambda *a_, **k: (_ for _ in ()).throw(OSError("OneDrive נעל את הקובץ")))
+    out = grading.save_review(a.dir, "0001", FULL, [], "", by="x", reason="ערעור")
+    assert out["grade"] == 100 and out["not_updated"] == ["מסד הנתונים הסטטיסטי בדרייב"]
+    assert grading.read_grades(a.dir)["0001"]["grade"] == "100"  # הציון נשמר בכל השאר
+    e = grade_edit.history(a.dir, "0001")[-1]
+    assert e["action"] == "grade_edit" and e["not_updated"][0]["target"] == "stats_db" and "OneDrive" in e["not_updated"][0]["error"]

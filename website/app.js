@@ -2251,7 +2251,8 @@
       }) });
       delete state.review.edits[id];
       delete state.review.log[`${A.id}:${id}`];
-      toast(r.from != null && String(r.from) !== String(r.grade) ? `עבודה ${id}: הציון שונה מ-${r.from} ל-${r.grade}` : `עבודה ${id} נשמרה: ${r.grade}`);
+      toast((r.from != null && String(r.from) !== String(r.grade) ? `עבודה ${id}: הציון שונה מ-${r.from} ל-${r.grade}` : `עבודה ${id} נשמרה: ${r.grade}`)
+        + (r.not_updated?.length ? `. לא עודכן עכשיו: ${r.not_updated.join(", ")} (יתעדכן בפעם הבאה)` : ""));
       state.review.saving = false;
       await loadLocal();
       const target = next ? `#/review?n=${next.id}` : wasQueued ? "#/review" : location.hash;
