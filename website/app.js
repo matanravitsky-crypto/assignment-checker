@@ -1758,9 +1758,8 @@
   }
 
   function rubricSummaryHTML() {
-    const R = rubric();
-    return `
-      <ul class="criteria">${R.questions.map((q) => `<li><span title="${esc(q.req)}">שאלה ${q.n}</span><span class="track"><i style="width:${q.pts}%"></i></span><b class="num">${q.pts}</b></li>`).join("")}</ul>`;
+    // הרכיב עצמו ב-rubric-points.js: שאלה, הניקוד שלה, ומתחתיה הסעיפים
+    return window.RubricPoints.html(rubric().questions, esc);
   }
 
   // ---------- לוח המספרים הציבורי ----------

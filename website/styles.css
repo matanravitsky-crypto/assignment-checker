@@ -429,6 +429,13 @@ tr.mine td:first-child { box-shadow: inset -3px 0 0 var(--blue); }
 .qbars li.worst .track i { background: var(--red); }
 .qbars li.worst b { color: var(--red); }
 .criteria .track i { background: var(--ink-3); }
+/* חלוקת הניקוד (rubric-points.js): שאלה, ומתחתיה הסעיפים שלה */
+.rp { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; font-size: 14px; }
+.rp li { padding: 4px 0; }
+.rp-q { margin-top: 12px; }
+.rp-q:first-child { margin-top: 0; }
+.rp-s { color: var(--ink-2); padding-inline-start: 14px; }
+.rp-total { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--rule); }
 .mistakes { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 14px; }
 .mistakes li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 5px 12px; font-size: 13.5px; }
 .mistakes .mc { font-weight: 700; white-space: nowrap; }
