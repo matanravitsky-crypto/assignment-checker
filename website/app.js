@@ -229,10 +229,11 @@
       late: subs.filter((s) => s.late).length,
       toGrade,
       toReturn: ok.filter((s) => s.status === "graded"),
+      gradesToSend: A.gradesToSend || 0,  // ציונים של עבודות שהקבצים שלהן כבר במודל (moodle/send_grades.py)
       done: {
         pull: !!A.pulledAt,
         grade: ok.length > 0 && graded.length === ok.length,
-        ret: ok.length > 0 && returned.length === ok.length,
+        ret: ok.length > 0 && returned.length === ok.length && !A.gradesToSend,
       },
     };
   }
@@ -326,7 +327,11 @@
       label = n ? `בדוק עבודות (${n} זמינות) ▾` : I.toGrade.length ? "כל העבודות שנשארו נלקחו" : "הכל נבדק";
       primary = n > 0;
     }
-    if (stage === "ret") { n = I.toReturn.length; label = n ? `החזר ${n} עבודות` : I.done.ret ? "הכל הוחזר" : "אין מה להחזיר"; primary = n > 0 && !I.toGrade.length; }
+    if (stage === "ret") {
+      n = I.toReturn.length + I.gradesToSend;
+      label = I.toReturn.length ? `החזר ${I.toReturn.length} עבודות` : n ? `העלה ${n} ציונים` : I.done.ret ? "הכל הוחזר" : "אין מה להחזיר";
+      primary = n > 0 && !I.toGrade.length;
+    }
     let disabled = busy || (stage !== "pull" && !n);
     if (LOCAL.on && stage === "grade" && !LOCAL.health?.claude) {
       // בלי מפתח אי אפשר לבדוק. ההסבר מופיע בלשונית "חיבור ל-Claude"
@@ -336,7 +341,7 @@
     }
     let text = mine ? (run.progress || "רץ עכשיו…") : label, spinning = mine;
     if (LOCAL.on && stage === "ret") {
-      if (!mine) text = n ? `העלה ${n} למודל` : I.done.ret ? "הכל הועלה" : "אין עבודות להעלאה";
+      if (!mine) text = I.toReturn.length ? `העלה ${I.toReturn.length} למודל` : n ? `העלה ${n} ציונים למודל` : I.done.ret ? "הכל הועלה" : "אין עבודות להעלאה";
       if (LOCAL.sending?.running || LOCAL.starting) disabled = true;  // העלאה אחת בכל פעם, גם אם היא של מטלה אחרת
       if (LOCAL.sending?.running && sendingHere()) { text = sendProgressText(); spinning = true; }
       if (LOCAL.rd?.flow && LOCAL.rd.then === "send" && LOCAL.rd.assignmentId === A.id && !mine) { text = "בודק שהמחשב מוכן…"; spinning = true; disabled = true; }
@@ -754,6 +759,7 @@
   const sendingHere = () => sendHere() && !!LOCAL.sending.running;
   function sendProgressText() {
     const S = LOCAL.sending;
+    if (S.phase === "grades") return "מעלה את הציונים (גיליון הציונים של מודל)…";
     return `מעלה קובץ ${Math.min((S.done || 0) + 1, S.total || 1)} מתוך ${S.total}…`;
   }
   const numList = (items, max = 20) => (items.length > max ? `${items.slice(0, max).join(", ")} ועוד ${items.length - max}` : items.join(", "));
@@ -783,7 +789,7 @@
       if (b.too_big?.length) notes.push(`גדולות מדי ולא ייכללו: ${numList(b.too_big)}`);
       if (b.resubmitted?.length) notes.push(`הוגשו מחדש אחרי הבדיקה ולא ייכללו: ${numList(b.resubmitted)}`);
       const noteList = notes.length ? `<ul class="report-lines send-notes">${notes.map((n) => `<li>${esc(n)}</li>`).join("")}</ul>` : "";
-      if (!b.zips?.length) {
+      if (!b.zips?.length && !b.grades) {
         return `<section class="panel report send-panel">
           <div class="panel-head"><h3>העלאה למודל</h3></div>
           <div class="panel-body"><p class="send-line"><b>אין עבודות חדשות להעלאה</b></p>${noteList}
@@ -794,9 +800,10 @@
         <div class="panel-head"><h3>אישור העלאה למודל</h3><span class="end tag warn">ממתין לאישור</span></div>
         <div class="panel-body">
           <p class="send-line"><b>${esc(b.summary)}</b></p>
-          <ul class="send-zips" dir="ltr">${b.zips.map((z) => `<li><code>${esc(z.name)}</code><span>${z.count} files, ${z.mb} MB</span></li>`).join("")}</ul>
+          ${b.zips?.length ? `<ul class="send-zips" dir="ltr">${b.zips.map((z) => `<li><code>${esc(z.name)}</code><span>${z.count} files, ${z.mb} MB</span></li>`).join("")}</ul>` : ""}
           ${noteList}
-          <p class="send-warn">${ICON.warn}<span>אחרי הלחיצה הקבצים נכנסים למודל מיד, בלי מסך אישור נוסף.</span></p>
+          ${b.zips?.length ? `<p class="send-warn">${ICON.warn}<span>אחרי הלחיצה הקבצים נכנסים למודל מיד, בלי מסך אישור נוסף.</span></p>` : ""}
+          ${b.grades ? `<p class="hint">הציונים (${b.grades}) עולים אחרי הקבצים דרך גיליון הציונים של מודל, ונשמרים רק אם התצוגה המקדימה של מודל מראה בדיוק את השינויים שציפינו להם. צריך שבמטלה יהיה מופעל "Offline grading worksheet".</p>` : ""}
           <div class="send-actions">
             <button class="btn primary" data-act="send-confirm" ${LOCAL.starting ? "disabled" : ""}>${LOCAL.starting ? ICON.spin : ICON.upload}העלה למודל</button>
             <button class="btn secondary" data-act="send-cancel" ${LOCAL.starting ? "disabled" : ""}>ביטול</button>
@@ -1585,7 +1592,7 @@
           <div class="panel-body">
             <dl class="fields">
               <div><dt>קובץ משוב</dt><dd>העבודה שלו עם ההערות במקום של כל טעות, ובהתחלה עמוד עם הציון, הניקוד לכל שאלה והמשוב</dd></div>
-              <div><dt>הציון</dt><dd>בינתיים עולה ידנית: במטלה מפעילים "Offline grading worksheet", מורידים את גיליון הציונים, <code dir="ltr">python -m moodle upload &lt;id&gt;</code> ממלא אותו, ומעלים דרך "העלאת גיליון ציונים"</dd></div>
+              <div><dt>הציון</dt><dd>עולה אוטומטית אחרי הקבצים, באותה לחיצה: Claude מוריד ממודל את גיליון הציונים, המערכת ממלאת אותו לפי המספרים, ו-Claude מעלה אותו ומאשר רק אם התצוגה המקדימה של מודל תואמת. צריך שבמטלה יהיה מופעל "Offline grading worksheet" (המרצה מפעיל אותו בהגדרות המטלה)</dd></div>
             </dl>
           </div>
         </section>

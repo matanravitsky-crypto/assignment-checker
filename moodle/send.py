@@ -36,7 +36,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
-from moodle import anonymize, lock, paths, upload, upload_log
+from moodle import anonymize, lock, paths, send_grades, upload, upload_log
 from moodle import grades as moodle_grades
 
 UPLOAD_LOCK = paths.UPLOAD_LOCK
@@ -62,6 +62,7 @@ class BatchSummary:
     too_big: list[str]
     resubmitted: list[str]
     not_approved: list[str]
+    grades: int = 0  # numbers whose grade goes up after the files (moodle/send_grades.py)
 
 
 def is_approved(row: dict | None) -> bool:
@@ -195,6 +196,7 @@ def prepare_batch(assignment_dir: Path, max_bytes: int = upload.CLAUDE_MAX_ZIP_B
         too_big=too_big,
         resubmitted=resubmitted,
         not_approved=sorted(n for n in in_batch if not is_approved(grades.get(n))),
+        grades=len(send_grades.pending(assignment_dir, grades, returned | in_batch)) if grades else 0,
     )
 
 

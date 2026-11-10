@@ -493,3 +493,39 @@ def test_prepare_return_is_refused_while_this_dashboard_uploads(root):
     finally:
         gate.release.set()
         wait_idle()
+
+
+# ---------- grades after the files (moodle/send_grades.py) ----------
+def test_one_click_uploads_the_files_then_the_grades(root):
+    from moodle import ingest, send_grades
+    from tests.fakes import FakeGradesDriver
+    mark(root, "0001", "0002")
+    (a_dir(root) / paths.GRADES).write_text("number,grade,feedback\n0001,90,ok\n0002,75,\n", encoding="utf-8")
+    rep = actions.prepare_send(root, COURSE, HW)
+    assert rep["grades"] == 2 and "ואחריהם 2 ציונים" in rep["summary"]
+    sheet = [["Identifier", "Full name", "Grade", "Feedback comments"],
+             ["Participant 1002", "x", "", ""], ["Participant 1001", "y", "", ""], ["Participant 1003", "z", "", ""]]
+    d = FakeGradesDriver(ingest.downloads_dir(), sheet)
+    s = actions.start_send(root, COURSE, HW, rep["id"], driver=d, wait=True)
+    assert (s["stopped"], s["grades_status"], s["grades_sent"], s["phase"]) == (None, "done", 2, "grades")
+    assert {row[0]: row[2] for row in d.uploaded[0][0][1:]} == {"Participant 1001": "90", "Participant 1002": "75",
+                                                                 "Participant 1003": ""}
+    assert hw(actions.state(root))["gradesToSend"] == 0
+    assert [r["number"] for r in send_grades.read_log(a_dir(root))] == ["0001", "0002"]
+
+
+def test_grades_waiting_after_the_files_went_up_alone(root):
+    from moodle import ingest
+    from tests.fakes import FakeGradesDriver
+    mark(root, "0001")
+    rep = actions.prepare_send(root, COURSE, HW)
+    actions.start_send(root, COURSE, HW, rep["id"], driver=FakeDriver(), wait=True)  # files only, no grades yet
+    (a_dir(root) / paths.GRADES).write_text("number,grade,feedback\n0001,90,ok\n", encoding="utf-8")
+    assert hw(actions.state(root))["gradesToSend"] == 1
+    rep = actions.prepare_send(root, COURSE, HW)
+    assert (rep["zips"], rep["grades"]) == ([], 1)
+    d = FakeGradesDriver(ingest.downloads_dir(), [["Identifier", "Grade"], ["Participant 1001", ""]],
+                         download_status="not_enabled")
+    s = actions.start_send(root, COURSE, HW, rep["id"], driver=d, wait=True)
+    assert s["stopped"] == "not_enabled" and "Offline grading worksheet" in s["message"]
+    assert hw(actions.state(root))["gradesToSend"] == 1

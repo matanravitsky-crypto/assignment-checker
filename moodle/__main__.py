@@ -10,10 +10,12 @@
     python -m moodle upload <assignment id> [--worksheet PATH] [--for-claude]
         Grades and marked files -> "3 - Ready to upload to Moodle", with upload steps.
 
-    python -m moodle send <assignment id> [--dry-run] [--yes]
+    python -m moodle send <assignment id> [--dry-run] [--yes] [--no-grades]
         Marked files -> Moodle, through Claude in Chrome. Prepares the batch (new or changed work only), prints
         its summary (numbers only), asks "להעלות למודל? (y/N)" unless --yes, uploads ZIP by ZIP and logs each one.
         --dry-run only checks the page and attaches the file, then cancels (Moodle imports at once): nothing is imported or logged.
+        Then the grades of what is in Moodle, through Moodle's grading worksheet (moodle/send_grades.py; a dry run stops
+        at Moodle's preview and cancels); --no-grades skips them.
         Refused while an upload or a pull of the assignment runs (the lock files). Exit code 1 if it stopped before the end.
 
     python -m moodle record <assignment id> "<zip name>"
@@ -28,7 +30,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from moodle import guide, ingest, lock, paths, send, status, upload, upload_log
+from moodle import guide, ingest, lock, paths, send, send_grades, status, upload, upload_log
 
 
 def make_driver() -> send.MoodleDriver:
@@ -58,10 +60,13 @@ def run_send(target: Path, args) -> int:
     except ValueError as blocked:  # includes BatchBlocked
         print(blocked)
         return 1
-    if not summary.zips:
+    grades_too = not args.no_grades and summary.grades > 0
+    if not summary.zips and not grades_too:
         print("אין עבודות חדשות להעלאה")
         return 0
     print_summary(summary)
+    if grades_too:
+        print(f"אחרי הקבצים: {summary.grades} ציונים, דרך גיליון הציונים של מודל")
     if not args.yes:
         try:
             answer = input("להעלות למודל? (y/N) ")
@@ -72,13 +77,19 @@ def run_send(target: Path, args) -> int:
             return 0
     if args.dry_run:
         print("ריצת ניסיון: בודקים את הדף ומצרפים את הקובץ, ואז מבטלים. שום דבר לא יובא ולא נרשם ביומן")
+    driver = make_driver()
     report = send.run_batch(
-        target, summary.id, make_driver(), dry_run=args.dry_run,
+        target, summary.id, driver, dry_run=args.dry_run,
         on_progress=lambda index, total, name: print(f"{index}/{total} {name}"))
     print(f"הושלמו {len(report.done_zips)} מתוך {report.total_zips} ZIP, נרשמו ביומן {report.recorded} קבצים")
     if report.stopped is not None:
         print(f"נעצר ({report.stopped}): {report.message}")
         return 1
+    if not args.no_grades and send_grades.can_send(driver):
+        graded = send_grades.send_grades(target, driver, dry_run=args.dry_run)
+        print(f"ציונים: {graded.message}")
+        if graded.status not in ("done", "nothing", "dry_run_ok"):
+            return 1
     return 0
 
 
@@ -111,6 +122,8 @@ def main() -> None:
     send_cmd.add_argument("assignment_id")
     send_cmd.add_argument("--dry-run", action="store_true", help="check the page and attach the file, then cancel: import and log nothing")
     send_cmd.add_argument("--yes", action="store_true", help="don't ask before uploading")
+    send_cmd.add_argument("--no-grades", action="store_true",
+                          help="upload the marked files only, not the grades (the grading worksheet)")
 
     record_cmd = commands.add_parser("record", help="log a ZIP that was uploaded by hand")
     record_cmd.add_argument("assignment_id")

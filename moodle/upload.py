@@ -100,6 +100,66 @@ def fill_worksheet(worksheet: Path, out: Path, results: dict, mapping: dict, max
     return filled
 
 
+def _number(text: str) -> float | None:
+    try:
+        return float(str(text).strip().replace(",", "."))
+    except ValueError:
+        return None
+
+
+def fill_for_upload(worksheet: Path, out: Path, results: dict, mapping: dict, max_grade: float | None = None) -> dict:
+    """The worksheet for the automatic grades upload (moodle/send_grades.py): only the numbers in `results` are filled,
+    matched by participant id (never by row order); every other row stays exactly as Moodle gave it, so Moodle sees
+    no change there. A worksheet without a feedback column (feedback comments off) gets grades only.
+
+    Returns {"filled": the numbers written, "grade_changes": rows whose grade differs from Moodle's,
+    "changed_rows": rows whose grade or feedback differs}. Raises ValueError for a worksheet without an identifier
+    or grade column."""
+    by_participant = {mapping[n]["participant_id"]: (n, r) for n, r in results.items() if n in mapping}
+    with open(worksheet, encoding="utf-8-sig", newline="") as f:
+        rows = list(csv.reader(f))
+    if not rows:
+        raise ValueError("the worksheet is empty")
+    header, body = rows[0], rows[1:]
+    grade_col = find_column(header, GRADE_HEADERS)
+    try:
+        feedback_col = find_column(header, FEEDBACK_HEADERS)
+    except ValueError:
+        feedback_col = None
+
+    filled, grade_changes, changed_rows = [], 0, 0
+    for row in body:
+        if not row or not row[0].strip():
+            continue
+        try:
+            participant = participant_from_identifier(row[0])
+        except ValueError:
+            continue
+        found = by_participant.get(participant)
+        if found is None:
+            continue
+        number, result = found
+        grade = schema.valid_grade(result, max_grade)
+        if grade is None:
+            continue
+        new_grade = str(result["grade"]).strip()
+        grade_changed = _number(row[grade_col]) != grade
+        row[grade_col] = new_grade
+        feedback_changed = False
+        if feedback_col is not None:
+            new_feedback = (result.get("feedback") or "").strip()
+            feedback_changed = row[feedback_col].strip() != new_feedback
+            row[feedback_col] = new_feedback
+        filled.append(number)
+        grade_changes += grade_changed
+        changed_rows += grade_changed or feedback_changed
+
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with open(out, "w", encoding="utf-8-sig", newline="") as f:
+        csv.writer(f).writerows([header, *body])
+    return {"filled": filled, "grade_changes": grade_changes, "changed_rows": changed_rows}
+
+
 def plan_parts(
     marked: Path, mapping: dict, max_bytes: int, numbers: set[str] | None = None
 ) -> tuple[list[list[tuple[Path, str]]], list[str]]:
