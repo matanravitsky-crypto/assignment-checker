@@ -1027,3 +1027,12 @@ span.rv-arrow { visibility: hidden; }
 .banner.integrity .btn { align-self: center; }
 .integrity-list { margin: 8px 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
 .integrity-list .chip { padding: 1px 8px; font-size: 11.5px; margin-inline-end: 6px; }
+
+/* הסטטיסטיקה של המטלה בשלב "בדיקה וציון" (ממסד הנתונים Statistics/) */
+.a-stats { margin-bottom: 18px; }
+.a-stats .stat-row { margin-bottom: 12px; }
+.sq-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.sq-list li { display: grid; grid-template-columns: 70px minmax(80px, 200px) 48px 1fr; align-items: center; gap: 10px; font-size: 13px; }
+.sq-list .track { height: 8px; }
+.sq-list small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 640px) { .sq-list li { grid-template-columns: 64px 1fr 44px; } .sq-list small { display: none; } }

@@ -116,6 +116,9 @@ def main() -> None:
     record_cmd.add_argument("assignment_id")
     record_cmd.add_argument("zip_name")
 
+    table_cmd = commands.add_parser("table", help="build Grades for Moodle.csv: each grade next to its Moodle participant")
+    table_cmd.add_argument("assignment_id")
+
     commands.add_parser("guide", help="rewrite the README files")
 
     args = parser.parse_args()
@@ -144,6 +147,17 @@ def main() -> None:
             print(unknown)
             raise SystemExit(1)
         print(f"{rows} קבצים נרשמו ביומן")
+        return
+
+    if args.command == "table":
+        from moodle import moodle_table
+        rep = moodle_table.build(target)
+        print(f"{paths.MOODLE_TABLE}: {rep['rows']} ציונים, כל אחד ליד מזהה המשתתף שלו במודל"
+              + ("" if rep["written"] else " (לא השתנה)"))
+        why = {"no_participant": "אין להם מזהה משתתף בטבלת המפתח", "key_problem": "טבלת המפתח לא חד-משמעית לגביהם",
+               "invalid_grade": "הציון לא חוקי"}
+        for kind, numbers in rep["left_out"].items():
+            print(f"לא נכנסו ({why[kind]}): {', '.join(numbers[:30])}" + (" ועוד" if len(numbers) > 30 else ""))
         return
 
     if args.command == "status":

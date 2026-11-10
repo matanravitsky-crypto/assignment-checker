@@ -44,6 +44,9 @@ TASKS = "Who does what"                  # in the COURSE folder: who took the pu
 # on the pages, and why it needs a person. Numbers only, never names. The site's manual review reads it
 NOTES = "Grading notes"
 KEY = "Key - number to student.csv"
+# Every grade next to the Moodle participant id it belongs to (moodle/moodle_table.py): derived from the grades and the
+# key, rebuilt on every grading, edit and upload. The upload fills Moodle's worksheet from it
+MOODLE_TABLE = "Grades for Moodle.csv"
 # The activity log (activity_log/): who did what and when, e.g. every grade edit with its reason. A folder in the
 # assignment folder with one "<who>.jsonl" per writer, so OneDrive never merges two versions of a file
 ACTIVITY_LOG = "Activity log"

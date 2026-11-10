@@ -1171,6 +1171,7 @@ def grade_assignment(assignment_dir: Path, numbers: list[str] | None = None, *, 
         rep.notes.append(f"{len(late)} עבודות נלקחו בינתיים על ידי בודק אחר ולא נבדקו כאן: {', '.join(sorted(late)[:20])}"
                          + (" ועוד" if len(late) > 20 else ""))
     _update_stats(assignment_dir)
+    _update_moodle_table(assignment_dir)
     if limit:  # מה שכבר היה אצל Claude נשמר; את השאר אפשר להמשיך כשהמכסה מתחדשת
         raise ClaudeLimit(f"Claude הגיע למגבלת השימוש, אז הבדיקה נעצרה אחרי {len(rep.graded)} עבודות. "
                           f"העבודות שלא נבדקו לא סומנו כנכשלות: אפשר להמשיך כשהמכסה מתחדשת. ({limit[0]})")
@@ -1207,6 +1208,18 @@ def _ledger(assignment_dir: Path, action: str, by: str, **details) -> None:
     except Exception as e:  # noqa: BLE001
         import sys
         print(f"היומן לא נכתב: {e}", file=sys.stderr)
+
+
+def _update_moodle_table(assignment_dir: Path) -> None:
+    """מעדכן את Grades for Moodle.csv (moodle/moodle_table.py) אחרי בדיקה. כישלון לא מפיל את הבדיקה: הטבלה נגזרת,
+    וההעלאה בונה אותה מחדש לפני שהיא ממלאת את גיליון מודל."""
+    import sys
+
+    try:
+        from moodle import moodle_table
+        moodle_table.build(assignment_dir)
+    except Exception as e:  # noqa: BLE001
+        print(f"טבלת הציונים למודל לא עודכנה: {e}", file=sys.stderr)
 
 
 def _update_stats(assignment_dir: Path) -> None:

@@ -178,8 +178,24 @@ class StatsTarget:
         stats.build(edit.assignment_dir, by=edit.by)
 
 
+@dataclass
+class MoodleTableTarget:
+    """Grades for Moodle.csv (moodle/moodle_table.py): כל ציון ליד מזהה המשתתף של מודל, שממנו הציון עולה לסטודנט הנכון.
+    נגזר מקובצי הציונים ומהמפתח, ולכן אחרי GradesCsvTarget. לא optional: טבלה ישנה = הציון הישן היה עולה למודל."""
+    name: str = "moodle_table"
+    label: str = "טבלת הציונים למודל (Grades for Moodle.csv)"
+
+    def enabled(self) -> bool:
+        return True
+
+    def apply(self, edit: GradeEdit) -> None:
+        from moodle import moodle_table
+        moodle_table.build(edit.assignment_dir)
+
+
 # הסדר הוא סדר העדכון. מקום חדש = שורה חדשה כאן
-TARGETS: list[Target] = [DatabaseTarget(), MarkedPdfTarget(), NotesTarget(), GradesCsvTarget(), StatsTarget()]
+TARGETS: list[Target] = [DatabaseTarget(), MarkedPdfTarget(), NotesTarget(), GradesCsvTarget(), MoodleTableTarget(),
+                         StatsTarget()]
 
 
 def connect_database(store: GradeStore | None) -> None:
