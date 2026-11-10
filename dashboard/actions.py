@@ -312,13 +312,7 @@ def pull(root: Path, course: str, assignment: str, moodle_id: str | None = None,
     try:
         rep = _do_pull(root, course, assignment, moodle_id, full, limit)
         job.summary = rep["summary"]
-        if rep["result"]["new"]:
-            # new submissions: the copying check (no Claude, no tokens) starts by itself, instead of a click on its page
-            try:
-                start_copying(root, course, assignment)
-                rep["notes"].append("בדיקת ההעתקות רצה עכשיו ברקע, והתוצאה תופיע בעמוד \"העתקות\".")
-            except (RuntimeError, OSError, UserError):
-                pass  # one already runs, or the folder went away: the button on that page still works
+        # the copying check no longer starts after a pull: the site dropped its page (Matan, 2026-11-10)
         return rep
     except Exception as e:
         job.error = str(e)
