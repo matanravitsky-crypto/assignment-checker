@@ -41,7 +41,7 @@ def test_editing_an_existing_grade_needs_a_reason_and_changes_nothing_without_on
 def test_an_edit_updates_the_pdf_the_grades_file_and_the_log(root):
     a = graded(root)
     out = grading.save_review(a.dir, "0001", FULL, [], "יפה מאוד", by="dana (PC)", reason="ערעור: הנימוק בשאלה 12 נמצא בעמוד 2")
-    assert out == {"number": "0001", "grade": 100, "from": "85", "updated": ["marked_pdf", "notes", "grades_csv", "stats_db"]}
+    assert out == {"number": "0001", "grade": 100, "from": "85", "updated": ["marked_pdf", "notes", "grades_csv", "moodle_table", "stats_db"]}
     # 2. עמוד הסיכום ב-PDF המסומן
     assert "ציון: 100 מתוך 100" in summary(a)
     # 3. Grades by <name>.csv של מי שערך, ומשם (הקריאה המאוחדת) הציון עולה למודל
@@ -53,7 +53,7 @@ def test_an_edit_updates_the_pdf_the_grades_file_and_the_log(root):
     assert (e["action"], e["by"], e["number"], e["from"], e["to"], e["kind"]) == ("grade_edit", "dana (PC)", "0001", "85", "100", "edit")
     assert e["reason"] == "ערעור: הנימוק בשאלה 12 נמצא בעמוד 2" and e["at"]
     assert e["points_from"] == "20;15;20;20;10" and e["points_to"] == "20;20;20;20;20"
-    assert e["updated"] == ["marked_pdf", "notes", "grades_csv", "stats_db"]
+    assert e["updated"] == ["marked_pdf", "notes", "grades_csv", "moodle_table", "stats_db"]
     assert grade_edit.history(a.dir, "1") == [e]
 
 
@@ -232,3 +232,15 @@ def test_a_statistics_failure_keeps_the_edit_and_is_logged(root, monkeypatch):
     assert grading.read_grades(a.dir)["0001"]["grade"] == "100"  # הציון נשמר בכל השאר
     e = grade_edit.history(a.dir, "0001")[-1]
     assert e["action"] == "grade_edit" and e["not_updated"][0]["target"] == "stats_db" and "OneDrive" in e["not_updated"][0]["error"]
+
+
+def test_an_edit_updates_the_moodle_table_so_the_new_grade_goes_to_the_right_student(root):
+    from moodle import moodle_table
+    a = graded(root)
+    before = {r["number"]: r for r in moodle_table.read(a.dir)}
+    assert before["0001"]["grade"] == "85" and before["0001"]["participant_id"] == "1001"  # הבדיקה כבר בנתה את הטבלה
+    out = grading.save_review(a.dir, "0001", FULL, [], "", by="dana (PC)", reason="ערעור")
+    after = {r["number"]: r for r in moodle_table.read(a.dir)}
+    assert "moodle_table" in out["updated"]
+    assert after["0001"]["grade"] == "100" and after["0001"]["moodle_identifier"] == "Participant 1001"
+    assert after["0001"]["approved"].startswith("dana (PC)")

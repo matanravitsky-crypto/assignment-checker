@@ -87,6 +87,12 @@ Exercise Checking System/                  the data folder (the synced one, foun
       Who grades what/<name>.json the numbers each grader took (moodle/claims.py)
       Grading notes/              0001.json ...: per question comments, mistakes, "unsure", the marks, why a person should look (numbers only)
       Key - number to student.csv number → Moodle participant id → original folder  ← the one key
+      Grades for Moodle.csv       every grade next to its Moodle participant id ("Participant N"): number, participant_id,
+                                  moodle_identifier, grade, max_grade, feedback, approved, graded_by, graded_at.
+                                  Derived (moodle/moodle_table.py) from the merged grades and the key, rebuilt on every
+                                  grading, grade edit (a target) and upload; `python -m moodle table <id>`. The upload
+                                  fills Moodle's own worksheet from it by participant id. A grade that can't be tied to
+                                  exactly one participant (key problem, no id, invalid grade) stays out and is reported
       Copying check.json          suspected copying: pairs of numbers and why, per-file hashes (`python -m copying`)
       Upload in progress.txt      exists only while an upload runs ("<user> (<PC>) pid=<pid>", since when; 30 minutes without an update = stuck)
       Pull in progress.txt        the same while a pull runs

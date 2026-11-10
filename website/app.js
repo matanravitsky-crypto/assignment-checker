@@ -651,7 +651,9 @@
           <td class="claim-cell">${ownerCell(A, stage)}</td>`;
       } else if (stage === "grade") {
         const free = I.toGrade.filter((s) => !s.claim).length;
+        const St = statOfAssignment(A);
         cells = `<td>${progressHTML(I.graded.length, I.ok.length)}</td>
+          <td class="num">${St?.counts?.graded ? fmt(St.grade.mean) : `<span class="muted">—</span>`}</td>
           <td class="col-hide-sm">${peopleHTML(A)}</td>
           <td>${free ? `<b class="num">${free}</b> פנויות` : `<span class="muted">${I.toGrade.length ? "הכל נלקח" : "הכל נבדק"}</span>`}</td>`;
       } else {
@@ -664,7 +666,7 @@
     }).join("");
     const head = {
       pull: "<th>בתיקייה</th><th>אחראי/ת</th>",
-      grade: `<th>נבדקו</th><th class="col-hide-sm">מי בודק</th><th>מה נשאר לקחת</th>`,
+      grade: `<th>נבדקו</th><th>ממוצע</th><th class="col-hide-sm">מי בודק</th><th>מה נשאר לקחת</th>`,
       ret: `<th>להעלאה</th><th class="col-hide-sm">הוחזרו</th><th>אחראי/ת</th>`,
     }[stage];
     // מה עוד יש לעשות בשלב הזה, בכל הקורס
@@ -1618,6 +1620,7 @@
     }[stage][t]();
     return `${stageHeroHTML(stage)}${boardHTML(stage)}
       <h2 class="picked">${esc(cur().title)}<small>המטלה שנבחרה</small></h2>
+      ${stage === "grade" ? assignmentStatsHTML(cur()) : ""}
       ${tabsHTML(stage)}<div class="tab-body" role="tabpanel" aria-labelledby="tab-${stage}-${t}">${body}</div>`;
   }
 
@@ -2398,6 +2401,37 @@
   const pctCell = (v) => (v == null ? `<span class="muted">—</span>` : `${v}%`);
   const numCell = (v) => (v == null ? `<span class="muted">—</span>` : fmt(v));
 
+  // הסטטיסטיקה של מטלה, מאותו מסד נתונים (Statistics/ בדרייב): בשלב "בדיקה וציון" לכל מטלה שיש בה עבודות בדוקות
+  const statKeyOf = (A) => (A ? `${A.courseFolder}/Assignment ${A.n - 1}` : null);
+  const statOfAssignment = (A) => statOf(statKeyOf(A));
+  function assignmentStatsHTML(A) {
+    const S = statOfAssignment(A);
+    if (!S?.counts?.graded) return "";
+    const g = S.grade, k = S.counts;
+    const tile = (label, value, sub = "", cls = "") => `<div class="stat ${cls}"><span class="stat-l">${label}</span><b class="stat-v num">${value}</b>${sub ? `<span class="stat-s">${sub}</span>` : ""}</div>`;
+    const qs = S.per_question.map((q) => `<li><span class="sq-l">שאלה ${q.index}</span>
+        <span class="track"><i style="width:${q.success_pct ?? 0}%"></i></span><b class="num">${pctCell(q.success_pct)}</b>
+        <small class="muted">${q.mistakes[0] ? esc(q.mistakes[0].text) : ""}</small></li>`).join("");
+    const top = S.per_question.flatMap((q) => q.mistakes.map((m) => ({ ...m, q: q.index }))).sort((a, b) => b.count - a.count).slice(0, 3);
+    return `<section class="panel a-stats" aria-label="הסטטיסטיקה של המטלה">
+      <div class="panel-head"><h3>הסטטיסטיקה של המטלה</h3>
+        <span class="meta">ממסד הנתונים בדרייב · חושב ${when(S.computed_at)}</span>
+        <button class="btn ghost small end" data-stats-open="${esc(S.key)}">${ICON.chev}כל הנתונים</button></div>
+      <div class="panel-body">
+        <div class="stat-row">
+          ${tile("נבדקו", `${k.graded}<small>/${k.submitted}</small>`, k.submitted ? `${Math.round((100 * k.graded) / k.submitted)}% מההגשות` : "")}
+          ${tile("ממוצע", fmt(g.mean), `מתוך ${S.max_grade}`)}
+          ${tile("חציון", fmt(g.median), g.sd != null ? `סטיית תקן ${fmt(g.sd)}` : "")}
+          ${tile("עוברים", g.pass_pct != null ? `${g.pass_pct}%` : "—", `ציון ${fmt(0.6 * S.max_grade)} ומעלה`)}
+          ${tile("לבדיקה ידנית", k.needs_review, "מקרים לאדם", k.needs_review ? "warn" : "ok")}
+          ${tile("אושרו", `${k.approved}<small>/${k.graded}</small>`, "ציונים שאדם אישר")}
+        </div>
+        ${qs ? `<ol class="sq-list" aria-label="הצלחה לפי שאלה">${qs}</ol>` : ""}
+        ${top.length ? `<p class="hint">הטעויות הנפוצות: ${top.map((m) => `${esc(m.text)} <small class="num">(שאלה ${m.q}, ${m.count})</small>`).join(" · ")}</p>` : ""}
+      </div>
+    </section>`;
+  }
+
   function statsView() {
     if (!LOCAL.on) return offlineHTML();
     const all = D.stats.filter((s) => !s.error), withData = all.filter((s) => s.counts?.graded);
@@ -2837,6 +2871,8 @@
     if (t.closest("[data-integrity-fix]")) { runIntegrityFix(); return; }
 
     // סטטיסטיקה: מטלה שנבחרה בטבלה
+    const so = t.closest("[data-stats-open]");
+    if (so) { state.statsKey = so.dataset.statsOpen; location.hash = "#/stats"; return; }
     const sk = t.closest("[data-stats-key]");
     if (sk) { state.statsKey = sk.dataset.statsKey; render(); return; }
 

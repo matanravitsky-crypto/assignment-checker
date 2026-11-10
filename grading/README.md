@@ -94,6 +94,7 @@ python -m grading <מזהה מטלה> --ids 0001 0002
 | `MarkedPdfTarget` | עמוד הסיכום ב-`2 - Graded with comments/0001.pdf` |
 | `NotesTarget` | `Grading notes/0001.json` (הערות, טעויות, מי בדק) |
 | `GradesCsvTarget` | `Grades by <name>.csv` של מי שעורך, כשורה מאושרת: היא גוברת על כל שורה אחרת של העבודה בכל קבצי הציונים, ולכן זה הציון שעולה למודל |
+| `MoodleTableTarget` | `Grades for Moodle.csv` (`moodle/moodle_table.py`): כל ציון ליד מזהה המשתתף של מודל, שממנו הציון עולה לסטודנט הנכון. אחרי קובץ הציונים, ולא optional: טבלה ישנה = הציון הישן היה עולה |
 | `StatsTarget` | מסד הנתונים הסטטיסטי בדרייב (`stats/`, `Statistics/<קורס>/Assignment N.json`): ממוצעים, התפלגות, טעויות נפוצות. נגזר מקובצי הציונים, ולכן אחרון. `optional`: כישלון לא מבטל את העריכה, נרשם ב-`not_updated` ביומן ובתשובה, והקורא הבא מחשב מחדש |
 
 אחר כך היא כותבת ליומן (`activity_log/`, פעולה `grade_edit`): מי, מתי, מאיזה ציון לאיזה, הניקוד לפני ואחרי, הסיבה,
