@@ -539,7 +539,7 @@ def test_pull_in_parts_keeps_every_number_and_adds_the_new_student(root, monkeyp
     log = (root / COURSE / HW / paths.PULL_LOG).read_text(encoding="utf-8-sig").splitlines()
     assert log[0] == "pulled_at,by,students,new,files,parts,partial" and log[-1].split(",")[2:] == ["4", "1", "4", "2", ""]
     assert list(ingest.downloads_dir().iterdir()) == []  # every part was taken
-    assert actions.pull_status()["phase"] == "number"
+    assert actions.pull_status()["phase"] == "worksheet"  # after numbering: the grading worksheet (moodle_table.save_worksheet)
     assert len(list((tmp_path / "Moodle originals" / COURSE / HW).iterdir())) == 4
 
 

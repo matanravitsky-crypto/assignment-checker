@@ -83,3 +83,40 @@ def test_the_upload_fills_moodles_worksheet_from_the_table(tmp_path):
         rows = {r[0]: r for r in csv.reader(f)}
     assert rows["משתתף 200"][2:5:2] == ["90", "ב"] and rows["משתתף 100"][2] == "70" and rows["משתתף 300"][2] == ""
     assert table(tmp_path)["0002"]["grade"] == "90"  # the table was built by the upload
+
+
+SHEET = [["Identifier", "Full name", "Email address", "ID number", "Status", "Grade", "Maximum grade",
+          "Grade can be changed", "Last modified (grade)", "Feedback comments"],
+         ["Participant 200", "בת כהן", "bat@post.bgu.ac.il", "123456789", "Submitted", "", "100", "Yes", "-", ""],
+         ["Participant 100", "אב לוי", "av@post.bgu.ac.il", "987654321", "Submitted", "", "100", "Yes", "-", ""],
+         ["Participant 300", "גד", "gad@post.bgu.ac.il", "111111111", "No submission", "", "100", "Yes", "-", ""]]
+
+
+def test_the_worksheet_from_the_pull_keeps_nothing_that_identifies_a_person_and_fills_from_the_grades(tmp_path):
+    write_csv(tmp_path / paths.KEY, KEY)
+    write_csv(tmp_path / paths.GRADES, [["number", "grade", "feedback"], ["0002", "90", "טוב"]])
+    downloaded = tmp_path / "Grading worksheet-1.csv"
+    write_csv(downloaded, SHEET)
+    rep = moodle_table.save_worksheet(tmp_path, downloaded)
+    assert rep["rows"] == 3
+    text = moodle_table.worksheet_path(tmp_path).read_text(encoding="utf-8-sig")
+    for private in ("בת כהן", "bat@", "123456789", "av@", "987654321", "גד"):
+        assert private not in text
+    rows = {r[0]: r for r in csv.reader(text.splitlines())}
+    assert rows["Identifier"] == SHEET[0]  # Moodle's columns stay, in Moodle's order
+    assert rows["Participant 200"][5] == "90" and rows["Participant 200"][9] == "טוב" and rows["Participant 200"][8] == "-"
+    assert rows["Participant 100"][5] == ""  # no grade yet
+    # every grade fills it again
+    write_csv(tmp_path / paths.GRADES, [["number", "grade", "feedback"], ["0002", "95", "טוב מאוד"], ["0001", "70", ""]])
+    assert moodle_table.build(tmp_path)["worksheet"] == 2
+    rows = {r[0]: r for r in csv.reader(moodle_table.worksheet_path(tmp_path).read_text(encoding="utf-8-sig").splitlines())}
+    assert (rows["Participant 200"][5], rows["Participant 200"][9], rows["Participant 100"][5]) == ("95", "טוב מאוד", "70")
+
+
+def test_a_file_that_is_not_a_worksheet_is_refused(tmp_path):
+    bad = tmp_path / "x.csv"
+    write_csv(bad, [["Name", "Grade"], ["בת כהן", "90"]])
+    import pytest
+    with pytest.raises(ValueError):
+        moodle_table.save_worksheet(tmp_path, bad)
+    assert not moodle_table.worksheet_path(tmp_path).exists()

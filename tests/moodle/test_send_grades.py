@@ -98,7 +98,7 @@ def test_grades_go_up_and_are_logged_by_number(returned, downloads):
     assert by_id == {"משתתף 100": "80", "משתתף 200": "95", "משתתף 300": ""}  # by participant, not by row
     assert [(row["number"], row["grade"], row["by"]) for row in read_log(returned)] == [("0001", "80", me()), ("0002", "95", me())]
     assert not list(downloads.iterdir())  # Moodle's sheet (names, emails) does not stay in Downloads
-    assert (returned / paths.UPLOAD / upload.GRADES_FOR_MOODLE).is_file()
+    assert (returned / paths.UPLOAD / send_grades.RUN_FILE).is_file()  # the run has its own file (nothing rewrites it mid-run)
     assert not (returned / UPLOAD_LOCK).exists()
     assert pending(returned) == {}
     assert go(returned, d, downloads).status == "nothing" and len(d.uploaded) == 1

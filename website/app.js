@@ -344,7 +344,7 @@
       label = n ? `בדוק עבודות (${n} זמינות) ▾` : I.toGrade.length ? "כל העבודות שנשארו נלקחו" : "הכל נבדק";
       primary = n > 0;
     }
-    if (stage === "ret") { n = I.toReturn.length; label = n ? `החזר ${n} עבודות` : I.done.ret ? "הכל הוחזר" : "אין מה להחזיר"; primary = n > 0 && !I.toGrade.length; }
+    if (stage === "ret") { n = I.toReturn.length || I.gradesToSend; label = I.toReturn.length ? `החזר ${n} עבודות` : I.gradesToSend ? `העלה ${I.gradesToSend} ציונים` : I.done.ret ? "הכל הוחזר" : "אין מה להחזיר"; primary = n > 0 && !I.toGrade.length; }
     let disabled = busy || (stage !== "pull" && !n);
     if (LOCAL.on && stage === "grade" && !LOCAL.health?.claude) {
       // בלי מפתח אי אפשר לבדוק. ההסבר מופיע בלשונית "חיבור ל-Claude"
@@ -354,7 +354,7 @@
     }
     let text = mine ? (run.progress || "רץ עכשיו…") : label, spinning = mine;
     if (LOCAL.on && stage === "ret") {
-      if (!mine) text = n ? `העלה ${n} למודל` : I.done.ret ? "הכל הועלה" : I.gradesToSend ? "כל העבודות הועלו" : "אין עבודות להעלאה";
+      if (!mine) text = I.toReturn.length ? `העלה ${I.toReturn.length} למודל` : I.gradesToSend ? `העלה ${I.gradesToSend} ציונים למודל` : I.done.ret ? "הכל הועלה" : "אין עבודות להעלאה";
       if (LOCAL.sending?.running || LOCAL.starting) disabled = true;  // העלאה אחת בכל פעם, גם אם היא של מטלה אחרת
       if (LOCAL.sending?.running && sendingHere()) { text = sendProgressText(); spinning = true; }
       if (LOCAL.rd?.flow && LOCAL.rd.then === "send" && LOCAL.rd.assignmentId === A.id && !mine) { text = "בודק שהמחשב מוכן…"; spinning = true; disabled = true; }
@@ -486,7 +486,7 @@
             ${st === "pull" ? pullBarHTML(true) : ""}
             ${nums[st][2] ? `<p class="stage-warn">${ICON.warn}${nums[st][2]}</p>` : ""}
             <footer class="stage-foot">
-              ${stageButton(st)}${st === "ret" ? gradesButton() : ""}
+              ${stageButton(st)}
               <a class="link" href="#${S.route}">הנחיות והגדרות</a>
             </footer>
           </article>`;
@@ -546,7 +546,7 @@
         </div>
         <div class="sh-side">
           <span class="stage-status ${ss.kind}">${ss.kind === "running" ? ICON.spin : ss.kind === "done" ? ICON.check : ""}${esc(ss.text)}</span>
-          ${stageButton(stage, { big: true })}${stage === "ret" ? gradesButton({ big: true }) : ""}
+          ${stageButton(stage, { big: true })}
         </div>
       </section>
       ${stage === "pull" ? `${readyPanelHTML("pull")}${pullBarHTML()}` : ""}
@@ -587,6 +587,7 @@
       };
       case "check": return { step: 1, pct: Math.round(60 + 10 * f), short: "בודק את ה-ZIP…", text: `בודק שה-ZIP שלם: ${pct}%`, hint: HERE };
       case "extract": return { step: 2, pct: Math.round(70 + 20 * f), short: "מחלץ…", text: `מחלץ את ה-ZIP: ${pct}%`, hint: HERE };
+      case "worksheet": return { step: 3, pct: 99, short: "מוריד את גיליון הציונים…", text: "מוריד ממודל את גיליון הציונים (בדרך כלל עד דקה)…", hint: LONG_WAIT };
       case "number": return { step: 3, pct: Math.round(90 + 10 * f), short: "ממספר הגשות…", text: `ממספר הגשות: ${p.done} מתוך ${p.total}`, hint: HERE };
       default: return { step: 0, pct: 1, short: "מתחיל…", text: "מתחיל משיכה ממודל…", hint: LONG_WAIT };
     }
@@ -817,6 +818,7 @@
           <p class="send-line"><b>${esc(b.summary)}</b></p>
           <ul class="send-zips" dir="ltr">${b.zips.map((z) => `<li><code>${esc(z.name)}</code><span>${z.count} files, ${z.mb} MB</span></li>`).join("")}</ul>
           ${noteList}
+          ${b.grades ? `<p class="hint">אחרי הקבצים עולים גם ${b.grades} ציונים: Claude מוריד ממודל גיליון ציונים טרי, המערכת ממלאת אותו לפי מזהה המשתתף מאותם ציונים שב-"Grades for Moodle.csv", ומודל שומר אותם רק אם רשימת השינויים שלו תואמת בדיוק. אחרת שום ציון לא משתנה.</p>` : ""}
           <p class="send-warn">${ICON.warn}<span>אחרי הלחיצה הקבצים נכנסים למודל מיד, בלי מסך אישור נוסף.</span></p>
           <div class="send-actions">
             <button class="btn primary" data-act="send-confirm" ${LOCAL.starting ? "disabled" : ""}>${LOCAL.starting ? ICON.spin : ICON.upload}העלה למודל</button>
@@ -840,7 +842,7 @@
       </section>`;
     }
     if (sendHere() && S.stopped && S.phase === "grades") {
-      const message = S.stopped === "needs_login" ? "צריך להתחבר שוב למודל בכרום, ואז ללחוץ שוב על 'העלה ציונים'." : S.message;
+      const message = S.stopped === "needs_login" ? "צריך להתחבר שוב למודל בכרום, ואז ללחוץ שוב על כפתור ההעלאה: הוא יעלה את הציונים." : `${S.message} לחיצה נוספת על כפתור ההעלאה תנסה שוב את הציונים.`;
       return `<section class="panel report send-panel">
         <div class="panel-head"><h3>העלאת הציונים נעצרה</h3></div>
         <div class="panel-body"><p class="send-line">${ICON.warn}<span>${esc(message)}</span></p></div>
@@ -871,7 +873,8 @@
     render();
     try {
       const rep = await api("api/upload/prepare", { method: "POST", body: JSON.stringify({ course: A.courseFolder, assignment: A.folder }) });
-      LOCAL.batch = { ...rep, assignmentId: A.id };
+      if (!rep.zips?.length && rep.grades) LOCAL.gradesAsk = { count: rep.grades, assignmentId: A.id, summary: `כל העבודות הבדוקות כבר במודל. ${rep.grades} ציונים יעלו עכשיו.` };
+      else LOCAL.batch = { ...rep, assignmentId: A.id };
       delete state.run[A.id];
       render();
     } catch (e) {
@@ -1664,7 +1667,7 @@
           <div class="panel-body">
             <dl class="fields">
               <div><dt>קובץ משוב</dt><dd>העבודה שלו עם ההערות במקום של כל טעות, ובהתחלה עמוד עם הציון, הניקוד לכל שאלה והמשוב</dd></div>
-              <div><dt>הציון</dt><dd>עולה רק בלחיצה על "העלה ציונים", אחרי שהקבצים הבדוקים כבר במודל: Claude מוריד ממודל את גיליון הציונים, המערכת ממלאת אותו לפי המספרים, ו-Claude מעלה אותו ומאשר רק אם רשימת השינויים של מודל תואמת</dd></div>
+              <div><dt>הציון</dt><dd>עולה עם הקבצים, באותה לחיצה ובאותו אישור: אחרי שהקבצים עלו, Claude מוריד ממודל גיליון ציונים טרי, המערכת ממלאת אותו לפי מזהה המשתתף מאותם ציונים שב-"Grades for Moodle.csv", ו-Claude מעלה אותו ומאשר רק אם רשימת השינויים של מודל תואמת. גיליון הציונים של מודל יורד גם עם כל משיכה, ונשמר בתיקיית המטלה בלי שמות ובלי מיילים, ממולא תמיד בציונים העדכניים</dd></div>
             </dl>
           </div>
         </section>
