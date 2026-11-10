@@ -470,12 +470,13 @@ comments (the rubric's `deductions`, the assignment's common mistakes, Claude's 
 
 **Editing a grade** ("ערוך ציון", Matan 2026-11-07): the same page, with a required "סיבה לשינוי" for any work that
 already has a grade (not for a first approval from the queue). Every save goes through one function,
-`grading/grade_edit.edit_grade`, which updates each place in `TARGETS` in order (the database, the marked PDF's summary
+`grading/grade_edit.edit_grade`, which updates each place in `TARGETS` in order (the event ledger, the marked PDF's summary
 page, `Grading notes`, the editor's `Grades by <name>.csv` as an approved row, which wins the merge and is what goes to
-Moodle) and logs who, when, from, to and why to `activity_log/` (`<assignment>/Activity log/<who>.jsonl`, one file per
+Moodle, and last the statistics database in the Drive, `Statistics/`) and logs who, when, from, to and why to `activity_log/` (`<assignment>/Activity log/<who>.jsonl`, one file per
 writer; any other action may write there too). A new place to update is one more target, not a change to the function.
-**There is no database yet**: `DatabaseTarget` stays off until `grade_edit.connect_database(store)` is called with an
-object that has `save_grade(edit)`.
+The database is connected (2026-11-10): `DatabaseTarget` gets `datastore/ledger.LedgerStore` at dashboard start, and
+`StatsTarget` rebuilds `Statistics/<course>/Assignment N.json`. A target with `optional = True` (the statistics: derived,
+rebuilt by the next reader) does not stop an edit when it fails; it is logged as `not_updated`.
 
 `python -m moodle upload` takes it from there.
 
