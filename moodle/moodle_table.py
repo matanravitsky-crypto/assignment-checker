@@ -14,6 +14,12 @@ upload, so it can always be deleted and rebuilt, and an OneDrive conflict copy o
 (`moodle upload`, `prepare_upload`) fills Moodle's own worksheet from this table, matching by participant id, so the
 grade that goes to Moodle is exactly the one in the table, whatever language Moodle's headers are in.
 
+Moodle's grading worksheet (paths.MOODLE_WORKSHEET) comes with every pull (`save_worksheet`): the copy in the
+assignment folder keeps only Moodle's participant identifier and the grading columns (every column that could
+identify a person is emptied), and `build` fills its grades and feedback from this table every time, so the worksheet
+in the Drive always says what would go to Moodle now. The upload itself still downloads a fresh worksheet right before
+it sends (moodle/send_grades.py), so Moodle's "last modified" times match, and fills it from the same grades.
+
 A row goes in only when it is safe: its grade is a valid number (0..max grade), and the key gives its number exactly one
 participant, who has no other number. Everything else is reported by number (never a name) and left out: a grade that
 cannot be tied to one student for sure never reaches Moodle.
@@ -23,6 +29,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import re
 from pathlib import Path
 
 from datastore import atomic, schema
@@ -115,7 +122,56 @@ def build(assignment_dir: Path) -> dict:
         same = False
     if not same:
         atomic.write_atomic(out, text, encoding="utf-8-sig")  # BOM, so Excel shows Hebrew feedback
-    return {"rows": len(rows), "left_out": left, "path": str(out), "written": not same}
+    in_sheet = fill_worksheet(assignment_dir, rows)
+    return {"rows": len(rows), "left_out": left, "path": str(out), "written": not same, "worksheet": in_sheet}
+
+
+# The columns of Moodle's worksheet that stay in the Drive copy: the identifier (always the first column) and these.
+# Everything else (full name, email, ID number and any other identity field the site shows) is emptied
+_KEEP = re.compile(r"^(status|מצב|grade|ציון|maximum grade|ציון (מירבי|מרבי)|grade can be changed|"
+                   r".*(last modified|עדכון אחרון|שינוי אחרון).*|feedback comments|הערות למשוב|משוב)$", re.IGNORECASE)
+
+
+def worksheet_path(assignment_dir: Path) -> Path:
+    return Path(assignment_dir) / paths.MOODLE_WORKSHEET
+
+
+def save_worksheet(assignment_dir: Path, downloaded: Path) -> dict:
+    """Keeps Moodle's worksheet (just downloaded, with names and emails) in the assignment folder without anything that
+    identifies a person, then fills it (build). Returns {"rows": students in it, "kept": columns kept}. Raises
+    ValueError for a file that is not a worksheet (no identifier in the first column)."""
+    with open(downloaded, encoding="utf-8-sig", newline="") as f:
+        rows = [r for r in csv.reader(f)]
+    if len(rows) < 1 or not rows[0]:
+        raise ValueError("the worksheet is empty")
+    header, body = rows[0], [r for r in rows[1:] if r and r[0].strip()]
+    if body and not re.search(r"\d+\s*$", body[0][0]):
+        raise ValueError("the first column of the worksheet is not Moodle's participant identifier")
+    keep = {0} | {i for i, h in enumerate(header) if _KEEP.match(h.strip())}
+    clean = [header] + [[v if i in keep else "" for i, v in enumerate(r)] for r in body]
+    buf = io.StringIO()
+    csv.writer(buf, lineterminator="\r\n").writerows(clean)
+    atomic.write_atomic(worksheet_path(assignment_dir), buf.getvalue(), encoding="utf-8-sig")
+    build(assignment_dir)
+    return {"rows": len(body), "kept": [header[i] for i in sorted(keep) if i < len(header)]}
+
+
+def fill_worksheet(assignment_dir: Path, rows: list[dict]) -> int | None:
+    """Fills the worksheet in the Drive from the table (by participant id). None when there is no worksheet yet."""
+    src = worksheet_path(assignment_dir)
+    if not src.is_file():
+        return None
+    from moodle import upload  # upload imports this module
+    results = {r["number"]: {"number": r["number"], "grade": r["grade"], "feedback": r["feedback"]} for r in rows}
+    mapping = {r["number"]: {"participant_id": r["participant_id"]} for r in rows}
+    tmp = src.with_name(src.stem + " (filling).csv.tmp")
+    try:
+        filled = upload.fill_for_upload(src, tmp, results, mapping, max_grade(assignment_dir))
+        if tmp.read_bytes() != src.read_bytes():
+            atomic.write_atomic(src, tmp.read_bytes())
+    finally:
+        tmp.unlink(missing_ok=True)
+    return len(filled["filled"])
 
 
 def read(assignment_dir: Path) -> list[dict]:

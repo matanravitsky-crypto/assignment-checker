@@ -47,6 +47,10 @@ KEY = "Key - number to student.csv"
 # Every grade next to the Moodle participant id it belongs to (moodle/moodle_table.py): derived from the grades and the
 # key, rebuilt on every grading, edit and upload. The upload fills Moodle's worksheet from it
 MOODLE_TABLE = "Grades for Moodle.csv"
+# Moodle's grading worksheet, downloaded with every pull (moodle/moodle_table.py, save_worksheet), WITHOUT the columns
+# that identify a person (name, email, ID number...): only Moodle's participant identifier and the grading columns.
+# Filled from Grades for Moodle.csv on every grading and edit, so it always holds the grades as they are now
+MOODLE_WORKSHEET = "Moodle grading worksheet.csv"
 # The activity log (activity_log/): who did what and when, e.g. every grade edit with its reason. A folder in the
 # assignment folder with one "<who>.jsonl" per writer, so OneDrive never merges two versions of a file
 ACTIVITY_LOG = "Activity log"

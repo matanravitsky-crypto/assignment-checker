@@ -1,4 +1,5 @@
-"""Upload the grades to Moodle, only when someone asks for it (the site's "העלה ציונים" button, or `send-grades`):
+"""Upload the grades to Moodle, right after the marked files in the same upload and after the same yes (the site's
+upload button, dashboard/actions._grades_after_files; or `send-grades`):
 Moodle's grading worksheet, filled in by number, for work whose marked files are already in Moodle.
 
 Moodle has no API, and the only safe way to set many grades is its offline grading worksheet ("Offline grading
@@ -38,6 +39,9 @@ LOG_FILE = "Grades upload log.csv"
 LOG_FIELDS = ["number", "grade", "feedback_sha256", "uploaded_at", "by"]
 WORKSHEET_NAME = "Grading worksheet-{id}.csv"  # what the download script saves (Chrome adds " (1)" when it exists)
 WORKSHEET_WAIT_S = 60
+# The worksheet this run uploads, in the upload folder. Its own name: "Grades for Moodle worksheet.csv" there is rebuilt
+# by "Prepare return", and the Drive's worksheet (paths.MOODLE_WORKSHEET) on every grade, so neither changes it mid-run
+RUN_FILE = "Grades for Moodle - this upload.csv"
 
 NOT_ENABLED = ('במטלה הזו "גיליון ציונים לא מקוון" (Offline grading worksheet) כבוי, ולכן אי אפשר להעלות ציונים. '
                "צריך לבקש מהמרצה להפעיל אותו בהגדרות המטלה (סוגי משוב), ואז ללחוץ שוב. הקבצים עצמם כבר עלו.")
@@ -205,7 +209,8 @@ def _send(assignment_dir, driver, todo, dry_run, downloads, wait_s, sleep, clock
         return GradesReport("error", NO_WORKSHEET)
     lock.refresh(lock_file)
 
-    out = assignment_dir / paths.UPLOAD / upload.GRADES_FOR_MOODLE
+    out = assignment_dir / paths.UPLOAD / RUN_FILE
+    out.parent.mkdir(parents=True, exist_ok=True)
     try:
         filled = upload.fill_for_upload(worksheet, out, todo, anonymize.read_mapping(assignment_dir),
                                         info.get("max_grade"))
