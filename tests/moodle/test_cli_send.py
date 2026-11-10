@@ -164,3 +164,23 @@ def test_send_is_refused_while_an_upload_runs(data, capsys, run_cli):
     out = capsys.readouterr().out
     assert "uri (URI-LAPTOP) מעלה" in out and "pid" not in out
     assert read_log(data) == []
+
+
+# ---------- send-grades: the grades only when asked ----------
+def test_send_never_touches_the_grades_and_send_grades_asks_first(data, run_cli, monkeypatch, capsys, tmp_path):
+    from moodle import ingest, send_grades
+    from tests.fakes import FakeGradesDriver
+    a = assignment_dir(ID)
+    (a / paths.GRADES).write_text("number,grade,feedback\n0001,90,ok\n", encoding="utf-8")
+    downloads = tmp_path / "Downloads"
+    downloads.mkdir()
+    monkeypatch.setattr(ingest, "downloads_dir", lambda: downloads)
+    d = FakeGradesDriver(downloads, [["Identifier", "Grade"], ["Participant 100", ""]])
+    monkeypatch.setattr(cli, "make_driver", lambda: d)
+    assert run_cli(["send", ID, "--yes"]) == 0
+    assert d.uploaded == [] and send_grades.read_log(a) == []
+    monkeypatch.setattr("builtins.input", lambda prompt: "n")
+    assert run_cli(["send-grades", ID]) == 0 and d.uploaded == []
+    assert run_cli(["send-grades", ID, "--yes"]) == 0
+    assert [r["number"] for r in send_grades.read_log(a)] == ["0001"]
+    assert "ציונים עלו" in capsys.readouterr().out

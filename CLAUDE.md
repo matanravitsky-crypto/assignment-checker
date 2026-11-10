@@ -30,8 +30,10 @@ so plainly and send the user to Claude Code on their own computer: the Claude de
 Nadav). Work on a branch and open a PR. The first push from a new computer opens a GitHub sign-in in the browser
 (Git Credential Manager); `gh auth login` once for PRs from the command line.
 
-**Moodle uploads are on hold** (Matan, 2026-10-22, and the team's setup issue #22): nothing goes up to Moodle, not
-even a dry run of `send`, until Matan says the course staff approved returning feedback through the system.
+**Moodle uploads are open** (Matan, 2026-11-10; on hold from 2026-10-22 until then): the site's "העלה למודל" uploads
+the marked files, and the grades go up **only** with their own button "העלה ציונים" (Matan, 2026-11-10: never
+automatically). Every upload still needs a person's yes, and the first real run of the grades should be on a test
+assignment (see "Uploading to Moodle with Claude").
 
 ## Repo layout
 
@@ -333,8 +335,10 @@ There is **no Moodle API**. Claude in Chrome works in the user's own logged-in C
   message saying how many files were imported; that count against the files in the ZIP is the only check.
   `Upload steps.txt` there has the steps and a checklist. That page takes .zip only, up to **31 MB** ("הגודל המירבי לקבצים חדשים", checked on assignment 3438636), so ZIPs are split at 30 MB
   (`--max-mb` to change). The course's max upload size is a course setting, capped by the site.
-- Grades upload needs **"Offline grading worksheet"** turned on in the assignment settings (not on yet in assignment 3438636).
-  Then: Actions → download the grading worksheet, run `python -m moodle upload <id>`, upload `Grades for Moodle worksheet.csv`.
+- Grades upload needs **"Offline grading worksheet"** turned on in the assignment's feedback types (not on yet in
+  assignment 3438636; the lecturer turns it on, we never change settings): it is the only page where Moodle takes
+  many grades by participant id. The site's "העלה ציונים" button does the rest (`moodle/send_grades.py`, below). By hand: Actions → download the grading worksheet, run `python -m moodle upload <id>`,
+  upload `Grades for Moodle worksheet.csv`.
 
 ## Uploading to Moodle with Claude
 
@@ -367,10 +371,25 @@ the same by hand with the ZIPs from `3 - Ready to upload to Moodle` (see `Upload
    that don't add up stops as "mismatch": Moodle already imported, so a person checks Moodle before anything runs
    again (the site offers "resume" only for `needs_login`, `user` and `error`). "Prepare return" (dashboard) and
    `send` (CLI) are refused while an upload of the assignment runs.
-5. Uploaded by hand instead? `python -m moodle record <id> "<zip name>"` writes that ZIP's files to the log. It looks
+5. **The grades: only with their own button** "העלה ציונים" (next to "העלה N למודל"; `GET /api/grades` for the count,
+   a confirm panel, then `POST /api/grades/start` → `actions.start_grades`, followed on `GET /api/upload` with
+   `phase: "grades"`; same Chrome job slot and same lock as the files). Uploading the files never uploads a grade.
+   What goes up (`send_grades.pending`, shown as `gradesToSend`): the numbers whose marked files are in Moodle, with a
+   valid grade that `Grades upload log.csv` doesn't have as it is now.
+   `ClaudeChromeDriver.download_worksheet` runs a checked script in the grading page (`--tools ""`) that fetches
+   `pluginaction=downloadgrades` with the user's session and saves `Grading worksheet-<id>.csv` to Downloads, so Claude
+   never sees names or emails; no download link and an HTML answer = "not_enabled". Python fills only those numbers, by
+   participant id (`upload.fill_for_upload`), into `3 - Ready to upload to Moodle/Grades for Moodle worksheet.csv`,
+   counts the grade changes, and deletes Moodle's sheet from Downloads. `upload_grades` (`--tools "Read"`, a temp copy
+   checked by sha256) uploads it on `pluginaction=uploadgrades` with the form's options untouched; Moodle's confirmation
+   page lists every change before saving, and Claude confirms only when its grade lines equal Python's count and
+   nothing is skipped, otherwise it cancels ("mismatch", nothing changed). Then `Grades upload log.csv`
+   (`number,grade,feedback_sha256,uploaded_at,by`). Uploading the same grades again is harmless. CLI:
+   `python -m moodle send-grades <id> [--dry-run] [--yes]`. Not yet run against real Moodle: the Hebrew wording of the preview and the result is unchecked.
+6. Uploaded by hand instead? `python -m moodle record <id> "<zip name>"` writes that ZIP's files to the log. It looks
    for the ZIP in the current batch's folder and refuses one that is missing or changed since it was prepared.
 
-CLI: `python -m moodle send <id> [--dry-run] [--yes]`.
+CLI: `python -m moodle send <id> [--dry-run] [--yes]` (files only) and `send-grades <id> [--dry-run] [--yes]` (a dry run stops at Moodle's preview and cancels).
 
 **Facts from the first real runs (2026-10-22)**
 - **BGU Moodle imports at once.** Clicking "יבוא קבצי משוב" on the uploadzip page imports immediately. There is NO
@@ -409,9 +428,8 @@ If not, nothing is pulled or uploaded and the site says what to fix. A pull alwa
 already waiting in Downloads is not taken. Fakes live only in `tests/` (`tests/fakes.py`, the dashboard tests' conftest).
 
 Never upload without the user's yes for that batch, never to a different assignment than the ZIPs were built for,
-and never change assignment settings. Grades (`Grades for Moodle worksheet.csv`) still go by hand through Actions →
-"העלאת גיליון ציונים", with Moodle's preview checked before confirming; that needs "Offline grading worksheet" on
-in the assignment.
+and never change assignment settings. Grades go up only with the "העלה ציונים" button, through Moodle's grading
+worksheet, confirmed only when Moodle's preview matches (step 5 above); that needs "Offline grading worksheet" on in the assignment.
 
 ## Problems already solved (don't re-solve)
 

@@ -38,7 +38,7 @@ from copying import check as copying
 from grading import grade as grading, grade_edit
 from moodle import (anonymize as moodle_anonymize, claims, claude_driver, grades as moodle_grades, pull_check,
                     ingest as moodle_ingest, lock as moodle_lock, paths, send as moodle_send, upload as moodle_upload,
-                    upload_log)
+                    send_grades, upload_log)
 
 from . import folder_view, onedrive_check, settings as cfg, shared_folder, usage as grading_usage
 from datastore import atomic
@@ -953,8 +953,11 @@ class SendJob:
     total: int = 0
     done: int = 0
     current: str = ""  # ה-ZIP שמועלה עכשיו
-    stopped: str | None = None  # None: הכול עלה. אחרת: user / needs_login / mismatch / error / stale / locked
+    stopped: str | None = None  # None: הכול עלה. אחרת: user / needs_login / mismatch / error / stale / locked / not_enabled
     message: str = ""
+    phase: str = "files"  # files: קובצי ה-ZIP. grades: הכפתור "העלה ציונים" (moodle/send_grades.py)
+    grades_status: str = ""  # done / nothing / dry_run_ok / not_enabled / needs_login / mismatch / error / locked
+    grades_sent: int = 0
     started_at: str = ""
     finished_at: str = ""
 
@@ -995,6 +998,74 @@ def prepare_send(root: Path, course: str, assignment: str) -> dict:
     rep["summary"] = (f'מטלה "{summary.title}" (מודל {summary.assignment_id}): '
                       f"{summary.files} קבצים של {summary.students} סטודנטים, ב-{len(summary.zips)} קובצי ZIP.")
     return rep
+
+
+def grades_summary(root: Path, course: str, assignment: str) -> dict:
+    """מה הכפתור "העלה ציונים" יעלה: כמה ציונים מחכים (מספרים בלבד). לא נוגע במודל."""
+    a = find_assignment(root, course, assignment)
+    who = _upload_lock_holder(a)
+    numbers = sorted(send_grades.pending(a.dir))
+    info = a.details()
+    title = info.get("title") or info.get("name") or a.dir.name
+    return {"count": len(numbers), "numbers": numbers, "uploading": who,
+            "summary": f'מטלה "{title}" (מודל {info.get("id")}): {len(numbers)} ציונים יעלו למודל.'}
+
+
+def start_grades(root: Path, course: str, assignment: str, driver=None, wait: bool = False,
+                 dry_run: bool = False) -> dict:
+    """הכפתור "העלה ציונים", אחרי "כן" של אדם: מעלה ברקע את הציונים שמחכים (moodle/send_grades.py), באותו מקום
+    של ההעלאה (העלאה אחת בכל פעם). האתר שואל על המצב ב-GET /api/upload, כמו בקבצים. זורק RuntimeError אם משהו רץ."""
+    global _send
+    a = find_assignment(root, course, assignment)
+    require_moodle(root, course, assignment, "העליתי")
+    base_driver = driver if driver is not None else _make_driver()
+    with _send_lock:
+        if _send.running:
+            raise RuntimeError("העלאה אחרת כבר רצה.")
+        if _checking:  # הבדיקה וההעלאה היו מפעילות את אותו כרום
+            raise RuntimeError("בדיקת החיבור למודל רצה עכשיו. אפשר להתחיל בעוד רגע.")
+        count = len(send_grades.pending(a.dir))
+        if not count:
+            raise UserError("אין ציונים חדשים להעלאה.")
+        _send = job = SendJob(course, assignment, "", dry_run, running=True, total=count, phase="grades",
+                              current="ציונים", started_at=datetime.now().isoformat(timespec="seconds"))
+        _stop.clear()
+    _take_task_if_free(a.dir.parent, assignment, "return")
+
+    def run() -> None:
+        try:
+            gr = send_grades.send_grades(a.dir, base_driver, dry_run=dry_run)
+            with _send_lock:
+                job.grades_status, job.grades_sent, job.message = gr.status, gr.sent, gr.message
+                job.done = gr.sent
+                if gr.status not in ("done", "nothing", "dry_run_ok"):
+                    job.stopped = gr.status
+        except Exception as e:  # השגיאה מוצגת באתר במקום שההעלאה תיראה כרצה לנצח
+            with _send_lock:
+                job.stopped, job.message = "error", f"העלאת הציונים נכשלה: {e}"
+        finally:
+            with _send_lock:
+                job.running, job.current = False, ""
+                job.finished_at = datetime.now().isoformat(timespec="seconds")
+
+    t = threading.Thread(target=run, daemon=True)
+    try:
+        t.start()
+    except Exception:
+        with _send_lock:
+            job.running = False
+        raise
+    if wait:
+        t.join()
+    return send_status()
+
+
+def _grades_to_send(assignment_dir: Path, returned: set[str]) -> int:
+    """כמה ציונים מחכים להעלאה: הקבצים של המספר כבר במודל, והציון שלו עוד לא (moodle/send_grades.py)."""
+    try:
+        return len(send_grades.pending(assignment_dir, returned=set(returned)))
+    except (OSError, ValueError, KeyError):
+        return 0
 
 
 def _make_driver() -> moodle_send.MoodleDriver:
@@ -1583,6 +1654,7 @@ def state(root: Path) -> dict:
                             + ([f"משיכה בתהליך: {who_pull}"] if (who_pull := _fresh_lock_holder(a.dir / LOCK_FILE)) else [])
                             + ([f"העלאה בתהליך: {who}"] if (who := _upload_lock_holder(a)) else []),
                 "subs": subs, "log": _activity(a, log), "owners": owners, "copying": copying_state(a.dir),
+                "gradesToSend": _grades_to_send(a.dir, returned),
             })
     return {"root": str(root), "courses": courses, "assignments": out, "me": me(),
             "moodle": False, "claude": quick_via() is not None, "claudeVia": quick_via(), "grading": grade_status(), "sending": send_status(), "copyCheck": copying_status(),

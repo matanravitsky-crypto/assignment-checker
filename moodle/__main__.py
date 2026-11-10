@@ -14,7 +14,12 @@
         Marked files -> Moodle, through Claude in Chrome. Prepares the batch (new or changed work only), prints
         its summary (numbers only), asks "להעלות למודל? (y/N)" unless --yes, uploads ZIP by ZIP and logs each one.
         --dry-run only checks the page and attaches the file, then cancels (Moodle imports at once): nothing is imported or logged.
+        Files only: the grades go up only with send-grades.
         Refused while an upload or a pull of the assignment runs (the lock files). Exit code 1 if it stopped before the end.
+
+    python -m moodle send-grades <assignment id> [--dry-run] [--yes]
+        Grades -> Moodle, only when asked: the numbers whose marked files are in Moodle, through Moodle's grading
+        worksheet (moodle/send_grades.py). Confirmed in Moodle only when its preview matches; --dry-run stops there.
 
     python -m moodle record <assignment id> "<zip name>"
         After uploading a ZIP of the current batch by hand (from its "Upload batch <id>" folder): writes its files to
@@ -28,7 +33,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from moodle import guide, ingest, lock, paths, send, status, upload, upload_log
+from moodle import guide, ingest, lock, paths, send, send_grades, status, upload, upload_log
 
 
 def make_driver() -> send.MoodleDriver:
@@ -82,6 +87,26 @@ def run_send(target: Path, args) -> int:
     return 0
 
 
+def run_send_grades(target: Path, args) -> int:
+    """Only when asked: the grades of the numbers whose files are in Moodle. Returns the exit code."""
+    todo = send_grades.pending(target)
+    if not todo:
+        print("אין ציונים חדשים להעלאה")
+        return 0
+    print(f"{len(todo)} ציונים יעלו למודל, דרך גיליון הציונים של מודל")
+    if not args.yes:
+        try:
+            answer = input("להעלות את הציונים? (y/N) ")
+        except EOFError:
+            answer = ""
+        if answer.strip().lower() not in ("y", "yes"):
+            print("לא הועלה כלום")
+            return 0
+    report = send_grades.send_grades(target, make_driver(), dry_run=args.dry_run)
+    print(report.message)
+    return 0 if report.status in ("done", "nothing", "dry_run_ok") else 1
+
+
 def main() -> None:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")  # Hebrew messages, even when the output is piped
@@ -111,6 +136,10 @@ def main() -> None:
     send_cmd.add_argument("assignment_id")
     send_cmd.add_argument("--dry-run", action="store_true", help="check the page and attach the file, then cancel: import and log nothing")
     send_cmd.add_argument("--yes", action="store_true", help="don't ask before uploading")
+    grades_cmd = commands.add_parser("send-grades", help="upload the grades to Moodle (only when asked)")
+    grades_cmd.add_argument("assignment_id")
+    grades_cmd.add_argument("--dry-run", action="store_true", help="stop at Moodle's preview and cancel: nothing changes")
+    grades_cmd.add_argument("--yes", action="store_true", help="don't ask before uploading")
 
     record_cmd = commands.add_parser("record", help="log a ZIP that was uploaded by hand")
     record_cmd.add_argument("assignment_id")
@@ -138,6 +167,8 @@ def main() -> None:
 
     if args.command == "send":
         raise SystemExit(run_send(target, args))
+    if args.command == "send-grades":
+        raise SystemExit(run_send_grades(target, args))
 
     if args.command == "record":
         try:
