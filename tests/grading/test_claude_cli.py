@@ -65,6 +65,18 @@ def test_pages_go_to_a_temp_folder_and_only_read_is_allowed():
     assert not folder.exists()  # התיקייה נמחקת בסוף
 
 
+def test_every_run_is_logged_with_its_seconds_and_assignment(tmp_path, monkeypatch):
+    monkeypatch.setenv("ASSIGNMENT_DATA", str(tmp_path))
+    run = FakeRun(output(usage={"input_tokens": 5, "output_tokens": 600, "cache_read_input_tokens": 7000, "cache_creation_input_tokens": 900},
+                         num_turns=3, total_cost_usd=0.42))
+    ask(run)({**request(), "assignment": "Linear Algebra/Assignment 0"})
+    ask(run)(request())
+    rows = [json.loads(l) for l in (tmp_path / "Grading usage.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert rows[0]["key"] == "Linear Algebra/Assignment 0" and rows[0]["seconds"] >= 0 and rows[0]["cost_usd"] == 0.42
+    assert rows[0]["input"] == 5 and rows[0]["output"] == 600 and rows[0]["cache_read"] == 7000 and rows[0]["model"] == "claude-opus-5-5"
+    assert "key" not in rows[1] and "assignment" not in run.calls[0][1]["input"]  # the key is not part of the prompt
+
+
 def test_failures_become_grading_errors():
     with pytest.raises(grading.GradingError, match="דקות"):
         ask(FakeRun(raises=subprocess.TimeoutExpired("claude", 900)))(request())

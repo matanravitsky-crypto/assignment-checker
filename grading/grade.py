@@ -144,6 +144,7 @@ class Context:
     solution: bytes | None = None
     official_key: OfficialKey | None = None  # המכוון של המרצה. כשיש, הוא קובע לפני כל מחוון אחר
     no_rubric: str = ""  # למה אי אפשר לתת ציונים (אין מחוון עם ניקוד לכל שאלה). ריק = יש מחוון
+    key: str = ""  # מפתח המטלה במסד הסטטיסטי ("<קורס>/Assignment N"), כדי שיומן השימוש ידע איזו מטלה כל ריצה בדקה
 
 
 def require_rubric(ctx: Context) -> None:
@@ -318,7 +319,7 @@ def load_context(assignment_dir: Path, instructions: str = "", send_solution: bo
         rules=[str(r) for r in d.get("submission_rules") or []], rubric_text=rubric_text,
         instructions="\n".join(t.strip() for t in (str(d.get("grading_instructions") or ""), instructions) if t and t.strip()),
         solution=solution.read_bytes() if send_solution and solution.is_file() else None, official_key=key,
-        no_rubric=no_rubric,
+        no_rubric=no_rubric, key=_stats_key(assignment_dir),
     )
 
 
@@ -382,6 +383,13 @@ SCHEMA = {
     "required": ["questions", "feedback", "annotations", "needs_review", "review_reason", "review_kind"],
     "additionalProperties": False,
 }
+
+
+def _stats_key(assignment_dir: Path) -> str:
+    """"<קורס>/Assignment N", כמו stats.compute.assignment_key (בלי לטעון את stats כאן)."""
+    a = Path(assignment_dir)
+    m = re.match(r"Assignment (\d+)(?: - |$)", a.name)
+    return f"{a.parent.name}/Assignment {m.group(1)}" if m else f"{a.parent.name}/{a.name}"
 
 
 def _pts(x: float) -> str:
@@ -452,6 +460,8 @@ def build_request(ctx: Context, images: list[PageImage], model: str = DEFAULT_MO
     if not model.startswith("claude-haiku"):
         req["betas"] = ["server-side-fallback-2026-07-01"]
         req["fallbacks"] = "default"
+    if ctx.key:
+        req["assignment"] = ctx.key  # ליומן השימוש של Claude Code בלבד (claude_cli.log_usage); לא נשלח ל-API
     return req
 
 
@@ -475,6 +485,7 @@ def claude_ask() -> Ask:
     client = anthropic.Anthropic(api_key=key, max_retries=4)
 
     def ask(req: dict) -> str:
+        req = {k: v for k, v in req.items() if k != "assignment"}  # מפתח המטלה הוא ליומן השימוש, לא פרמטר של ה-API
         try:
             with client.beta.messages.stream(**req) as stream:
                 msg = stream.get_final_message()

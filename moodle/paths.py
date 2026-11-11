@@ -89,6 +89,17 @@ SHARED_COURSE_FOLDER = "YallaLinearit"
 STATISTICS = "Statistics"
 STATS_FILE = "Assignment {}.json"
 STATS_EXPORT = "All assignments.csv"
+# The grading report (python -m stats report): a PDF of one assignment's statistics for the team, next to its JSON.
+# The second field is the date of the report. Numbers only, like everything in Statistics/
+STATS_REPORT = "Assignment {} - grading report {}.pdf"
+# What every Claude Code grading run cost: one JSON line per run (time, model, tokens, cost, seconds, the assignment's
+# key) in the data folder (grading/claude_cli.py). Each computer appends to the same name, so OneDrive may leave
+# "Grading usage-<PC>.jsonl" copies: readers take them all (USAGE_LOGS) and count a line once
+USAGE_LOG = "Grading usage.jsonl"
+USAGE_LOGS = "Grading usage*.jsonl"
+# An earlier grading of the assignment, moved aside by hand ("Old test grading/": its Grades*.csv and Grading notes/).
+# The statistics show it apart from the current grading (stats.earlier), for comparison; nothing else reads it
+OLD_GRADING_PREFIX = "Old"
 PULL_LOCK = "Pull in progress.txt"      # in the assignment folder while a pull runs (see lock.py)
 UPLOAD_LOCK = "Upload in progress.txt"  # in the assignment folder while an upload to Moodle runs
 
