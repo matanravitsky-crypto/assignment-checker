@@ -22,8 +22,8 @@ const el = () => ({ style: {}, remove() {}, click() {}, querySelector: () => el(
 global.window = {};
 global.document = { getElementById: () => null, createElement: () => el(), body: { appendChild() {} } };
 eval(fs.readFileSync(process.argv[1], "utf8"));
-const { local, remote } = JSON.parse(fs.readFileSync(0, "utf8"));
-process.stdout.write(JSON.stringify(window.__ecsPlan(local, remote)));
+const { local, remote, snap, busy } = JSON.parse(fs.readFileSync(0, "utf8"));
+process.stdout.write(JSON.stringify(window.__ecsPlan(local, remote, snap || {}, busy || [])));
 """
 
 A = "Assignment 0 - Propositional Logic"
@@ -31,8 +31,8 @@ MOVED = 1_793_740_000_000          # when the old grading was moved (the archive
 BEFORE, AFTER = MOVED - 10 * 86_400_000, MOVED + 3_600_000
 
 
-def plan(local: list[dict], remote: dict) -> dict:
-    r = subprocess.run([NODE, "-e", HARNESS, str(SCRIPT)], input=json.dumps({"local": local, "remote": remote}),
+def plan(local: list[dict], remote: dict, snap: dict | None = None, busy: list[str] | None = None) -> dict:
+    r = subprocess.run([NODE, "-e", HARNESS, str(SCRIPT)], input=json.dumps({"local": local, "remote": remote, "snap": snap, "busy": busy}),
                        capture_output=True, text=True, encoding="utf-8", timeout=60)
     assert r.returncode == 0, r.stderr
     return json.loads(r.stdout)
@@ -91,3 +91,64 @@ def test_a_file_still_in_its_place_in_onedrive_is_compared_as_usual():
 def test_files_inside_the_archive_upload_like_any_file():
     p = plan([f(f"{A}/Old test grading/Grading notes/0001.json")], ARCHIVED)
     assert uploaded(p) == [f"{A}/Old test grading/Grading notes/0001.json"] and p["archived"] == []
+
+
+# ---------- שני הכיוונים: המחשב, הענן, ומה שני הצדדים היו בסנכרון הקודם (snap: {path: {l, ls, r, rs}}) ----------
+def seen(l, ls, r=None, rs=None):
+    return {"l": l, "ls": ls, "r": l if r is None else r, "rs": ls if rs is None else rs}
+
+
+def test_a_file_only_in_onedrive_is_downloaded_but_not_the_keys_history_nor_a_lock():
+    remote = {f"{A}/Grades by נועה.csv": {"size": 50, "mtime": AFTER}, f"{A}/Key history/2026.csv": {"size": 9, "mtime": AFTER},
+              f"{A}/Pull in progress.txt": {"size": 9, "mtime": BEFORE}, f"{A}/Removed from OneDrive/x/y.txt": {"size": 1, "mtime": AFTER}}
+    p = plan([], remote)
+    assert [d["path"] for d in p["download"]] == [f"{A}/Grades by נועה.csv"] and p["download"][0]["why"] == "new"
+    assert p["download"][0]["expect"] is None and p["upload"] == [] and p["remove"] == []
+    assert sorted(p["skipped"]) == [f"{A}/Pull in progress.txt", f"{A}/Removed from OneDrive/x/y.txt"]
+    assert f"{A}/Key history/2026.csv" in p["skipped"] or f"{A}/Key history/2026.csv" not in [d["path"] for d in p["download"]]
+
+
+def test_a_file_the_cloud_had_last_time_and_lost_is_moved_aside_not_uploaded():
+    path = f"{A}/2 - Graded with comments/0001.pdf"
+    # המחשב לא נגע בו מאז: הועבר או נמחק בענן → Removed from OneDrive
+    p = plan([f(path)], {}, {path: seen(BEFORE, 100)})
+    assert [r["path"] for r in p["remove"]] == [path] and p["upload"] == [] and p["archived"] == []
+    # המחשב כן שינה אותו מאז: עבודה חדשה, עולה
+    p = plan([f(path, mtime=AFTER, size=120)], {}, {path: seen(BEFORE, 100)})
+    assert uploaded(p) == [path] and p["remove"] == []
+    # בלי סנכרון קודם: כמו פעם (עולה, או נעצר בגלל הארכיון)
+    assert uploaded(plan([f(path, mtime=AFTER)], {})) == [path]
+    assert plan([f(path)], ARCHIVED)["archived"] == [path]
+
+
+def test_changed_on_one_side_only_goes_that_way_and_both_sides_is_a_conflict():
+    path, snap = f"{A}/Assignment details.json", {f"{A}/Assignment details.json": seen(BEFORE, 100, BEFORE + 5000, 100)}
+    same = plan([f(path)], {path: {"size": 100, "mtime": BEFORE + 5000}}, snap)
+    assert same["same"] == [path]
+    up = plan([f(path, mtime=AFTER, size=130)], {path: {"size": 100, "mtime": BEFORE + 5000}}, snap)
+    assert uploaded(up) == [path] and up["upload"][0]["why"] == "changed"
+    down = plan([f(path)], {path: {"size": 130, "mtime": AFTER}}, snap)
+    assert [d["path"] for d in down["download"]] == [path] and down["download"][0] == {"path": path, "size": 130, "mtime": AFTER, "why": "changed", "expect": BEFORE}
+    both = plan([f(path, mtime=AFTER, size=120)], {path: {"size": 130, "mtime": AFTER + 1000}}, snap)
+    assert [c["path"] for c in both["conflict"]] == [path] and both["upload"] == both["download"] == []
+    # התנגשות שאדם פתר: שני הצדדים זהים עכשיו, גם אם הסנכרון הקודם אומר אחרת
+    solved = plan([f(path, mtime=AFTER, size=130)], {path: {"size": 130, "mtime": AFTER + 1000}}, snap)
+    assert solved["same"] == [path] and solved["conflict"] == []
+
+
+def test_without_a_previous_sync_the_newer_side_wins_and_the_cloud_never_overwrites_a_same_size_file():
+    path = f"{A}/Grades.csv"
+    assert uploaded(plan([f(path, mtime=AFTER, size=120)], {path: {"size": 100, "mtime": BEFORE}})) == [path]
+    p = plan([f(path, mtime=BEFORE, size=100)], {path: {"size": 120, "mtime": AFTER}})
+    assert [d["path"] for d in p["download"]] == [path] and p["download"][0]["keep"] is True  # the local copy is archived first
+    # אותו גודל, הענן חדש יותר: לא נוגעים (כמו פעם). גודל שונה באותו זמן: התנגשות
+    assert plan([f(path, mtime=BEFORE, size=100)], {path: {"size": 100, "mtime": AFTER}})["same"] == [path]
+    assert [c["path"] for c in plan([f(path, size=100)], {path: {"size": 101, "mtime": BEFORE + 1000}})["conflict"]] == [path]
+
+
+def test_an_assignment_being_graded_or_pulled_waits_for_the_next_round():
+    other = "Assignment 1"
+    local = [f(f"{A}/Grades by אורי.csv", mtime=AFTER), f(f"{other}/Grades by אורי.csv", mtime=AFTER)]
+    p = plan(local, {f"{A}/Grading notes/0001.json": {"size": 5, "mtime": AFTER}}, {}, [A])
+    assert sorted(p["held"]) == [f"{A}/Grades by אורי.csv", f"{A}/Grading notes/0001.json"]
+    assert uploaded(p) == [f"{other}/Grades by אורי.csv"] and p["download"] == []

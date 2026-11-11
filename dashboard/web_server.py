@@ -70,7 +70,12 @@ class Handler(SimpleHTTPRequestHandler):
         if self.headers.get(HEADER) != "1":
             return False
         origin = self.headers.get("Origin")
-        return origin is None or origin in SITE_ORIGINS or urlparse(origin).hostname in ("127.0.0.1", "localhost")
+        return (origin is None or origin in SITE_ORIGINS or urlparse(origin).hostname in ("127.0.0.1", "localhost")
+                or self._sync_origin())
+
+    def _sync_origin(self) -> bool:
+        """הלשונית של הוואן דרייב: רק הכתובות של הסנכרון (קריאה, וכתיבה של מה שירד מהענן)."""
+        return self.headers.get("Origin") == SYNC_ORIGIN and self.path.startswith(SYNC_PREFIX)
 
     def end_headers(self):
         # האתר הציבורי קורא את התשובות (CORS). אתרים אחרים לא
@@ -91,7 +96,7 @@ class Handler(SimpleHTTPRequestHandler):
         if not self._host_ok() or (origin not in SITE_ORIGINS and not sync):
             return self.send_error(HTTPStatus.FORBIDDEN)
         self.send_response(HTTPStatus.NO_CONTENT)
-        self.send_header("Access-Control-Allow-Methods", "GET" if sync else "GET, POST")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST")
         self.send_header("Access-Control-Allow-Headers", f"Content-Type, {HEADER}")
         self.send_header("Access-Control-Allow-Private-Network", "true")
         self.send_header("Access-Control-Max-Age", "600")
@@ -139,7 +144,8 @@ class Handler(SimpleHTTPRequestHandler):
             st, via = actions.quick_status(), actions.quick_via()
             return self._json({"ok": True, "root": str(root) if root else None, "error": err,
                                "moodle": bool(st and st.get("logged_in")), "claude": via is not None, "claudeVia": via,
-                               "checking": st is None and via is None, "version": updater.version()})
+                               "checking": st is None and via is None, "version": updater.version(),
+                               "liveSync": sync.live_status()})
         if url.path == "/api/upload":
             return self._json(actions.send_status())
         if url.path == "/api/grades":
@@ -177,7 +183,10 @@ class Handler(SimpleHTTPRequestHandler):
             # חתימה של התיקייה. האתר שואל כל כמה שניות, וטוען מחדש רק כשהיא משתנה. version: המערכת התעדכנה
             # (dashboard/updater.py), והאתר טוען את עצמו מחדש כדי לקבל גם את הקבצים החדשים שלו
             root = self._root()
-            return root and self._json({"sig": actions.changes(root), "version": updater.version()})
+            # liveSync: הסנכרון החי עם הוואן דרייב (הלשונית מדווחת ל-POST /api/sync/status), כדי שהשורה "OneDrive"
+            # באתר תתעדכן בלי טעינה מחדש
+            return root and self._json({"sig": actions.changes(root), "version": updater.version(),
+                                        "liveSync": sync.live_status()})
         if url.path == "/api/integrity":
             # שער השלמות (datastore doctor): בעיות לכל מטלה, או ?course=&assignment=. מספרים בלבד, אף פעם לא שמות
             root = self._root()
@@ -309,7 +318,16 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             course = query.get("course", [""])[0]
             if url.path == SYNC_PREFIX + "list":
-                return self._json({"course": course, "files": sync.list_files(course)})
+                # busy: מטלות שמנעול טרי בהן (משיכה או העלאה רצות), או שהבדיקה של המחשב הזה רצה בהן עכשיו:
+                # הסקריפט לא נוגע בהן בסיבוב הזה
+                busy = set(sync.busy_assignments(course))
+                grading = actions.grading_now()
+                if grading and grading[0] == course:
+                    busy.add(grading[1])
+                return self._json({"course": course, "files": sync.list_files(course), "busy": sorted(busy)})
+            if url.path == SYNC_PREFIX + "snapshot":
+                # מה הסקריפט ראה בסנכרון הקודם של הקורס (נשמר במחשב הזה, sync.state_dir)
+                return self._json({"course": course, "snapshot": sync.read_snapshot(course)})
             if url.path == SYNC_PREFIX + "file":
                 data = sync.read_file(course, query.get("path", [""])[0])
                 self.send_response(HTTPStatus.OK)
@@ -323,12 +341,67 @@ class Handler(SimpleHTTPRequestHandler):
             return self.send_error(HTTPStatus.NOT_FOUND)
         return self.send_error(HTTPStatus.NOT_FOUND)
 
+    def _sync_post(self, url) -> None:
+        """הכיוון וואן דרייב → מחשב של onedrive/sync.js, ומה שהסקריפט זוכר ומדווח:
+        put: הקובץ כפי שהוא בוואן דרייב (הגוף), עם זמן השינוי של הענן (mtime) והזמן של הקובץ במחשב כשהסקריפט
+          השווה (expect; בלי = לא היה קובץ). רק לתוך תיקיית קורס, לא מנעול, לא זמני, לא Key history (sync.put_file).
+        remove: קובץ שנעלם מהוואן דרייב עובר ל-"Removed from OneDrive/<תאריך>/" בתיקיית המטלה (sync.remove_file).
+        snapshot: מה הסקריפט ראה בסנכרון הזה. status: הלשונית חיה, ומה קרה בסיבוב האחרון.
+        409: הקובץ במחשב השתנה בינתיים. 423: בדיקה, משיכה או העלאה רצות במטלה (מנעול טרי)."""
+        query = parse_qs(url.query)
+        course = query.get("course", [""])[0]
+
+        def ms(name, body=None):
+            raw = (body or {}).get(name) if body is not None else query.get(name, [None])[0]
+            if raw is None or raw == "":
+                return None
+            return int(float(raw))
+
+        def grading_here(course_, rel):
+            # הבדיקה של המחשב הזה רצה במטלה הזו עכשיו: לא כותבים בה (כמו מנעול)
+            grading = actions.grading_now()
+            return grading and grading[0] == course_ and str(rel).replace("\\", "/").split("/")[0] == grading[1]
+
+        try:
+            if url.path == SYNC_PREFIX + "put":
+                n = int(self.headers.get("Content-Length") or 0)
+                data = self.rfile.read(n) if n else b""
+                if not query.get("mtime"):
+                    return self._json({"error": "חסר mtime"}, HTTPStatus.BAD_REQUEST)
+                rel = query.get("path", [""])[0]
+                if grading_here(course, rel):
+                    raise sync.Busy(f"{rel.split('/')[0]}: הבדיקה רצה")
+                return self._json(sync.put_file(course, rel, data, ms("mtime"), ms("expect")))
+            body = self._body()
+            if url.path == SYNC_PREFIX + "remove":
+                if grading_here(body.get("course", ""), body.get("path", "")):
+                    raise sync.Busy(f"{str(body.get('path', '')).split('/')[0]}: הבדיקה רצה")
+                return self._json(sync.remove_file(body.get("course", ""), str(body.get("path", "")), ms("expect", body),
+                                                   body.get("stamp")))
+            if url.path == SYNC_PREFIX + "snapshot":
+                sync.write_snapshot(body.get("course", ""), body.get("snapshot"))
+                return self._json({"ok": True})
+            if url.path == SYNC_PREFIX + "status":
+                sync.set_live(body)
+                return self._json(sync.live_status())
+        except FileNotFoundError:
+            return self.send_error(HTTPStatus.NOT_FOUND)
+        except sync.Conflict as e:
+            return self._json({"error": str(e), "conflict": True}, HTTPStatus.CONFLICT)
+        except sync.Busy as e:
+            return self._json({"error": str(e), "busy": True}, HTTPStatus.LOCKED)
+        except (ValueError, TypeError) as e:
+            return self._json({"error": str(e)}, HTTPStatus.BAD_REQUEST)
+        return self.send_error(HTTPStatus.NOT_FOUND)
+
     # ---------- POST ----------
     def do_POST(self):
         if not self._host_ok() or not self._write_ok():
             self._discard_body()  # else Windows may reset the connection before the client reads the 403
             return self.send_error(HTTPStatus.FORBIDDEN)
         url = urlparse(self.path)
+        if url.path.startswith(SYNC_PREFIX):
+            return self._sync_post(url)
         body = self._body()
         if url.path == "/api/claude/login":  # these two work on this computer, not on the shared folder: no root needed
             return self._json(actions.start_claude_login(restart=body.get("restart") is True))

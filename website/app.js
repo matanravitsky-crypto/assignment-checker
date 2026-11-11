@@ -32,7 +32,11 @@
     me: null,          // השם שלי בצוות: {name, set}. set=false עד שבחרו שם באתר (אז זה שם המשתמש של Windows)
     syncing: false, syncedAt: null,  // הכפתור "סנכרון": רץ עכשיו, ומתי סונכרן לאחרונה
     access: null,      // באתר הציבורי: מה כרום אומר על הגישה למערכת שבמחשב ("granted" / "prompt" / "denied")
+    liveSync: null,    // הסנכרון החי עם הוואן דרייב של המרצה (onedrive/sync.js בלשונית שלו): {alive, agoS, report}
   };
+  // השורה שמפעילה את הסנכרון החי בלשונית של הוואן דרייב של המרצה (onedrive/README.md)
+  const LIVE_SYNC_COMMAND = 'eval(await (await fetch("http://127.0.0.1:8765/api/sync/script.js")).text()); window.__ecsLive.start()';
+  const ONEDRIVE_URL = "https://bgu365-my.sharepoint.com/personal/mein_bgu_ac_il/_layouts/15/onedrive.aspx?id=%2Fpersonal%2Fmein%5Fbgu%5Fac%5Fil%2FDocuments%2FYallaLinearit%2FExercise%20Checking%20System";
   const $ = (sel, root = document) => root.querySelector(sel);
   const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -1990,6 +1994,34 @@
     return integrityBannerHTML();
   }
 
+  // הסנכרון החי עם הוואן דרייב של המרצה: מה הלשונית דיווחה (מספרים ושמות קבצים ממוספרים), ואיך מפעילים אותו
+  function liveSyncPanelHTML() {
+    const ls = LOCAL.liveSync, r = ls?.report || {}, alive = !!ls?.alive;
+    const when = r.syncedAt ? new Date(r.syncedAt).toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" }) : null;
+    const s = r.summary || {};
+    const list = (items, what) => items?.length ? `<p class="team-note"><b>${what} (${items.length}):</b></p><ul class="todo" dir="ltr" style="direction:ltr;text-align:left">${items.slice(0, 20).map((x) => `<li>${esc(x)}</li>`).join("")}${items.length > 20 ? `<li>…ועוד ${items.length - 20}</li>` : ""}</ul>` : "";
+    return `<section class="panel" style="margin-top:24px">
+      <div class="panel-head"><h2>סנכרון חי עם הוואן דרייב של המרצה</h2><span class="end tag ${alive ? (r.conflicts?.length || r.error ? "warn" : "ok") : "warn"}">${alive ? "רץ" : "לא רץ"}</span></div>
+      <div class="panel-body">
+        <p class="lead">התיקייה במחשב הזה והתיקייה המשותפת בוואן דרייב (YallaLinearit) מסונכרנות בשני הכיוונים כל כמה דקות, דרך לשונית של הוואן דרייב בכרום שלך. מה שהשתנה במחשב עולה, מה שהשתנה בענן יורד, ומה שהוסר בענן עובר במחשב ל-<code dir="ltr">Removed from OneDrive</code> (לא נמחק).</p>
+        ${alive ? `<div class="notice ok">${ICON.check}<div><b>הלשונית מחוברת.</b> ${r.stage === "sync" ? "מסנכרן עכשיו…" : when ? `הסיבוב האחרון הסתיים ב-${when}` : "הסיבוב הראשון עוד רץ"}${r.interval_s ? `, סיבוב כל ${Math.round(r.interval_s / 60)} דקות` : ""}.
+            ${when ? `עלו ${s.uploaded || 0}, ירדו ${s.downloaded || 0}, הוסרו בענן ועברו לארכיון ${s.removed || 0}, זהים ${s.same || 0}${s.held ? `, מחכים לסיום בדיקה ${s.held}` : ""}${s.failed ? `, נכשלו ${s.failed}` : ""}.` : ""}</div></div>`
+          : `<div class="notice">${ICON.warn}<div><b>הסנכרון החי לא רץ${r.syncedAt && when ? ` (הסיבוב האחרון היה ב-${when})` : ""}.</b> כנראה לשונית הוואן דרייב נסגרה, או שלא הופעל עדיין. מה שהצוות עושה בענן לא מגיע למחשב הזה עד שיופעל.</div></div>`}
+        ${r.needsLogin ? `<div class="notice">${ICON.warn}<div><b>הוואן דרייב דורש התחברות מחדש.</b> מרעננים את לשונית הוואן דרייב, מתחברים לחשבון האוניברסיטה ומפעילים שוב.</div></div>` : r.error ? `<div class="notice">${ICON.warn}<div><b>הסיבוב האחרון נכשל:</b> ${esc(r.error)}</div></div>` : ""}
+        ${r.conflicts?.length ? `<div class="notice">${ICON.warn}<div><b>${r.conflicts.length} קבצים השתנו גם במחשב וגם בוואן דרייב מאז הסנכרון הקודם.</b> אף צד לא נדרס. בחלון הקטן בלשונית הוואן דרייב בוחרים לכל אחד "קח מהענן" או "קח מהמחשב".</div></div>${list(r.conflicts, "התנגשויות")}` : ""}
+        ${list(r.busy, "מטלות שמחכות לסיום בדיקה, משיכה או העלאה")}${list(r.failed, "נכשלו בסיבוב האחרון")}
+        <p class="team-note" style="margin-top:12px"><b>איך מפעילים (פעם אחת, כל עוד הלשונית פתוחה):</b></p>
+        <ol class="todo">
+          <li>פותחים בכרום את <a href="${ONEDRIVE_URL}" target="_blank" rel="noopener">התיקייה המשותפת בוואן דרייב של המרצה</a>, מחוברים לחשבון האוניברסיטה.</li>
+          <li>לוחצים F12, עוברים ל-Console, מדביקים את השורה הזו ולוחצים Enter (בפעם הראשונה כרום מבקש להקליד <code dir="ltr">allow pasting</code>, ואז שואל אם לאפשר גישה לרשת המקומית: "אפשר"):
+            <div class="row-start" style="margin-top:8px"><pre class="prompt" dir="ltr" style="flex:1">${esc(LIVE_SYNC_COMMAND)}</pre>
+              <button class="btn primary small" data-act="copy-live">${ICON.check}הפעל סנכרון חי</button></div></li>
+          <li>משאירים את הלשונית פתוחה (אפשר ברקע). בפינת הדף יש חלון קטן עם המצב וההתנגשויות.</li>
+        </ol>
+      </div>
+    </section>`;
+  }
+
   function drivePanelHTML() {
     if (LOCAL.on) {
       const h = LOCAL.health || {};
@@ -2003,7 +2035,7 @@
               <button class="btn secondary small" data-act="open-inbox">${ICON.upload}פתח את תיקיית ההורדות</button>
             </div>` : `<pre class="prompt">${esc(h.error || "")}</pre>`}
         </div>
-      </section>`;
+      </section>${h.root ? liveSyncPanelHTML() : ""}`;
     }
     return `<section class="panel" style="margin-top:24px">
       <div class="panel-head"><h2>תיקיית OneDrive</h2><span class="end tag warn">לא מחובר</span></div>
@@ -2748,11 +2780,12 @@
       if (a === "pull-pick-close") { state.pullPick = null; render(); }
       if (a === "open-upload") openFolder("upload");
       if (a === "recheck") { if (LOCAL.on) location.reload(); else connect(true); }
-      if (a === "copy-connect") {
+      if (a === "copy-connect" || a === "copy-live") {
+        const text = a === "copy-live" ? LIVE_SYNC_COMMAND : CONNECT_COMMAND;
         // הלוח של הדפדפן, ואם הוא מסרב (דפדפן מוטמע, דף לא מאובטח): הדרך הישנה, טקסט מסומן והעתקה
-        (navigator.clipboard ? navigator.clipboard.writeText(CONNECT_COMMAND) : Promise.reject(new Error("no clipboard")))
+        (navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject(new Error("no clipboard")))
           .catch(() => {
-            const t = Object.assign(document.createElement("textarea"), { value: CONNECT_COMMAND });
+            const t = Object.assign(document.createElement("textarea"), { value: text });
             t.style.cssText = "position:fixed;opacity:0";
             document.body.append(t);
             t.select();
@@ -2760,7 +2793,10 @@
             t.remove();
             if (!copied) throw new Error("copy");
           })
-          .then(() => toast("הפקודה הועתקה. מדביקים אותה ב-PowerShell ולוחצים Enter.", ICON.check))
+          .then(() => {
+            if (a === "copy-live") { window.open(ONEDRIVE_URL, "_blank", "noopener"); toast("השורה הועתקה ולשונית הוואן דרייב נפתחה. שם: F12 → Console → הדבקה → Enter.", ICON.check); }
+            else toast("הפקודה הועתקה. מדביקים אותה ב-PowerShell ולוחצים Enter.", ICON.check);
+          })
           .catch(() => toast("לא הצלחתי להעתיק. מסמנים את השורה ומעתיקים ביד (Ctrl+C).", ICON.warn));
       }
       if (a === "send-confirm" && LOCAL.batch?.assignmentId === cur().id) startLocalSend(LOCAL.batch.id);
@@ -3031,6 +3067,7 @@
       const h = await api("api/health").catch(() => null);
       if (!h) return;
       LOCAL.health = { ...LOCAL.health, ...h };
+      if (h.liveSync) LOCAL.liveSync = h.liveSync;
       renderStatus();
       render();
       if (h.checking) followHealth();
@@ -3061,6 +3098,7 @@
         .sort((x, y) => (y.at || "").localeCompare(x.at || "")));
       // מודל מחובר = Claude Code מחובר במחשב (דרכו Claude in Chrome עובד במודל)
       LOCAL.health = { ...LOCAL.health, ...(health || {}), root: data.root, claude: data.claude, claudeVia: data.claudeVia };
+      if (health?.liveSync) LOCAL.liveSync = health.liveSync;
       LOCAL.me = data.me || null;
       D.usage = data.usage || null;
       if (health?.checking) followHealth();
@@ -3299,7 +3337,14 @@
     if (LOCAL.polling || Object.keys(state.run).length || editing()) return;
     changesBusy = true;
     try {
-      const { sig, version } = await api("api/changes");
+      const { sig, version, liveSync } = await api("api/changes");
+      // הסנכרון החי עם הוואן דרייב: השורה "OneDrive" מתעדכנת בכל סיבוב, בלי טעינה מחדש
+      if (liveSync && JSON.stringify(liveSync) !== JSON.stringify(LOCAL.liveSync)) {
+        const wasAlive = !!LOCAL.liveSync?.alive, conflicts = LOCAL.liveSync?.report?.conflicts?.length || 0;
+        LOCAL.liveSync = liveSync;
+        renderStatus();
+        if (wasAlive !== !!liveSync.alive || conflicts !== (liveSync.report?.conflicts?.length || 0)) render();
+      }
       // המערכת התעדכנה לבד מ-GitHub (dashboard/updater.py) ועלתה מחדש: טוענים את הדף, כדי שגם האתר יהיה החדש.
       // רק כאן, כשלא רץ כלום ולא מקלידים (התנאים שלמעלה)
       if (version && LOCAL.version && version !== LOCAL.version) {
@@ -3468,6 +3513,24 @@
       .catch((e) => toast(e.message, ICON.warn));
   }
 
+  // מה כתוב בשורת "OneDrive" בצד: הסנכרון החי עם הוואן דרייב של המרצה (onedrive/sync.js בלשונית שלו) רץ, ומתי סונכרן
+  function liveSyncLine(folderOk) {
+    if (!folderOk) return "לא מחובר";
+    const ls = LOCAL.liveSync;
+    const ago = (iso) => {
+      if (!iso) return "";
+      const m = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60000));
+      return m < 1 ? "סונכרן עכשיו" : m < 60 ? `סונכרן לפני ${m} דק'` : `סונכרן לפני ${Math.round(m / 60)} שע'`;
+    };
+    if (!ls?.alive) return ls?.report?.syncedAt ? `סנכרון חי לא רץ · ${ago(ls.report.syncedAt)}` : "סנכרון חי לא רץ";
+    const r = ls.report || {};
+    if (r.needsLogin) return "מחובר בלייב · צריך להתחבר שוב לוואן דרייב";
+    if (r.conflicts?.length) return `מחובר בלייב · ${r.conflicts.length} התנגשויות לבדיקה`;
+    if (r.error) return "מחובר בלייב · הסיבוב האחרון נכשל";
+    if (r.stage === "sync") return "מחובר בלייב · מסנכרן עכשיו…";
+    return `מחובר בלייב${r.syncedAt ? " · " + ago(r.syncedAt) : ""}`;
+  }
+
   function renderStatus() {
     const live = LOCAL.on && !!LOCAL.health?.root;
     const badge = $("#mode-badge");
@@ -3482,7 +3545,7 @@
     };
     set("#conn-moodle", !!LOCAL.health?.moodle, LOCAL.health?.moodle ? "דרך Claude בכרום" : LOCAL.on ? "צריך להתחבר" : "לא מחובר");
     set("#conn-claude", !!LOCAL.health?.claude, LOCAL.health?.claude ? "מחובר" : LOCAL.on ? "עוד לא מחובר" : "לא מחובר");
-    set("#conn-drive", live, live ? "מחובר" : "לא מחובר");
+    set("#conn-drive", live && !!LOCAL.liveSync?.alive, liveSyncLine(live));
     renderSyncBtn();
     $("#proto-note").textContent = live
       ? (LOCAL.health?.claude ? "כל המספרים במסך נקראים מתיקיית OneDrive של הקורס." : "כל המספרים במסך נקראים מתיקיית OneDrive של הקורס. הבדיקה עם Claude עוד לא מחוברת (מחברים את Claude Code במחשב, או ANTHROPIC_API_KEY ב-.env).")

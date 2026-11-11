@@ -241,24 +241,47 @@ with `python -m moodle status <id>`.
   Re-uploading replaces files with the same name. The folder picker is a native Windows dialog Claude can't see,
   so Ori picks the folder himself.
 
-**Automatic upload to the lecturer's OneDrive (`onedrive/`).** Instead of dragging the course folder and pressing
-"Replace", `onedrive/sync.js` runs in the lecturer's OneDrive tab (Claude in Chrome, `javascript_tool`) and uploads only
-what is new or changed, through SharePoint REST with the signed-in user's own rights (no app, no admin consent):
-`eval(await (await fetch("http://127.0.0.1:8765/api/sync/script.js")).text()); await window.__ecsSyncAll({dryRun: true})`,
-then without `dryRun`. The files come from the dashboard (`/api/sync/`, `dashboard/sync.py`: course list, file list
-with size and mtime, file bytes; only from inside a course folder of `ASSIGNMENT_DATA`, CORS only for
-`https://bgu365-my.sharepoint.com`), so they go computer → browser → OneDrive and not through Claude (few tokens, no
-10 MB limit). It never deletes, never overwrites a OneDrive file newer than the local one (a team's `Grades.csv`),
-skips locks and temp files, and checks sizes after uploading. Don't sync while `Grading part N in progress.txt` exists.
-Once per computer Chrome asks to allow the site to reach the local network: the user clicks "Allow" (each new port
-asks again).
-**Archived grading stays archived.** On 2026-11-03 Ori's test grading of 23/10-30/10 (Discrete Assignment 0, LA
-Assignment 0: marked PDFs, `Grading notes`, `Who grades what`, `Grades*.csv`) was moved in OneDrive to
-`<assignment>/Old test grading/` (its README says how to restore), so the site counts 0 graded there. A local copy that
-still has those files in their old places would upload them again as "new", so `plan` holds back a grading file that
-is missing in OneDrive when that assignment has `Old test grading/README.txt` in OneDrive and the file was saved before
-that README (`archived` in the report, with advice to move them locally too). Grading saved after it uploads as usual.
-`tests/onedrive/test_sync_plan.py` runs `plan` in Node.
+**Live sync with the lecturer's OneDrive, both ways (`onedrive/`).** Instead of dragging the course folder and pressing
+"Replace", `onedrive/sync.js` runs in the lecturer's OneDrive tab in the user's Chrome (the site's settings page has a
+"הפעל סנכרון חי" button that copies the one-liner and opens the tab; paste it in the DevTools console, or Claude in Chrome
+runs it with `javascript_tool`): `eval(await (await fetch("http://127.0.0.1:8765/api/sync/script.js")).text());
+window.__ecsLive.start()`. `window.__ecsSyncAll({dryRun: true})` only compares, `window.__ecsSyncAll()` is one round.
+It works through SharePoint REST with the signed-in user's own rights (no app, no admin consent), and the files go
+computer ↔ browser ↔ OneDrive through the dashboard (`/api/sync/`, `dashboard/sync.py`; CORS only for
+`https://bgu365-my.sharepoint.com`, writes need the `X-Assignment-Checker` header), never through Claude (few tokens,
+no 10 MB limit). Only inside a course folder of `ASSIGNMENT_DATA` (`Moodle originals` is not there).
+- **Three-way compare** (`plan`, pure, `tests/onedrive/test_sync_plan.py` runs it in Node): the computer, OneDrive, and
+  what both were at the previous round (the snapshot, `GET/POST /api/sync/snapshot`, kept per course outside the data
+  folder in `sync.state_dir()`: `%LOCALAPPDATA%/Bodek Hacham/onedrive-sync/`, or `ASSIGNMENT_SYNC_STATE`). Changed only on
+  the computer → upload (as before). Only in OneDrive, or changed only there → download (`POST /api/sync/put`, atomic,
+  the file gets OneDrive's mtime; a file that changed on the computer meanwhile is refused with 409). Was in OneDrive at
+  the previous round, gone now, untouched locally → not deleted: moved to `<assignment>/Removed from OneDrive/<date>/<path>`
+  (`POST /api/sync/remove`; outside an assignment, the course's or root's own `Removed from OneDrive`). Changed on both
+  sides → **conflict**: nothing is overwritten, it is listed in the report, in the site, and in the tab's window with
+  "קח מהענן" (the local copy goes to `Removed from OneDrive` first) / "קח מהמחשב". A conflict a person resolved ends
+  when both sides are identical. Without a snapshot (first round): different size and the newer side wins, same size
+  and not newer locally = same (as before); a local file the cloud overwrites in such a round is kept in `Removed from
+  OneDrive` first (`keep`), and a first run never removes anything. Nothing is ever deleted in OneDrive.
+- **Never touched, either way:** locks (`... in progress.txt`), temp files, ZIPs, `Key history`, `Removed from OneDrive`.
+  An assignment with a fresh lock on either side (grading, pull or upload running: `busy` in `/api/sync/list`, lock files
+  in the OneDrive listing) waits for the next round; the server refuses writes into it with 423. The key table is
+  checked by content (`keyProblems`, when the two copies differ): an assignment whose local key does not contain the
+  OneDrive key with the same numbers (another computer pulled it) is **not touched in either direction** (0001.pdf of
+  one student would overwrite 0001.pdf of another) until a person merges the keys; the report and the site say so.
+  Seen 2026-11-11 on LA Assignment 1: the OneDrive key has 150 numbers that belong to other students locally.
+- **Live loop** (`window.__ecsLive`): a round every 2 minutes while the tab is open (Chrome throttles background tabs to
+  about once a minute, fine), a heartbeat every 30 s to `POST /api/sync/status` (numbers, numbered file names and
+  error text only). `/api/health` and `/api/changes` carry `liveSync` (`alive` = a report within `ALIVE_SECONDS`), so
+  the site's "OneDrive" row says "מחובר בלייב · סונכרן לפני N דק'" or "סנכרון חי לא רץ", and the settings page shows
+  the last round, conflicts, busy assignments and how to start it. Files the sync writes change the folder signature,
+  so the site reloads by itself. A 401/403 from SharePoint is reported as `needsLogin` (refresh the tab and sign in).
+- **Archived grading stays archived.** On 2026-11-03 Ori's test grading of 23/10-30/10 (Discrete Assignment 0, LA
+  Assignment 0: marked PDFs, `Grading notes`, `Who grades what`, `Grades*.csv`) was moved in OneDrive to
+  `<assignment>/Old test grading/` (its README says how to restore), so the site counts 0 graded there. Without a
+  snapshot, a local copy that still has those files would upload them again as "new", so `plan` holds back a grading
+  file that is missing in OneDrive when that assignment has `Old test grading/README.txt` in OneDrive and the file was
+  saved before that README (`archived` in the report). With a snapshot that saw them in OneDrive, they move to
+  `Removed from OneDrive` instead. Grading saved after the move uploads as usual.
 Checked 2026-10-23: 12 MB from the computer in 10 s, byte-identical; a dry run found Discrete Mathematics identical.
 
 When working with this data:
