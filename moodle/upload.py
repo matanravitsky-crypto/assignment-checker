@@ -23,8 +23,8 @@ import re
 import zipfile
 from pathlib import Path
 
-from moodle import anonymize, grades, paths
-from datastore import schema
+from moodle import anonymize, grades, moodle_table, paths
+from . import schema
 
 # The worksheet's headers follow the Moodle language the user downloaded it in
 GRADE_HEADERS = {"Grade", "ציון"}
@@ -35,15 +35,15 @@ MAX_ZIP_BYTES = 30_000_000
 # When Claude uploads through Claude in Chrome, each file can be at most 10 MB
 CLAUDE_MAX_ZIP_BYTES = 9_000_000
 
-INSTRUCTIONS_FILE = "Upload steps.txt"
-GRADES_FOR_MOODLE = "Grades for Moodle worksheet.csv"
+INSTRUCTIONS_FILE = paths.UPLOAD_STEPS
+GRADES_FOR_MOODLE = paths.GRADES_WORKSHEET
 ZIP_PREFIX = "Graded - part"
 ZIP_NAME = re.compile(rf"{re.escape(ZIP_PREFIX)} \d{{2,}}\.zip")
 
 
 def find_worksheet(assignment_id: str, downloads: Path | None = None) -> Path | None:
     """Return the newest grading worksheet for this assignment in Downloads, if any."""
-    downloads = downloads or Path.home() / "Downloads"
+    downloads = downloads or paths.downloads_dir()
     sheets = [p for p in downloads.glob("*.csv") if p.stem.endswith(f"-{assignment_id}")]
     return max(sheets, key=lambda p: p.stat().st_mtime) if sheets else None
 
@@ -71,10 +71,14 @@ def find_column(header: list[str], names: set[str]) -> int:
 
 
 def fill_worksheet(worksheet: Path, out: Path, results: dict, mapping: dict, max_grade: float | None = None,
-                   skipped: list | None = None) -> int:
+                   skipped: list | None = None, table: list[dict] | None = None) -> int:
     """Write the worksheet with grades filled in. Returns how many rows were filled. A result whose grade is not a
-    valid number (or is out of 0..max_grade) is left empty and its number goes to `skipped`: never a bad grade in Moodle."""
-    by_participant = {mapping[n]["participant_id"]: r for n, r in results.items() if n in mapping}
+    valid number (or is out of 0..max_grade) is left empty and its number goes to `skipped`: never a bad grade in Moodle.
+    With `table` (the rows of Grades for Moodle.csv, moodle_table.py) the grades come from it, by participant id."""
+    if table is not None:
+        by_participant = moodle_table.by_participant(table)
+    else:
+        by_participant = {mapping[n]["participant_id"]: r for n, r in results.items() if n in mapping}
 
     with open(worksheet, encoding="utf-8-sig", newline="") as f:
         rows = list(csv.reader(f))
@@ -98,6 +102,66 @@ def fill_worksheet(worksheet: Path, out: Path, results: dict, mapping: dict, max
     with open(out, "w", encoding="utf-8-sig", newline="") as f:
         csv.writer(f).writerows([header, *body])
     return filled
+
+
+def _number(text: str) -> float | None:
+    try:
+        return float(str(text).strip().replace(",", "."))
+    except ValueError:
+        return None
+
+
+def fill_for_upload(worksheet: Path, out: Path, results: dict, mapping: dict, max_grade: float | None = None) -> dict:
+    """The worksheet for the automatic grades upload (moodle/send_grades.py): only the numbers in `results` are filled,
+    matched by participant id (never by row order); every other row stays exactly as Moodle gave it, so Moodle sees
+    no change there. A worksheet without a feedback column (feedback comments off) gets grades only.
+
+    Returns {"filled": the numbers written, "grade_changes": rows whose grade differs from Moodle's,
+    "changed_rows": rows whose grade or feedback differs}. Raises ValueError for a worksheet without an identifier
+    or grade column."""
+    by_participant = {mapping[n]["participant_id"]: (n, r) for n, r in results.items() if n in mapping}
+    with open(worksheet, encoding="utf-8-sig", newline="") as f:
+        rows = list(csv.reader(f))
+    if not rows:
+        raise ValueError("the worksheet is empty")
+    header, body = rows[0], rows[1:]
+    grade_col = find_column(header, GRADE_HEADERS)
+    try:
+        feedback_col = find_column(header, FEEDBACK_HEADERS)
+    except ValueError:
+        feedback_col = None
+
+    filled, grade_changes, changed_rows = [], 0, 0
+    for row in body:
+        if not row or not row[0].strip():
+            continue
+        try:
+            participant = participant_from_identifier(row[0])
+        except ValueError:
+            continue
+        found = by_participant.get(participant)
+        if found is None:
+            continue
+        number, result = found
+        grade = schema.valid_grade(result, max_grade)
+        if grade is None:
+            continue
+        new_grade = str(result["grade"]).strip()
+        grade_changed = _number(row[grade_col]) != grade
+        row[grade_col] = new_grade
+        feedback_changed = False
+        if feedback_col is not None:
+            new_feedback = (result.get("feedback") or "").strip()
+            feedback_changed = row[feedback_col].strip() != new_feedback
+            row[feedback_col] = new_feedback
+        filled.append(number)
+        grade_changes += grade_changed
+        changed_rows += grade_changed or feedback_changed
+
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with open(out, "w", encoding="utf-8-sig", newline="") as f:
+        csv.writer(f).writerows([header, *body])
+    return {"filled": filled, "grade_changes": grade_changes, "changed_rows": changed_rows}
 
 
 def plan_parts(
@@ -231,10 +295,16 @@ def prepare_upload(assignment_dir: Path, worksheet: Path | None = None, max_byte
         "feedback_zips": [],
         "too_big": [],
     }
+    # Grades for Moodle.csv first: the table is what goes to Moodle, built again now from the grades and the key
+    table = moodle_table.build(assignment_dir)
+    report["moodle_table"] = {"rows": table["rows"], "left_out": table["left_out"]}
     if worksheet:
         report["grades_skipped_invalid"] = []
         report["grades_filled"] = fill_worksheet(worksheet, upload / GRADES_FOR_MOODLE, results, mapping,
-                                                 skipped=report["grades_skipped_invalid"])
+                                                 skipped=report["grades_skipped_invalid"],
+                                                 table=moodle_table.read(assignment_dir))
+        left = table["left_out"]
+        report["grades_skipped_invalid"] = sorted(set(report["grades_skipped_invalid"]) | set(left.get("invalid_grade", [])))
     marked = assignment_dir / paths.MARKED
     if marked.is_dir():
         report["feedback_zips"], report["too_big"] = build_feedback_zips(marked, upload, mapping, max_bytes)

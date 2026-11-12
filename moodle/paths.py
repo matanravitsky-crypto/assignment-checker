@@ -44,6 +44,13 @@ TASKS = "Who does what"                  # in the COURSE folder: who took the pu
 # on the pages, and why it needs a person. Numbers only, never names. The site's manual review reads it
 NOTES = "Grading notes"
 KEY = "Key - number to student.csv"
+# Every grade next to the Moodle participant id it belongs to (moodle/moodle_table.py): derived from the grades and the
+# key, rebuilt on every grading, edit and upload. The upload fills Moodle's worksheet from it
+MOODLE_TABLE = "Grades for Moodle.csv"
+# Moodle's grading worksheet, downloaded with every pull (moodle/moodle_table.py, save_worksheet), WITHOUT the columns
+# that identify a person (name, email, ID number...): only Moodle's participant identifier and the grading columns.
+# Filled from Grades for Moodle.csv on every grading and edit, so it always holds the grades as they are now
+MOODLE_WORKSHEET = "Moodle grading worksheet.csv"
 # The activity log (activity_log/): who did what and when, e.g. every grade edit with its reason. A folder in the
 # assignment folder with one "<who>.jsonl" per writer, so OneDrive never merges two versions of a file
 ACTIVITY_LOG = "Activity log"
@@ -59,6 +66,11 @@ PEDAGOGY = ("Pedagogy", "פדגוגי")
 # (pasted, or read out of a Word file). The points per question go in Assignment details.json, "official_key_points".
 # When there is a key, grading follows it before any other rubric. A replaced key moves to "Earlier official keys/<date>/"
 OFFICIAL_KEY = "Official key"
+# What the rubric-builder skill (.claude/skills/rubric-builder) writes into the pedagogy folder, and the site reads
+RUBRIC_MD = "Rubric.md"                       # the grading bot's rubric
+RUBRIC_PDF = "Rubric.pdf"                     # the same rubric for people
+RUBRIC_NOTES = "Working notes"                # the committee's folder: rubric.json, findings, the agents' reports
+RUBRIC_LOG = "Rubric PDF changelog.md"        # in RUBRIC_NOTES: every round of remarks, and the approval
 OFFICIAL_KEY_TEXT = "Official key.txt"
 OFFICIAL_KEY_OLD = "Earlier official keys"
 # A pull never deletes or overwrites a submission: a file that a newer download replaces (a resubmission, or a
@@ -84,14 +96,33 @@ STATS_FILE = "Assignment {}.json"
 STATS_EXPORT = "All assignments.csv"
 PULL_LOCK = "Pull in progress.txt"      # in the assignment folder while a pull runs (see lock.py)
 UPLOAD_LOCK = "Upload in progress.txt"  # in the assignment folder while an upload to Moodle runs
+# The last pull's check, in the assignment folder: nothing lost, missed, doubled or changed (pull_check.py)
+PULL_CHECK = "Pull check.json"
+# In "3 - Ready to upload to Moodle" (upload.py, upload_log.py, send.py, send_grades.py)
+UPLOAD_STEPS = "Upload steps.txt"                        # the steps and a checklist for an upload by hand
+UPLOAD_LOG = "Upload log.csv"                            # what went up, per number (numbers only)
+UPLOAD_BATCH = "Upload batch.json"                       # the current batch: each ZIP and file with its sha256
+GRADES_WORKSHEET = "Grades for Moodle worksheet.csv"     # Moodle's worksheet filled by "Prepare return"
+GRADES_RUN_FILE = "Grades for Moodle - this upload.csv"  # the worksheet one grades upload sends
+GRADES_UPLOAD_LOG = "Grades upload log.csv"              # which grades went up
+# In the data folder: one line per Claude Code grading run, tokens and cost only (grading/claude_cli.py, dashboard/usage.py)
+USAGE_LOG = "Grading usage.jsonl"
+# The folders' default names (data_dir, work_dir), and the system folder's name inside the synced course folder
+DATA_FOLDER = "Exercise Checking System"
+WORK_FOLDER = "Moodle originals"
 
 
 def data_dir() -> Path:
-    return Path(os.environ.get("ASSIGNMENT_DATA", Path.home() / "Exercise Checking System"))
+    return Path(os.environ.get("ASSIGNMENT_DATA", Path.home() / DATA_FOLDER))
 
 
 def work_dir() -> Path:
-    return Path(os.environ.get("ASSIGNMENT_WORK", Path.home() / "Moodle originals"))
+    return Path(os.environ.get("ASSIGNMENT_WORK", Path.home() / WORK_FOLDER))
+
+
+def downloads_dir() -> Path:
+    """Where Chrome saves what it downloads from Moodle (ZIPs, parts, the grading worksheet)."""
+    return Path(os.environ.get("DOWNLOADS_DIR") or Path.home() / "Downloads")
 
 
 def assignment_dirs() -> list[Path]:

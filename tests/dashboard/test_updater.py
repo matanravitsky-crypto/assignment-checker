@@ -43,7 +43,15 @@ def test_an_update_waits_when_main_moved_forward():
     ({"merge-base": None}, "the history went apart: git pull --ff-only would fail"),
 ])
 def test_no_update_when_this_checkout_should_not_move(answers, why):
-    assert updater.waiting_update(git=Git(**answers)) is None, why
+    assert updater.waiting_update(git=Git(**answers), running=HEAD[:7]) is None, why
+
+
+def test_a_server_older_than_its_checkout_restarts():
+    """`git pull` by hand while the server ran: the files are new, the code in memory is not (2026-11-10)."""
+    pulled = Git(**{"rev-parse origin/main": NEW, "rev-parse HEAD": NEW})
+    assert updater.waiting_update(git=pulled, running=HEAD[:7]) == NEW
+    assert updater.waiting_update(git=pulled, running=NEW[:7]) is None, "already runs it"
+    assert updater.waiting_update(git=pulled, running="") is None, "no version known: never restart blindly"
 
 
 def test_tick_stops_only_when_idle_and_the_watchdog_brings_it_back():

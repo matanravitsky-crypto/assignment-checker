@@ -1,13 +1,27 @@
-"""Grading and the manual approval update the statistics database (stats/) by themselves."""
+"""Grading and the manual approval update the statistics database (stats/), once the system connects it.
+
+grading doesn't import stats (stats depends on grading); the dashboard connects it at start (web_server.connect_stores),
+as the fixture here does. Moved from tests/grading/test_stats_hook.py on 2026-11-12 (tests/test_modularity.py).
+"""
 from __future__ import annotations
 
 import json
 
-from grading import grade as grading
-from moodle import paths
-import stats
+import pytest
 
+import stats
+from dashboard import web_server
+from grading import grade as grading, grade_edit
+from moodle import paths
 from tests.grading.test_grade import asg, detailed, root  # noqa: F401  (fixtures and helpers of the grading tests)
+
+
+@pytest.fixture(autouse=True)
+def system():
+    web_server.connect_stores()
+    yield
+    grade_edit.connect_database(None)
+    grade_edit.connect_stats(None)
 
 
 def stats_file(root):
@@ -30,6 +44,15 @@ def test_grading_writes_the_statistics_and_approval_updates_them(root):
     s2 = json.loads(f.read_text(encoding="utf-8"))
     assert s2["counts"]["approved"] == 1 and s2["counts"]["needs_review"] == len(rep.graded) - 1
     assert s2["graders"]["by"][0]["graded"] >= 1
+
+
+def test_without_the_connection_grading_writes_no_statistics(root):
+    """grading alone (a skill, or `python -m grading`): no statistics file; the next reader computes it (stats.read)."""
+    grade_edit.connect_stats(None)
+    a = asg(root)
+    grading.grade_assignment(a.dir, ask=lambda req: detailed(), parallel=1)
+    assert not stats_file(root).exists()
+    assert stats.read(a.dir)["counts"]["graded"] == 3 and stats_file(root).is_file()
 
 
 def test_a_statistics_failure_does_not_stop_the_grading(root, monkeypatch, capsys):

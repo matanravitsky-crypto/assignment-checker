@@ -24,10 +24,10 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from moodle import claims, grades, lock as moodle_lock, paths
+from moodle import atomic, claims, grades, lock as moodle_lock, paths
+from moodle.schema import INFO, REJECT, WARN, Problem, check_details, check_grade_row, check_key_rows, check_notes, summarize
 
-from . import atomic, ledger
-from .schema import INFO, REJECT, WARN, Problem, check_details, check_grade_row, check_key_rows, check_notes, summarize
+from . import ledger
 
 CONFLICT_DIR = "Conflict copies"          # בתוך Earlier versions/: עותקים מתנגשים שמוזגו
 _CONFLICT = re.compile(r"^(?P<base>.+?)-(?P<pc>[A-Za-z0-9][A-Za-z0-9_]{1,30}(?:-[A-Za-z0-9_]{1,30})*)(?P<ext>\.[A-Za-z0-9]{1,8})$")
@@ -179,7 +179,7 @@ def check(assignment_dir: Path) -> Report:
         fixable.append("conflict_copy_stats")
 
     # האצווה להעלאה
-    batch = a / paths.UPLOAD / "Upload batch.json"
+    batch = a / paths.UPLOAD / paths.UPLOAD_BATCH
     if batch.is_file():
         atomic.read_json(batch, default=None, problems=problems)
 
@@ -244,7 +244,7 @@ def fix(assignment_dir: Path, dry_run: bool = True) -> list[str]:
         theirs, ours = grades.read_file(copy), grades.read_file(original)
         added = 0
         for n, row in theirs.items():
-            if n not in ours or grades._rank(row) > grades._rank(ours[n]):
+            if n not in ours or grades.rank(row) > grades.rank(ours[n]):
                 ours[n] = row
                 added += 1
         done.append(f"{verb} ממזג {copy.name} לתוך {original.name} ({added} שורות עדכניות יותר) ומעביר את העותק ל-{paths.EARLIER}/{CONFLICT_DIR}")

@@ -493,3 +493,110 @@ def test_prepare_return_is_refused_while_this_dashboard_uploads(root):
     finally:
         gate.release.set()
         wait_idle()
+
+
+# ---------- grades: only with their own button (moodle/send_grades.py) ----------
+def write_two_grades(root):
+    (a_dir(root) / paths.GRADES).write_text("number,grade,feedback\n0001,90,ok\n0002,75,\n", encoding="utf-8")
+
+
+def test_one_upload_sends_the_files_and_then_their_grades(root):
+    """Matan, 2026-11-10 (evening): no separate button. The same "yes" uploads the files and, right after them, the
+    grades of those works, through a fresh worksheet that Moodle saves only when its preview matches."""
+    from moodle import ingest, send_grades
+    from tests.fakes import FakeGradesDriver
+    mark(root, "0001", "0002")
+    write_two_grades(root)
+    rep = actions.prepare_send(root, COURSE, HW)
+    assert rep["grades"] == 2 and "2 ציונים" in rep["summary"]  # the one confirmation says both
+    sheet = [["Identifier", "Full name", "Grade", "Feedback comments"],
+             ["Participant 1002", "x", "", ""], ["Participant 1001", "y", "", ""], ["Participant 1003", "z", "", ""]]
+    d = FakeGradesDriver(ingest.downloads_dir(), sheet)
+    s = actions.start_send(root, COURSE, HW, rep["id"], driver=d, wait=True)
+    assert (s["stopped"], s["phase"], s["grades_status"], s["grades_sent"]) == (None, "grades", "done", 2)
+    assert {row[0]: row[2] for row in d.uploaded[0][0][1:]} == {"Participant 1001": "90", "Participant 1002": "75",
+                                                                 "Participant 1003": ""}
+    assert hw(actions.state(root))["gradesToSend"] == 0
+    assert [r["number"] for r in send_grades.read_log(a_dir(root))] == ["0001", "0002"]
+
+
+def test_when_the_grades_fail_after_the_files_the_files_stay_and_it_says_so(root):
+    from moodle import ingest
+    from tests.fakes import FakeGradesDriver
+    mark(root, "0001", "0002")
+    write_two_grades(root)
+    rep = actions.prepare_send(root, COURSE, HW)
+    d = FakeGradesDriver(ingest.downloads_dir(), [], download_status="not_enabled")  # Offline grading worksheet is off
+    s = actions.start_send(root, COURSE, HW, rep["id"], driver=d, wait=True)
+    assert s["phase"] == "grades" and s["stopped"] == "not_enabled" and "הקבצים עלו" in s["message"]
+    assert s["done"] == s["total"]  # every ZIP went up
+    assert hw(actions.state(root))["gradesToSend"] == 2  # the next press of the same button tries the grades again
+
+
+def test_the_grades_button_uploads_the_grades_of_returned_work(root):
+    from moodle import ingest, send_grades
+    from tests.fakes import FakeGradesDriver
+    mark(root, "0001", "0002")
+    write_two_grades(root)
+    assert actions.grades_summary(root, COURSE, HW)["count"] == 0  # the files are not in Moodle yet
+    rep = actions.prepare_send(root, COURSE, HW)
+    actions.start_send(root, COURSE, HW, rep["id"], driver=FakeDriver(), wait=True)
+    g = actions.grades_summary(root, COURSE, HW)
+    assert (g["count"], g["numbers"]) == (2, ["0001", "0002"]) and "2 ציונים" in g["summary"]
+    sheet = [["Identifier", "Full name", "Grade", "Feedback comments"],
+             ["Participant 1002", "x", "", ""], ["Participant 1001", "y", "", ""], ["Participant 1003", "z", "", ""]]
+    d = FakeGradesDriver(ingest.downloads_dir(), sheet)
+    s = actions.start_grades(root, COURSE, HW, driver=d, wait=True)
+    assert (s["stopped"], s["grades_status"], s["grades_sent"], s["phase"]) == (None, "done", 2, "grades")
+    assert {row[0]: row[2] for row in d.uploaded[0][0][1:]} == {"Participant 1001": "90", "Participant 1002": "75",
+                                                                 "Participant 1003": ""}
+    assert hw(actions.state(root))["gradesToSend"] == 0
+    assert [r["number"] for r in send_grades.read_log(a_dir(root))] == ["0001", "0002"]
+    with pytest.raises(actions.UserError):
+        actions.start_grades(root, COURSE, HW, driver=d, wait=True)  # nothing left: nothing starts
+
+
+def test_grades_button_when_the_worksheet_is_off(root):
+    from moodle import ingest
+    from tests.fakes import FakeGradesDriver
+    mark(root, "0001")
+    rep = actions.prepare_send(root, COURSE, HW)
+    actions.start_send(root, COURSE, HW, rep["id"], driver=FakeDriver(), wait=True)
+    (a_dir(root) / paths.GRADES).write_text("number,grade,feedback\n0001,90,ok\n", encoding="utf-8")
+    d = FakeGradesDriver(ingest.downloads_dir(), [], download_status="not_enabled")
+    s = actions.start_grades(root, COURSE, HW, driver=d, wait=True)
+    assert s["stopped"] == "not_enabled" and "Offline grading worksheet" in s["message"]
+    assert hw(actions.state(root))["gradesToSend"] == 1
+
+
+def test_grades_routes(server, root):
+    port = server
+    mark(root, "0001")
+    status, body = call(port, "GET", f"/api/grades?course={COURSE.replace(' ', '%20')}&assignment={HW.replace(' ', '%20')}", headers=HDR)
+    assert status == 200 and body["count"] == 0
+    status, body = call(port, "POST", "/api/grades/start", BODY, HDR)
+    assert status == 422 and "אין ציונים" in body["error"]
+
+
+def test_the_pull_brings_the_grading_worksheet_without_names_and_deletes_the_original(root, tmp_path):
+    from moodle import ingest, moodle_table
+    from tests.fakes import FakeGradesDriver
+    write_two_grades(root)
+    sheet = [["Identifier", "Full name", "Email address", "Grade", "Feedback comments"],
+             ["Participant 1001", "נועה כהן", "noa@post.bgu.ac.il", "", ""], ["Participant 1002", "איתי", "i@x", "", ""]]
+    d = FakeGradesDriver(ingest.downloads_dir(), sheet)
+    a = actions.find_assignment(root, COURSE, HW)
+    notes = actions._worksheet_with_pull(a, a.details()["id"], downloader=d, downloads=ingest.downloads_dir(), wait_s=2)
+    assert "נשמר" in notes[0] and "2 סטודנטים" in notes[0]
+    text = moodle_table.worksheet_path(a.dir).read_text(encoding="utf-8-sig")
+    assert "נועה" not in text and "noa@" not in text and "Participant 1001,,,90" in text
+    assert list(ingest.downloads_dir().glob("*.csv")) == []  # the original, with names, is gone from Downloads
+
+
+def test_a_pull_where_the_worksheet_is_off_still_succeeds_and_says_so(root):
+    from moodle import ingest
+    from tests.fakes import FakeGradesDriver
+    d = FakeGradesDriver(ingest.downloads_dir(), [], download_status="not_enabled")
+    a = actions.find_assignment(root, COURSE, HW)
+    notes = actions._worksheet_with_pull(a, a.details()["id"], downloader=d, downloads=ingest.downloads_dir(), wait_s=1)
+    assert len(notes) == 1 and "כבוי" in notes[0]

@@ -24,10 +24,10 @@ from datetime import datetime
 from pathlib import Path
 
 from moodle import paths, upload
-from datastore import atomic
+from . import atomic
 
-LOG_FILE = "Upload log.csv"
-BATCH_FILE = "Upload batch.json"
+LOG_FILE = paths.UPLOAD_LOG
+BATCH_FILE = paths.UPLOAD_BATCH
 LOG_FIELDS = ["number", "file", "sha256", "zip", "uploaded_at", "by"]
 BATCH_DIR_PREFIX = "Upload batch "
 # Only folders with exactly this name are ours: the batch id is "<date>-<time>-<8 hex>" (see send.prepare_batch)

@@ -13,11 +13,7 @@ import csv
 import io
 from pathlib import Path
 
-from datastore import atomic, schema
-
-from datastore import atomic, schema
-
-from . import claims, paths
+from . import atomic, claims, paths, schema
 
 # number, grade, feedback are what the return step reads. The rest are the system's:
 #   points      points per question, in order, separated by ";"
@@ -55,8 +51,12 @@ def read_file(path: Path) -> dict[str, dict]:
         return {number_key(r["number"]): r for r in csv.DictReader(fh) if (r.get("number") or "").strip()}
 
 
-def _rank(row: dict) -> tuple[bool, str]:
+def rank(row: dict) -> tuple[bool, str]:
+    """Which of two rows of one number wins the merge: the higher rank (approved first, then the later graded_at)."""
     return is_approved(row), (row.get("graded_at") or "").strip()
+
+
+_rank = rank  # the older private name, for code that still uses it
 
 
 def read(assignment_dir: Path) -> dict[str, dict]:
@@ -64,7 +64,7 @@ def read(assignment_dir: Path) -> dict[str, dict]:
     best: dict[str, dict] = {}
     for path in files(assignment_dir):
         for n, row in read_file(path).items():
-            if n not in best or _rank(row) >= _rank(best[n]):
+            if n not in best or rank(row) >= rank(best[n]):
                 best[n] = row
     return best
 

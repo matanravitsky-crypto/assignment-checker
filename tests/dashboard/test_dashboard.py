@@ -166,7 +166,7 @@ def test_pull_runs_ingest_with_the_assignment_id(root, monkeypatch):
     assert seen == {"id": MID, "data": root}
     assert rep["result"] == {"total": 4, "new": 1, "files": 5}
     assert "1 חדשות" in rep["summary"]
-    assert copied == [(root, COURSE, HW)] and any("העתקות" in n for n in rep["notes"])  # starts by itself
+    assert copied == [] and not any("העתקות" in n for n in rep["notes"])  # the copying check no longer starts by itself
 
 
 def test_pull_time_left_follows_the_pace_of_the_phase():
@@ -539,7 +539,7 @@ def test_pull_in_parts_keeps_every_number_and_adds_the_new_student(root, monkeyp
     log = (root / COURSE / HW / paths.PULL_LOG).read_text(encoding="utf-8-sig").splitlines()
     assert log[0] == "pulled_at,by,students,new,files,parts,partial" and log[-1].split(",")[2:] == ["4", "1", "4", "2", ""]
     assert list(ingest.downloads_dir().iterdir()) == []  # every part was taken
-    assert actions.pull_status()["phase"] == "number"
+    assert actions.pull_status()["phase"] == "worksheet"  # after numbering: the grading worksheet (moodle_table.save_worksheet)
     assert len(list((tmp_path / "Moodle originals" / COURSE / HW).iterdir())) == 4
 
 

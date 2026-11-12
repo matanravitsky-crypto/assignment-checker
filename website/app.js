@@ -72,8 +72,8 @@
     mistakeOpen: null,
     // הבדיקה הידנית: העבודה שפתוחה, סינון לפי סוג הבעיה, מה מוצג (מסומנת/מקורית) והטיוטה של כל עבודה עד השמירה
     review: { id: null, edits: {}, saving: false, pages: {}, marks: true, open: {}, fbOpen: false, log: {} },
-    // העתקות: איזו שכבה מוצגת, איזה זוג פתוח, ובדיקה שרצה עכשיו
-    copy: { filter: "all", open: null, running: false, progress: "" },
+    // חלונות מתקפלים: מה פתוח (מפתח → true/false). בלי מפתח: ברירת המחדל של החלון
+    fold: store.get("fold", {}),
   };
 
   // מה כל שלב עושה באמת (moodle/ingest.py, grading/grade.py, moodle/send.py)
@@ -117,6 +117,7 @@
     check: '<svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>',
     close: '<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>',
     chev: '<svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg>',
+    chart: '<svg viewBox="0 0 24 24"><path d="M4 19h16M7 16V9M12 16V5M17 16v-6"/></svg>',
     file: '<svg viewBox="0 0 24 24"><path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5"/></svg>',
     img: '<svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="M5 17l5-4 3 2.5 2.5-2 3.5 3"/></svg>',
     redo: '<svg viewBox="0 0 24 24"><path d="M4 12a8 8 0 1 0 2.3-5.6M4 4v4h4"/></svg>',
@@ -241,10 +242,11 @@
       late: subs.filter((s) => s.late).length,
       toGrade,
       toReturn: ok.filter((s) => s.status === "graded"),
+      gradesToSend: A.gradesToSend || 0,  // ציונים של עבודות שהקבצים שלהן כבר במודל (moodle/send_grades.py)
       done: {
         pull: !!A.pulledAt,
         grade: ok.length > 0 && graded.length === ok.length,
-        ret: ok.length > 0 && returned.length === ok.length,
+        ret: ok.length > 0 && returned.length === ok.length && !A.gradesToSend,
       },
     };
   }
@@ -328,6 +330,22 @@
   }
 
   // ---------- Stage pieces ----------
+  // "העלה ציונים": רק בלחיצה. מעלה את הציונים של עבודות שהקבצים שלהן כבר במודל (moodle/send_grades.py)
+  function gradesButton({ big = false } = {}) {
+    const A = cur();
+    if (!LOCAL.on || !A || A.empty) return "";
+    const I = info(A), n = I.gradesToSend, S = LOCAL.sending;
+    const here = S?.running && sendingHere() && S.phase === "grades";
+    const checking = LOCAL.rd?.flow && LOCAL.rd.then === "grades" && LOCAL.rd.assignmentId === A.id;
+    const owner = ownerOf(A, "ret");
+    const theirs = owner && owner.who !== myName();
+    const disabled = !n || S?.running || LOCAL.starting || checking || theirs || !!state.run[A.id];
+    const text = here ? "מעלה ציונים…" : checking ? "בודק שהמחשב מוכן…" : theirs ? `אצל ${owner.who}`
+      : n ? `העלה ${n} ציונים` : "אין ציונים להעלאה";
+    return `<button class="btn ${n && !I.toReturn.length ? "primary" : "secondary"} ${big ? "lg" : ""}" data-act="grades-flow" ${disabled ? "disabled" : ""}
+      title="הציונים עולים רק בלחיצה הזו, של עבודות שהקבצים הבדוקים שלהן כבר במודל">${here || checking ? ICON.spin : ICON.upload}${text}</button>`;
+  }
+
   function stageButton(stage, { big = false } = {}) {
     const A = cur(), I = info(A), run = state.run[A.id];
     const busy = !!run, mine = run?.stage === stage;
@@ -338,7 +356,7 @@
       label = n ? `בדוק עבודות (${n} זמינות) ▾` : I.toGrade.length ? "כל העבודות שנשארו נלקחו" : "הכל נבדק";
       primary = n > 0;
     }
-    if (stage === "ret") { n = I.toReturn.length; label = n ? `החזר ${n} עבודות` : I.done.ret ? "הכל הוחזר" : "אין מה להחזיר"; primary = n > 0 && !I.toGrade.length; }
+    if (stage === "ret") { n = I.toReturn.length || I.gradesToSend; label = I.toReturn.length ? `החזר ${n} עבודות` : I.gradesToSend ? `העלה ${I.gradesToSend} ציונים` : I.done.ret ? "הכל הוחזר" : "אין מה להחזיר"; primary = n > 0 && !I.toGrade.length; }
     let disabled = busy || (stage !== "pull" && !n);
     if (LOCAL.on && stage === "grade" && !LOCAL.health?.claude) {
       // בלי מפתח אי אפשר לבדוק. ההסבר מופיע בלשונית "חיבור ל-Claude"
@@ -348,7 +366,7 @@
     }
     let text = mine ? (run.progress || "רץ עכשיו…") : label, spinning = mine;
     if (LOCAL.on && stage === "ret") {
-      if (!mine) text = n ? `העלה ${n} למודל` : I.done.ret ? "הכל הועלה" : "אין עבודות להעלאה";
+      if (!mine) text = I.toReturn.length ? `העלה ${I.toReturn.length} למודל` : I.gradesToSend ? `העלה ${I.gradesToSend} ציונים למודל` : I.done.ret ? "הכל הועלה" : "אין עבודות להעלאה";
       if (LOCAL.sending?.running || LOCAL.starting) disabled = true;  // העלאה אחת בכל פעם, גם אם היא של מטלה אחרת
       if (LOCAL.sending?.running && sendingHere()) { text = sendProgressText(); spinning = true; }
       if (LOCAL.rd?.flow && LOCAL.rd.then === "send" && LOCAL.rd.assignmentId === A.id && !mine) { text = "בודק שהמחשב מוכן…"; spinning = true; disabled = true; }
@@ -581,6 +599,7 @@
       };
       case "check": return { step: 1, pct: Math.round(60 + 10 * f), short: "בודק את ה-ZIP…", text: `בודק שה-ZIP שלם: ${pct}%`, hint: HERE };
       case "extract": return { step: 2, pct: Math.round(70 + 20 * f), short: "מחלץ…", text: `מחלץ את ה-ZIP: ${pct}%`, hint: HERE };
+      case "worksheet": return { step: 3, pct: 99, short: "מוריד את גיליון הציונים…", text: "מוריד ממודל את גיליון הציונים (בדרך כלל עד דקה)…", hint: LONG_WAIT };
       case "number": return { step: 3, pct: Math.round(90 + 10 * f), short: "ממספר הגשות…", text: `ממספר הגשות: ${p.done} מתוך ${p.total}`, hint: HERE };
       default: return { step: 0, pct: 1, short: "מתחיל…", text: "מתחיל משיכה ממודל…", hint: LONG_WAIT };
     }
@@ -663,7 +682,9 @@
           <td class="claim-cell">${ownerCell(A, stage)}</td>`;
       } else if (stage === "grade") {
         const free = I.toGrade.filter((s) => !s.claim).length;
+        const St = statOfAssignment(A);
         cells = `<td>${progressHTML(I.graded.length, I.ok.length)}</td>
+          <td class="num">${St?.counts?.graded ? fmt(St.grade.mean) : `<span class="muted">—</span>`}</td>
           <td class="col-hide-sm">${peopleHTML(A)}</td>
           <td>${free ? `<b class="num">${free}</b> פנויות` : `<span class="muted">${I.toGrade.length ? "הכל נלקח" : "הכל נבדק"}</span>`}</td>`;
       } else {
@@ -676,7 +697,7 @@
     }).join("");
     const head = {
       pull: "<th>בתיקייה</th><th>אחראי/ת</th>",
-      grade: `<th>נבדקו</th><th class="col-hide-sm">מי בודק</th><th>מה נשאר לקחת</th>`,
+      grade: `<th>נבדקו</th><th>ממוצע</th><th class="col-hide-sm">מי בודק</th><th>מה נשאר לקחת</th>`,
       ret: `<th>להעלאה</th><th class="col-hide-sm">הוחזרו</th><th>אחראי/ת</th>`,
     }[stage];
     // מה עוד יש לעשות בשלב הזה, בכל הקורס
@@ -766,6 +787,7 @@
   const sendingHere = () => sendHere() && !!LOCAL.sending.running;
   function sendProgressText() {
     const S = LOCAL.sending;
+    if (S.phase === "grades") return "מעלה את הציונים למודל…";
     return `מעלה קובץ ${Math.min((S.done || 0) + 1, S.total || 1)} מתוך ${S.total}…`;
   }
   const numList = (items, max = 20) => (items.length > max ? `${items.slice(0, max).join(", ")} ועוד ${items.length - max}` : items.join(", "));
@@ -780,12 +802,12 @@
       if (!sendHere()) return `<div class="banner">${ICON.spin}<div>העלאה למודל רצה עכשיו במטלה אחרת. אפשר להכין העלאה חדשה כשהיא תסתיים.</div></div>`;
       const pct = S.total ? Math.round((100 * (S.done || 0)) / S.total) : 0;
       return `<section class="panel report send-panel" aria-live="polite">
-        <div class="panel-head"><h3>העלאה למודל</h3><span class="end tag">${S.done || 0} מתוך ${S.total} הועלו</span></div>
+        <div class="panel-head"><h3>${S.phase === "grades" ? "העלאת ציונים למודל" : "העלאה למודל"}</h3>${S.phase === "grades" ? "" : `<span class="end tag">${S.done || 0} מתוך ${S.total} הועלו</span>`}</div>
         <div class="panel-body">
           <p class="send-line">${ICON.spin}<b>${sendProgressText()}</b></p>
           <div class="send-bar" role="progressbar" aria-label="התקדמות ההעלאה" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><i style="width:${pct}%"></i></div>
           ${LOCAL.stopping ? `<p class="hint">ביקשת לעצור: ההעלאה תיעצר אחרי הקובץ הנוכחי.</p>` : ""}
-          <div class="send-actions"><button class="btn secondary" data-act="send-stop" ${LOCAL.stopping ? "disabled" : ""}>עצור אחרי הקובץ הנוכחי</button></div>
+          ${S.phase === "grades" ? "" : `<div class="send-actions"><button class="btn secondary" data-act="send-stop" ${LOCAL.stopping ? "disabled" : ""}>עצור אחרי הקובץ הנוכחי</button></div>`}
         </div>
       </section>`;
     }
@@ -808,12 +830,34 @@
           <p class="send-line"><b>${esc(b.summary)}</b></p>
           <ul class="send-zips" dir="ltr">${b.zips.map((z) => `<li><code>${esc(z.name)}</code><span>${z.count} files, ${z.mb} MB</span></li>`).join("")}</ul>
           ${noteList}
+          ${b.grades ? `<p class="hint">אחרי הקבצים עולים גם ${b.grades} ציונים: Claude מוריד ממודל גיליון ציונים טרי, המערכת ממלאת אותו לפי מזהה המשתתף מאותם ציונים שב-"Grades for Moodle.csv", ומודל שומר אותם רק אם רשימת השינויים שלו תואמת בדיוק. אחרת שום ציון לא משתנה.</p>` : ""}
           <p class="send-warn">${ICON.warn}<span>אחרי הלחיצה הקבצים נכנסים למודל מיד, בלי מסך אישור נוסף.</span></p>
           <div class="send-actions">
             <button class="btn primary" data-act="send-confirm" ${LOCAL.starting ? "disabled" : ""}>${LOCAL.starting ? ICON.spin : ICON.upload}העלה למודל</button>
             <button class="btn secondary" data-act="send-cancel" ${LOCAL.starting ? "disabled" : ""}>ביטול</button>
           </div>
         </div>
+      </section>`;
+    }
+    const g = LOCAL.gradesAsk;
+    if (g && g.assignmentId === A.id) {
+      return `<section class="panel report send-panel">
+        <div class="panel-head"><h3>אישור העלאת ציונים</h3><span class="end tag warn">ממתין לאישור</span></div>
+        <div class="panel-body">
+          <p class="send-line"><b>${esc(g.summary)}</b></p>
+          <p class="hint">Claude מוריד ממודל את גיליון הציונים, המערכת ממלאת את הציונים לפי המספרים, ו-Claude מעלה אותו. לפני השמירה מודל מראה רשימה של כל השינויים, והם נשמרים רק אם הרשימה מראה בדיוק את מה שציפינו. אחרת שום ציון לא משתנה.</p>
+          <div class="send-actions">
+            <button class="btn primary" data-act="grades-confirm" ${LOCAL.starting ? "disabled" : ""}>${LOCAL.starting ? ICON.spin : ICON.upload}העלה ציונים</button>
+            <button class="btn secondary" data-act="grades-cancel" ${LOCAL.starting ? "disabled" : ""}>ביטול</button>
+          </div>
+        </div>
+      </section>`;
+    }
+    if (sendHere() && S.stopped && S.phase === "grades") {
+      const message = S.stopped === "needs_login" ? "צריך להתחבר שוב למודל בכרום, ואז ללחוץ שוב על כפתור ההעלאה: הוא יעלה את הציונים." : `${S.message} לחיצה נוספת על כפתור ההעלאה תנסה שוב את הציונים.`;
+      return `<section class="panel report send-panel">
+        <div class="panel-head"><h3>העלאת הציונים נעצרה</h3></div>
+        <div class="panel-body"><p class="send-line">${ICON.warn}<span>${esc(message)}</span></p></div>
       </section>`;
     }
     if (sendHere() && S.stopped) {
@@ -841,13 +885,47 @@
     render();
     try {
       const rep = await api("api/upload/prepare", { method: "POST", body: JSON.stringify({ course: A.courseFolder, assignment: A.folder }) });
-      LOCAL.batch = { ...rep, assignmentId: A.id };
+      if (!rep.zips?.length && rep.grades) LOCAL.gradesAsk = { count: rep.grades, assignmentId: A.id, summary: `כל העבודות הבדוקות כבר במודל. ${rep.grades} ציונים יעלו עכשיו.` };
+      else LOCAL.batch = { ...rep, assignmentId: A.id };
       delete state.run[A.id];
       render();
     } catch (e) {
       delete state.run[A.id];
       render();
       toast(e.message, ICON.warn);
+    }
+  }
+
+  // "העלה ציונים": שואלים את השרת כמה ציונים יעלו ומראים חלון אישור. שום ציון לא עולה לפני ה"כן"
+  async function prepareLocalGrades() {
+    const A = cur();
+    if (!A) return;
+    try {
+      const g = await api(`api/grades?course=${encodeURIComponent(A.courseFolder)}&assignment=${encodeURIComponent(A.folder)}`);
+      if (g.uploading) toast(`${g.uploading} מעלה את המטלה הזו עכשיו.`, ICON.warn);
+      else if (!g.count) toast("אין ציונים חדשים להעלאה.", ICON.check);
+      else LOCAL.gradesAsk = { ...g, assignmentId: A.id };
+    } catch (e) {
+      toast(e.message, ICON.warn);
+    }
+    render();
+  }
+
+  async function startLocalGrades() {
+    const A = cur();
+    if (!A || LOCAL.starting || LOCAL.sending?.running) return;
+    LOCAL.starting = true;
+    render();
+    try {
+      LOCAL.sending = await api("api/grades/start", { method: "POST", body: JSON.stringify({ course: A.courseFolder, assignment: A.folder }) });
+      LOCAL.gradesAsk = null;
+      render();
+      followSend();
+    } catch (e) {
+      toast(e.message, ICON.warn);
+    } finally {
+      LOCAL.starting = false;
+      render();
     }
   }
 
@@ -922,12 +1000,14 @@
   });
 
   // הלחיצה על "העלה N למודל". אם הכול כבר מוכן (גם לפי הזיכרון של 30 הדקות), ממשיכים ישר להכנה
-  async function startSendFlow() {
+  async function startSendFlow(then = "send") {
     const A = cur();
     if (!A || state.run[A.id] || LOCAL.sending?.running || LOCAL.starting || (LOCAL.rd?.flow && LOCAL.rd.assignmentId === A.id)) return;
     LOCAL.batch = null;
-    const rd = (LOCAL.rd = newReady(A, true));
-    state.run[A.id] = { stage: "ret", steps: RET_LOCAL_STEPS.map(() => "pending"), progress: "בודק שהמחשב מוכן…" };
+    LOCAL.gradesAsk = null;
+    const rd = (LOCAL.rd = newReady(A, true, then));
+    // הציונים: כפתור משלהם מראה "בודק שהמחשב מוכן…", וכפתור הקבצים לא מסתובב
+    if (then === "send") state.run[A.id] = { stage: "ret", steps: RET_LOCAL_STEPS.map(() => "pending"), progress: "בודק שהמחשב מוכן…" };
     render();
     try {
       rd.data = await api(readyUrl(A));
@@ -1067,6 +1147,7 @@
     rd.flow = false;
     render();
     if (rd.then === "pull") runLocalPull(rd.full, rd.limit);
+    else if (rd.then === "grades") prepareLocalGrades();
     else prepareLocalSend();
   }
 
@@ -1128,7 +1209,8 @@
   // (ואז עוברים להכנת האצווה, או שהמשיכה מתחילה)
   function readyPanelHTML(then = "send") {
     const rd = LOCAL.rd;
-    if (!LOCAL.on || !rd?.flow || rd.then !== then || rd.assignmentId !== cur()?.id || !rd.data) return "";
+    const same = rd?.then === then || (then === "send" && rd?.then === "grades");  // הציונים: אותו חלון בדף ההחזרה
+    if (!LOCAL.on || !rd?.flow || !same || rd.assignmentId !== cur()?.id || !rd.data) return "";
     const title = then === "pull" ? "לפני המשיכה: מחברים את המחשב הזה ל-Claude שלך" : "לפני ההעלאה: בודקים שהמחשב הזה מוכן";
     return `<section class="panel report send-panel ready-panel" aria-live="polite">
       <div class="panel-head"><h3>${title}</h3><button class="btn ghost small end" data-act="ready-close">ביטול</button></div>
@@ -1597,7 +1679,7 @@
           <div class="panel-body">
             <dl class="fields">
               <div><dt>קובץ משוב</dt><dd>העבודה שלו עם ההערות במקום של כל טעות, ובהתחלה עמוד עם הציון, הניקוד לכל שאלה והמשוב</dd></div>
-              <div><dt>הציון</dt><dd>בינתיים עולה ידנית: במטלה מפעילים "Offline grading worksheet", מורידים את גיליון הציונים, <code dir="ltr">python -m moodle upload &lt;id&gt;</code> ממלא אותו, ומעלים דרך "העלאת גיליון ציונים"</dd></div>
+              <div><dt>הציון</dt><dd>עולה עם הקבצים, באותה לחיצה ובאותו אישור: אחרי שהקבצים עלו, Claude מוריד ממודל גיליון ציונים טרי, המערכת ממלאת אותו לפי מזהה המשתתף מאותם ציונים שב-"Grades for Moodle.csv", ו-Claude מעלה אותו ומאשר רק אם רשימת השינויים של מודל תואמת. גיליון הציונים של מודל יורד גם עם כל משיכה, ונשמר בתיקיית המטלה בלי שמות ובלי מיילים, ממולא תמיד בציונים העדכניים</dd></div>
             </dl>
           </div>
         </section>
@@ -1630,49 +1712,42 @@
     }[stage][t]();
     return `${stageHeroHTML(stage)}${boardHTML(stage)}
       <h2 class="picked">${esc(cur().title)}<small>המטלה שנבחרה</small></h2>
+      ${stage === "grade" ? assignmentStatsHTML(cur()) : ""}
       ${tabsHTML(stage)}<div class="tab-body" role="tabpanel" aria-labelledby="tab-${stage}-${t}">${body}</div>`;
   }
 
-  function distHTML(I) {
-    const g = I.graded.map((s) => s.score).filter((x) => typeof x === "number");
-    if (!g.length) return `<p class="muted empty-line">יופיע אחרי שיהיו עבודות בדוקות.</p>`;
-    const buckets = [[0, 49], [50, 59], [60, 69], [70, 79], [80, 89], [90, 100]];
-    const counts = buckets.map(([a, b]) => g.filter((x) => x >= a && x <= b).length);
-    const max = Math.max(...counts, 1);
-    const sorted = [...g].sort((a, b) => a - b);
-    return `
-      <div class="dist-wrap">
-        <div class="dist" role="img" aria-label="התפלגות ציונים">
-          ${buckets.map(([a, b], i) => `<div class="bar ${a < 60 ? "low" : ""} ${counts[i] ? "" : "zero"}"><span class="v num">${counts[i] || ""}</span><i style="height:${(counts[i] / max) * 100}%"></i><span class="l num">${a}–${b}</span></div>`).join("")}
-        </div>
-        <dl class="kv">
-          <div><dt>ממוצע</dt><dd class="num">${avg(g)}</dd></div>
-          <div><dt>חציון</dt><dd class="num">${sorted[Math.floor(sorted.length / 2)]}</dd></div>
-          <div><dt>מתחת ל-60</dt><dd class="num">${g.filter((x) => x < 60).length}</dd></div>
-          <div><dt>ציון מלא</dt><dd class="num">${g.filter((x) => x === 100).length}</dd></div>
-        </dl>
-      </div>`;
+  // ---------- חלון מתקפל ----------
+  // שורה קטנה עם כותרת וסיכום קצר; לחיצה מגדילה אותו לפרטים המלאים. מה שנפתח או נסגר נזכר בין ביקורים (state.fold)
+  const foldOpen = (k, def = false) => (k in state.fold ? state.fold[k] : def);
+  function foldHTML(k, { title, sum = "", body, link = "", def = false, cls = "" }) {
+    const open = foldOpen(k, def);
+    return `<section class="panel fold ${open ? "open" : ""} ${cls}">
+      <div class="fold-head">
+        <button type="button" class="fold-btn" data-fold="${esc(k)}" data-fold-def="${def ? 1 : 0}" aria-expanded="${open}">
+          <span class="fold-chev" aria-hidden="true">${ICON.chev}</span><span class="fold-title">${title}</span>${sum ? `<span class="fold-sum">${sum}</span>` : ""}
+        </button>${link}
+      </div>
+      ${open ? `<div class="fold-body">${typeof body === "function" ? body() : body}</div>` : ""}
+    </section>`;
   }
 
-  // שורת המספרים מתחת למסלול: כמה נבדקו, ממוצע, חציון, פיזור, עוברים, כמה מחכות לאדם וכמה אושרו
-  function statsRowHTML(A, I) {
+  // לוח הבקרה: כרטיס קטן עם המספרים העיקריים של המטלה. לחיצה עליו פותחת את לשונית הסטטיסטיקה, שם כל הפירוט
+  function statsMiniHTML(A, I) {
     const max = A.maxGrade || 100;
     const g = I.graded.map((s) => s.score).filter((x) => typeof x === "number");
     const mean = g.length ? g.reduce((a, b) => a + b, 0) / g.length : null;
-    const sd = g.length > 1 ? Math.sqrt(g.reduce((a, x) => a + (x - mean) ** 2, 0) / (g.length - 1)) : null;
     const pass = g.length ? Math.round((100 * g.filter((x) => x >= 0.6 * max).length) / g.length) : null;
-    const queue = A.subs.filter(needsReview).length;
     const approved = I.graded.filter((s) => s.approved).length;
-    const tile = (label, value, sub = "", cls = "", href = "") => `<${href ? `a href="${href}"` : "div"} class="stat ${cls}">
-      <span class="stat-l">${label}</span><b class="stat-v num">${value}</b>${sub ? `<span class="stat-s">${sub}</span>` : ""}</${href ? "a" : "div"}>`;
-    return `<section class="stat-row" aria-label="סטטיסטיקה">
-      ${tile("נבדקו", `${I.graded.length}<small>/${I.ok.length}</small>`, I.ok.length ? `${Math.round((100 * I.graded.length) / I.ok.length)}% מההגשות` : "")}
-      ${tile("ממוצע", fmt(mean), `מתוך ${max}`)}
-      ${tile("חציון", fmt(median(g)), sd != null ? `סטיית תקן ${fmt(sd)}` : "")}
-      ${tile("עוברים", pass != null ? `${pass}%` : "—", `ציון ${0.6 * max} ומעלה`)}
-      ${tile("לבדיקה ידנית", queue, queue ? "לחיצה פותחת את התור" : "אין מה לבדוק", queue ? "warn" : "ok", "#/review")}
-      ${tile("אושרו", `${approved}<small>/${I.graded.length}</small>`, "ציונים שאדם אישר")}
-    </section>`;
+    const item = (label, value) => `<span class="sm-item"><b class="num">${value}</b><small>${label}</small></span>`;
+    return `<a class="stats-mini" href="#/stats" title="פתח את הסטטיסטיקה המלאה של המטלה">
+      <span class="sm-icon" aria-hidden="true">${ICON.chart}</span>
+      ${item("נבדקו", `${I.graded.length}<i>/${I.ok.length}</i>`)}
+      ${item("ממוצע", fmt(mean))}
+      ${item("חציון", fmt(median(g)))}
+      ${item("עוברים", pass != null ? `${pass}%` : "—")}
+      ${item("אושרו", `${approved}<i>/${I.graded.length}</i>`)}
+      <span class="sm-more">לסטטיסטיקה המלאה<span aria-hidden="true">${ICON.chev}</span></span>
+    </a>`;
   }
 
   // מה מחכה לבדיקה ידנית, לפי סוג הבעיה. Claude שולח לשם כל עבודה שהוא לא בטוח בה
@@ -1709,36 +1784,20 @@
     ${list.length > top.length ? `<p class="hint">ועוד ${list.length - top.length} סוגי טעויות פחות נפוצים.</p>` : ""}`;
   }
 
-  function perQuestionHTML(I) {
-    const qs = rubric().questions;
-    // רק עבודות עם ניקוד לכל שאלה (בשורות ישנות יש רק ציון סופי)
-    const withQ = I.graded.filter((s) => Array.isArray(s.q) && s.q.length === qs.length);
-    if (noRubric()) return `<p class="muted empty-line">אין מחוון, אז אין ניקוד לפי שאלה.</p>`;
-    if (!withQ.length) return `<p class="muted empty-line">יופיע אחרי שיהיה ניקוד לכל שאלה.</p>`;
-    // עבודה שהניקוד בה עובר את המחוון נבדקה לפי חלוקה אחרת: לא נספרת, אחרת יוצאים אחוזים מעל 100
-    const fits = withQ.filter((s) => !overRubric(s.q).length), off = withQ.length - fits.length;
-    const offNote = off ? `<p class="hint">${off === 1
-      ? "עבודה אחת לא נספרת כאן: הניקוד בה עובר את המחוון (היא נבדקה לפי חלוקה אחרת), וצריך לבדוק אותה מחדש."
-      : `${off} עבודות לא נספרות כאן: הניקוד בהן עובר את המחוון (הן נבדקו לפי חלוקה אחרת), וצריך לבדוק אותן מחדש.`}</p>` : "";
-    if (!fits.length) return `<p class="muted empty-line">אין עדיין עבודות שנבדקו לפי המחוון.</p>${offNote}`;
-    const rates = qs.map((q, i) => Math.min(100, avg(fits.map((s) => Math.round((s.q[i] / q.pts) * 100)))));
-    const worst = rates.indexOf(Math.min(...rates));
-    return `<ul class="qbars">${qs.map((q, i) => `
-      <li class="${i === worst ? "worst" : ""}"><span>שאלה ${q.n}</span><span class="track"><i style="width:${rates[i]}%"></i></span><b class="num">${rates[i]}%</b></li>`).join("")}</ul>${offNote}`;
-  }
-
   // עלות הבדיקה עד עכשיו, מתוך יומן השימוש של Claude Code. שווה ערך ל-API: הבדיקה רצה במנוי של הצוות, לא מחויבת
   function usageHTML() {
     const u = D.usage;
     if (!u) return "";
     const share = u.cacheReadShare == null ? "—" : `${Math.round(u.cacheReadShare * 100)}%`;
     const models = Object.entries(u.models || {}).map(([m, v]) => `<bdi>${esc(m)}</bdi> · ${v.runs} ריצות · <bdi>$${v.costUsd}</bdi>`).join("<br>");
-    return `<section class="panel"><div class="panel-head"><h3>עלות הבדיקה</h3><span class="meta">שווה ערך ל-API, לא חיוב</span></div>
-      <div class="panel-body"><div class="stat-row" style="grid-template-columns:repeat(3,minmax(0,1fr));margin-top:0">
+    return foldHTML("stats:usage", {
+      title: "עלות הבדיקה", sum: `<bdi>$${u.costUsd}</bdi> · ${u.runs} ריצות · שווה ערך ל-API, לא חיוב`,
+      body: () => `<div class="stat-row compact" style="grid-template-columns:repeat(3,minmax(0,1fr));margin-top:0">
         <div class="stat"><span class="stat-l">סך הכל</span><b class="stat-v num">$${u.costUsd}</b><span class="stat-s">${u.runs} ריצות</span></div>
         <div class="stat"><span class="stat-l">לעבודה</span><b class="stat-v num">$${u.avgUsd}</b><span class="stat-s">ממוצע לריצה</span></div>
         <div class="stat"><span class="stat-l">מהמטמון</span><b class="stat-v num">${share}</b><span class="stat-s">מהקלט נקרא ולא נכתב מחדש</span></div>
-      </div><p class="muted" style="margin:12px 0 0">${models}</p></div></section>`;
+      </div><p class="muted" style="margin:12px 0 0">${models}</p>`,
+    });
   }
 
   function logHTML(limit, onlyHere) {
@@ -1749,12 +1808,17 @@
       <li><span class="ic ${r.kind}">${icon[r.kind]}</span><div>${esc(r.text)}<small>${esc(r.where || "")}<time class="num">${when(r.at)}</time>${r.actor ? `<span dir="ltr">${esc(r.actor)}</span>` : ""}</small></div></li>`).join("")}</ul>`;
   }
 
+  // כל המטלות של הקורס. בקטן: רק מטלות שיש בהן הגשות (והנבחרת); "הצג את כולן" מגדיל לכל עשר המשבצות
   function overviewHTML() {
     const list = D.assignments.filter((a) => a.courseId === state.courseId);
+    const active = list.filter((A) => A.subs.length || A.id === state.assignmentId);
+    const all = foldOpen("overview:all") || active.length === list.length;
     const mark = (done, txt) => `<span class="ov ${done ? "done" : ""}">${done ? ICON.check : ""}${txt}</span>`;
+    const more = list.length > active.length || foldOpen("overview:all")
+      ? `<button type="button" class="fold-more" data-fold="overview:all" data-fold-def="0" aria-expanded="${all}">${all ? "הצג רק מטלות עם הגשות" : `הצג את כל ${list.length} המטלות`}</button>` : "";
     return `<div class="table-wrap"><table class="overview">
       <thead><tr><th>מטלה</th><th class="col-hide">מועד הגשה</th><th>משיכה</th><th>בדיקה</th><th>החזרה</th><th>ממוצע</th></tr></thead>
-      <tbody>${list.map((A) => {
+      <tbody>${(all ? list : active).map((A) => {
         const I = info(A);
         const sel = A.id === state.assignmentId;
         return `<tr class="clickable ${sel ? "sel" : ""}" data-assign="${A.id}" tabindex="0" ${sel ? 'aria-current="true"' : ""}>
@@ -1766,13 +1830,12 @@
           <td class="num">${avg(I.graded.map((s) => s.score)) ?? `<span class="muted">—</span>`}</td>
         </tr>`;
       }).join("")}</tbody>
-    </table></div>`;
+    </table></div>${more}`;
   }
 
   function rubricSummaryHTML() {
-    const R = rubric();
-    return `
-      <ul class="criteria">${R.questions.map((q) => `<li><span title="${esc(q.req)}">שאלה ${q.n}</span><span class="track"><i style="width:${q.pts}%"></i></span><b class="num">${q.pts}</b></li>`).join("")}</ul>`;
+    // הרכיב עצמו ב-rubric-points.js: שאלה, הניקוד שלה, ומתחתיה הסעיפים
+    return window.RubricPoints.html(rubric().questions, esc);
   }
 
   // ---------- לוח המספרים הציבורי ----------
@@ -2265,7 +2328,8 @@
       }) });
       delete state.review.edits[id];
       delete state.review.log[`${A.id}:${id}`];
-      toast(r.from != null && String(r.from) !== String(r.grade) ? `עבודה ${id}: הציון שונה מ-${r.from} ל-${r.grade}` : `עבודה ${id} נשמרה: ${r.grade}`);
+      toast((r.from != null && String(r.from) !== String(r.grade) ? `עבודה ${id}: הציון שונה מ-${r.from} ל-${r.grade}` : `עבודה ${id} נשמרה: ${r.grade}`)
+        + (r.not_updated?.length ? `. לא עודכן עכשיו: ${r.not_updated.join(", ")} (יתעדכן בפעם הבאה)` : ""));
       state.review.saving = false;
       await loadLocal();
       const target = next ? `#/review?n=${next.id}` : wasQueued ? "#/review" : location.hash;
@@ -2278,131 +2342,6 @@
     }
   }
 
-  // ---------- העתקות (copying/check.py): זוגות של הגשות שנראות כמו אותה עבודה. בלי Claude ובלי טוקנים ----------
-  // שכבה 0: אותו קובץ או אותו מקור (קובץ, מטא-דאטה). שכבה 1: אותה סריקה בקובץ אחר (עמודים)
-  const COPY_KIND = {
-    file: { layer: 0, text: "אותו קובץ בדיוק" },
-    doc_id: { layer: 0, text: "אותו מזהה מסמך פנימי: הקבצים נוצרו מאותו מסמך" },
-    author: { layer: 0, text: "אותו מחבר במטא-דאטה של ה-PDF" },
-    created: { layer: 0, text: "אותו רגע יצירה במטא-דאטה של ה-PDF" },
-    page: { layer: 1, text: "עמודים זהים: אותה סריקה או תמונה" },
-    text: { layer: 1, text: "עמוד מוקלד עם כמעט אותו טקסט" },
-  };
-  const COPY_LAYERS = [
-    { key: "l0", layer: 0, name: "אותו קובץ או אותו מקור", what: "קובץ זהה אצל שני מספרים, או PDF שנוצר מאותו מסמך (מזהה פנימי, מחבר, רגע יצירה)" },
-    { key: "l1", layer: 1, name: "אותו עמוד", what: "סריקה שנראית כמעט זהה לעמוד בהגשה אחרת (גם אחרי דחיסה או צילום מסך), או עמוד מוקלד עם אותו טקסט נדיר" },
-  ];
-  const inLayer = (p, layer) => p.reasons.some((r) => COPY_KIND[r.kind]?.layer === layer);
-  const pairKey = (p) => `${p.a}-${p.b}`;
-
-  // שתי ההגשות זו לצד זו: העמודים שנמצאו זהים, ובלי עמודים זהים העמוד הראשון של כל אחת
-  function copyCompareHTML(A, p) {
-    const found = p.reasons.find((r) => r.pages), pages = found?.pages || [[1, 1, null]];
-    const score = (d) => (d == null ? "" : found.kind === "text" ? ` · ${d}% מהטקסט הנדיר משותף` : ` · ${d ? `${d} ביטים שונים מתוך 256` : "זהה"}`);
-    const sub = (id) => A.subs.find((s) => s.id === id);
-    const open = (id) => {
-      const f = sub(id) && origFiles(sub(id))[0];
-      return f ? `<a class="link" href="${fileUrl(f)}" target="_blank" rel="noopener">${ICON.file}פתח את ${id}</a>` : "";
-    };
-    return `<div class="cp-compare">
-      <div class="cp-cols cp-cols-head"><div><b class="num">${p.a}</b>${open(p.a)}</div><div><b class="num">${p.b}</b>${open(p.b)}</div></div>
-      ${pages.slice(0, 4).map(([pa, pb, d]) => `<div class="cp-cols">
-        <figure><img loading="lazy" src="${pageUrl(A, p.a, pa)}" alt="עמוד ${pa} בהגשה ${p.a}"><figcaption>עמוד ${pa}</figcaption></figure>
-        <figure><img loading="lazy" src="${pageUrl(A, p.b, pb)}" alt="עמוד ${pb} בהגשה ${p.b}"><figcaption>עמוד ${pb}${score(d)}</figcaption></figure>
-      </div>`).join("")}
-      ${pages.length > 4 ? `<p class="muted">ועוד ${pages.length - 4} זוגות של עמודים זהים</p>` : ""}
-    </div>`;
-  }
-
-  function copyPairHTML(A, p) {
-    const k = pairKey(p), isOpen = state.copy.open === k;
-    const reasons = p.reasons.map((r) => COPY_KIND[r.kind]?.text + (r.pages ? ` (${r.pages.map(([a, b]) => (a === b ? `עמוד ${a}` : `${a}↔${b}`)).join(", ")})` : ""));
-    return `<article class="cp-pair ${isOpen ? "open" : ""}">
-      <button type="button" class="cp-pair-head" data-copy-open="${k}" aria-expanded="${isOpen}">
-        <span class="cp-nums num">${p.a}<i>↔</i>${p.b}</span>
-        <span class="tag ${p.level === "strong" ? "bad" : "warn"}">${p.level === "strong" ? "חשד חזק" : "כדאי להסתכל"}</span>
-        <span class="cp-why">${reasons.map(esc).join(" · ")}</span>
-        <span class="cp-chev" aria-hidden="true">${ICON.chev}</span>
-      </button>
-      ${isOpen ? copyCompareHTML(A, p) : ""}
-    </article>`;
-  }
-
-  function copyingView() {
-    const A = cur();
-    if (!A) return offlineHTML();
-    const C = A.copying, run = state.copy, pairs = C?.pairs || [];
-    const shown = run.filter === "all" ? pairs : pairs.filter((p) => inLayer(p, COPY_LAYERS.find((l) => l.key === run.filter).layer));
-    const strong = pairs.filter((p) => p.level === "strong").length;
-    const button = (cls) => `<button type="button" class="btn ${cls}" data-copy-run ${run.running || !LOCAL.on ? "disabled" : ""}>
-      ${run.running ? ICON.spin : ICON.search}${run.running ? esc(run.progress || "בודק…") : C ? "בדוק שוב" : "בדוק העתקות"}</button>`;
-    const head = `<div class="page-head cp-top">
-        <div><h1>העתקות</h1>
-          <p>משווה את ההגשות זו לזו ומחפש עבודות שהן בעצם אותה עבודה. בלי Claude ובלי טוקנים: רק השוואה של הקבצים במחשב.</p>
-          ${C ? `<p class="muted">נבדק ${when(C.checkedAt)} · ${plural(C.checked, "הגשה אחת", "הגשות")}${C.by ? ` · ${esc(C.by)}` : ""}</p>` : ""}</div>
-        ${C ? button("secondary") : ""}
-      </div>
-      ${C?.stale ? `<div class="notice">${ICON.warn}<div>הגיעו הגשות חדשות או שקבצים השתנו מאז הבדיקה. כדאי לבדוק שוב: רק הקבצים החדשים ייקראו.</div></div>` : ""}`;
-    if (!A.subs.length) return `${head}<section class="panel">${emptyPulled()}</section>`;
-    if (!C) return `${head}<section class="rv-empty cp-empty">${ICON.search}<b>עוד לא נבדק</b>
-      <p>הבדיקה משווה כל הגשה לכל האחרות: קבצים זהים, PDF שנוצר מאותו מסמך, ועמודים שהם אותה סריקה.<br>בפעם הראשונה זה לוקח כמה דקות. אחר כך רק הגשות חדשות נקראות.</p>
-      ${button("primary")}</section>`;
-    const layers = `<div class="cp-layers" role="group" aria-label="סוג החשד">
-      <button type="button" class="cp-layer" data-copy-filter="all" aria-pressed="${run.filter === "all"}">
-        <span class="cp-layer-n num">${pairs.length}</span><span><b>כל החשדות</b><small>${strong ? `${strong} מהם חשד חזק` : "אין חשד חזק"}</small></span></button>
-      ${COPY_LAYERS.map((l) => `<button type="button" class="cp-layer" data-copy-filter="${l.key}" aria-pressed="${run.filter === l.key}">
-        <span class="cp-layer-n num">${pairs.filter((p) => inLayer(p, l.layer)).length}</span>
-        <span><b><span class="cp-layer-no">שכבה ${l.layer}</span>${l.name}</b><small>${l.what}</small></span></button>`).join("")}
-    </div>`;
-    const list = shown.length
-      ? `<div class="cp-list">${shown.map((p) => copyPairHTML(A, p)).join("")}</div>`
-      : `<section class="rv-empty">${ICON.check}<b>לא נמצא חשד להעתקה</b><p>${pairs.length ? "אין זוגות חשודים בשכבה הזו." : `אף הגשה לא זהה לאחרת, מתוך ${plural(C.checked, "הגשה אחת", "הגשות")}.`}</p></section>`;
-    return `${head}${layers}${list}${copyRepeatedHTML(A, C.repeated || [])}
-      <p class="cp-foot muted">זה רק חשד: ההחלטה אם זו העתקה היא של אדם. העתקה בכתב יד אחר (חבר שהעתיק את הפתרון בכתב ידו) לא נתפסת כאן.</p>`;
-  }
-
-  // עמודים שחוזרים אצל הרבה הגשות: בדרך כלל דף שאלות, אבל גם פתרון שעבר בקבוצה. לא זוגות: אדם מחליט
-  function copyRepeatedHTML(A, groups) {
-    if (!groups.length) return "";
-    return `<section class="panel cp-repeated">
-      <div class="panel-head"><h3>עמודים שחוזרים אצל הרבה הגשות</h3><span class="meta">בדרך כלל דף שאלות. אם זה פתרון, זו העתקה של קבוצה</span></div>
-      <div class="panel-body">${groups.slice(0, 10).map((g) => {
-        const [n, pg] = g.pages[0];
-        return `<div class="cp-group">
-          <img loading="lazy" src="${pageUrl(A, n, pg)}" alt="עמוד ${pg} בהגשה ${n}">
-          <div><b>${g.numbers} הגשות</b> <span class="muted">${g.kind === "text" ? "אותו טקסט" : "אותה סריקה"}</span>
-            <p class="num">${g.pages.slice(0, 40).map(([x, y]) => `${x}${y > 1 ? `/${y}` : ""}`).join(" · ")}${g.pages.length > 40 ? " …" : ""}</p></div>
-        </div>`;
-      }).join("")}</div>
-    </section>`;
-  }
-
-  // "בדוק העתקות": השרת משווה את ההגשות ברקע (api/copying), והאתר שואל מה המצב עד שזה נגמר
-  async function runCopying() {
-    const A = cur();
-    if (!A || state.copy.running || !LOCAL.on) return;
-    Object.assign(state.copy, { running: true, progress: "" });
-    render();
-    try {
-      await api("api/copying", { method: "POST", body: JSON.stringify({ course: A.courseFolder, assignment: A.folder }) });
-      let job;
-      for (;;) {
-        await new Promise((r) => setTimeout(r, 1000));
-        job = await api("api/copying");
-        state.copy.progress = job.total ? `קורא קבצים ${job.done} מתוך ${job.total}…` : "בודק…";
-        if (route() === "/copying") render();
-        if (!job.running) break;
-      }
-      state.copy.running = false;
-      await loadLocal();
-      toast(job.error || job.summary, job.error ? ICON.warn : ICON.check);
-    } catch (e) {
-      state.copy.running = false;
-      render();
-      toast(e.message, ICON.warn);
-    }
-  }
-
   // ---------- סטטיסטיקה: לשונית הדשבורד של מסד הנתונים (stats/, api/stats) ----------
   // כל מה שבמסד, לכל המטלות: טבלה לכל קורס להשוואה בין מטלות, ולמטלה שנבחרה ההתפלגות, השאלות והטעויות הנפוצות.
   // המספרים מגיעים מהמודול stats בלבד (אותם מספרים שהאתר מראה בלוח הבקרה), אף פעם לא מחושבים כאן.
@@ -2410,6 +2349,37 @@
   const statOf = (key) => D.stats.find((s) => s.key === key);
   const pctCell = (v) => (v == null ? `<span class="muted">—</span>` : `${v}%`);
   const numCell = (v) => (v == null ? `<span class="muted">—</span>` : fmt(v));
+
+  // הסטטיסטיקה של מטלה, מאותו מסד נתונים (Statistics/ בדרייב): בשלב "בדיקה וציון" לכל מטלה שיש בה עבודות בדוקות
+  const statKeyOf = (A) => (A ? `${A.courseFolder}/Assignment ${A.n - 1}` : null);
+  const statOfAssignment = (A) => statOf(statKeyOf(A));
+  function assignmentStatsHTML(A) {
+    const S = statOfAssignment(A);
+    if (!S?.counts?.graded) return "";
+    const g = S.grade, k = S.counts;
+    const tile = (label, value, sub = "", cls = "") => `<div class="stat ${cls}"><span class="stat-l">${label}</span><b class="stat-v num">${value}</b>${sub ? `<span class="stat-s">${sub}</span>` : ""}</div>`;
+    const qs = S.per_question.map((q) => `<li><span class="sq-l">שאלה ${q.index}</span>
+        <span class="track"><i style="width:${q.success_pct ?? 0}%"></i></span><b class="num">${pctCell(q.success_pct)}</b>
+        <small class="muted">${q.mistakes[0] ? esc(q.mistakes[0].text) : ""}</small></li>`).join("");
+    const top = S.per_question.flatMap((q) => q.mistakes.map((m) => ({ ...m, q: q.index }))).sort((a, b) => b.count - a.count).slice(0, 3);
+    return `<section class="panel a-stats" aria-label="הסטטיסטיקה של המטלה">
+      <div class="panel-head"><h3>הסטטיסטיקה של המטלה</h3>
+        <span class="meta">ממסד הנתונים בדרייב · חושב ${when(S.computed_at)}</span>
+        <button class="btn ghost small end" data-stats-open="${esc(S.key)}">${ICON.chev}כל הנתונים</button></div>
+      <div class="panel-body">
+        <div class="stat-row">
+          ${tile("נבדקו", `${k.graded}<small>/${k.submitted}</small>`, k.submitted ? `${Math.round((100 * k.graded) / k.submitted)}% מההגשות` : "")}
+          ${tile("ממוצע", fmt(g.mean), `מתוך ${S.max_grade}`)}
+          ${tile("חציון", fmt(g.median), g.sd != null ? `סטיית תקן ${fmt(g.sd)}` : "")}
+          ${tile("עוברים", g.pass_pct != null ? `${g.pass_pct}%` : "—", `ציון ${fmt(0.6 * S.max_grade)} ומעלה`)}
+          ${tile("לבדיקה ידנית", k.needs_review, "מקרים לאדם", k.needs_review ? "warn" : "ok")}
+          ${tile("אושרו", `${k.approved}<small>/${k.graded}</small>`, "ציונים שאדם אישר")}
+        </div>
+        ${qs ? `<ol class="sq-list" aria-label="הצלחה לפי שאלה">${qs}</ol>` : ""}
+        ${top.length ? `<p class="hint">הטעויות הנפוצות: ${top.map((m) => `${esc(m.text)} <small class="num">(שאלה ${m.q}, ${m.count})</small>`).join(" · ")}</p>` : ""}
+      </div>
+    </section>`;
+  }
 
   function statsView() {
     if (!LOCAL.on) return offlineHTML();
@@ -2427,12 +2397,18 @@
     ${errors.map((e) => `<div class="notice">${ICON.warn}<div><b>${esc(e.key)}</b>: הסטטיסטיקה לא חושבה. ${esc(e.error)}</div></div>`).join("")}`;
     if (!withData.length) return `${head}<section class="rv-empty">${ICON.check}<b>עוד אין עבודות בדוקות</b><p>אחרי הבדיקה הראשונה המטלה תופיע כאן עם הממוצע, ההתפלגות והטעויות הנפוצות שלה.</p></section>`;
     return `${head}${D.courses.map((c) => statsCourseTable(c, all.filter((s) => s.course === c.folder))).join("")}
-      ${S ? statsDetailHTML(S) : ""}`;
+      ${S ? statsDetailHTML(S) : ""}
+      <div class="st-usage">${usageHTML()}</div>`;
   }
 
   function statsCourseTable(c, list) {
     if (!list.length) return "";
-    const rows = list.slice().sort((a, b) => (a.slot ?? 99) - (b.slot ?? 99)).map((s) => {
+    const sorted = list.slice().sort((a, b) => (a.slot ?? 99) - (b.slot ?? 99));
+    const active = sorted.filter((s) => s.counts?.graded || s.key === state.statsKey), allKey = `stats:all:${c.folder}`;
+    const showAll = foldOpen(allKey) || active.length === sorted.length;
+    const more = sorted.length > active.length || foldOpen(allKey)
+      ? `<button type="button" class="fold-more" data-fold="${esc(allKey)}" data-fold-def="0" aria-expanded="${showAll}">${showAll ? "הצג רק מטלות עם עבודות בדוקות" : `הצג את כל ${sorted.length} המטלות`}</button>` : "";
+    const rows = (showAll ? sorted : active).map((s) => {
       const g = s.grade, k = s.counts, sel = s.key === state.statsKey, has = k.graded > 0;
       const review = k.needs_review ? `<span class="st-warn">${k.needs_review}</span>` : "0";
       return `<tr class="${has ? "clickable" : "muted"} ${sel ? "sel" : ""}" ${has ? `data-stats-key="${esc(s.key)}" tabindex="0"` : ""} ${sel ? 'aria-current="true"' : ""}>
@@ -2452,7 +2428,7 @@
       <div class="panel-head"><h2>${esc(c.name)}</h2><span class="meta">לחיצה על מטלה פותחת את הפירוט שלה</span></div>
       <div class="table-wrap"><table class="st-table">
         <thead><tr><th>מטלה</th><th>הוגשו</th><th>נבדקו</th><th>ממוצע</th><th class="col-hide">חציון</th><th class="col-hide">סטיית תקן</th><th>עוברים</th><th>לבדיקה ידנית</th><th class="col-hide">אושרו</th><th class="col-hide">בודקים</th></tr></thead>
-        <tbody>${rows}</tbody></table></div>
+        <tbody>${rows}</tbody></table></div>${more}
     </section>`;
   }
 
@@ -2488,6 +2464,8 @@
     }).join("");
     const mistakes = S.per_question.flatMap((q) => q.mistakes.map((m) => ({ ...m, q: q.index }))).sort((a, b) => b.count - a.count || a.q - b.q);
     const top = mistakes.slice(0, 15), mostM = top[0]?.count || 1;
+    const hardest = S.per_question.filter((q) => q.success_pct != null).sort((a, b) => a.success_pct - b.success_pct)[0];
+    const live = cur() && `${cur().courseFolder}/Assignment ${cur().n - 1}` === S.key && mistakeStats(cur()).length ? cur() : null;
     const mkList = top.length ? `<ol class="mk-list">${top.map((m) => `<li><div class="mk-row">
         <span class="mk-text"><b>${esc(m.text)}</b><small>שאלה ${m.q}${m.in_rubric ? " · במחוון" : ""}${m.deduction != null ? ` · בדרך כלל −${fmt(m.deduction)}` : ""}</small></span>
         <span class="track"><i style="width:${(m.count / mostM) * 100}%"></i></span>
@@ -2495,7 +2473,7 @@
       ${mistakes.length > top.length ? `<p class="hint">ועוד ${mistakes.length - top.length} סוגי טעויות פחות נפוצים.</p>` : ""}` : `<p class="muted empty-line">אין טעויות רשומות.</p>`;
     return `<section class="st-detail" aria-live="polite">
       <div class="page-head st-detail-head"><div><h2>${esc(S.title || `הגשה ${S.slot}`)}</h2><p class="muted">${esc(course)}${S.moodle_id ? ` · מזהה מודל ${esc(S.moodle_id)}` : ""} · חושב ${when(S.computed_at)}${S.computed_by ? ` על ידי ${esc(S.computed_by)}` : ""}</p></div></div>
-      <div class="stat-row">
+      <div class="stat-row compact">
         ${tile("נבדקו", `${k.graded}<small>/${k.submitted}</small>`, k.submitted ? `${Math.round((100 * k.graded) / k.submitted)}% מההגשות` : "")}
         ${tile("ממוצע", fmt(g.mean), `מתוך ${S.max_grade}`)}
         ${tile("חציון", fmt(g.median), g.sd != null ? `סטיית תקן ${fmt(g.sd)}` : "")}
@@ -2504,21 +2482,25 @@
         ${tile("אושרו", `${k.approved}<small>/${k.graded}</small>`, "ציונים שאדם אישר")}
       </div>
       ${kinds ? `<div class="chips st-kinds">${kinds}</div>` : ""}
-      <div class="st-grid">
-        <section class="panel"><div class="panel-head"><h3>התפלגות ציונים</h3><span class="meta">${g.n} ציונים</span></div><div class="panel-body">${g.n ? hist : `<p class="muted empty-line">אין ציונים.</p>`}</div></section>
-        <section class="panel"><div class="panel-head"><h3>טעויות נפוצות</h3><span class="meta">כמה עבודות עשו כל טעות</span></div><div class="panel-body">${mkList}</div></section>
-      </div>
-      <section class="panel"><div class="panel-head"><h3>לפי שאלה</h3><span class="meta">${S.over_rubric ? `${S.over_rubric} עבודות עם ניקוד מחוץ למחוון לא נספרות כאן · ` : ""}השוואה בין השאלות</span></div>
-        <div class="table-wrap"><table class="st-table st-q">
+      <div class="st-folds">
+        ${foldHTML("stats:hist", { title: "התפלגות ציונים", def: true,
+          sum: g.n ? `${g.n} ציונים · מינימום ${numCell(g.min)} · מקסימום ${numCell(g.max)} · ${g.full_marks} ציון מלא` : "אין ציונים",
+          body: () => (g.n ? hist : `<p class="muted empty-line">אין ציונים.</p>`) })}
+        ${foldHTML("stats:mistakes", { title: "טעויות נפוצות",
+          sum: mistakes.length ? `${mistakes.length} סוגים · הנפוצה: ${esc(mistakes[0].text)} (${mistakes[0].count})` : "אין טעויות רשומות",
+          body: () => (live ? mistakesHTML(live) : mkList) })}
+        ${foldHTML("stats:questions", { title: "לפי שאלה",
+          sum: hardest ? `${S.per_question.length} שאלות · הקשה ביותר: שאלה ${hardest.index} (${pctCell(hardest.success_pct)} הצלחה)` : "אין מחוון, אז אין ניקוד לפי שאלה",
+          body: () => `${S.over_rubric ? `<p class="hint">${S.over_rubric} עבודות עם ניקוד מחוץ למחוון לא נספרות כאן.</p>` : ""}<div class="table-wrap"><table class="st-table st-q">
           <thead><tr><th>שאלה</th><th>ניקוד</th><th>נבדקו</th><th>ממוצע</th><th>הצלחה</th><th class="col-hide">ניקוד מלא</th><th class="col-hide">אפס</th><th>לא בטוח</th><th>הטעות הנפוצה ביותר</th></tr></thead>
-          <tbody>${qRows || `<tr><td colspan="9" class="muted">אין מחוון, אז אין ניקוד לפי שאלה.</td></tr>`}</tbody></table></div></section>
-      <p class="hint">בודקים: ${S.graders.by.map((x) => `${esc(x.name)} (${x.graded})`).join(", ") || "—"}${S.copying?.pairs != null ? ` · זוגות העתקה חשודים: ${S.copying.pairs}` : ""}</p>
+          <tbody>${qRows || `<tr><td colspan="9" class="muted">אין מחוון, אז אין ניקוד לפי שאלה.</td></tr>`}</tbody></table></div>` })}
+      </div>
+      <p class="hint">בודקים: ${S.graders.by.map((x) => `${esc(x.name)} (${x.graded})`).join(", ") || "—"}</p>
     </section>`;
   }
 
   const views = {
     "/review": () => reviewView(),
-    "/copying": () => copyingView(),
     "/stats": () => statsView(),
     "/"() {
       const A = cur(), I = info(A);
@@ -2532,24 +2514,20 @@
         </div>
         ${noRubric() ? rubricNoticeHTML() : ""}
         ${pipelineHTML()}
-        ${statsRowHTML(A, I)}
+        ${statsMiniHTML(A, I)}
         ${reviewCalloutHTML(A)}
-        <div class="grid-2">
-          <div class="stack">
-            <section class="panel"><div class="panel-head"><h2>התפלגות ציונים</h2><span class="meta">${I.graded.length} עבודות בדוקות</span></div><div class="panel-body">${distHTML(I)}</div></section>
-            <section class="panel"><div class="panel-head"><h2>טעויות נפוצות</h2><span class="meta">לחיצה על טעות מראה מי עשה אותה</span></div><div class="panel-body">${mistakesHTML(A)}</div></section>
-            <section class="panel"><div class="panel-head"><h3>הצלחה לפי שאלה</h3></div><div class="panel-body">${perQuestionHTML(I)}</div></section>
-          </div>
-          <div class="stack">
-            <section class="panel"><div class="panel-head"><h3>מחוון</h3><a class="end link" href="#/grade" data-goto-tab="grade:instr">פרטים</a></div><div class="panel-body">${rubricSummaryHTML()}</div></section>
-            ${usageHTML()}
-            <section class="panel"><div class="panel-head"><h3>פעילות אחרונה</h3><a class="end link" href="#/runs">ליומן המלא</a></div><div class="panel-body tight">${logHTML(4, true)}</div></section>
-          </div>
-        </div>
-        <section class="panel" style="margin-top:24px">
-          <div class="panel-head"><h2>כל המטלות ב${esc(course().name)}</h2><span class="meta">לחיצה על שורה עוברת למטלה</span></div>
-          ${overviewHTML()}
-        </section>`;
+        <div class="home-folds">
+          ${foldHTML("home:overview", {
+            title: `כל המטלות ב${esc(course().name)}`,
+            sum: plural(D.assignments.filter((a) => a.courseId === state.courseId && a.subs.length).length, "מטלה אחת עם הגשות", "מטלות עם הגשות"),
+            body: () => overviewHTML(),
+          })}
+          ${foldHTML("home:rubric", {
+            title: "מחוון", sum: noRubric() ? "עוד אין מחוון" : `${rubric().questions.length} שאלות · ${A.maxGrade || 100} נקודות`,
+            body: () => rubricSummaryHTML(),
+            link: `<a class="end link" href="#/grade" data-goto-tab="grade:instr">פרטים</a>`,
+          })}
+        </div>`;
     },
     "/pull": () => stageView("pull"),
     "/grade": () => stageView("grade"),
@@ -2666,9 +2644,6 @@
     const rb = $("#nav-review-badge"), waiting = A.subs.filter(needsReview).length;
     rb.textContent = waiting || "";
     rb.title = waiting ? `${waiting} עבודות מחכות לבדיקה ידנית` : "";
-    const cb = $("#nav-copy-badge"), strong = (A.copying?.pairs || []).filter((p) => p.level === "strong").length;
-    cb.textContent = strong || "";
-    cb.title = strong ? `${strong} זוגות עם חשד חזק להעתקה` : "";
     const I = info(A), run = state.run[A.id];
     $$(".nav-stage").forEach((a) => {
       const st = a.dataset.stage, done = I.done[st];
@@ -2736,11 +2711,9 @@
     const gChip = t.closest("[data-grade-chip]");
     if (gChip) { state.gradeCount = Number(gChip.dataset.gradeChip); store.set("gradeCount", state.gradeCount); render(); return; }
     if (state.gradePick && !t.closest(".grade-pick")) { state.gradePick = null; render(); }  // לחיצה מחוץ לחלונית סוגרת אותה
-    if (t.closest("[data-copy-run]")) { runCopying(); return; }
-    const cpFilter = t.closest("[data-copy-filter]");
-    if (cpFilter) { state.copy.filter = cpFilter.dataset.copyFilter; state.copy.open = null; render(); return; }
-    const cpOpen = t.closest("[data-copy-open]");
-    if (cpOpen) { const k = cpOpen.dataset.copyOpen; state.copy.open = state.copy.open === k ? null : k; render(); return; }
+    // חלון מתקפל (fold): לחיצה על הכותרת מגדילה או מקטינה, ונזכר בין ביקורים
+    const fold = t.closest("[data-fold]");
+    if (fold) { const k = fold.dataset.fold; state.fold[k] = !foldOpen(k, fold.dataset.foldDef === "1"); store.set("fold", state.fold); render(); return; }
 
     // לוח הבקרה: טעות נפוצה שנפתחה
     const mk = t.closest("[data-mistake]");
@@ -2806,6 +2779,9 @@
       }
       if (a === "send-confirm" && LOCAL.batch?.assignmentId === cur().id) startLocalSend(LOCAL.batch.id);
       if (a === "send-cancel") { LOCAL.batch = null; render(); }
+      if (a === "grades-flow") startSendFlow("grades");
+      if (a === "grades-confirm" && LOCAL.gradesAsk?.assignmentId === cur().id) startLocalGrades();
+      if (a === "grades-cancel") { LOCAL.gradesAsk = null; render(); }
       if (a === "send-stop") stopLocalSend();
       if (a === "send-resume" && LOCAL.sending?.batch_id) startLocalSend(LOCAL.sending.batch_id);
       if (a === "ready-close" && LOCAL.rd) { LOCAL.rd.flow = false; render(); }
@@ -2850,6 +2826,8 @@
     if (t.closest("[data-integrity-fix]")) { runIntegrityFix(); return; }
 
     // סטטיסטיקה: מטלה שנבחרה בטבלה
+    const so = t.closest("[data-stats-open]");
+    if (so) { state.statsKey = so.dataset.statsOpen; location.hash = "#/stats"; return; }
     const sk = t.closest("[data-stats-key]");
     if (sk) { state.statsKey = sk.dataset.statsKey; render(); return; }
 

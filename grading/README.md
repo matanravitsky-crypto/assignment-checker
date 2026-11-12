@@ -11,6 +11,17 @@ python -m grading <מזהה מטלה> --ids 0001 0002
 
 בלי `--ids` נבדק כל מה שעוד לא נבדק. עם `--ids` נבדקות רק ההגשות האלה, גם אם כבר נבדקו.
 
+## ממשק
+
+| | |
+|---|---|
+| **נכנס** | `1 - Submissions to grade/`, `Assignment details.json` (שאלות, מחוון), `פדגוגי/` (`Rubric.md` ועוד), `Official key*`, `Official solution.pdf`; Claude דרך `ANTHROPIC_API_KEY` או Claude Code המחובר |
+| **יוצא** | `2 - Graded with comments/0001.pdf`, `Grades by <name>.csv`, `Grading notes/0001.json`, `Who grades what/<name>.json`, אירועי ציון ב-`Activity log/`, `Grades for Moodle.csv` (דרך `moodle_table.build`), `Grading usage.jsonl` |
+| **פקודה** | `python -m grading <id> [--ids 0001 ...] [--model ...]` (ברירת המחדל של המודל: `GRADING_MODEL` ב-`.env`) |
+| **מפייתון** | רק מה שב-`INTERFACE` ב-`grading/__init__.py`: `grade_assignment`, `save_review`, `load_context`, `read_grades`, `read_notes`... |
+| **מה מחברים אליו** | `grade_edit.connect_database(store)` (יומן האירועים) ו-`grade_edit.connect_stats(build)` (הסטטיסטיקה): grading לא מייבא אותם, והדשבורד מחבר אותם בהפעלה (`web_server.connect_stores`). בלי חיבור (סקיל, או `python -m grading`) הבדיקה עובדת אותו דבר, והסטטיסטיקה מחושבת אצל הקורא הבא שלה |
+| **תלוי ב** | הליבה (`moodle/paths.py` ושכניו), `moodle.claude_driver` (להריץ את Claude Code), `moodle.moodle_table`, `activity_log`. בחוץ: PyMuPDF, numpy, anthropic |
+
 ## מה הבדיקה מקבלת
 
 בתיקיית כל מטלה, בתיקייה המשותפת:
@@ -90,10 +101,12 @@ python -m grading <מזהה מטלה> --ids 0001 0002
 
 | יעד | מה |
 |---|---|
-| `DatabaseTarget` | מסד הנתונים. **כבוי עד שיהיה מסד נתונים** (ראו למטה) |
+| `DatabaseTarget` | יומן האירועים (`datastore/ledger.py`, `LedgerStore`): "עריכה התחילה" נרשמת לפני שאר היעדים, כך שקריסה באמצע נראית ב-doctor. מחובר בהפעלת הדשבורד |
 | `MarkedPdfTarget` | עמוד הסיכום ב-`2 - Graded with comments/0001.pdf` |
 | `NotesTarget` | `Grading notes/0001.json` (הערות, טעויות, מי בדק) |
 | `GradesCsvTarget` | `Grades by <name>.csv` של מי שעורך, כשורה מאושרת: היא גוברת על כל שורה אחרת של העבודה בכל קבצי הציונים, ולכן זה הציון שעולה למודל |
+| `MoodleTableTarget` | `Grades for Moodle.csv` (`moodle/moodle_table.py`): כל ציון ליד מזהה המשתתף של מודל, שממנו הציון עולה לסטודנט הנכון. אחרי קובץ הציונים, ולא optional: טבלה ישנה = הציון הישן היה עולה |
+| `StatsTarget` | מסד הנתונים הסטטיסטי בדרייב (`stats/`, `Statistics/<קורס>/Assignment N.json`): ממוצעים, התפלגות, טעויות נפוצות. נגזר מקובצי הציונים, ולכן אחרון. `optional`: כישלון לא מבטל את העריכה, נרשם ב-`not_updated` ביומן ובתשובה, והקורא הבא מחשב מחדש |
 
 אחר כך היא כותבת ליומן (`activity_log/`, פעולה `grade_edit`): מי, מתי, מאיזה ציון לאיזה, הניקוד לפני ואחרי, הסיבה,
 ואיפה עודכן. יעד שנכשל עוצר את השאר, נרשם כ-`grade_edit_failed` עם מה כן עודכן, והאתר אומר לשמור שוב.
@@ -102,14 +115,10 @@ python -m grading <מזהה מטלה> --ids 0001 0002
 **מקום חדש לעדכן בו ציון:** מחלקה עם `name`, `label`, `enabled()` ו-`apply(edit)`, ושורה ב-`TARGETS`. `edit_grade` לא משתנה.
 `edit` (`GradeEdit`) נותן את המספר, הציון הישן והחדש (`old_grade`, `new_grade`), הניקוד, הסיבה, מי ומתי.
 
-**חיבור מסד הנתונים, כשיהיה:** אובייקט עם `save_grade(edit: GradeEdit) -> None`, ופעם אחת בעליית השרת:
+יעד עם `optional = True` לא עוצר את העריכה כשהוא נכשל (מתאים למה שנגזר ואפשר לחשב מחדש); כל השאר עוצרים.
 
-```python
-from grading import grade_edit
-grade_edit.connect_database(MyStore(...))
-```
-
-מאותו רגע מסד הנתונים מתעדכן ראשון בכל עריכה, ו-`updated` ביומן מתחיל ב-`database`.
+**מסד הנתונים** מחובר: `DatabaseTarget` מקבל בהפעלת הדשבורד את `LedgerStore` (`dashboard/web_server.connect_stores`),
+ו-`StatsTarget` מעדכן את הסטטיסטיקה בדרייב. מסד אחר בעתיד: `grade_edit.connect_database(store)` עם `save_grade(edit)`, או יעד חדש ברשימה.
 
 ## כללים
 

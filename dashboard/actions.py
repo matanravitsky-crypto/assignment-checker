@@ -36,13 +36,12 @@ import pymupdf
 
 from copying import check as copying
 from grading import grade as grading, grade_edit
-from moodle import (anonymize as moodle_anonymize, claims, claude_driver, grades as moodle_grades, pull_check,
-                    ingest as moodle_ingest, lock as moodle_lock, paths, send as moodle_send, upload as moodle_upload,
-                    upload_log)
-
-from . import folder_view, onedrive_check, settings as cfg, shared_folder, usage as grading_usage
-from datastore import atomic
+from moodle import (anonymize as moodle_anonymize, atomic, claims, claude_driver, grades as moodle_grades, pull_check,
+                    ingest as moodle_ingest, lock as moodle_lock, paths, send as moodle_send, settings as cfg,
+                    shared_folder, upload as moodle_upload, moodle_table, send_grades, upload_log)
 from datastore import doctor as integrity_doctor
+
+from . import folder_view, onedrive_check, usage as grading_usage
 
 
 def root_info() -> tuple[Path | None, str | None]:
@@ -312,13 +311,7 @@ def pull(root: Path, course: str, assignment: str, moodle_id: str | None = None,
     try:
         rep = _do_pull(root, course, assignment, moodle_id, full, limit)
         job.summary = rep["summary"]
-        if rep["result"]["new"]:
-            # new submissions: the copying check (no Claude, no tokens) starts by itself, instead of a click on its page
-            try:
-                start_copying(root, course, assignment)
-                rep["notes"].append("בדיקת ההעתקות רצה עכשיו ברקע, והתוצאה תופיע בעמוד \"העתקות\".")
-            except (RuntimeError, OSError, UserError):
-                pass  # one already runs, or the folder went away: the button on that page still works
+        # the copying check no longer starts after a pull: the site dropped its page (Matan, 2026-11-10)
         return rep
     except Exception as e:
         job.error = str(e)
@@ -380,6 +373,7 @@ def _do_pull(root: Path, course: str, assignment: str, moodle_id: str | None, fu
         lock.unlink(missing_ok=True)
     numbers = {r["number"] for r in rows}
     new = sorted(numbers - before)
+    worksheet_notes = _worksheet_with_pull(a, mid)
     return {
         "course": course, "assignment": assignment,
         "result": {"total": len(numbers), "new": len(new), "files": len(rows)},
@@ -391,6 +385,7 @@ def _do_pull(root: Path, course: str, assignment: str, moodle_id: str | None, fu
                      if changed else "שום הגשה לא השתנתה במודל מאז המשיכה הקודמת, ולכן שום קובץ לא השתנה."]
                     if changed is not None else [])
                  + _check_notes(a)
+                 + worksheet_notes
                  + [f"הקבצים נשמרו ב-\"{paths.TO_GRADE}\". ה-ZIP של מודל נשמר רק במחשב הזה, ב-\"{paths.BACKUP}\"."]
                  + ([f"{without_file} סטודנטים בטבלת ההגשות במודל הגיעו בלי קובץ (לא הגישו קובץ, או שמודל לא שלח אותו)."]
                     if without_file else [])
@@ -399,6 +394,37 @@ def _do_pull(root: Path, course: str, assignment: str, moodle_id: str | None, fu
                     if listed and listed < (known := len({r["participant_id"] for r in old_rows})) else []),
         "pulled_at": datetime.now().isoformat(timespec="seconds"),
     }
+
+
+def _worksheet_with_pull(a: folder_view.Assignment, mid: str, downloader=None, downloads: Path | None = None,
+                         wait_s: float | None = None) -> list[str]:
+    """אחרי המשיכה: Claude מוריד ממודל גם את גיליון הציונים (Offline grading worksheet), והמערכת שומרת אותו בתיקיית
+    המטלה בלי שום עמודה שמזהה אדם (moodle_table.save_worksheet) וממלאת אותו מהציונים. המקור (עם שמות ומיילים) נמחק
+    מההורדות. כישלון כאן לא מבטל את המשיכה: ההגשות כבר נשמרו. מחזיר שורות לדוח."""
+    _pull_report("worksheet")
+    try:
+        info = paths.read_info(a.dir)
+        started = time.time()
+        got = (downloader or _make_downloader()).download_worksheet(info)
+        status = got.get("status")
+        if status == "not_enabled":
+            return ['גיליון הציונים לא הורד: במטלה הזו "גיליון ציונים לא מקוון" (Offline grading worksheet) כבוי במודל. '
+                    "ההגשות נמשכו כרגיל; כדי שהציונים יעלו למודל, המרצה צריך להפעיל אותו בהגדרות המטלה (סוגי משוב)."]
+        if status != "started":
+            return [f"גיליון הציונים לא הורד ממודל ({got.get('message') or status}). ההגשות נמשכו כרגיל, "
+                    "והגיליון יורד שוב במשיכה הבאה ולפני כל העלאת ציונים."]
+        sheet = send_grades.wait_for_worksheet(mid, started, downloads,
+                                               send_grades.WORKSHEET_WAIT_S if wait_s is None else wait_s)
+        if sheet is None:
+            return ["גיליון הציונים לא הגיע להורדות תוך דקה. ההגשות נמשכו כרגיל, והגיליון יורד שוב במשיכה הבאה."]
+        try:
+            saved = moodle_table.save_worksheet(a.dir, sheet)
+        finally:
+            sheet.unlink(missing_ok=True)  # יש בו שמות ומיילים: לא נשאר בהורדות
+        return [f"גיליון הציונים של מודל נשמר בתיקיית המטלה (\"{paths.MOODLE_WORKSHEET}\", {saved['rows']} סטודנטים, בלי שמות "
+                "ובלי מיילים), ומתמלא לבד בכל ציון שניתן או נערך."]
+    except Exception as e:  # noqa: BLE001 - המשיכה עצמה כבר הצליחה
+        return [f"גיליון הציונים לא נשמר ({e}). ההגשות נמשכו כרגיל."]
 
 
 def _listing(download: Path) -> dict:
@@ -959,8 +985,11 @@ class SendJob:
     total: int = 0
     done: int = 0
     current: str = ""  # ה-ZIP שמועלה עכשיו
-    stopped: str | None = None  # None: הכול עלה. אחרת: user / needs_login / mismatch / error / stale / locked
+    stopped: str | None = None  # None: הכול עלה. אחרת: user / needs_login / mismatch / error / stale / locked / not_enabled
     message: str = ""
+    phase: str = "files"  # files: קובצי ה-ZIP. grades: הציונים, מיד אחריהם באותה ריצה (moodle/send_grades.py)
+    grades_status: str = ""  # done / nothing / dry_run_ok / not_enabled / needs_login / mismatch / error / locked
+    grades_sent: int = 0
     started_at: str = ""
     finished_at: str = ""
 
@@ -998,9 +1027,96 @@ def prepare_send(root: Path, course: str, assignment: str) -> dict:
     except ValueError as e:  # כולל BatchBlocked: ההודעה כבר בעברית
         raise UserError(str(e)) from e
     rep = asdict(summary)
+    in_batch = {f["number"] for z in (upload_log.read_batch(a.dir) or {}).get("zips", []) for f in z.get("files", [])}
+    returned = returned_numbers(a.dir, grading.marked_files(a.dir))
+    rep["grades"] = _grades_to_send(a.dir, returned | in_batch)
     rep["summary"] = (f'מטלה "{summary.title}" (מודל {summary.assignment_id}): '
-                      f"{summary.files} קבצים של {summary.students} סטודנטים, ב-{len(summary.zips)} קובצי ZIP.")
+                      f"{summary.files} קבצים של {summary.students} סטודנטים, ב-{len(summary.zips)} קובצי ZIP"
+                      + (f", ואחריהם {rep['grades']} ציונים." if rep["grades"] else "."))
     return rep
+
+
+def grades_summary(root: Path, course: str, assignment: str) -> dict:
+    """מה הכפתור "העלה ציונים" יעלה: כמה ציונים מחכים (מספרים בלבד). לא נוגע במודל."""
+    a = find_assignment(root, course, assignment)
+    who = _upload_lock_holder(a)
+    numbers = sorted(send_grades.pending(a.dir))
+    info = a.details()
+    title = info.get("title") or info.get("name") or a.dir.name
+    return {"count": len(numbers), "numbers": numbers, "uploading": who,
+            "summary": f'מטלה "{title}" (מודל {info.get("id")}): {len(numbers)} ציונים יעלו למודל.'}
+
+
+def start_grades(root: Path, course: str, assignment: str, driver=None, wait: bool = False,
+                 dry_run: bool = False) -> dict:
+    """הכפתור "העלה ציונים", אחרי "כן" של אדם: מעלה ברקע את הציונים שמחכים (moodle/send_grades.py), באותו מקום
+    של ההעלאה (העלאה אחת בכל פעם). האתר שואל על המצב ב-GET /api/upload, כמו בקבצים. זורק RuntimeError אם משהו רץ."""
+    global _send
+    a = find_assignment(root, course, assignment)
+    require_moodle(root, course, assignment, "העליתי")
+    base_driver = driver if driver is not None else _make_driver()
+    with _send_lock:
+        if _send.running:
+            raise RuntimeError("העלאה אחרת כבר רצה.")
+        if _checking:  # הבדיקה וההעלאה היו מפעילות את אותו כרום
+            raise RuntimeError("בדיקת החיבור למודל רצה עכשיו. אפשר להתחיל בעוד רגע.")
+        count = len(send_grades.pending(a.dir))
+        if not count:
+            raise UserError("אין ציונים חדשים להעלאה.")
+        _send = job = SendJob(course, assignment, "", dry_run, running=True, total=count, phase="grades",
+                              current="ציונים", started_at=datetime.now().isoformat(timespec="seconds"))
+        _stop.clear()
+    _take_task_if_free(a.dir.parent, assignment, "return")
+
+    def run() -> None:
+        try:
+            gr = send_grades.send_grades(a.dir, base_driver, dry_run=dry_run)
+            with _send_lock:
+                job.grades_status, job.grades_sent, job.message = gr.status, gr.sent, gr.message
+                job.done = gr.sent
+                if gr.status not in ("done", "nothing", "dry_run_ok"):
+                    job.stopped = gr.status
+        except Exception as e:  # השגיאה מוצגת באתר במקום שההעלאה תיראה כרצה לנצח
+            with _send_lock:
+                job.stopped, job.message = "error", f"העלאת הציונים נכשלה: {e}"
+        finally:
+            with _send_lock:
+                job.running, job.current = False, ""
+                job.finished_at = datetime.now().isoformat(timespec="seconds")
+
+    t = threading.Thread(target=run, daemon=True)
+    try:
+        t.start()
+    except Exception:
+        with _send_lock:
+            job.running = False
+        raise
+    if wait:
+        t.join()
+    return send_status()
+
+
+def _grades_after_files(a: folder_view.Assignment, driver, job: SendJob, dry_run: bool) -> None:
+    """אחרי שכל הקבצים עלו, באותה ריצה ובאותו "כן": הציונים של העבודות שהקבצים שלהן במודל (moodle/send_grades.py).
+    גיליון טרי ממודל, ממולא מאותם ציונים כמו "Grades for Moodle.csv", ונשמר רק אם התצוגה המקדימה של מודל תואמת."""
+    with _send_lock:
+        job.phase, job.current = "grades", "ציונים"
+    gr = send_grades.send_grades(a.dir, driver, dry_run=dry_run)
+    with _send_lock:
+        job.grades_status, job.grades_sent = gr.status, gr.sent
+        if gr.status not in ("done", "nothing", "dry_run_ok"):
+            job.stopped = gr.status
+            job.message = f"הקבצים עלו. הציונים לא עלו: {gr.message}"
+        else:
+            job.message = " ".join(x for x in (job.message, gr.message if gr.status != "nothing" else "") if x)
+
+
+def _grades_to_send(assignment_dir: Path, returned: set[str]) -> int:
+    """כמה ציונים מחכים להעלאה: הקבצים של המספר כבר במודל, והציון שלו עוד לא (moodle/send_grades.py)."""
+    try:
+        return len(send_grades.pending(assignment_dir, returned=set(returned)))
+    except (OSError, ValueError, KeyError):
+        return 0
 
 
 def _make_driver() -> moodle_send.MoodleDriver:
@@ -1057,6 +1173,8 @@ def start_send(root: Path, course: str, assignment: str, batch_id: str,
                 job.done = len(rep.done_zips)
                 job.total = rep.total_zips or job.total
                 job.stopped, job.message = rep.stopped, rep.message
+            if rep.stopped is None and not _stop.is_set():
+                _grades_after_files(a, base_driver, job, dry_run)
         except Exception as e:  # השגיאה מוצגת באתר במקום שההעלאה תיראה כרצה לנצח
             with _send_lock:
                 job.stopped, job.message = "error", f"ההעלאה נכשלה: {e}"
@@ -1592,15 +1710,16 @@ def state(root: Path) -> dict:
                             + ([f"משיכה בתהליך: {who_pull}"] if (who_pull := _fresh_lock_holder(a.dir / LOCK_FILE)) else [])
                             + ([f"העלאה בתהליך: {who}"] if (who := _upload_lock_holder(a)) else []),
                 "subs": subs, "log": _activity(a, log), "owners": owners, "copying": copying_state(a.dir),
+                "gradesToSend": _grades_to_send(a.dir, returned),
             })
     return {"root": str(root), "courses": courses, "assignments": out, "me": me(),
             "moodle": False, "claude": quick_via() is not None, "claudeVia": quick_via(), "grading": grade_status(), "sending": send_status(), "copyCheck": copying_status(),
             "usage": grading_usage.summary(root)}
 
 
-RUBRIC_PDF = "Rubric.pdf"
-RUBRIC_MD = "Rubric.md"
-RUBRIC_LOG = "Rubric PDF changelog.md"
+RUBRIC_PDF = paths.RUBRIC_PDF
+RUBRIC_MD = paths.RUBRIC_MD
+RUBRIC_LOG = paths.RUBRIC_LOG
 NO_RUBRIC_FILE = {"pdf": False, "pdfAt": None, "path": None, "md": None, "approved": False, "rounds": 0}
 
 
@@ -1618,7 +1737,7 @@ def rubric_file_state(a_dir: Path, root: Path | None = None) -> dict:
         head = md.read_text(encoding="utf-8-sig", errors="replace")[:600]
         md_kind = "rendered" if "rubric.json" in head else "council"
     rounds = approved = 0
-    log = ped / "Working notes" / RUBRIC_LOG
+    log = ped / paths.RUBRIC_NOTES / RUBRIC_LOG
     if log.is_file():
         lines = [l for l in log.read_text(encoding="utf-8-sig", errors="replace").splitlines() if l.startswith("- ")]
         rounds = len({m.group(1) for l in lines for m in re.finditer(r"(?:round|סבב) (\d+)", l, re.I)})
@@ -1730,7 +1849,7 @@ def save_official_key(root: Path, course: str, assignment: str, *, file_name: st
                 raise UserError(f"אין במטלה שאלה בשם \"{label}\".")
             if v in (None, ""):
                 continue
-            x = grading._num(v, -1)
+            x = grading.to_points(v, -1)
             if x <= 0 or x > 1000:
                 raise UserError(f"הניקוד של \"{label}\" צריך להיות מספר חיובי.")
             clean[label] = x

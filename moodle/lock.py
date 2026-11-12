@@ -17,7 +17,7 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from datastore import atomic
+from . import atomic
 
 LOCK_MINUTES = 30
 SOMEONE_ELSE = "מישהו אחר"  # shown when the lock file is empty

@@ -7,7 +7,7 @@ each assignment's details file, so they stay right as assignments are added.
 from pathlib import Path
 
 from moodle import paths, status
-from datastore import atomic
+from . import atomic
 
 
 

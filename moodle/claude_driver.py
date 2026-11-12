@@ -42,8 +42,12 @@ import tempfile
 import time
 from pathlib import Path
 
-from moodle import upload_log
+from moodle import claude_code, settings, upload_log
+from moodle.claude_code import (AUTH_PROBLEM, AUTH_TIMEOUT_S, MESSAGE_MAX, NOT_INSTALLED, NOT_LOGGED_IN,  # noqa: F401
+                                STDERR_MAX, UNEXPECTED, crashed, failure_message, find_claude, object_in, read_answer,
+                                read_run, stderr_tail)
 from moodle.send import UploadResult
+from moodle.send_grades import GradesResult
 
 UPLOAD_URL = ("https://moodle.bgu.ac.il/moodle/mod/assign/view.php?id={id}&plugin=file"
               "&pluginsubtype=assignfeedback&action=viewpluginpage&pluginaction=uploadzip")
@@ -56,28 +60,22 @@ SESSION_RULE = (f'- If a page shows "404 Not Found" or a login page, Moodle\'s s
                 "seconds (Moodle signs in again by itself), and open the address you wanted again. {give_up}")
 
 # Starting values: the test assignment (plan task 11) sets them from real runs
-DEFAULT_MODEL = "claude-sonnet-5-5"
+DEFAULT_MODEL = "claude-sonnet-5-5"  # MOODLE_MODEL ב-.env דורס
 DEFAULT_BUDGET_USD = 2.0
 TIMEOUT_S = 600
 CHECK_BUDGET_USD = 0.5  # "is everything ready" opens one page, so it gets less
 CHECK_TIMEOUT_S = 180
-AUTH_TIMEOUT_S = 30
 DOWNLOAD_BUDGET_USD = 2.0  # opens a page, maybe ticks one box, runs the parts script and waits for it (a check every 20 s)
 DOWNLOAD_TIMEOUT_S = 20 * 60  # the run waits for every part: 15 parts took ~3 minutes on 2026-10-23
-MESSAGE_MAX = 300
 # A run that ends with an error code and no output this soon never reached Moodle: Claude Code itself failed to start
 # (2026-11-03 12:01, right after a `claude update` that hung: exit code 4294967295, and the pull button looked like it did
 # nothing). The check and the download then run once more after a short pause. Reaching Moodle takes Claude several turns,
 # so within this window the parts script cannot have started. Uploads never run twice by themselves
 CRASH_WINDOW_S = 20
 CRASH_PAUSE_S = 5
-STDERR_MAX = 200
 
-NOT_LOGGED_IN = "Claude Code לא מחובר במחשב הזה. מריצים פעם אחת: claude auth login"
-NOT_INSTALLED = "Claude Code לא מותקן במחשב הזה (הפקודה claude לא נמצאה)."
 NO_COPY = "לא הצלחנו להכין עותק של {name} להעלאה (הקובץ חסר או נעול). שום דבר לא הועלה."
 COPY_CHANGED = "העותק של {name} שונה מהקובץ שהוכן. שום דבר לא הועלה: צריך להכין שוב."
-UNEXPECTED = "תשובה לא צפויה מ-Claude Code: אי אפשר לקרוא את התוצאה."
 
 STATUSES = ("imported", "dry_run_ok", "needs_login", "mismatch", "error")
 RESULT_SCHEMA = {
@@ -202,29 +200,142 @@ def download_prompt(info: dict) -> str:
                                   wait_minutes=round(DOWNLOAD_TIMEOUT_S / 60) - 2) + \
         CHECKED_RUN.replace("{sha}", sha).replace("{script}", script)
 
+# ---------- grades: the offline grading worksheet (moodle/send_grades.py) ----------
+# "Offline grading worksheet" must be on in the assignment (a setting we never change). The download runs as a script
+# in the grading page: it fetches the worksheet with the user's session and saves it to Downloads, so Claude never
+# sees its contents (names and emails). The upload goes through Moodle's form, whose preview lists every change
+# before anything is saved: Claude confirms only when the preview has exactly the grade changes Python counted.
+WORKSHEET_DOWNLOAD_URL = ("https://moodle.bgu.ac.il/moodle/mod/assign/view.php?id={id}&plugin=offline"
+                          "&pluginsubtype=assignfeedback&action=viewpluginpage&pluginaction=downloadgrades")
+GRADES_UPLOAD_URL = ("https://moodle.bgu.ac.il/moodle/mod/assign/view.php?id={id}&plugin=offline"
+                     "&pluginsubtype=assignfeedback&action=viewpluginpage&pluginaction=uploadgrades")
+WORKSHEET_BUDGET_USD = 1.0
+WORKSHEET_TIMEOUT_S = 300
+
+# No backtick and no "${": it goes into String.raw (CHECKED_RUN)
+WORKSHEET_SCRIPT = """(async function () {
+  var url = "__URL__";
+  var linked = !!document.querySelector('a[href*="pluginaction=downloadgrades"], option[value*="pluginaction=downloadgrades"]');
+  var r;
+  try { r = await fetch(url, { credentials: "include" }); } catch (e) { return JSON.stringify({ error: "fetch failed" }); }
+  var type = (r.headers.get("content-type") || "").toLowerCase();
+  var text = await r.text();
+  var html = type.indexOf("html") >= 0 || /^\\s*</.test(text);
+  if (!r.ok || html) {
+    if (!linked && r.status !== 404) return JSON.stringify({ notEnabled: true });
+    return JSON.stringify({ error: "not a worksheet (http " + r.status + ")" });
+  }
+  var a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([text], { type: "text/csv;charset=utf-8" }));
+  a.download = "__NAME__";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  return JSON.stringify({ saved: true });
+})()"""
+
+WORKSHEET_STATUSES = ("started", "not_enabled", "needs_login", "error")
+WORKSHEET_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "status": {"type": "string", "enum": list(WORKSHEET_STATUSES)},
+        "message": {"type": "string", "maxLength": MESSAGE_MAX},
+    },
+    "required": ["status", "message"],
+    "additionalProperties": False,
+}
+
+WORKSHEET_PROMPT = """You start the download of the grading worksheet of one Moodle assignment, for a university course. Use only the Chrome tools.
+
+Rules (never break them):
+- Go only to this address: {grading_url} (and {home_url}, as the next rule says). Never open assignment settings or any other page.
+""" + SESSION_RULE.format(give_up='If it still shows 404 or a login page, do not type anything anywhere: stop and return status "needs_login".') + """
+- Never type anything, never click anything, never take a screenshot, never write any person's name in your answer.
+- Never change grades, submissions or settings. The only script you may run is the one in step 2, exactly as written.
+
+Steps:
+1. Open {grading_url}. Check the address has id={assignment_id} and the page is the grading page of the assignment "{title}". If not, return "error".
+2. On that page, run the script below with the javascript tool, copied exactly, character for character (the page checks
+   that it is exact before it runs). Run it once.
+3. It answers {{"saved": true}}: return "started". {{"notEnabled": true}}: return "not_enabled". {{"error": ...}} or it throws: return "error" with that text.
+
+Return only the structured result. "message" says what happened in one short sentence.
+
+The script:
+"""
+
+GRADES_STATUSES = ("imported", "dry_run_ok", "needs_login", "mismatch", "not_enabled", "error")
+GRADES_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "status": {"type": "string", "enum": list(GRADES_STATUSES)},
+        "preview": {"type": ["integer", "null"]},
+        "skipped": {"type": ["integer", "null"]},
+        "updated": {"type": ["integer", "null"]},
+        "message": {"type": "string", "maxLength": MESSAGE_MAX},
+    },
+    "required": ["status", "preview", "skipped", "updated", "message"],
+    "additionalProperties": False,
+}
+
+GRADES_DRY_RUN_MODE = ('This is a dry run: count as step 6 says, then click ביטול (Cancel) on the confirmation page. '
+                       'Never click the confirm button. Return "dry_run_ok" with "preview" and "skipped", and stop.')
+
+GRADES_PROMPT = """You upload one grading worksheet (a CSV file) to Moodle for a university course. Follow these steps exactly, using only the Chrome tools.
+
+Rules (never break them):
+- Go only to this address: {upload_url} (and {home_url}, as the next rule says). Never open assignment settings or any other page.
+""" + SESSION_RULE.format(give_up='If it still shows 404 or a login page, do not type anything anywhere: stop and return status "needs_login".') + """
+- Never upload any file other than {csv_path}. Never type anything into the page.
+- Leave every option of the upload form as it is. Never change any setting of the assignment.
+- Click the confirm button of the confirmation page at most once, only in step 7, and never in a dry run.
+- Never take a screenshot. Never write any person's name in your answer.
+
+Steps:
+1. Open {upload_url}.
+2. If Moodle says the grading worksheet is not enabled or not available, or the page has no form to upload a grading worksheet, return "not_enabled".
+3. Check the address has id={assignment_id} and the page is for the assignment "{title}". If not, return "error".
+4. In the form's file picker choose "העלאת קובץ" (Upload a file). Find the input[type=file] with find or read_page and upload {csv_path} with file_upload. Do not click the file input. Then click "העלאת קובץ זה" (Upload this file). Check that the file name appears in the form's file area; if it does not, return "error".
+5. Leave the encoding, the separator and the checkbox about records modified more recently in Moodle as they are. Click the form's submit button ("העלאת גיליון ציונים" / "Upload grading worksheet").
+6. Moodle now shows a confirmation page that lists every change before anything is saved. Read it with get_page_text and count:
+   "preview" = the lines that set a grade (in English "Set grade for ... to ..."; the Hebrew page says the same in Hebrew).
+   Do not count lines that set feedback text or any other field.
+   "skipped" = the lines that say a record is skipped (for example because it was modified more recently in Moodle); 0 if none.
+   {mode}
+7. Real run only (a dry run stops at step 6): if preview is {expected} and skipped is 0, click the confirm button (אישור / Confirm) exactly once,
+   read Moodle's result message (in English "Updated N grades and feedback") and return "imported" with "updated" = N (null if it shows no number).
+   Otherwise click ביטול (Cancel), do not confirm, and return "mismatch" with the numbers: then nothing changes in Moodle.
+
+Return only the structured result. "message" says what happened in one short sentence, with numbers only.
+"""
+
+
+def worksheet_prompt(info: dict) -> str:
+    mid = assignment_id(info)
+    script = WORKSHEET_SCRIPT.replace("__URL__", WORKSHEET_DOWNLOAD_URL.format(id=mid)) \
+        .replace("__NAME__", f"Grading worksheet-{mid}.csv")
+    if "`" in script or "${" in script:
+        raise ValueError("the worksheet script may not hold a backtick or ${: it goes into String.raw")
+    sha = hashlib.sha256(script.encode("utf-8")).hexdigest()
+    return WORKSHEET_PROMPT.format(grading_url=GRADING_URL.format(id=mid), home_url=HOME_URL, assignment_id=mid,
+                                   title=info.get("title") or info.get("name") or "") + \
+        CHECKED_RUN.replace("{sha}", sha).replace("{script}", script)
+
+
+def grades_prompt(info: dict, csv_path: Path, expected: int, dry_run: bool) -> str:
+    mid = assignment_id(info)
+    return GRADES_PROMPT.format(upload_url=GRADES_UPLOAD_URL.format(id=mid), home_url=HOME_URL, assignment_id=mid,
+                                title=info.get("title") or info.get("name") or "", csv_path=csv_path,
+                                expected=int(expected), mode=GRADES_DRY_RUN_MODE if dry_run else "")
+
+
 # A failed run whose output is one of these means Claude Code itself is not logged in
-AUTH_PROBLEM = re.compile(r"authenticat|oauth|not logged in|/login|invalid api key", re.IGNORECASE)
 # What to say when Claude gives a failing status without a message
 DEFAULT_MESSAGES = {
     "needs_login": "Moodle מבקש התחברות. מתחברים ל-Moodle בכרום ומריצים שוב.",
     "mismatch": "מספר הקבצים ש-Moodle עיבד שונה מהצפוי.",
     "error": "Claude לא פירט מה השתבש.",
 }
-
-
-def find_claude() -> str | None:
-    """The `claude` command: on the PATH, or where the official installer puts it (~/.local/bin).
-
-    A fresh install is often not on the PATH of a server that was already running.
-    """
-    found = shutil.which("claude")
-    if found:
-        return found
-    for name in ("claude.exe", "claude"):
-        candidate = Path.home() / ".local" / "bin" / name
-        if candidate.is_file():
-            return str(candidate)
-    return None
 
 
 CHROME_PATHS = (r"%ProgramFiles%\Google\Chrome\Application\chrome.exe",
@@ -308,61 +419,6 @@ def build_command(prompt: str, add_dir: Path, *, model: str, budget_usd: float, 
     ]
 
 
-def object_in(text) -> dict | None:
-    """The JSON object inside a text (possibly in a ``` fence), or None."""
-    if not isinstance(text, str):
-        return None
-    try:
-        value = json.loads(re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip()))
-    except ValueError:
-        return None
-    return value if isinstance(value, dict) else None
-
-
-def read_answer(stdout: str | None) -> tuple[dict | None, str]:
-    """The structured answer in the CLI's JSON output, or (None, why in Hebrew).
-
-    The answer is in `structured_output`; if it is not, in the `result` text as JSON.
-    """
-    try:
-        data = json.loads(stdout or "")
-    except ValueError:
-        return None, UNEXPECTED
-    if isinstance(data, list):  # a list of messages: the last "result" one is the answer
-        data = next((d for d in reversed(data) if isinstance(d, dict) and d.get("type") == "result"), None)
-    if not isinstance(data, dict):
-        return None, UNEXPECTED
-    if data.get("is_error") or str(data.get("subtype") or "").startswith("error"):
-        text = str(data.get("result") or data.get("subtype") or "").strip()
-        if AUTH_PROBLEM.search(text):
-            return None, NOT_LOGGED_IN
-        return None, f"Claude Code נכשל: {text[:MESSAGE_MAX]}" if text else "Claude Code נכשל."
-    answer = data.get("structured_output")
-    answer = answer if isinstance(answer, dict) else object_in(data.get("result"))
-    return (answer, "") if answer is not None else (None, UNEXPECTED)
-
-
-def crashed(proc) -> bool:
-    """Claude Code ended with an error code and wrote nothing at all: it failed before it could answer."""
-    return bool(getattr(proc, "returncode", 0)) and not str(getattr(proc, "stdout", "") or "").strip()
-
-
-def stderr_tail(proc) -> str:
-    """The last line Claude Code wrote to stderr, short: why it failed, when it says so."""
-    lines = [line.strip() for line in str(getattr(proc, "stderr", "") or "").splitlines() if line.strip()]
-    return lines[-1][:STDERR_MAX] if lines else ""
-
-
-def read_run(proc) -> tuple[dict | None, str]:
-    """read_answer for a finished process. A non-zero exit never counts as an answer."""
-    code = getattr(proc, "returncode", 0)
-    answer, problem = read_answer(proc.stdout)
-    if code and (answer is not None or problem == UNEXPECTED):
-        tail = stderr_tail(proc)
-        return None, f"Claude Code נכשל (קוד יציאה {code})." + (f" הוא כתב: {tail}" if tail else "")
-    return answer, problem
-
-
 def count_or_none(value) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
@@ -383,22 +439,13 @@ def parse_result(stdout: str) -> UploadResult:
     return result_of(*read_answer(stdout))
 
 
-def failure_message(error: Exception, timeout_s: float) -> str:
-    """Hebrew for a run that did not finish. The type of the error only: its text could hold anything."""
-    if isinstance(error, subprocess.TimeoutExpired):
-        return f"Claude Code לא סיים תוך {round(timeout_s / 60)} דקות ונעצר."
-    if isinstance(error, FileNotFoundError):
-        return NOT_INSTALLED
-    return f"Claude Code לא הצליח לרוץ ({type(error).__name__})."
-
-
 class ClaudeChromeDriver:
     """The `MoodleDriver` for Moodle through Claude in Chrome. `run` is subprocess.run, a fake in tests."""
 
-    def __init__(self, model: str = DEFAULT_MODEL, budget_usd: float = DEFAULT_BUDGET_USD,
+    def __init__(self, model: str | None = None, budget_usd: float = DEFAULT_BUDGET_USD,
                  timeout_s: int = TIMEOUT_S, run=subprocess.run, claude: str | None = None,
                  sleep=time.sleep, clock=time.monotonic):
-        self.model = model
+        self.model = model or settings.get("MOODLE_MODEL", DEFAULT_MODEL)
         self.budget_usd = budget_usd
         self.timeout_s = timeout_s
         self.run = run
@@ -508,26 +555,71 @@ class ClaudeChromeDriver:
         return {"status": status, "message": message,
                 "users": count_or_none(answer.get("users")), "parts": count_or_none(answer.get("parts"))}
 
+    def download_worksheet(self, info: dict) -> dict:
+        """Save the assignment's grading worksheet to Downloads (moodle/send_grades.py waits for it there).
+        {"status": "started"|"not_enabled"|"needs_login"|"error", "message": str}. An empty folder and no built-in
+        tools, like the connection check. Never raises."""
+        claude = self.claude or find_claude()
+        if not claude:
+            return {"status": "error", "message": NOT_INSTALLED}
+        try:
+            prompt = worksheet_prompt(info)
+            with tempfile.TemporaryDirectory(prefix="moodle-worksheet-", ignore_cleanup_errors=True) as empty:
+                proc = self.execute(claude, prompt, Path(empty), WORKSHEET_SCHEMA, WORKSHEET_BUDGET_USD,
+                                    WORKSHEET_TIMEOUT_S, again_if_crashed=True)
+        except Exception as error:  # never raise: the caller shows the message
+            return {"status": "error", "message": failure_message(error, WORKSHEET_TIMEOUT_S)}
+        answer, problem = read_run(proc)
+        if answer is None:
+            return {"status": "error", "message": problem}
+        status = answer.get("status")
+        if status not in WORKSHEET_STATUSES:
+            return {"status": "error", "message": UNEXPECTED}
+        return {"status": status, "message": str(answer.get("message") or "")[:MESSAGE_MAX] or DEFAULT_MESSAGES.get(status, "")}
+
+    def upload_grades(self, info: dict, csv_path: Path, expected: int, dry_run: bool, sha256: str | None = None):
+        """Upload the filled worksheet through Moodle's form and confirm its preview (see GRADES_PROMPT). Like
+        upload_zip: a fresh temp folder with only a copy of the file, checked against `sha256`, Read as the only
+        built-in tool, never run twice by itself. Returns a send_grades.GradesResult. Never raises."""
+        claude = self.claude or find_claude()
+        if not claude:
+            return GradesResult("error", message=NOT_INSTALLED)
+        name = Path(csv_path).name
+        run_dir = None
+        try:
+            run_dir = Path(tempfile.mkdtemp(prefix="moodle-grades-")).absolute()
+            copy = run_dir / name
+            try:
+                shutil.copyfile(csv_path, copy)
+            except OSError:
+                return GradesResult("error", message=NO_COPY.format(name=name))
+            if sha256 is not None and upload_log.file_hash(copy) != sha256:
+                return GradesResult("error", message=COPY_CHANGED.format(name=name))
+            prompt = grades_prompt(info, copy, expected, dry_run)
+            proc = self.execute(claude, prompt, run_dir, GRADES_SCHEMA, self.budget_usd, self.timeout_s, tools="Read")
+        except Exception as error:  # the driver must never raise
+            message = failure_message(error, self.timeout_s)
+            if isinstance(error, subprocess.TimeoutExpired):
+                message += " ייתכן שהציונים כבר עודכנו. העלאה חוזרת של אותו גיליון בטוחה: מודל משנה רק מה שהשתנה."
+            return GradesResult("error", message=message)
+        finally:
+            if run_dir is not None:
+                shutil.rmtree(run_dir, ignore_errors=True)
+        answer, problem = read_run(proc)
+        if answer is None:
+            return GradesResult("error", message=problem)
+        status = answer.get("status")
+        if status not in GRADES_STATUSES:
+            return GradesResult("error", message=UNEXPECTED)
+        message = str(answer.get("message") or "")[:MESSAGE_MAX] or DEFAULT_MESSAGES.get(status, "")
+        return GradesResult(status, count_or_none(answer.get("preview")), count_or_none(answer.get("skipped")),
+                            count_or_none(answer.get("updated")), message)
+
 
 def auth_status(run=subprocess.run, claude: str | None = None) -> dict:
-    """Is Claude Code logged in on this computer? {"logged_in": bool, "message": str}. Never raises.
-
-    `claude auth status --json` prints {"loggedIn": ..., ...} (and exits non-zero when logged out). Nothing of
-    that output is passed on but the yes or no: it holds the account's details.
-    """
+    """Is Claude Code logged in on this computer? See claude_code.auth_status. Finds `claude` through this module's
+    find_claude, so the site's readiness check and its tests see the same one."""
     claude = claude or find_claude()
     if not claude:
         return {"logged_in": False, "message": NOT_INSTALLED}
-    try:
-        proc = run([claude, "auth", "status", "--json"], capture_output=True, text=True, encoding="utf-8",
-                   timeout=AUTH_TIMEOUT_S, stdin=subprocess.DEVNULL)
-        data = json.loads(proc.stdout or "")
-    except FileNotFoundError:
-        return {"logged_in": False, "message": NOT_INSTALLED}
-    except Exception:  # a timeout, odd output...: we only could not check
-        data = None
-    if not isinstance(data, dict) or "loggedIn" not in data:
-        return {"logged_in": False, "message": "לא הצלחנו לבדוק אם Claude Code מחובר."}
-    if data["loggedIn"] is True:
-        return {"logged_in": True, "message": "Claude Code מחובר."}
-    return {"logged_in": False, "message": NOT_LOGGED_IN}
+    return claude_code.auth_status(run, claude)

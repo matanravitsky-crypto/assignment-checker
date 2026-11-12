@@ -54,7 +54,7 @@ from typing import Callable
 
 import pymupdf
 
-from moodle import claims, claude_driver, grades, paths
+from moodle import claims, claude_code, grades, paths, settings
 
 from .render import CROP_DEFAULT, PageImage, render_pdf
 
@@ -63,7 +63,7 @@ GRADES = paths.GRADES
 SOLUTION = "Official solution.pdf"
 GRADE_COLUMNS = grades.COLUMNS  # מה כל עמודה אומרת: moodle/grades.py
 
-DEFAULT_MODEL = "claude-opus-5-5"
+DEFAULT_MODEL = "claude-opus-5-5"  # GRADING_MODEL ב-.env דורס (default_model)
 EFFORT = "high"
 MAX_TOKENS = 32000
 # כמה עבודות נשלחות ל-Claude במקביל
@@ -158,6 +158,16 @@ def _num(value, default: float = 0) -> float:
     except (TypeError, ValueError):
         return default
     return x if math.isfinite(x) and x >= 0 else default
+
+
+def default_model() -> str:
+    """The grading model: GRADING_MODEL in .env, or DEFAULT_MODEL."""
+    return settings.get("GRADING_MODEL", DEFAULT_MODEL)
+
+
+def to_points(value, default: float = 0) -> float:
+    """A number of points as grading reads it (finite and not negative), or default. Other parts use this, not _num."""
+    return _num(value, default)
 
 
 # ---------- תיקיית המטלה ----------
@@ -468,7 +478,7 @@ def claude_ask() -> Ask:
         from . import claude_cli
         if not claude_cli.available():
             raise NoApiKey()
-        return claude_cli.cli_ask(claude_driver.find_claude(), SCHEMA, EFFORT, error=GradingError,
+        return claude_cli.cli_ask(claude_code.find_claude(), SCHEMA, EFFORT, error=GradingError,
                                   not_logged_in=NoApiKey)
     import anthropic
 
@@ -1027,7 +1037,7 @@ class TakenByOther(Exception):
 
 
 def grade_assignment(assignment_dir: Path, numbers: list[str] | None = None, *, ask: Ask | None = None,
-                     model: str = DEFAULT_MODEL, parallel: int = DEFAULT_PARALLEL, instructions: str = "",
+                     model: str | None = None, parallel: int = DEFAULT_PARALLEL, instructions: str = "",
                      send_solution: bool = True, on_progress: Callable[[str, str], None] | None = None,
                      stop: threading.Event | None = None, who: str | None = None) -> GradeReport:
     """בודק הגשות של מטלה. numbers=None: כל מה שעוד לא נבדק.
@@ -1036,6 +1046,7 @@ def grade_assignment(assignment_dir: Path, numbers: list[str] | None = None, *, 
     stop: כשהוא מסומן, הגשות שעוד לא נשלחו ל-Claude לא נשלחות (rep.stopped), ואלה שבאמצע מסתיימות ונשמרות.
     כשנגמרת המכסה של Claude הבדיקה נעצרת לבד באותה דרך, ואחרי שמה שבאמצע נשמר זורקת ClaudeLimit."""
     stop = stop or threading.Event()
+    model = model or default_model()
     via = ""  # נרשם ב-Grading notes: איך רצה הבדיקה, כדי שיהיה אפשר לראות באתר מה בדק כל עבודה
     if ask is None:
         ask = claude_ask()
@@ -1173,6 +1184,7 @@ def grade_assignment(assignment_dir: Path, numbers: list[str] | None = None, *, 
         rep.notes.append(f"{len(late)} עבודות נלקחו בינתיים על ידי בודק אחר ולא נבדקו כאן: {', '.join(sorted(late)[:20])}"
                          + (" ועוד" if len(late) > 20 else ""))
     _update_stats(assignment_dir)
+    _update_moodle_table(assignment_dir)
     if limit:  # מה שכבר היה אצל Claude נשמר; את השאר אפשר להמשיך כשהמכסה מתחדשת
         raise ClaudeLimit(f"Claude הגיע למגבלת השימוש, אז הבדיקה נעצרה אחרי {len(rep.graded)} עבודות. "
                           f"העבודות שלא נבדקו לא סומנו כנכשלות: אפשר להמשיך כשהמכסה מתחדשת. ({limit[0]})")
@@ -1211,13 +1223,29 @@ def _ledger(assignment_dir: Path, action: str, by: str, **details) -> None:
         print(f"היומן לא נכתב: {e}", file=sys.stderr)
 
 
-def _update_stats(assignment_dir: Path) -> None:
-    """מעדכן את מסד הנתונים הסטטיסטי (stats/, "Statistics/<קורס>/Assignment N.json") אחרי בדיקה או אישור.
-    כישלון שם לא מפיל את הבדיקה: הקובץ נגזר, והקורא הבא יחשב אותו מחדש."""
+def _update_moodle_table(assignment_dir: Path) -> None:
+    """מעדכן את Grades for Moodle.csv (moodle/moodle_table.py) אחרי בדיקה. כישלון לא מפיל את הבדיקה: הטבלה נגזרת,
+    וההעלאה בונה אותה מחדש לפני שהיא ממלאת את גיליון מודל."""
     import sys
 
     try:
-        import stats
-        stats.build(assignment_dir)
+        from moodle import moodle_table
+        moodle_table.build(assignment_dir)
+    except Exception as e:  # noqa: BLE001
+        print(f"טבלת הציונים למודל לא עודכנה: {e}", file=sys.stderr)
+
+
+def _update_stats(assignment_dir: Path) -> None:
+    """מעדכן את מסד הנתונים הסטטיסטי (stats/, "Statistics/<קורס>/Assignment N.json") אחרי בדיקה או אישור, אם מי
+    שמרכיב את המערכת חיבר אותו (grade_edit.connect_stats; grading לא מייבא את stats). כישלון שם לא מפיל את הבדיקה:
+    הקובץ נגזר, והקורא הבא יחשב אותו מחדש."""
+    import sys
+
+    from .grade_edit import stats_builder  # grade_edit מייבא את הקובץ הזה
+    build = stats_builder()
+    if build is None:
+        return
+    try:
+        build(assignment_dir)
     except Exception as e:  # noqa: BLE001
         print(f"הסטטיסטיקה לא עודכנה: {e}", file=sys.stderr)

@@ -13,13 +13,16 @@
 מסד הנתונים (DatabaseTarget): כבוי עד ש-connect_database(store) מחבר אליו store עם save_grade(edit: GradeEdit) -> None.
 datastore/ledger.py נותן LedgerStore: רושם "grade_edit_intent" ביומן לפני שאר היעדים (קריסה באמצע = עריכה לא גמורה
 שה-doctor מראה). הדשבורד יחבר אותו בהפעלה (שלב 3 של הצעה A); העריכה הגמורה נרשמת תמיד ("grade_edit").
+
+מסד הנתונים הסטטיסטי בדרייב (StatsTarget, stats/): אחרון ברשימה, כי הוא נגזר מקובצי הציונים. optional: אם הוא נכשל
+העריכה נשמרת בכל השאר, והכישלון נרשם ביומן (not_updated).
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Protocol
+from typing import Callable, Protocol
 
 import activity_log
 from moodle import grades, paths
@@ -126,7 +129,7 @@ class MarkedPdfTarget:
 class NotesTarget:
     """Grading notes/0001.json: ההערות, הטעויות ומי בדק. מזה האתר מראה את העבודה."""
     name: str = "notes"
-    label: str = "Grading notes"
+    label: str = paths.NOTES
 
     def enabled(self) -> bool:
         return True
@@ -158,8 +161,45 @@ class GradesCsvTarget:
                           max_grade=edit.ctx.max_grade, question_points=[q.points for q in edit.ctx.questions])
 
 
+@dataclass
+class StatsTarget:
+    """מסד הנתונים הסטטיסטי בדרייב (stats/, "Statistics/<קורס>/Assignment N.json" ו-"All assignments.csv"): ממוצעים,
+    התפלגות, טעויות נפוצות. נגזר מקובצי הציונים, ולכן בא אחרי GradesCsvTarget. optional: כישלון כאן לא מבטל עריכה
+    שכבר נשמרה בכל השאר. הוא נרשם ביומן (not_updated), והקורא הבא של הסטטיסטיקה מחשב אותה מחדש.
+
+    כבוי עד ש-connect_stats(build) מחבר אליו את stats.build. grading לא מייבא את stats (stats הוא שתלוי ב-grading:
+    הוא קורא את המחוון וההערות דרכו), ולכן מי שמרכיב את המערכת מחבר אותו: הדשבורד ב-web_server.connect_stores.
+    בלי חיבור (grading כסקיל לבד, או `python -m grading`) הסטטיסטיקה מחושבת מחדש אצל הקורא הבא שלה (stats.read)."""
+    name: str = "stats_db"
+    label: str = "מסד הנתונים הסטטיסטי בדרייב"
+    optional: bool = True
+    build: Callable[..., object] | None = None
+
+    def enabled(self) -> bool:
+        return self.build is not None
+
+    def apply(self, edit: GradeEdit) -> None:
+        self.build(edit.assignment_dir, by=edit.by)
+
+
+@dataclass
+class MoodleTableTarget:
+    """Grades for Moodle.csv (moodle/moodle_table.py): כל ציון ליד מזהה המשתתף של מודל, שממנו הציון עולה לסטודנט הנכון.
+    נגזר מקובצי הציונים ומהמפתח, ולכן אחרי GradesCsvTarget. לא optional: טבלה ישנה = הציון הישן היה עולה למודל."""
+    name: str = "moodle_table"
+    label: str = "טבלת הציונים למודל (Grades for Moodle.csv)"
+
+    def enabled(self) -> bool:
+        return True
+
+    def apply(self, edit: GradeEdit) -> None:
+        from moodle import moodle_table
+        moodle_table.build(edit.assignment_dir)
+
+
 # הסדר הוא סדר העדכון. מקום חדש = שורה חדשה כאן
-TARGETS: list[Target] = [DatabaseTarget(), MarkedPdfTarget(), NotesTarget(), GradesCsvTarget()]
+TARGETS: list[Target] = [DatabaseTarget(), MarkedPdfTarget(), NotesTarget(), GradesCsvTarget(), MoodleTableTarget(),
+                         StatsTarget()]
 
 
 def connect_database(store: GradeStore | None) -> None:
@@ -167,6 +207,19 @@ def connect_database(store: GradeStore | None) -> None:
     for t in TARGETS:
         if isinstance(t, DatabaseTarget):
             t.store = store
+
+
+def connect_stats(build: Callable[..., object] | None) -> None:
+    """מחבר את מסד הנתונים הסטטיסטי (או מנתק, עם None): build(assignment_dir, by=None), כמו stats.build.
+    אחרי כל עריכה (יעד optional) ובסוף כל ריצת בדיקה (grade.grade_assignment)."""
+    for t in TARGETS:
+        if isinstance(t, StatsTarget):
+            t.build = build
+
+
+def stats_builder() -> Callable[..., object] | None:
+    """מה ש-connect_stats חיבר, או None."""
+    return next((t.build for t in TARGETS if isinstance(t, StatsTarget) and t.build is not None), None)
 
 
 # ---------- הפונקציה ----------
@@ -232,21 +285,28 @@ def edit_grade(assignment_dir: Path, number: str, points: list, comments: list, 
         base = {"number": n, "from": edit.old_grade, "to": edit.new_grade, "points_from": old.get("points") or None,
                 "points_to": ";".join(g_._pts(p) for p in pts), "reason": why, "kind": kind}
         updated: list[str] = []
+        not_updated: list[dict] = []  # יעדים optional שנכשלו: העריכה נשמרה, והם יתעדכנו בפעם הבאה
         for t in (TARGETS if targets is None else targets):
             if not t.enabled():
                 continue
             try:
                 t.apply(edit)
             except Exception as e:
+                if getattr(t, "optional", False):
+                    not_updated.append({"target": t.name, "error": str(e)[:300]})
+                    continue
                 activity_log.record(assignment_dir, ACTION_FAILED, by, **base, updated=updated, failed=t.name,
                                     error=str(e)[:500])
                 done = ", ".join(_label(x, targets) for x in updated) or "בשום מקום"
                 raise EditIncomplete(f"הציון של עבודה {n} לא עודכן ב{t.label}: {e}. עודכן: {done}. "
                                      "אפשר לשמור שוב.", updated, t.name) from e
             updated.append(t.name)
-        activity_log.record(assignment_dir, ACTION, by, **base, updated=updated)
-    g_._update_stats(assignment_dir)  # מסד הנתונים הסטטיסטי (stats/): נגזר מקובצי הציונים, מתעדכן אחרי כל עריכה
-    return {"number": n, "grade": graded.grade, "from": edit.old_grade, "updated": updated}
+        activity_log.record(assignment_dir, ACTION, by, **base, updated=updated,
+                            **({"not_updated": not_updated} if not_updated else {}))
+    out = {"number": n, "grade": graded.grade, "from": edit.old_grade, "updated": updated}
+    if not_updated:
+        out["not_updated"] = [_label(x["target"], targets) for x in not_updated]
+    return out
 
 
 def _label(name: str, targets: list[Target] | None) -> str:

@@ -14,7 +14,12 @@
         Marked files -> Moodle, through Claude in Chrome. Prepares the batch (new or changed work only), prints
         its summary (numbers only), asks "להעלות למודל? (y/N)" unless --yes, uploads ZIP by ZIP and logs each one.
         --dry-run only checks the page and attaches the file, then cancels (Moodle imports at once): nothing is imported or logged.
+        Files only: the grades go up only with send-grades.
         Refused while an upload or a pull of the assignment runs (the lock files). Exit code 1 if it stopped before the end.
+
+    python -m moodle send-grades <assignment id> [--dry-run] [--yes]
+        Grades -> Moodle, only when asked: the numbers whose marked files are in Moodle, through Moodle's grading
+        worksheet (moodle/send_grades.py). Confirmed in Moodle only when its preview matches; --dry-run stops there.
 
     python -m moodle record <assignment id> "<zip name>"
         After uploading a ZIP of the current batch by hand (from its "Upload batch <id>" folder): writes its files to
@@ -28,7 +33,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from moodle import guide, ingest, lock, paths, send, status, upload, upload_log
+from moodle import guide, ingest, lock, paths, send, send_grades, status, upload, upload_log
 
 
 def make_driver() -> send.MoodleDriver:
@@ -82,10 +87,30 @@ def run_send(target: Path, args) -> int:
     return 0
 
 
+def run_send_grades(target: Path, args) -> int:
+    """Only when asked: the grades of the numbers whose files are in Moodle. Returns the exit code."""
+    todo = send_grades.pending(target)
+    if not todo:
+        print("אין ציונים חדשים להעלאה")
+        return 0
+    print(f"{len(todo)} ציונים יעלו למודל, דרך גיליון הציונים של מודל")
+    if not args.yes:
+        try:
+            answer = input("להעלות את הציונים? (y/N) ")
+        except EOFError:
+            answer = ""
+        if answer.strip().lower() not in ("y", "yes"):
+            print("לא הועלה כלום")
+            return 0
+    report = send_grades.send_grades(target, make_driver(), dry_run=args.dry_run)
+    print(report.message)
+    return 0 if report.status in ("done", "nothing", "dry_run_ok") else 1
+
+
 def main() -> None:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")  # Hebrew messages, even when the output is piped
-    from dashboard import shared_folder  # the same folder as the site: the synced one, unless ASSIGNMENT_DATA says
+    from . import shared_folder  # the same folder as the site: the synced one, unless ASSIGNMENT_DATA says
     shared_folder.use_for_commands()
     parser = argparse.ArgumentParser(prog="python -m moodle")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -111,10 +136,17 @@ def main() -> None:
     send_cmd.add_argument("assignment_id")
     send_cmd.add_argument("--dry-run", action="store_true", help="check the page and attach the file, then cancel: import and log nothing")
     send_cmd.add_argument("--yes", action="store_true", help="don't ask before uploading")
+    grades_cmd = commands.add_parser("send-grades", help="upload the grades to Moodle (only when asked)")
+    grades_cmd.add_argument("assignment_id")
+    grades_cmd.add_argument("--dry-run", action="store_true", help="stop at Moodle's preview and cancel: nothing changes")
+    grades_cmd.add_argument("--yes", action="store_true", help="don't ask before uploading")
 
     record_cmd = commands.add_parser("record", help="log a ZIP that was uploaded by hand")
     record_cmd.add_argument("assignment_id")
     record_cmd.add_argument("zip_name")
+
+    table_cmd = commands.add_parser("table", help="build Grades for Moodle.csv: each grade next to its Moodle participant")
+    table_cmd.add_argument("assignment_id")
 
     commands.add_parser("guide", help="rewrite the README files")
 
@@ -135,6 +167,8 @@ def main() -> None:
 
     if args.command == "send":
         raise SystemExit(run_send(target, args))
+    if args.command == "send-grades":
+        raise SystemExit(run_send_grades(target, args))
 
     if args.command == "record":
         try:
@@ -144,6 +178,17 @@ def main() -> None:
             print(unknown)
             raise SystemExit(1)
         print(f"{rows} קבצים נרשמו ביומן")
+        return
+
+    if args.command == "table":
+        from moodle import moodle_table
+        rep = moodle_table.build(target)
+        print(f"{paths.MOODLE_TABLE}: {rep['rows']} ציונים, כל אחד ליד מזהה המשתתף שלו במודל"
+              + ("" if rep["written"] else " (לא השתנה)"))
+        why = {"no_participant": "אין להם מזהה משתתף בטבלת המפתח", "key_problem": "טבלת המפתח לא חד-משמעית לגביהם",
+               "invalid_grade": "הציון לא חוקי"}
+        for kind, numbers in rep["left_out"].items():
+            print(f"לא נכנסו ({why[kind]}): {', '.join(numbers[:30])}" + (" ועוד" if len(numbers) > 30 else ""))
         return
 
     if args.command == "status":
