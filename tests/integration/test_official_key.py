@@ -45,10 +45,12 @@ def test_a_pdf_key_is_sent_first_and_wins_over_the_rubric(root):
                               text="על חוסר נימוק מורידים 3", points={LABELS[0]: 30, LABELS[1]: 10})
     ctx = grading.load_context(a.dir)
     assert [q.points for q in ctx.questions] == [30, 10, 20, 20, 20] and not ctx.no_rubric
-    content = grading.build_request(ctx, [])["messages"][0]["content"]
+    req = grading.build_request(ctx, [])
+    content = req["messages"][0]["content"]
     assert content[0]["type"] == "document" and "המכוון הרשמי" in content[0]["title"]
-    text = next(b["text"] for b in content if b["type"] == "text" and b["text"].startswith("מטלה:"))
-    assert "המכוון הרשמי של המרצה:" in text and grading.KEY_RULE in text
+    # הטקסט על המטלה (עם כלל המכוון) יושב ב-system, אחרי הוראות הבדיקה; המכוון עצמו הוא קובץ, ראשון בהודעה
+    text = req["system"][-1]["text"]
+    assert text.startswith("מטלה:") and "המכוון הרשמי של המרצה:" in text and grading.KEY_RULE in text
     assert "על חוסר נימוק מורידים 3" in text and "1. דף קבוצות 11 (30 נקודות)" in text
     assert "המכוון הרשמי" in grading.SYSTEM
     # Claude Code מקבל את המכוון כקובץ בתיקייה הזמנית, עם השם שלו
