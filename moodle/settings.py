@@ -11,6 +11,7 @@
     DOWNLOADS_DIR             לאן כרום מוריד (paths.downloads_dir, ברירת מחדל ~/Downloads)
     GRADER_NAME               השם שלי בצוות (moodle/claims.py)
     GRADING_MODEL             המודל של הבדיקה (grading.default_model, ברירת מחדל grading.grade.DEFAULT_MODEL)
+    GRADING_EFFORT            רמת המאמץ של הבדיקה: low / medium / high (grading.default_effort, ברירת מחדל medium)
     MOODLE_MODEL              המודל של ההורדה וההעלאה דרך כרום (ברירת מחדל moodle/claude_driver.DEFAULT_MODEL)
     ועוד, ליד מי שקורא אותן: SCHEDULE_* (dashboard/scheduler.py), AUTO_UPDATE ו-UPDATE_CHECK_MINUTES
     (dashboard/updater.py), PUBLIC_STATUS_GIST (dashboard/public_status.py), INSTALL_SKILLS (dashboard/skills.py),

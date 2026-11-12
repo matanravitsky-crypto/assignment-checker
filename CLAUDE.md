@@ -473,7 +473,7 @@ worksheet, confirmed only when Moodle's preview matches (step 5 above); that nee
 Without `ANTHROPIC_API_KEY`, `grading.claude_ask()` grades through the Claude Code that is logged in on the computer
 (the team's subscription, like the upload), in `grading/claude_cli.py`: one `claude -p` per submission with
 `--tools Read` only, `--no-chrome`, `--strict-mcp-config`, `--setting-sources project`, `--no-session-persistence`,
-the same SYSTEM prompt (`--system-prompt-file`), `--json-schema SCHEMA`, `--effort high` and the chosen model, in a
+the same SYSTEM prompt (`--system-prompt-file`), `--json-schema SCHEMA`, `--effort medium` (`GRADING_EFFORT` in `.env` overrides; high until 2026-11-12) and the chosen model, in a
 fresh temp folder outside OneDrive that holds only that submission's page images (and the official solution). The
 request goes in on stdin. The answer is the same JSON as through the API, so everything after it is shared.
 The dashboard reports `claudeVia: "api" | "code" | null`. Checked on 2026-10-22 on a synthetic submission: graded,

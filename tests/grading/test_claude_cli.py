@@ -45,7 +45,7 @@ def output(answer=ANSWER, **extra) -> str:
 
 
 def ask(run):
-    return claude_cli.cli_ask("claude", grading.SCHEMA, "high", run=run, error=grading.GradingError,
+    return claude_cli.cli_ask("claude", grading.SCHEMA, grading.default_effort(), run=run, error=grading.GradingError,
                               not_logged_in=grading.NoApiKey)
 
 
@@ -57,7 +57,7 @@ def test_pages_go_to_a_temp_folder_and_only_read_is_allowed():
     assert cmd[cmd.index("--tools") + 1] == "Read" and "--no-chrome" in cmd and "--strict-mcp-config" in cmd
     assert cmd[cmd.index("--add-dir") + 1] == str(folder) and cmd[cmd.index("--model") + 1] == "claude-opus-5-5"
     assert json.loads(cmd[cmd.index("--json-schema") + 1]) == grading.SCHEMA
-    assert cmd[cmd.index("--effort") + 1] == "high"
+    assert cmd[cmd.index("--effort") + 1] == "medium"
     files = run.seen[0]
     assert files["002.png"] == PNG and files["001.pdf"] == b"%PDF sol" and files["system.txt"] == "אתה מתרגל".encode()
     prompt = kwargs["input"]  # הבקשה ב-stdin, לא בשורת הפקודה

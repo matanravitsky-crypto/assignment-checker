@@ -138,7 +138,7 @@ def test_request_has_only_the_pages_no_names_and_no_key(root):
     # מה שמשותף לכל ההגשות נשמר במטמון, והשאלות כתובות בו לפי הסדר עם הניקוד
     shared = next(b for b in content if b.get("cache_control"))
     assert "1. דף קבוצות 11 (20 נקודות)" in shared["text"] and "כתב יד, קובץ PDF אחד" in shared["text"]
-    assert req["model"] == grading.DEFAULT_MODEL and req["output_config"]["effort"] == "high"
+    assert req["model"] == grading.DEFAULT_MODEL and req["output_config"]["effort"] == "medium"
     assert req["output_config"]["format"]["type"] == "json_schema" and req["fallbacks"] == "default"
     assert "thinking" not in req and "temperature" not in req
 
@@ -583,3 +583,15 @@ def test_model_images_carry_a_numbered_grid_but_files_do_not():
     pix = pymupdf.Pixmap(gridded.data)
     # קו הרשת ב-x=500 צבוע כתום באמצע העמוד
     assert any(pix.pixel(pix.width // 2, y)[2] < 200 for y in range(pix.height // 2, pix.height // 2 + 40))
+
+
+# ---------- המודל ורמת המאמץ ----------
+def test_model_and_effort_default_to_opus_at_medium_and_env_overrides(monkeypatch):
+    monkeypatch.delenv("GRADING_MODEL", raising=False)
+    monkeypatch.delenv("GRADING_EFFORT", raising=False)
+    assert grading.default_model() == "claude-opus-5-5" and grading.default_effort() == "medium"
+    monkeypatch.setenv("GRADING_MODEL", "claude-sonnet-5-5")
+    monkeypatch.setenv("GRADING_EFFORT", "high")
+    assert grading.default_model() == "claude-sonnet-5-5" and grading.default_effort() == "high"
+    monkeypatch.setenv("GRADING_EFFORT", "  ")  # ריק = ברירת המחדל
+    assert grading.default_effort() == "medium"

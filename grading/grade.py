@@ -64,7 +64,9 @@ SOLUTION = "Official solution.pdf"
 GRADE_COLUMNS = grades.COLUMNS  # מה כל עמודה אומרת: moodle/grades.py
 
 DEFAULT_MODEL = "claude-opus-5-5"  # GRADING_MODEL ב-.env דורס (default_model)
-EFFORT = "high"
+# רמת המאמץ (כמה המודל חושב לפני שעונה). medium מאז 2026-11-12: ב-high הוא כתב פי כמה יותר טוקני חשיבה
+# על אותם ציונים. GRADING_EFFORT ב-.env דורס (default_effort): low / medium / high
+DEFAULT_EFFORT = "medium"
 MAX_TOKENS = 32000
 # כמה עבודות נשלחות ל-Claude במקביל
 DEFAULT_PARALLEL = 4
@@ -174,6 +176,11 @@ def _num(value, default: float = 0) -> float:
 def default_model() -> str:
     """The grading model: GRADING_MODEL in .env, or DEFAULT_MODEL."""
     return settings.get("GRADING_MODEL", DEFAULT_MODEL)
+
+
+def default_effort() -> str:
+    """The grading effort: GRADING_EFFORT in .env, or DEFAULT_EFFORT."""
+    return settings.get("GRADING_EFFORT", DEFAULT_EFFORT)
 
 
 def to_points(value, default: float = 0) -> float:
@@ -467,7 +474,7 @@ def build_request(ctx: Context, images: list[PageImage], model: str = DEFAULT_MO
     req = {
         "model": model, "max_tokens": MAX_TOKENS, "system": SYSTEM,
         "messages": [{"role": "user", "content": shared + pages}],
-        "output_config": {"effort": EFFORT, "format": {"type": "json_schema", "schema": SCHEMA}},
+        "output_config": {"effort": default_effort(), "format": {"type": "json_schema", "schema": SCHEMA}},
     }
     # אם Claude מסרב, הבקשה רצה שוב על מודל אחר שמתאים לסוג הסירוב (ל-Haiku אין דבר כזה)
     if not model.startswith("claude-haiku"):
@@ -489,7 +496,7 @@ def claude_ask() -> Ask:
         from . import claude_cli
         if not claude_cli.available():
             raise NoApiKey()
-        return claude_cli.cli_ask(claude_code.find_claude(), SCHEMA, EFFORT, error=GradingError,
+        return claude_cli.cli_ask(claude_code.find_claude(), SCHEMA, default_effort(), error=GradingError,
                                   not_logged_in=NoApiKey)
     import anthropic
 
