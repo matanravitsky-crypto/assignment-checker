@@ -8,7 +8,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-PATTERN = "Grading usage*.jsonl"
+from moodle import paths
+
+PATTERN = f"{Path(paths.USAGE_LOG).stem}*{Path(paths.USAGE_LOG).suffix}"  # with the sync's conflict copies
 
 
 def _num(x) -> float:

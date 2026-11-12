@@ -10,8 +10,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from dashboard import shared_folder
-from moodle import paths
+from moodle import paths, shared_folder
 
 from . import grade
 
@@ -23,14 +22,14 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="python -m grading", description="בדיקת הגשות עם Claude")
     p.add_argument("assignment_id", help="מזהה המטלה במודל (id ב-Assignment details.json)")
     p.add_argument("--ids", nargs="*", help="מספרי הגשות לבדיקה (ברירת מחדל: כל מה שעוד לא נבדק)")
-    p.add_argument("--model", default=grade.DEFAULT_MODEL)
+    p.add_argument("--model", default=None, help="ברירת מחדל: GRADING_MODEL ב-.env, ובלעדיו " + grade.DEFAULT_MODEL)
     p.add_argument("--parallel", type=int, default=grade.DEFAULT_PARALLEL, help="כמה עבודות במקביל")
     args = p.parse_args(argv)
 
     labels = {"graded": "נבדקה", "failed": "נכשלה", "skipped": "כבר אושרה", "taken": "שמורה לבודק אחר"}
     try:
         folder = paths.assignment_dir(args.assignment_id)
-        rep = grade.grade_assignment(folder, args.ids or None, model=args.model, parallel=args.parallel,
+        rep = grade.grade_assignment(folder, args.ids or None, model=args.model or grade.default_model(), parallel=args.parallel,
                                      on_progress=lambda n, what: print(f"  {n}: {labels[what]}"))
     except (FileNotFoundError, grade.NoApiKey, grade.NoRubric, grade.ClaudeLimit) as e:
         print(e)

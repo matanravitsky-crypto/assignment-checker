@@ -28,7 +28,7 @@ from pathlib import Path
 
 from moodle import paths
 
-CHECK_FILE = "Pull check.json"
+CHECK_FILE = paths.PULL_CHECK
 
 
 class PullCheckFailed(Exception):

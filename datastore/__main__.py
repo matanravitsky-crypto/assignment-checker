@@ -12,7 +12,7 @@ from pathlib import Path
 from moodle import paths
 
 from . import doctor, ledger
-from .schema import INFO, REJECT, WARN
+from moodle.schema import INFO, REJECT, WARN
 
 LEVEL_HE = {REJECT: "שגיאה", WARN: "אזהרה", INFO: "ידיעה"}
 

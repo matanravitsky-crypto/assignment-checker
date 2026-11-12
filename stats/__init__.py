@@ -21,6 +21,14 @@ from moodle import claims, grades, paths
 from . import compute as _compute
 from . import store
 
+# הממשק: מה שחלקים אחרים מותר להם לקחת מכאן. כל השאר פנימי, ואפשר לשנות אותו בלי לשאול אף חלק אחר.
+# tests/test_modularity.py נופל כשקוד מחוץ לחלק לוקח משהו שלא ברשימה. "*" = כל מה שלא מתחיל ב-_ (הליבה).
+INTERFACE = {
+    "": ["read", "build", "rebuild", "read_all", "assignment_dirs", "is_fresh", "file_for", "export_csv",
+         "export_sqlite"],
+    "compute": ["assignment_key", "slot"],
+}
+
 
 def gather(assignment_dir: Path) -> dict:
     """כל מה ש-`compute.compute` צריך, מתיקיית המטלה: המחוון (דרך grading, כולל הניקוד מתיקיית "פדגוגי"),

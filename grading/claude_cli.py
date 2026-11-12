@@ -24,7 +24,7 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 
-from moodle import claude_driver
+from moodle import claude_code, paths
 
 BUDGET_USD = 5.0
 TIMEOUT_S = 900
@@ -34,7 +34,7 @@ READ_ALL = ("לפני שאתה עונה, קרא עם הכלי Read את כל ה�
             "(והמכוון והפתרון הרשמי, אם הם ברשימה). אל תקרא שום קובץ אחר. בסוף החזר רק את התוצאה המובנית.")
 
 
-USAGE_LOG = "Grading usage.jsonl"
+USAGE_LOG = paths.USAGE_LOG
 
 
 def log_usage(stdout: str, model: str) -> None:
@@ -47,7 +47,6 @@ def log_usage(stdout: str, model: str) -> None:
                "cache_read": usage.get("cache_read_input_tokens"),
                "cache_write": usage.get("cache_creation_input_tokens"),
                "turns": data.get("num_turns"), "cost_usd": data.get("total_cost_usd")}
-        from moodle import paths
         with (paths.data_dir() / USAGE_LOG).open("a", encoding="utf-8") as f:
             f.write(json.dumps(row) + "\n")
     except Exception:
@@ -56,7 +55,7 @@ def log_usage(stdout: str, model: str) -> None:
 
 def available() -> bool:
     """Claude Code מותקן ומחובר במחשב הזה."""
-    return claude_driver.find_claude() is not None and claude_driver.auth_status()["logged_in"] is True
+    return claude_code.find_claude() is not None and claude_code.auth_status()["logged_in"] is True
 
 
 def write_request(req: dict, folder: Path) -> str:
@@ -117,13 +116,13 @@ def cli_ask(claude: str, schema: dict, effort: str | None = None, run=subprocess
                 proc = run(cmd, input=prompt, capture_output=True, text=True, encoding="utf-8",
                            timeout=TIMEOUT_S, cwd=folder)
             except Exception as e:
-                raise error(claude_driver.failure_message(e, TIMEOUT_S)) from e
+                raise error(claude_code.failure_message(e, TIMEOUT_S)) from e
         finally:
             shutil.rmtree(folder, ignore_errors=True)
         log_usage(proc.stdout, req["model"])
-        answer, problem = claude_driver.read_run(proc)
+        answer, problem = claude_code.read_run(proc)
         if answer is None:
-            if problem == claude_driver.NOT_LOGGED_IN:
+            if problem == claude_code.NOT_LOGGED_IN:
                 raise not_logged_in()
             raise error(problem)
         return json.dumps(answer, ensure_ascii=False)

@@ -10,6 +10,20 @@ python -m copying <מזהה מטלה>
 
 בפעם הראשונה כל קובץ נקרא (בערך 0.1 שנייה לעמוד, כלומר כמה דקות למטלה של 1,000 סטודנטים). אחר כך נקראים רק קבצים חדשים או ששונו, וההשוואה עצמה לוקחת שניות.
 
+## ממשק
+
+| | |
+|---|---|
+| **נכנס** | ההגשות של מטלה אחת: `1 - Submissions to grade/` (PDF ותמונות, לפי מספר) |
+| **יוצא** | `Copying check.json` בתיקיית המטלה: זוגות של מספרים, למה, וכמה חזק. מספרים ו-hash בלבד |
+| **פקודה** | `python -m copying <מזהה מטלה או תיקיית המטלה>` |
+| **מפייתון** | `INTERFACE` ב-`copying/__init__.py`: `check_assignment`, `read_report`, `report_path`, `is_stale`, `KIND_TEXT` |
+| **תלוי ב** | רק בליבה (`moodle/paths.py`, `moodle/lock.py` לשם של מי שבדק). בחוץ: PyMuPDF |
+
+**כסקיל:** `python tools/extract_skill.py copying <תיקייה>` בונה את הסקיל `copying-check` מהקוד הזה עצמו (בלי להעתיק
+ביד): תיקיית `copying/` והקבצים של הליבה שהיא צריכה, ו-`SKILL.md` מ-`copying/skill/`. `tests/integration/test_copying_skill.py`
+בונה אותו, מריץ אותו בלי הריפו ומשווה לתוצאה של המערכת.
+
 ## מה נבדק
 
 **שכבה 0: אותו קובץ או אותו מקור**
