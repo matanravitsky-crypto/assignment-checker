@@ -76,6 +76,8 @@ h1, h2, h3, h4 { text-wrap: balance; }
 .link:hover { text-decoration: underline; }
 code { font: 500 .88em var(--font-code); background: var(--sheet-2); border: 1px solid var(--rule); padding: 0 5px; border-radius: 4px; }
 .katex { direction: ltr; unicode-bidi: isolate; font-size: 1.08em; }
+/* סטטיסטיקה: שורה עם נוסחה מקבלת קצת יותר רווח, כדי שהנוסחה לא תידחס לשורה שמעליה */
+.st-table td:has(.katex), .mk-text:has(.katex), .sq-list small:has(.katex), .a-stats .hint:has(.katex) { line-height: 1.8; }
 
 /* ---------- Shell ---------- */
 .shell { display: grid; grid-template-columns: 256px minmax(0, 1fr); min-height: 100vh; }

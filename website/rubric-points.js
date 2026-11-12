@@ -54,7 +54,16 @@
     return `<ul class="rp">${rows.join("")}<li class="rp-total"><b>סך הכל במחוון</b> - ${e(pts(total))}</li></ul>`;
   }
 
-  const api = { parseLabel, group, lines, html };
+  // השם הקצר של סעיף בטבלה שכבר כתוב בכותרתה על איזה דף היא: "דף תרגילים 0 (תחשיב הפסוקים) 4" -> "שאלה 4",
+  // "קבוצות 11א" נשאר כמו שהוא (הנושא מבדיל בין "קבוצות 6א" ל"מרוכבים 6א"), "8א" נשאר
+  function shortName(label) {
+    const full = String(label ?? "").trim();
+    const rest = full.replace(/^דף תרגילים\s*\d+\s*(\([^)]*\))?\s*/, "");
+    if (!rest) return full;
+    return /^\d+$/.test(rest) ? `שאלה ${rest}` : rest;
+  }
+
+  const api = { parseLabel, group, lines, html, shortName };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   root.RubricPoints = api;
 })(typeof window !== "undefined" ? window : globalThis);
