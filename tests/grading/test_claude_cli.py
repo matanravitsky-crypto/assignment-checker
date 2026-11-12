@@ -59,9 +59,13 @@ def test_pages_go_to_a_temp_folder_and_only_read_is_allowed():
     assert json.loads(cmd[cmd.index("--json-schema") + 1]) == grading.SCHEMA
     assert cmd[cmd.index("--effort") + 1] == "high"
     files = run.seen[0]
-    assert files["002.png"] == PNG and files["001.pdf"] == b"%PDF sol" and files["system.txt"] == "אתה מתרגל".encode()
+    # העמודים נקראים לפי מספר העמוד והמסמכים בנפרד: כשהפתרון היה 001 ועמוד 1 היה 002, Claude דיווח לפעמים את
+    # מספר הקובץ כמספר העמוד והסימונים נפלו עמוד אחד מאוחר מדי (2026-11-11)
+    assert files["page-01.png"] == PNG and files["attachment-1.pdf"] == b"%PDF sol" and files["system.txt"] == "אתה מתרגל".encode()
+    assert not [f for f in files if f[0].isdigit()]
     prompt = kwargs["input"]  # הבקשה ב-stdin, לא בשורת הפקודה
-    assert str(folder / "002.png") in prompt and "עמוד 1:" in prompt and claude_cli.READ_ALL in prompt
+    assert f"תמונת עמוד 1: {folder / 'page-01.png'}" in prompt and "עמוד 1:" in prompt and claude_cli.READ_ALL in prompt
+    assert "Official solution.pdf" in prompt and "page-03 = עמוד 3" in claude_cli.READ_ALL
     assert not folder.exists()  # התיקייה נמחקת בסוף
 
 

@@ -301,7 +301,9 @@ def edit_grade(assignment_dir: Path, number: str, points: list, comments: list, 
         graded = g_.Graded(pts, texts, g_.compute_grade(pts, ctx), str(feedback or "").strip()[:3000],
                            [g_.Mark(**m) for m in note.get("marks") or []
                             if isinstance(m, dict) and set(m) == {"page", "x0", "y0", "x1", "y1", "text"}],
-                           mistakes=picked or note.get("mistakes") or [])
+                           mistakes=picked or note.get("mistakes") or [],
+                           places=[g_.Mark(**m) for m in note.get("places") or []
+                                   if isinstance(m, dict) and set(m) == {"page", "x0", "y0", "x1", "y1", "text"}])
         g_.scrub_graded(graded, names)
         # graded_at עד המיקרו-שנייה: שתי עריכות באותה שנייה (שני אנשים, או אחד שתיקן מיד) - האחרונה גוברת במיזוג
         at = datetime.now().isoformat(timespec="microseconds")

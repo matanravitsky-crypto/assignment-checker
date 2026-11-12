@@ -356,8 +356,9 @@ SYSTEM = """אתה מתרגל שבודק תרגילי בית במתמטיקה (�
 - שאלה שלא נמצאה בהגשה מקבלת 0, וכותבים בהערה שלה שהיא לא נמצאה.
 - אם כתב היד לא קריא, חסרים עמודים, או שהניקוד לא ודאי, מסמנים needs_review=true ומסבירים ב-review_reason (ראו "בדיקה ידנית" למטה). אחרת review_reason ריק.
 
-questions: אחד לכל שאלה במטלה, באותו סדר ועם אותה תווית כמו ברשימת השאלות.
+questions: אחד לכל שאלה במטלה, באותו סדר ועם אותה תווית (label) בדיוק כמו ברשימת השאלות. חייבים להחזיר את כולן: תשובה חלקית נפסלת כולה.
 - comment: משפט קצר על התשובה.
+- page, x0, y0, x1, y1: איפה התשובה לשאלה מתחילה: המלבן סביב מספר הסעיף שהסטודנט כתב או סביב השורה הראשונה של התשובה (באותן אלפיות כמו annotations). לידו יצויר ✓ לניקוד מלא, ✗ לאפס, ✓✗ לניקוד חלקי. שאלה שלא נמצאה: page 0 וכל השאר 0.
 - mistakes: סוגי הטעויות בתשובה, ריק אם היא נכונה. כל טעות בניסוח קצר וכללי, 2 עד 6 מילים, שלא תלוי בעבודה הזו, כך שאותה טעות אצל סטודנטים שונים תקבל בדיוק אותו ניסוח (למשל "חסר נימוק להכלה ההפוכה"). אם במחוון יש לשאלה טעויות מוכרות, משתמשים בניסוח שלהן מילה במילה ומורידים כמו שכתוב שם.
 - unsure: true אם הניקוד בשאלה הזו לא ודאי (לא קריא, תשובה חלקית שקשה להעריך, דרך שלא בטוח שהיא נכונה).
 
@@ -369,7 +370,7 @@ questions: אחד לכל שאלה במטלה, באותו סדר ועם אותה 
 annotations, סימונים על גבי העבודה:
 - בכל תמונה מצוירת רשת עזר כתומה: קו כל 100 אלפיות, ומספריו כתובים בארבעת הקצוות. המספרים האלה הם הקואורדינטות. קודם מוצאים את הכתב עצמו בין קווי הרשת, ואז קוראים את הקואורדינטות שלו מהמספרים. לא מנחשים לפי הרגשה.
 - כל סימון מקיף מקום מדויק בעבודה של הסטודנט: הכתב היד של הטעות, של הצעד החסר או של הנימוק הלא מספיק. מלבן שמקיף שטח ריק, או את נוסח השאלה המודפס, שגוי. דברים נכונים לא מסמנים.
-- page: מספר העמוד, מ-1, לפי סדר התמונות.
+- page: מספר העמוד, מ-1: המספר שכתוב בכותרת "עמוד N" לפני התמונה ובפינה העליונה של התמונה ("page N"). לא מספר הקובץ ולא מקומו ברשימה.
 - x0, y0, x1, y1: המלבן שמקיף את המקום, באלפיות של רוחב העמוד ושל גובהו. (0, 0) היא הפינה השמאלית העליונה ו-(1000, 1000) הימנית התחתונה. המלבן צמוד לשורה או לשורות הרלוונטיות בכתב היד (בדרך כלל פחות מ-15% מגובה העמוד), לא לחצי עמוד.
 - text: הערה קצרה בעברית, עד 12 מילים, שאומרת מה לא נכון. מתמטיקה בטקסט פשוט (A^-1, det(A)), בלי LaTeX.
 
@@ -386,8 +387,11 @@ SCHEMA = {
         "questions": {"type": "array", "items": {
             "type": "object",
             "properties": {"label": {"type": "string"}, "points": {"type": "number"}, "comment": {"type": "string"},
-                           "mistakes": {"type": "array", "items": {"type": "string"}}, "unsure": {"type": "boolean"}},
-            "required": ["label", "points", "comment", "mistakes", "unsure"], "additionalProperties": False,
+                           "mistakes": {"type": "array", "items": {"type": "string"}}, "unsure": {"type": "boolean"},
+                           "page": {"type": "integer"}, "x0": {"type": "number"}, "y0": {"type": "number"},
+                           "x1": {"type": "number"}, "y1": {"type": "number"}},
+            "required": ["label", "points", "comment", "mistakes", "unsure", "page", "x0", "y0", "x1", "y1"],
+            "additionalProperties": False,
         }},
         "feedback": {"type": "string"},
         "annotations": {"type": "array", "items": {
@@ -541,6 +545,8 @@ class Graded:
     mistakes: list[list[str]] = field(default_factory=list)  # לכל שאלה: סוגי הטעויות
     unsure: list[bool] = field(default_factory=list)         # לכל שאלה: Claude לא בטוח בניקוד
     review_kind: str = ""
+    places: list[Mark] = field(default_factory=list)         # לכל שאלה: איפה התשובה מתחילה (page 0 = לא נמצאה); שם מצויר ✓ / ✗ / ✓✗
+    lost: list[str] = field(default_factory=list)            # הערות שאין להן עמוד (Claude נתן מספר עמוד שלא קיים): לעמוד הסיכום
 
 
 def _round_half_up(x: float) -> float:
@@ -558,17 +564,14 @@ def parse_answer(text: str, ctx: Context, pages: int) -> Graded:
         data = json.loads(text)
     except json.JSONDecodeError as e:
         raise GradingError("התשובה של Claude לא הייתה בפורמט הנכון. כדאי לנסות שוב.") from e
-    got = [q for q in data.get("questions") or [] if isinstance(q, dict)]
+    got = _answers_by_label(data, ctx)
     review = str(data.get("review_reason") or "").strip()
     kind = str(data.get("review_kind") or "").strip()
     if data.get("needs_review") and not review:
         review = "Claude ביקש שאדם יבדוק את העבודה."
-    if len(got) != len(ctx.questions):
-        review = (review + " " if review else "") + f"Claude החזיר ניקוד ל-{len(got)} שאלות במקום {len(ctx.questions)}."
     kind = (kind if kind in REVIEW_KINDS else "other") if review else ""
-    points, comments, mistakes, unsure, over = [], [], [], [], []
-    for i, q in enumerate(ctx.questions):
-        answer = got[i] if i < len(got) else {}
+    points, comments, mistakes, unsure, over, places = [], [], [], [], [], []
+    for q, answer in zip(ctx.questions, got):
         p = _round_half_up(_num(answer.get("points")))
         if p > q.points:  # יותר ממה שהמחוון נותן לשאלה: נחתך, ואדם מסתכל
             over.append(f"{q.label}: {_pts(p)} מתוך {_pts(q.points)}")
@@ -576,24 +579,66 @@ def parse_answer(text: str, ctx: Context, pages: int) -> Graded:
         comments.append(str(answer.get("comment") or "").strip())
         mistakes.append(_mistakes(answer.get("mistakes")))
         unsure.append(answer.get("unsure") is True)
+        places.append(_box(answer, pages, q.label) or Mark(0, 0, 0, 0, 0, q.label))
     if over:
         review = (review + " " if review else "") + f"Claude נתן יותר מהמחוון ({'; '.join(over)}), והניקוד נחתך למחוון."
         kind = kind or "uncertain"
 
-    marks = []
+    marks, lost = [], []
     for a in data.get("annotations") or []:
         if not isinstance(a, dict):
             continue
+        text = str(a.get("text") or "").strip()
         page = int(_num(a.get("page")))
-        if not 1 <= page <= pages:
+        if page > pages and text:  # עמוד שלא קיים: ההערה לא נזרקת, היא עוברת לעמוד הסיכום
+            lost.append(f"עמוד {page} (אין עמוד כזה): {text}")
             continue
-        x0, x1 = sorted(min(_num(a.get(k)), 1000) for k in ("x0", "x1"))
-        y0, y1 = sorted(min(_num(a.get(k)), 1000) for k in ("y0", "y1"))
-        if x1 - x0 < 1 or y1 - y0 < 1:
-            continue
-        marks.append(Mark(page, x0, y0, x1, y1, str(a.get("text") or "").strip()))
+        mark = _box(a, pages, text)
+        if mark is not None:
+            marks.append(mark)
     return Graded(points, comments, compute_grade(points, ctx), str(data.get("feedback") or "").strip(), marks, review.strip(),
-                  mistakes, unsure, kind)
+                  mistakes, unsure, kind, places, lost)
+
+
+PLACEHOLDER = "placeholder"
+
+
+def _answers_by_label(data: dict, ctx: Context) -> list[dict]:
+    """התשובות לשאלות, לפי התווית (label) ולא לפי המקום ברשימה. תשובה חלקית נפסלת כולה: באג אמיתי (2026-11-11,
+    עבודה של 24 עמודים) החזיר 15 שאלות מ-21, והשידוך לפי מקום נתן 0 לשש שאלות נכונות ו-"placeholder" לסטודנט."""
+    got = [q for q in data.get("questions") or [] if isinstance(q, dict)]
+    by_label: dict[str, dict] = {}
+    for q in got:
+        by_label.setdefault(" ".join(str(q.get("label") or "").split()), q)
+    answers = []
+    for i, q in enumerate(ctx.questions):
+        answer = by_label.get(" ".join(q.label.split()))
+        if answer is None and len(got) == len(ctx.questions):  # אותו מספר, תווית כתובה אחרת: לפי הסדר
+            answer = got[i]
+        if answer is None:
+            raise GradingError(f"Claude החזיר ניקוד ל-{len(got)} שאלות במקום {len(ctx.questions)} (חסרה \"{q.label}\"). "
+                               "העבודה לא נבדקה; כדאי לנסות שוב.")
+        answers.append(answer)
+    texts = [str(data.get("feedback") or "")] + [str(a.get("comment") or "") for a in answers] + \
+            [str(a.get("text") or "") for a in data.get("annotations") or [] if isinstance(a, dict)]
+    if any(PLACEHOLDER in t.lower() for t in texts):
+        raise GradingError("התשובה של Claude לא הושלמה (\"placeholder\" במקום הערה). העבודה לא נבדקה; כדאי לנסות שוב.")
+    empty = [q.label for q, a in zip(ctx.questions, answers) if not str(a.get("comment") or "").strip() and _num(a.get("points")) == 0]
+    if empty:
+        raise GradingError(f"התשובה של Claude לא הושלמה: 0 בלי הערה ב-{', '.join(empty)}. העבודה לא נבדקה; כדאי לנסות שוב.")
+    return answers
+
+
+def _box(a: dict, pages: int, text: str) -> Mark | None:
+    """מלבן באלפיות מהתשובה של Claude, או None כשאין שם מלבן של ממש (עמוד שלא קיים, קו בלי רוחב)."""
+    page = int(_num(a.get("page")))
+    if not 1 <= page <= pages:
+        return None
+    x0, x1 = sorted(min(_num(a.get(k)), 1000) for k in ("x0", "x1"))
+    y0, y1 = sorted(min(_num(a.get(k)), 1000) for k in ("y0", "y1"))
+    if x1 - x0 < 1 or y1 - y0 < 1:
+        return None
+    return Mark(page, x0, y0, x1, y1, text)
 
 
 def _mistakes(raw) -> list[str]:
@@ -643,6 +688,7 @@ def scrub_graded(g: Graded, names: list[str]) -> Graded:
         g.mistakes = [[scrub(m, names) for m in ms] for ms in g.mistakes]
         for m in g.marks:
             m.text = scrub(m.text, names)
+        g.lost = [scrub(t, names) for t in g.lost]
     return g
 
 
@@ -789,16 +835,19 @@ def _note_rect(box: pymupdf.Rect, page: pymupdf.Rect, text: str = "", size: floa
     return min(pool, key=cost)  # בשוויון נשארת הראשונה: מתחת למלבן
 
 
-def _write(page: pymupdf.Page, rect: pymupdf.Rect, html: str, archive, backdrop: bool = True) -> None:
-    """כותב טקסט במקום שמחושב לפי העמוד כפי שהוא מוצג (גם אם העמוד מסובב).
+def _write(page: pymupdf.Page, rect: pymupdf.Rect, html: str, archive, backdrop: bool = True) -> bool:
+    """כותב טקסט במקום שמחושב לפי העמוד כפי שהוא מוצג (גם אם העמוד מסובב). מחזיר False כשהכתיבה נכשלה.
     הרקע הלבן שקוף ברובו ונמצא רק במקום שנבחר כי הוא פנוי מכתב יד: הטקסט נקרא על נייר משבצות, והעבודה לא מוסתרת."""
     box = rect * page.derotation_matrix
+    if box.is_empty or box.width <= 0 or box.height <= 0:
+        return False
     if backdrop:
         page.draw_rect(box, color=None, fill=(1, 1, 1), fill_opacity=0.8, overlay=True)
     try:
         page.insert_htmlbox(box, html, css=_CSS, archive=archive, rotate=page.rotation, scale_low=0)
-    except Exception:  # הטקסט לא נכנס בשום קנה מידה: הערה שחסרה עדיפה על בדיקה שנכשלת
-        pass
+    except Exception:  # הטקסט לא נכנס בשום קנה מידה: ההערה עוברת לעמוד הסיכום, ולא נעלמת (באג אמיתי, 2026-11-11)
+        return False
+    return True
 
 
 def _summary_page(doc: pymupdf.Document, g: Graded, ctx: Context, archive, extra: list[str] | None = None) -> None:
@@ -854,9 +903,60 @@ def _place_marks(doc: pymupdf.Document, g: Graded, archive) -> list[str]:
             note = _note_rect(box, shown, mark.text, size, ink, taken.setdefault(mark.page, []))
             taken[mark.page].append(note)
             dark = bool(ink and getattr(ink, "dark", False))
-            _write(page, note, _html(mark.text, size, "#ff7b7b" if dark else "#d90000"), archive, backdrop=not dark)
+            if not _write(page, note, _html(mark.text, size, "#ff7b7b" if dark else "#d90000"), archive, backdrop=not dark):
+                unplaced.append(f"עמוד {mark.page}: {mark.text}")
     g.marks = placed
     return unplaced
+
+
+GREEN, ORANGE = (0, 0.55, 0.1), (0.95, 0.5, 0)
+
+
+def check_kind(points: float, full: float) -> str:
+    """מה מצויר ליד השאלה: check (ניקוד מלא), cross (אפס), half (חלקי)."""
+    return "check" if points >= full > 0 else "cross" if points <= 0 else "half"
+
+
+def _draw_check(page: pymupdf.Page, x: float, y: float, size: float, color, width: float) -> None:
+    """✓ שהפינה השמאלית-העליונה של הריבוע שלו ב-(x, y)."""
+    m = page.derotation_matrix
+    page.draw_polyline([pymupdf.Point(x + size * 0.05, y + size * 0.55) * m, pymupdf.Point(x + size * 0.38, y + size * 0.92) * m,
+                        pymupdf.Point(x + size * 0.95, y + size * 0.1) * m], color=color, width=width, overlay=True)
+
+
+def _draw_cross(page: pymupdf.Page, x: float, y: float, size: float, color, width: float) -> None:
+    m = page.derotation_matrix
+    page.draw_line(pymupdf.Point(x + size * 0.1, y + size * 0.1) * m, pymupdf.Point(x + size * 0.9, y + size * 0.9) * m,
+                   color=color, width=width, overlay=True)
+    page.draw_line(pymupdf.Point(x + size * 0.9, y + size * 0.1) * m, pymupdf.Point(x + size * 0.1, y + size * 0.9) * m,
+                   color=color, width=width, overlay=True)
+
+
+def _place_checks(doc: pymupdf.Document, g: Graded, ctx: Context) -> None:
+    """ליד תחילת התשובה לכל שאלה (g.places, מ-Claude): ✓ ירוק לניקוד מלא, ✗ אדום לאפס, ✓✗ כתום לניקוד חלקי.
+    הסימן יושב מימין למלבן (שם מספר הסעיף בכתיבה מימין לשמאל), ואם אין שם מקום, משמאלו. שאלה בלי מקום (page 0) לא מסומנת."""
+    for q, p, place in zip(ctx.questions, g.points, g.places):
+        if not place or not 1 <= place.page <= len(doc):
+            continue
+        page = doc[place.page - 1]
+        shown = page.rect
+        scale = min(max(shown.width / 612, 0.8), 1.6)
+        box = pymupdf.Rect(place.x0 / 1000 * shown.width, place.y0 / 1000 * shown.height,
+                           place.x1 / 1000 * shown.width, place.y1 / 1000 * shown.height)
+        kind = check_kind(p, q.points)
+        size = min(max(box.height, 14 * scale), 24 * scale)
+        gap = 4 * scale
+        n = 2 if kind == "half" else 1
+        x = box.x1 + gap if box.x1 + gap + n * size <= shown.width - 2 else max(box.x0 - gap - n * size, 2)
+        y = min(max(box.y0 + (box.height - size) / 2, 2), shown.height - size - 2)
+        width = 2.2 * scale
+        if kind == "check":
+            _draw_check(page, x, y, size, GREEN, width)
+        elif kind == "cross":
+            _draw_cross(page, x, y, size, RED, width)
+        else:
+            _draw_check(page, x + size, y, size, ORANGE, width)  # ✓ מימין, ✗ משמאלו: ✓✗ כשקוראים מימין לשמאל
+            _draw_cross(page, x, y, size, ORANGE, width)
 
 
 def _flatten(doc: pymupdf.Document, side: int, quality: int) -> bytes:
@@ -881,7 +981,8 @@ def mark_pdf(pdf: bytes, g: Graded, ctx: Context, max_bytes: int = MAX_BYTES) ->
     archive = _archive()
     with pymupdf.open(stream=pdf, filetype="pdf") as doc:
         unplaced = _place_marks(doc, g, archive)
-        _summary_page(doc, g, ctx, archive, unplaced)
+        _place_checks(doc, g, ctx)
+        _summary_page(doc, g, ctx, archive, g.lost + unplaced)
         doc.subset_fonts()
         out = doc.tobytes(garbage=4, deflate=True)
         # סריקות גדולות: כל עמוד הופך לתמונה קטנה יותר עד שהקובץ נכנס בגודל
@@ -946,6 +1047,7 @@ def graded_notes(g: Graded, model: str) -> dict:
     return {"points": g.points, "comments": g.comments, "mistakes": g.mistakes, "unsure": g.unsure,
             "review": g.review, "review_kind": g.review_kind,
             "marks": [{"page": m.page, "x0": m.x0, "y0": m.y0, "x1": m.x1, "y1": m.y1, "text": m.text} for m in g.marks],
+            "places": [{"page": m.page, "x0": m.x0, "y0": m.y0, "x1": m.x1, "y1": m.y1, "text": m.text} for m in g.places],
             "model": model, "graded_at": _now()}
 
 
@@ -1036,6 +1138,7 @@ def grade_one(pdf: bytes, ctx: Context, ask: Ask, model: str = DEFAULT_MODEL, na
         raise GradingError("אין עמודים בקובץ.")
     g = parse_answer(ask(build_request(ctx, images, model)), ctx, len(images))
     g.marks = marks_to_page(g.marks, images)
+    g.places = marks_to_page(g.places, images)
     scrub_graded(g, names or [])
     return g, mark_pdf(pdf, g, ctx)
 

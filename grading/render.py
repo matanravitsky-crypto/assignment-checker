@@ -97,12 +97,17 @@ GRID_STEP = 100
 GRID_COLOR = (1, 0.45, 0)
 
 
-def _with_grid(pix: pymupdf.Pixmap) -> pymupdf.Pixmap:
+def _with_grid(pix: pymupdf.Pixmap, label: str = "") -> pymupdf.Pixmap:
+    """הרשת הכתומה, ובראש התמונה התווית (למשל "page 3"): מספר העמוד כתוב בתמונה עצמה, כדי שהמודל לא ייקח אותו
+    משם הקובץ או ממקום התמונה ברשימה."""
     w, h = pix.width, pix.height
     with pymupdf.open() as tmp:
         page = tmp.new_page(width=w, height=h)
         page.insert_image(page.rect, pixmap=pix)
         size = max(9, w / 80)
+        if label:
+            big = size * 1.6
+            page.insert_text((w / 2 - big * len(label) * 0.28, big + 1), label, fontsize=big, color=GRID_COLOR)
         for v in range(0, 1001, GRID_STEP):
             x, y = v / 1000 * w, v / 1000 * h
             if 0 < v < 1000:
@@ -132,7 +137,7 @@ def render_page(page: pymupdf.Page, grid: bool = False, crop: bool = False) -> P
     # alpha=False: רקע לבן מלא, בלי שקיפות
     pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), clip=clip, alpha=False)
     if grid:
-        pix = _with_grid(pix)
+        pix = _with_grid(pix, f"page {page.number + 1}")
     frac = None
     if clip is not None:
         r = page.rect

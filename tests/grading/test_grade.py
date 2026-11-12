@@ -166,7 +166,7 @@ def test_rubric_and_solution_are_sent(root):
 def test_parse_answer_clamps_and_computes_the_grade(root):
     ctx = grading.load_context(asg(root).dir)
     text = json.dumps({
-        "questions": [{"label": l, "points": p, "comment": ""} for l, p in zip(LABELS, (25, 15.3, -4, "x"))],  # רק 4 שאלות
+        "questions": [{"label": l, "points": p, "comment": "משהו"} for l, p in zip(LABELS, (25, 15.3, -4, "x", 0))],
         "feedback": "יפה",
         "annotations": [
             {"page": 1, "x0": 900, "y0": 50, "x1": 100, "y1": 20, "text": "הפוך"},  # מלבן הפוך מתוקן
@@ -179,9 +179,103 @@ def test_parse_answer_clamps_and_computes_the_grade(root):
     assert g.points == [20, 15.5, 0, 0, 0]  # עד הניקוד המרבי, בחצאי נקודות
     assert g.grade == 36
     assert [(m.x0, m.y0, m.x1, m.y1) for m in g.marks] == [(100, 20, 900, 50)]
-    assert "4 שאלות במקום 5" in g.review
+    assert g.lost == ["עמוד 9 (אין עמוד כזה): עמוד שלא קיים"]  # לא נזרקת: תגיע לעמוד הסיכום
+    assert "25 מתוך 20" in g.review and "שאלות במקום" not in g.review
     with pytest.raises(grading.GradingError):
         grading.parse_answer("not json", ctx, 1)
+
+
+def test_answers_are_matched_by_label_and_a_partial_answer_is_refused(root):
+    # באג אמיתי (2026-11-11): Claude החזיר 15 שאלות מ-21 בעבודה של 24 עמודים. השידוך לפי מקום ברשימה נתן 0
+    # לשש שאלות נכונות, 5 מתוך 2 לשאלה שהניקוד של שכנתה זלג אליה, ו-"placeholder" בעמוד הסיכום של הסטודנט
+    ctx = grading.load_context(asg(root).dir)
+
+    def reply(questions, feedback="יפה", annotations=()):
+        return json.dumps({"questions": questions, "feedback": feedback, "annotations": list(annotations),
+                           "needs_review": False, "review_reason": ""}, ensure_ascii=False)
+
+    def q(label, points, comment="נכון"):
+        return {"label": label, "points": points, "comment": comment}
+
+    # הפוך בסדר: הניקוד הולך לפי התווית
+    g = grading.parse_answer(reply([q(l, p) for l, p in zip(reversed(LABELS), (1, 2, 3, 4, 5))]), ctx, 1)
+    assert g.points == [5, 4, 3, 2, 1]
+    # תווית עם רווחים אחרים עדיין מזוהה; באותו מספר שאלות תווית זרה הולכת לפי הסדר
+    g = grading.parse_answer(reply([q(" ".join(LABELS[0]), 7)] + [q(l, 20) for l in LABELS[1:]]), ctx, 1)
+    assert g.points[0] == 7
+    g = grading.parse_answer(reply([q("משהו אחר", 7)] + [q(l, 20) for l in LABELS[1:]]), ctx, 1)
+    assert g.points[0] == 7
+    # חסרות שאלות: הבדיקה נכשלת, לא 0 בשקט
+    with pytest.raises(grading.GradingError, match="4 שאלות במקום 5"):
+        grading.parse_answer(reply([q(l, 20) for l in LABELS[:4]]), ctx, 1)
+    with pytest.raises(grading.GradingError, match="placeholder"):
+        grading.parse_answer(reply([q(l, 20) for l in LABELS[:4]] + [q(LABELS[4], 0, "placeholder")]), ctx, 1)
+    with pytest.raises(grading.GradingError, match="placeholder"):
+        grading.parse_answer(reply([q(l, 20) for l in LABELS], feedback="Placeholder"), ctx, 1)
+    with pytest.raises(grading.GradingError, match="0 בלי הערה"):
+        grading.parse_answer(reply([q(l, 20) for l in LABELS[:4]] + [q(LABELS[4], 0, "")]), ctx, 1)
+    # 0 עם הערה הוא תשובה לגיטימית (שאלה שלא נמצאה)
+    g = grading.parse_answer(reply([q(l, 20) for l in LABELS[:4]] + [q(LABELS[4], 0, "לא נמצאה")]), ctx, 1)
+    assert g.points[4] == 0
+
+
+def test_a_note_on_a_page_that_does_not_exist_reaches_the_summary_page(root):
+    ctx = grading.load_context(asg(root).dir)
+    g = grading.parse_answer(answer(marks=[{"page": 7, "x0": 0, "y0": 0, "x1": 10, "y1": 10, "text": "הערה בעמוד 7"}]), ctx, 2)
+    assert g.marks == [] and g.lost == ["עמוד 7 (אין עמוד כזה): הערה בעמוד 7"]
+    with pymupdf.open(stream=grading.mark_pdf(homework_pdf("x", "t"), g, ctx), filetype="pdf") as out:
+        assert "הערה בעמוד 7" in text(out[0])
+
+
+def test_a_note_that_cannot_be_written_goes_to_the_summary(monkeypatch):
+    # באג אמיתי (2026-11-11): insert_htmlbox נכשל על מלבן ריק, _write בלע את השגיאה, והסטודנט ראה תיבה בלי הסבר
+    doc, page = _scan_page((100, 200, 300, 230))
+    ctx = grading.Context("מטלה", "קורס", [grading.Question("שאלה 1", 100)])
+    g = grading.Graded([90], [""], 90, "", [grading.Mark(1, 168, 237, 504, 273, "הערה שלא נכנסת")])
+    real = pymupdf.Page.insert_htmlbox
+
+    def failing(self, rect, html, **kw):
+        if "הערה שלא נכנסת" in html and "ציון:" not in html:  # ההערה על הדף, לא עמוד הסיכום
+            raise OverflowError("int too large to convert to float")
+        return real(self, rect, html, **kw)
+    monkeypatch.setattr(pymupdf.Page, "insert_htmlbox", failing)
+    with pymupdf.open(stream=grading.mark_pdf(doc.tobytes(), g, ctx), filetype="pdf") as out:
+        assert "הערה שלא נכנסת" in text(out[0]) and "עמוד 1" in text(out[0])
+    assert len(g.marks) == 1  # המלבן עצמו כן צויר
+
+
+def test_places_come_from_the_answer_and_are_kept_in_the_notes(root):
+    ctx = grading.load_context(asg(root).dir)
+    data = json.loads(answer())
+    for i, q in enumerate(data["questions"]):
+        q.update({"page": 1 if i < 2 else 0, "x0": 700, "y0": 100 + 200 * i, "x1": 900, "y1": 130 + 200 * i})
+    g = grading.parse_answer(json.dumps(data, ensure_ascii=False), ctx, 1)
+    assert [(p.page, p.text) for p in g.places] == [(1, LABELS[0]), (1, LABELS[1])] + [(0, l) for l in LABELS[2:]]
+    assert grading.parse_answer(answer(), ctx, 1).places[0].page == 0  # תשובה בלי מקום עדיין נקראת
+    notes = grading.graded_notes(g, "m")
+    assert [p["page"] for p in notes["places"]] == [1, 1, 0, 0, 0] and notes["places"][0]["text"] == LABELS[0]
+
+
+def _strokes(page, color):
+    return [d for d in page.get_drawings() if d.get("color") and all(abs(a - b) < 0.05 for a, b in zip(d["color"], color))]
+
+
+def test_check_cross_or_half_is_drawn_where_each_answer_starts():
+    doc, page = _scan_page((100, 200, 300, 230))
+    ctx = grading.Context("מטלה", "קורס", [grading.Question(f"שאלה {i}", 10) for i in range(1, 5)])
+    places = [grading.Mark(1, 700, 100, 760, 130, "שאלה 1"), grading.Mark(1, 700, 300, 760, 330, "שאלה 2"),
+              grading.Mark(1, 700, 500, 760, 530, "שאלה 3"), grading.Mark(0, 0, 0, 0, 0, "שאלה 4")]
+    g = grading.Graded([10, 0, 6.5, 10], [""] * 4, 66, "", [], places=places)
+    with pymupdf.open(stream=grading.mark_pdf(doc.tobytes(), g, ctx), filetype="pdf") as out:
+        page = out[1]
+        green, red, orange = (_strokes(page, c) for c in (grading.GREEN, grading.RED, grading.ORANGE))
+    assert len(green) == 1 and len(red) == 2 and len(orange) == 3  # ✓ · ✗ (שני קווים) · ✓✗ (קו + שני קווים)
+    # ✓ של שאלה 1 מימין למלבן שלה, בגובה שלו
+    r = green[0]["rect"]
+    assert r.x0 >= 760 / 1000 * 595 and abs((r.y0 + r.y1) / 2 - 115 / 1000 * 842) < 20
+    # שאלה 4 בלי מקום: שום סימן נוסף
+    assert len(green) + len(red) + len(orange) == 6
+    assert grading.check_kind(10, 10) == "check" and grading.check_kind(0, 10) == "cross" and grading.check_kind(3, 10) == "half"
 
 
 def test_names_are_removed_even_if_claude_copies_them(root):
@@ -583,3 +677,9 @@ def test_model_images_carry_a_numbered_grid_but_files_do_not():
     pix = pymupdf.Pixmap(gridded.data)
     # קו הרשת ב-x=500 צבוע כתום באמצע העמוד
     assert any(pix.pixel(pix.width // 2, y)[2] < 200 for y in range(pix.height // 2, pix.height // 2 + 40))
+    # ומספר העמוד ("page 1") כתוב בכתום בראש התמונה, באמצע, כדי שהמודל לא ייקח אותו משם הקובץ
+    top = [(x, y) for y in range(2, int(pix.height * 0.03)) for x in range(int(pix.width * 0.4), int(pix.width * 0.6), 2)
+           if pix.pixel(x, y)[2] < 120 and pix.pixel(x, y)[0] > 200]
+    assert len(top) > 20
+    assert not [(x, y) for y in range(2, int(pix.height * 0.03)) for x in range(int(pix.width * 0.4), int(pix.width * 0.6), 2)
+                if pymupdf.Pixmap(plain.data).pixel(x, y)[2] < 120]
