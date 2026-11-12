@@ -89,13 +89,9 @@ def test_a_skill_that_fell_behind_the_repo_is_found(tmp_path):
     assert extract_skill.stale(skill) == ["copying/check.py"]
     by_hand = tmp_path / "a skill made by hand"
     by_hand.mkdir()
-    (by_hand / "SKILL.md").write_text("---
-name: mine
----
-", encoding="utf-8")
+    (by_hand / "SKILL.md").write_text("---\nname: mine\n---\n", encoding="utf-8")
     with pytest.raises(SystemExit):  # a folder this tool did not build is never replaced
         extract_skill.build("copying", by_hand)
-    assert (by_hand / "SKILL.md").read_text(encoding="utf-8").startswith("---
-name: mine")
+    assert (by_hand / "SKILL.md").read_text(encoding="utf-8").startswith("---\nname: mine")
     # one it built is rebuilt in place (the folder stays: Windows refuses to remove a skills folder Claude Code holds)
     assert extract_skill.build("copying", skill) == skill and extract_skill.stale(skill) == []
