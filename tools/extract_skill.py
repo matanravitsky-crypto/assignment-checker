@@ -8,6 +8,7 @@
                                                            behind; a skill there that this tool did not build (an older
                                                            copy from a ZIP) is first copied to ~/.claude/skill-backups/.
                                                            The dashboard runs this at every start (dashboard/skills.py)
+    python tools/extract_skill.py --remove <skill folder>  removes a skill this tool built (never one it did not build)
 
 The skill gets:
   SKILL.md               from <part>/skill/SKILL.md (the part owns its text; its `name:` is the skill's name), and
@@ -15,8 +16,11 @@ The skill gets:
   scripts/run.py         runs `python -m <part>` from the skill's own copy, so the repo is not needed
   scripts/<the code>     the part and every module of the repo it needs (tools/modules.closure): the part itself and
                          the core it uses, never a part above it (tests/test_modularity.py keeps that true)
-  scripts/MANIFEST.json  the commit it came from and every file's sha256, so a copy that fell behind is found
+  scripts/MANIFEST.json  the commit it came from and every file's sha256, so a copy that fell behind is found, and
+                         "team": true when the dashboard installed it as one of the team's skills, so the dashboard
+                         also removes it once it is no longer on its list (retire)
 A part can go out this way only because it uses nothing but the core and the parts below it (docs/Modularity.md).
+Every part with a <part>/skill/SKILL.md is built and run alone by tests/integration/test_every_skill.py.
 """
 from __future__ import annotations
 
@@ -36,7 +40,10 @@ if __package__ in (None, ""):  # run as a script: python tools/extract_skill.py
 from tools import modules as M  # noqa: E402
 
 MANIFEST = "MANIFEST.json"
-RUN = '''"""Runs `python -m {part}` of Bodek Hacham from this skill's own copy of the code (built by tools/extract_skill.py).
+# what is left of a removed skill when Windows keeps its folder (Claude Code holds it): no SKILL.md, so it is no skill;
+# the next retire removes the folder, and an install over it takes the folder back
+REMOVED = "REMOVED by Bodek Hacham.txt"
+RUN ='''"""Runs `python -m {part}` of Bodek Hacham from this skill's own copy of the code (built by tools/extract_skill.py).
 
     python run.py <arguments of python -m {part}>
 """
@@ -108,8 +115,9 @@ def _empty(folder: Path) -> None:
             child.unlink()
 
 
-def build(part: str, dest: Path | None = None) -> Path:
-    """Builds the skill and returns its folder. A folder that is there already is replaced only if this tool built it."""
+def build(part: str, dest: Path | None = None, team: bool = False) -> Path:
+    """Builds the skill and returns its folder. A folder that is there already is replaced only if this tool built it.
+    `team`: the dashboard installs it as one of the team's skills (dashboard/skills.py), and may remove it later."""
     src = skill_source(part)
     dest = Path(dest) if dest else Path.home() / ".claude" / "skills" / skill_name(part)
     if dest.exists() and any(dest.iterdir()):
@@ -131,7 +139,7 @@ def build(part: str, dest: Path | None = None) -> Path:
         files[rel] = _sha(f)
     (scripts / "run.py").write_text(RUN.format(part=part), encoding="utf-8")
     manifest = {"part": part, "skill": skill_name(part), "commit": _commit(),
-                "built_at": datetime.now().isoformat(timespec="seconds"), "files": files}
+                "built_at": datetime.now().isoformat(timespec="seconds"), "team": team, "files": files}
     (scripts / MANIFEST).write_text(json.dumps(manifest, indent=1) + "\n", encoding="utf-8")
     return dest
 
@@ -171,18 +179,49 @@ def up_to_date(part: str, dest: Path) -> bool:
         return False
 
 
-def install(part: str, skills: Path | None = None, backups: Path | None = None) -> dict:
+def _manifest(skill_dir: Path) -> dict | None:
+    """The MANIFEST.json of a skill this tool built, or None (no skill there, or one it did not build)."""
+    try:
+        m = json.loads((Path(skill_dir) / "scripts" / MANIFEST).read_text(encoding="utf-8"))
+        return m if isinstance(m, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def _removed_earlier(folder: Path) -> bool:
+    """A skill folder that remove() emptied and Windows kept: nothing in it but the REMOVED note."""
+    try:
+        return folder.is_dir() and [c.name for c in folder.iterdir()] == [REMOVED]
+    except OSError:
+        return False
+
+
+def _remove_folder(folder: Path) -> None:
+    folder.rmdir()
+
+
+def _skills_dir(skills: Path | None) -> Path:
+    return Path(skills) if skills else Path.home() / ".claude" / "skills"
+
+
+def install(part: str, skills: Path | None = None, backups: Path | None = None, team: bool = False) -> dict:
     """Keeps the part's skill current in a skills folder (default ~/.claude/skills), the way a teammate's computer gets
     it: nothing is done when it is up to date; a copy this tool built is built again; a copy it did not build (the
     hand-made exercise-grader that went round as a ZIP) is first copied whole to `backups` (default
     ~/.claude/skill-backups, outside the skills folder, so it is not a second skill with the same name), and only then
-    replaced. Returns {"skill", "path", "action": "up_to_date" | "installed" | "updated" | "replaced", "backup"}."""
+    replaced. `team` (the dashboard, dashboard/skills.py) marks it as one of the team's skills, which retire() removes
+    once it is off the list; a mark that is there stays.
+    Returns {"skill", "path", "action": "up_to_date" | "installed" | "updated" | "replaced", "backup"}."""
     name = skill_name(part)
-    skills = Path(skills) if skills else Path.home() / ".claude" / "skills"
+    skills = _skills_dir(skills)
     dest = skills / name
     out = {"skill": name, "path": str(dest), "action": "up_to_date", "backup": None}
+    if _removed_earlier(dest):  # the folder of a skill removed earlier: it is ours again
+        (dest / REMOVED).unlink()
     there = dest.is_dir() and any(dest.iterdir())
-    if there and up_to_date(part, dest):
+    old = _manifest(dest) if there else None
+    team = team or bool(old and old.get("team"))
+    if there and old is not None and bool(old.get("team")) == team and up_to_date(part, dest):
         return out
     if there and not (dest / "scripts" / MANIFEST).is_file():
         backups = Path(backups) if backups else skills.parent / "skill-backups"
@@ -197,7 +236,49 @@ def install(part: str, skills: Path | None = None, backups: Path | None = None) 
     else:
         out["action"] = "updated" if there else "installed"
     skills.mkdir(parents=True, exist_ok=True)
-    build(part, dest)
+    build(part, dest, team=team)
+    return out
+
+
+def remove(skill_dir: Path) -> None:
+    """Removes a skill this tool built; one it did not build is never touched. On Windows Claude Code may hold the
+    folder, so it is emptied and then removed; when Windows keeps it, a note (REMOVED) is all that stays, which is no
+    skill, and the next retire() removes the folder."""
+    skill_dir = Path(skill_dir)
+    if _manifest(skill_dir) is None:
+        raise SystemExit(f"{skill_dir} was not built by this tool: not touching it")
+    _empty(skill_dir)
+    try:
+        _remove_folder(skill_dir)
+    except OSError:
+        (skill_dir / REMOVED).write_text("This skill was removed by Bodek Hacham (tools/extract_skill.py). The folder "
+                                         "goes at the dashboard's next start.\n", encoding="utf-8")
+
+
+def retire(keep: list[str], skills: Path | None = None) -> list[dict]:
+    """Removes from a skills folder (default ~/.claude/skills) every team skill (installed with team=True, by the
+    dashboard) whose name is not in `keep`: a part taken off dashboard/skills.TEAM_SKILLS, or a skill whose name changed.
+    A skill built by hand (`extract_skill.py <part>`, `--install`) or made by hand is never touched. Also removes the
+    folders that an earlier remove() could only empty. Returns [{"skill", "path", "action": "removed"}]."""
+    skills = _skills_dir(skills)
+    out = []
+    if not skills.is_dir():
+        return out
+    for folder in sorted(skills.iterdir()):
+        if not folder.is_dir() or folder.is_symlink():
+            continue
+        if _removed_earlier(folder):
+            try:
+                (folder / REMOVED).unlink()
+                _remove_folder(folder)
+            except OSError:
+                (folder / REMOVED).touch()  # Windows still holds it: the note stays for the next start
+            continue
+        m = _manifest(folder)
+        if m is None or not m.get("team") or folder.name in keep:
+            continue
+        remove(folder)
+        out.append({"skill": folder.name, "path": str(folder), "action": "removed", "backup": None})
     return out
 
 
@@ -211,7 +292,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--stale", type=Path, metavar="SKILL_DIR", help="which files of a built skill fell behind the repo")
     p.add_argument("--install", action="store_true",
                    help="build it in ~/.claude/skills only if missing or behind; back up a hand-made one first")
+    p.add_argument("--remove", type=Path, metavar="SKILL_DIR", help="remove a skill this tool built")
     args = p.parse_args(argv)
+    if args.remove:
+        remove(args.remove)
+        print(f"removed {args.remove}")
+        return 0
     if args.stale:
         behind = stale(args.stale)
         print("\n".join(behind) if behind else "up to date")

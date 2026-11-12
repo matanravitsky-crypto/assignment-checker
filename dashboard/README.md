@@ -15,7 +15,7 @@ python -m dashboard serve
 | `actions.py` | הפעולות: משיכה (`moodle ingest`) עם נעילה ובדיקת עותקים כפולים, בדיקה ברקע (`grading/`), בדיקת העתקות ברקע (`copying/`), הכנת החזרה (`moodle upload`), העלאה למודל ברקע (`moodle send`), והמצב לאתר |
 | `web_server.py` | השרת: מגיש את האתר ואת `/api/...` |
 | `updater.py` | עדכון עצמי: פעם בשעה שואל את GitHub אם `main` התקדם. כשכן, והתיקייה על `main` בלי שינויים, שום דבר לא רץ, ו-`autostart.vbs` רץ, השרת נעצר והוא מעלה אותו מעודכן. `version` ב-`/api/health` וב-`/api/changes`, והאתר נטען מחדש כשהיא משתנה. `AUTO_UPDATE=off` ב-`.env` מכבה |
-| `skills.py` | הסקילים של הצוות בכל מחשב: בכל הפעלה של השרת (וכך אחרי כל עדכון מ-`main`) בונה את `exercise-grader` מהקוד של המחשב הזה ב-`~/.claude/skills` (`tools/extract_skill.install`), רק אם הוא חסר או נשאר מאחור. עותק ידני (ה-ZIP) מועתק קודם ל-`~/.claude/skill-backups/`. ברקע; כישלון לא עוצר את השרת. `INSTALL_SKILLS=off` ב-`.env` מכבה |
+| `skills.py` | הסקילים של הצוות בכל מחשב: בכל הפעלה של השרת (וכך אחרי כל עדכון מ-`main`) בונה את `exercise-grader` מהקוד של המחשב הזה ב-`~/.claude/skills` (`tools/extract_skill.install`), רק אם הוא חסר או נשאר מאחור. עותק ידני (ה-ZIP) מועתק קודם ל-`~/.claude/skill-backups/`. סקיל שהשרת התקין וירד מ-`TEAM_SKILLS` נמחק (`extract_skill.retire`); סקיל שהותקן ביד לא נמחק לעולם. ברקע; כישלון לא עוצר את השרת. `INSTALL_SKILLS=off` ב-`.env` מכבה |
 | `public_status.py` | לוח המספרים הציבורי: במחשב שיש ב-`.env` שלו `PUBLIC_STATUS_GIST`, מפרסם ל-gist (דרך `gh`) סיכום של מספרים בלבד: לכל מטלה כמה נמשכו, נבדקו, מחכות לבדיקה ידנית, אושרו והוחזרו, מתי, ומי מושך. בלי מספרי הגשות, ציונים, הערות או קבצים. רק כשמשהו השתנה, ופעם בשעה גם בלי. האתר מציג אותו למי שאין במחשב שלו מערכת |
 | `settings.py` | קורא את `.env` (מפתח Claude) |
 
