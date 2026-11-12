@@ -87,11 +87,13 @@ def build(part: str, dest: Path | None = None) -> Path:
     """Builds the skill and returns its folder. A folder that is there already is replaced only if this tool built it."""
     src = skill_source(part)
     dest = Path(dest) if dest else Path.home() / ".claude" / "skills" / skill_name(part)
-    if dest.exists():
+    if dest.exists() and any(dest.iterdir()):
         if not (dest / "scripts" / MANIFEST).is_file():
             raise SystemExit(f"{dest} exists and was not built by this tool: not touching it")
-        shutil.rmtree(dest)
-    shutil.copytree(src, dest, ignore=shutil.ignore_patterns("__pycache__"))
+        # empty it but keep the folder: Claude Code watches its skills folders, and Windows refuses to remove one it holds
+        for child in dest.iterdir():
+            shutil.rmtree(child) if child.is_dir() else child.unlink()
+    shutil.copytree(src, dest, ignore=shutil.ignore_patterns("__pycache__"), dirs_exist_ok=True)
     scripts = dest / "scripts"
     scripts.mkdir(exist_ok=True)
     files = {}
