@@ -132,5 +132,7 @@ a short table: number | grade | needs review.
 
 ## Keeping it current
 
-`python tools/extract_skill.py --stale <skill>` (in the repo) says whether the code here fell behind the system;
-`python tools/extract_skill.py grading` builds it again.
+On a computer that runs the system, the dashboard builds this skill again from its own code at every start (and so
+after every update from GitHub), only when something changed (`dashboard/skills.py`, `INSTALL_SKILLS=off` turns it
+off). By hand, in the repo: `python tools/extract_skill.py --stale <skill>` says whether it fell behind,
+`python tools/extract_skill.py grading --install` builds it again.

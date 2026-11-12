@@ -14,7 +14,8 @@ python -m grading <מזהה מטלה> --ids 0001 0002
 הגשה אחת מחוץ למערכת (עבודה ששלחו בצ'אט, עם מחוון בכל צורה) בודקים עם הסקיל **`exercise-grader`**, שנבנה מהקוד
 הזה (`python tools/extract_skill.py grading`, מ-`grading/skill/SKILL.md`): Claude שבשיחה קורא ובודק, והקוד של
 grading מכין את העמודים, נותן את הוראות הבדיקה, חותך את הניקוד למחוון, מחשב את הציון ומצייר את העבודה המסומנת
-(`one_submission.py`, `python -m grading prepare|rules|rubric|mark`). שום דבר לא נכתב בתיקיית מטלה.
+(`one_submission.py`, `python -m grading prepare|rules|rubric|mark`). שום דבר לא נכתב בתיקיית מטלה. כל מחשב שמריץ
+את המערכת בונה את הסקיל מהקוד שלו בכל הפעלה של השרת (`dashboard/skills.py`), כך שכל הצוות מקבל אותו לבד.
 
 ## ממשק
 

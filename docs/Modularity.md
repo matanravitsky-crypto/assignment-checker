@@ -72,7 +72,10 @@
 בונה את `copying-check`, מריץ אותו בלי הריפו (`python -I`, מתיקייה אחרת), ומשווה את התוצאה שלו לתוצאה של המערכת על
 אותן הגשות. `tests/integration/test_grading_skill.py` עושה אותו דבר ל-`exercise-grader`.
 
-**`exercise-grader` אצל חברי הצוות.** הגרסה הקודמת הייתה העתקה ידנית (`grade_tool.py`) שהופצה כ-ZIP, ולכן
-`extract_skill.py` לא מחליף אותה (תיקייה שהוא לא בנה): מעבירים אותה קודם ל-`%USERPROFILE%\.claude\skill-backups\`
-(כמו ש-`scripts/install.ps1` עושה), ואז `python tools/extract_skill.py grading`. ZIP לחבר צוות: מכווצים את תיקיית הסקיל
-שנבנתה (`exercise-grader\SKILL.md` בתוכו), והוא מתקין אותה עם `scripts/install.ps1` שבתוכה.
+**`exercise-grader` אצל כל הצוות, לבד.** כל מחשב שמריץ את המערכת בונה אותו מהקוד שלו בכל הפעלה של השרת
+(`dashboard/skills.py` → `python tools/extract_skill.py grading --install`), והשרת עולה מחדש אחרי כל עדכון מ-`main`, כך
+שכל אחד מקבל את הגרסה שב-`main` בתוך שעה ממיזוג. נבנה רק כשהסקיל חסר או נשאר מאחור (הקוד, `SKILL.md` או
+`run.py`). הגרסה הקודמת הייתה העתקה ידנית (`grade_tool.py`) שהופצה כ-ZIP: תיקייה שהכלי לא בנה מועתקת קודם כולה
+ל-`%USERPROFILE%\.claude\skill-backups\exercise-grader-<תאריך>` (מחוץ לתיקיית הסקילים, כדי שלא יהיו שני סקילים באותו
+שם), ורק אז מוחלפת. `INSTALL_SKILLS=off` ב-`.env` מכבה. למי שאין מערכת במחשב: מכווצים את תיקיית הסקיל שנבנתה
+(`exercise-grader\SKILL.md` בתוכו), והוא מתקין אותה עם `scripts/install.ps1` שבתוכה.

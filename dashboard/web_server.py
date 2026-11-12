@@ -28,7 +28,7 @@ from datastore import ledger
 from grading import grade as grading, grade_edit
 from moodle import moodle_table, paths, settings as cfg
 
-from . import actions, folder_view, public_status, scheduler, sync, updater
+from . import actions, folder_view, public_status, scheduler, skills, sync, updater
 
 WEBSITE = cfg.REPO_DIR / "website"
 HEADER = "X-Assignment-Checker"
@@ -586,6 +586,8 @@ def serve(port: int = 8765, open_browser: bool = True) -> None:
                   lambda: actions.running_jobs() + (["night pull"] if scheduler.in_night_window() else []))
     # לוח המספרים הציבורי באתר: רק במחשב שיש ב-.env שלו PUBLIC_STATUS_GIST (dashboard/public_status.py)
     public_status.start()
+    # הסקיל exercise-grader נבנה מהקוד של המחשב הזה, כך שכל אחד בצוות מקבל את הגרסה שב-main (dashboard/skills.py)
+    skills.start()
     actions.refresh_status_soon()  # כבר עכשיו, כדי שהתשובה תהיה מוכנה כשהאתר נפתח
     url = f"http://localhost:{port}/"
     print(f"\nבודק חכם פועל: {url}\nכדי לעצור: Ctrl+C או לסגור את החלון.")

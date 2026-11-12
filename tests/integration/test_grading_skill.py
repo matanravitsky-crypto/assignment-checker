@@ -6,6 +6,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import stat
 import subprocess
 import sys
 
@@ -128,3 +129,39 @@ def test_the_skill_never_loads_code_from_the_repo(tmp_path):
     loaded = json.loads(out.stdout.strip().splitlines()[-1])
     assert loaded and all(str(skill) in f for f in loaded), loaded
     assert any(f.endswith("one_submission.py") for f in loaded)
+
+
+def test_every_computer_gets_the_skill_and_a_hand_made_one_is_kept_aside(tmp_path):
+    """extract_skill.install, which the dashboard runs at every start (dashboard/skills.py): a teammate who installed
+    the hand-made exercise-grader from a ZIP gets the one built from the code, and the old one is kept, whole."""
+    skills, backups = tmp_path / ".claude" / "skills", tmp_path / ".claude" / "skill-backups"
+    old = skills / "exercise-grader"
+    (old / "scripts").mkdir(parents=True)
+    (old / "SKILL.md").write_text("---\nname: exercise-grader\n---\nby hand\n", encoding="utf-8")
+    (old / "scripts" / "grade_tool.py").write_text("# main @ 43b48dc\n", encoding="utf-8")
+
+    done = extract_skill.install("grading", skills, backups)
+    assert done["action"] == "replaced" and done["skill"] == "exercise-grader"
+    kept = backups / done["backup"].split("\\")[-1].split("/")[-1]
+    assert (kept / "scripts" / "grade_tool.py").read_text(encoding="utf-8") == "# main @ 43b48dc\n"
+    assert (kept / "SKILL.md").read_text(encoding="utf-8").endswith("by hand\n")
+    assert not (old / "scripts" / "grade_tool.py").exists() and (old / "scripts" / "run.py").is_file()
+    assert extract_skill.up_to_date("grading", old) and extract_skill.stale(old) == []
+
+    # the next start: nothing to do, nothing touched
+    when = (old / "SKILL.md").stat().st_mtime_ns
+    assert extract_skill.install("grading", skills, backups)["action"] == "up_to_date"
+    assert (old / "SKILL.md").stat().st_mtime_ns == when and len(list(backups.iterdir())) == 1
+
+    # a copy that fell behind (here: SKILL.md changed) is built again, with no second backup, even when its folders are
+    # read-only (OneDrive marks folders read-only; a build that copied that attribute could not be built again)
+    (old / "SKILL.md").write_text("---\nname: exercise-grader\n---\nolder text\n", encoding="utf-8")
+    os.chmod(old / "scripts" / "run.py", stat.S_IREAD)
+    os.chmod(old / "scripts", stat.S_IREAD | stat.S_IEXEC)
+    assert not extract_skill.up_to_date("grading", old)
+    assert extract_skill.install("grading", skills, backups)["action"] == "updated"
+    assert extract_skill.up_to_date("grading", old) and len(list(backups.iterdir())) == 1
+
+    # and a computer that never had it
+    fresh = extract_skill.install("grading", tmp_path / "other" / "skills", backups)
+    assert fresh["action"] == "installed" and extract_skill.up_to_date("grading", tmp_path / "other" / "skills" / "exercise-grader")
