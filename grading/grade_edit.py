@@ -22,7 +22,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Protocol
+from typing import Callable, Protocol
 
 import activity_log
 from moodle import grades, paths
@@ -129,7 +129,7 @@ class MarkedPdfTarget:
 class NotesTarget:
     """Grading notes/0001.json: ההערות, הטעויות ומי בדק. מזה האתר מראה את העבודה."""
     name: str = "notes"
-    label: str = "Grading notes"
+    label: str = paths.NOTES
 
     def enabled(self) -> bool:
         return True
@@ -165,17 +165,21 @@ class GradesCsvTarget:
 class StatsTarget:
     """מסד הנתונים הסטטיסטי בדרייב (stats/, "Statistics/<קורס>/Assignment N.json" ו-"All assignments.csv"): ממוצעים,
     התפלגות, טעויות נפוצות. נגזר מקובצי הציונים, ולכן בא אחרי GradesCsvTarget. optional: כישלון כאן לא מבטל עריכה
-    שכבר נשמרה בכל השאר. הוא נרשם ביומן (not_updated), והקורא הבא של הסטטיסטיקה מחשב אותה מחדש."""
+    שכבר נשמרה בכל השאר. הוא נרשם ביומן (not_updated), והקורא הבא של הסטטיסטיקה מחשב אותה מחדש.
+
+    כבוי עד ש-connect_stats(build) מחבר אליו את stats.build. grading לא מייבא את stats (stats הוא שתלוי ב-grading:
+    הוא קורא את המחוון וההערות דרכו), ולכן מי שמרכיב את המערכת מחבר אותו: הדשבורד ב-web_server.connect_stores.
+    בלי חיבור (grading כסקיל לבד, או `python -m grading`) הסטטיסטיקה מחושבת מחדש אצל הקורא הבא שלה (stats.read)."""
     name: str = "stats_db"
     label: str = "מסד הנתונים הסטטיסטי בדרייב"
     optional: bool = True
+    build: Callable[..., object] | None = None
 
     def enabled(self) -> bool:
-        return True
+        return self.build is not None
 
     def apply(self, edit: GradeEdit) -> None:
-        import stats
-        stats.build(edit.assignment_dir, by=edit.by)
+        self.build(edit.assignment_dir, by=edit.by)
 
 
 @dataclass
@@ -203,6 +207,19 @@ def connect_database(store: GradeStore | None) -> None:
     for t in TARGETS:
         if isinstance(t, DatabaseTarget):
             t.store = store
+
+
+def connect_stats(build: Callable[..., object] | None) -> None:
+    """מחבר את מסד הנתונים הסטטיסטי (או מנתק, עם None): build(assignment_dir, by=None), כמו stats.build.
+    אחרי כל עריכה (יעד optional) ובסוף כל ריצת בדיקה (grade.grade_assignment)."""
+    for t in TARGETS:
+        if isinstance(t, StatsTarget):
+            t.build = build
+
+
+def stats_builder() -> Callable[..., object] | None:
+    """מה ש-connect_stats חיבר, או None."""
+    return next((t.build for t in TARGETS if isinstance(t, StatsTarget) and t.build is not None), None)
 
 
 # ---------- הפונקציה ----------

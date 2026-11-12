@@ -25,7 +25,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from moodle import claude_driver
+from moodle import claude_code, paths
 
 BUDGET_USD = 5.0
 TIMEOUT_S = 900
@@ -51,7 +51,6 @@ def log_usage(stdout: str, model: str, seconds: float | None = None, key: str = 
             row["seconds"] = round(seconds, 1)
         if key:
             row["key"] = key
-        from moodle import paths
         with (paths.data_dir() / paths.USAGE_LOG).open("a", encoding="utf-8") as f:
             f.write(json.dumps(row) + "\n")
     except Exception:
@@ -60,7 +59,7 @@ def log_usage(stdout: str, model: str, seconds: float | None = None, key: str = 
 
 def available() -> bool:
     """Claude Code מותקן ומחובר במחשב הזה."""
-    return claude_driver.find_claude() is not None and claude_driver.auth_status()["logged_in"] is True
+    return claude_code.find_claude() is not None and claude_code.auth_status()["logged_in"] is True
 
 
 def write_request(req: dict, folder: Path) -> str:
@@ -122,13 +121,13 @@ def cli_ask(claude: str, schema: dict, effort: str | None = None, run=subprocess
                 proc = run(cmd, input=prompt, capture_output=True, text=True, encoding="utf-8",
                            timeout=TIMEOUT_S, cwd=folder)
             except Exception as e:
-                raise error(claude_driver.failure_message(e, TIMEOUT_S)) from e
+                raise error(claude_code.failure_message(e, TIMEOUT_S)) from e
         finally:
             shutil.rmtree(folder, ignore_errors=True)
         log_usage(proc.stdout, req["model"], time.monotonic() - started, str(req.get("assignment") or ""))
-        answer, problem = claude_driver.read_run(proc)
+        answer, problem = claude_code.read_run(proc)
         if answer is None:
-            if problem == claude_driver.NOT_LOGGED_IN:
+            if problem == claude_code.NOT_LOGGED_IN:
                 raise not_logged_in()
             raise error(problem)
         return json.dumps(answer, ensure_ascii=False)

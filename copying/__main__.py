@@ -1,18 +1,30 @@
 """בדיקת העתקות משורת הפקודה, כמו `python -m grading`:
 
-  python -m copying <מזהה מטלה>    משווה את כל ההגשות של המטלה וכותב Copying check.json
+  python -m copying <מזהה מטלה>       משווה את כל ההגשות של המטלה וכותב Copying check.json
+  python -m copying <תיקיית המטלה>    אותו דבר, לתיקייה שנותנים (או לתיקיית "1 - Submissions to grade" שבה)
 
-את תיקיית המטלה מוצאים לפי המזהה, דרך ASSIGNMENT_DATA (ראו moodle/paths.py).
+את תיקיית המטלה מוצאים לפי המזהה, דרך ASSIGNMENT_DATA (ראו moodle/paths.py). הסקיל copying-check מריץ את הקובץ הזה.
 """
 from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
-from dashboard import shared_folder
-from moodle import paths
+from moodle import paths, shared_folder
 
 from . import check
+
+
+def find(what: str) -> Path:
+    """תיקיית המטלה: לפי נתיב (תיקיית המטלה, או "1 - Submissions to grade" שבתוכה), ואחרת לפי מזהה המטלה במודל."""
+    given = Path(what).expanduser()
+    if given.is_dir():
+        folder = given.parent if given.name == paths.TO_GRADE else given
+        if not (folder / paths.TO_GRADE).is_dir():
+            raise FileNotFoundError(f'בתיקייה {folder} אין "{paths.TO_GRADE}"')
+        return folder
+    return paths.assignment_dir(what)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -20,10 +32,10 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.reconfigure(encoding="utf-8")
     shared_folder.use_for_commands()
     p = argparse.ArgumentParser(prog="python -m copying", description="חשד להעתקה בין הגשות (בלי Claude)")
-    p.add_argument("assignment_id", help="מזהה המטלה במודל (id ב-Assignment details.json)")
+    p.add_argument("assignment_id", help="מזהה המטלה במודל (id ב-Assignment details.json), או הנתיב של תיקיית המטלה")
     args = p.parse_args(argv)
     try:
-        folder = paths.assignment_dir(args.assignment_id)
+        folder = find(args.assignment_id)
     except FileNotFoundError as e:
         print(e)
         return 2

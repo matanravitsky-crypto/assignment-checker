@@ -14,7 +14,8 @@ from grading.claude_cli import write_request
 from moodle import paths
 from tests.dashboard.helpers import call, hw
 from tests.grading.test_grade import (COURSE, HW, LABELS, FakeClaude, answer, asg, no_real_claude, root,  # noqa: F401
-                                      save_details, server)
+                                      save_details)
+from tests.integration.test_grading_in_the_dashboard import server  # noqa: F401  (fixture)
 from tests.sample_files import homework_pdf
 
 BODY = {"course": COURSE, "assignment": HW}

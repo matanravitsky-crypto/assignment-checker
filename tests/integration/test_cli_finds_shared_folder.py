@@ -14,7 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 from copying import __main__ as copying_cli
-from dashboard import settings, shared_folder
+from moodle import settings, shared_folder
 from grading import __main__ as grading_cli
 from moodle import __main__ as moodle_cli, paths
 

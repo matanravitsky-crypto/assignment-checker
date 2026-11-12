@@ -61,7 +61,7 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--pdf", help='נתיב ל-PDF (ברירת מחדל: "Statistics/<קורס>/Assignment N - grading report <תאריך>.pdf")')
     r.add_argument("--preview", help="לשמור גם תמונת PNG של העמוד הראשון בנתיב הזה")
     args = p.parse_args(argv)
-    from dashboard import shared_folder  # the same folder as the site and the other commands: the synced one
+    from moodle import shared_folder  # the same folder as the site and the other commands: the synced one
     shared_folder.use_for_commands()
 
     if args.cmd == "show":

@@ -1,18 +1,13 @@
 """Editing a grade: one function, a required reason, every place updated, and the log says who, when, from, to and why."""
 from __future__ import annotations
 
-from urllib.parse import quote
-
 import pymupdf
 import pytest
 
 import activity_log
-from dashboard import actions, web_server
-from datastore import ledger
 from grading import grade as grading, grade_edit
 from moodle import grades, paths
-from tests.grading.test_grade import (COURSE, HW, answer, asg, call, no_real_claude, root, server,  # noqa: F401 (fixtures)
-                                      text)
+from tests.grading.test_grade import answer, asg, no_real_claude, root, text  # noqa: F401 (fixtures)
 
 FULL = [20] * 5
 
@@ -41,7 +36,7 @@ def test_editing_an_existing_grade_needs_a_reason_and_changes_nothing_without_on
 def test_an_edit_updates_the_pdf_the_grades_file_and_the_log(root):
     a = graded(root)
     out = grading.save_review(a.dir, "0001", FULL, [], "יפה מאוד", by="dana (PC)", reason="ערעור: הנימוק בשאלה 12 נמצא בעמוד 2")
-    assert out == {"number": "0001", "grade": 100, "from": "85", "updated": ["marked_pdf", "notes", "grades_csv", "moodle_table", "stats_db"]}
+    assert out == {"number": "0001", "grade": 100, "from": "85", "updated": ["marked_pdf", "notes", "grades_csv", "moodle_table"]}
     # 2. עמוד הסיכום ב-PDF המסומן
     assert "ציון: 100 מתוך 100" in summary(a)
     # 3. Grades by <name>.csv של מי שערך, ומשם (הקריאה המאוחדת) הציון עולה למודל
@@ -53,7 +48,7 @@ def test_an_edit_updates_the_pdf_the_grades_file_and_the_log(root):
     assert (e["action"], e["by"], e["number"], e["from"], e["to"], e["kind"]) == ("grade_edit", "dana (PC)", "0001", "85", "100", "edit")
     assert e["reason"] == "ערעור: הנימוק בשאלה 12 נמצא בעמוד 2" and e["at"]
     assert e["points_from"] == "20;15;20;20;10" and e["points_to"] == "20;20;20;20;20"
-    assert e["updated"] == ["marked_pdf", "notes", "grades_csv", "moodle_table", "stats_db"]
+    assert e["updated"] == ["marked_pdf", "notes", "grades_csv", "moodle_table"]  # stats_db: only when connected
     assert grade_edit.history(a.dir, "1") == [e]
 
 
@@ -130,29 +125,6 @@ def test_the_database_is_off_until_connected_and_then_updated_first(root):
     assert not db.enabled()
 
 
-def test_the_dashboard_connects_the_ledger_and_an_edit_is_intent_then_done(root, server):
-    a = graded(root)
-    web_server.connect_stores()
-    try:
-        (db,) = [t for t in grade_edit.TARGETS if isinstance(t, grade_edit.DatabaseTarget)]
-        assert db.enabled() and isinstance(db.store, ledger.LedgerStore)
-        out = grading.save_review(a.dir, "0001", FULL, [], "", by="dana", reason="ערעור")
-    finally:
-        grade_edit.connect_database(None)
-    assert out["updated"][0] == "database"
-    acts = [e["action"] for e in ledger.history(a.dir, "0001")]
-    assert acts == ["grade_set", "grade_edit_intent", "grade_edit"]
-    assert ledger.incomplete_edits(a.dir) == [] and ledger.compare(a.dir) == []
-    p = ledger.projection(a.dir)["0001"]
-    assert p["grade"] == "100" and p["approved"] and p["by"] == "dana"
-    # ה-API נותן גם את כל ההיסטוריה (לעמוד הבדיקה הידנית), לצד רשימת העריכות
-    q = f"course={quote(COURSE)}&assignment={quote(HW)}&number=0001"
-    st, got = call(server, "GET", f"/api/grade-log?{q}")
-    assert st == 200 and [e["action"] for e in got["history"]] == acts
-    assert [(e["from"], e["to"]) for e in got["entries"]] == [("85", "100")]
-    assert all(e.get("grade") in (None, 85, "85") for e in got["history"] if e["action"] == "grade_set")
-
-
 def test_a_failing_place_stops_says_what_was_updated_and_is_logged(root):
     a = graded(root)
 
@@ -175,24 +147,6 @@ def test_a_failing_place_stops_says_what_was_updated_and_is_logged(root):
     assert entry["action"] == "grade_edit_failed" and entry["failed"] == "broken" and "OneDrive" in entry["error"]
 
 
-def test_the_server_asks_for_a_reason_and_shows_the_history(root, server):
-    a = graded(root)
-    body = {"course": COURSE, "assignment": HW, "number": "0001", "points": FULL, "comments": [], "feedback": ""}
-    st, out = call(server, "POST", "/api/review", body)
-    assert st == 422 and out["needReason"] and "סיבה" in out["error"]
-    st, out = call(server, "POST", "/api/review", {**body, "reason": "ערעור"})
-    assert st == 200 and out["grade"] == 100 and out["from"] == "85"
-    q = f"course={quote(COURSE)}&assignment={quote(HW)}&number=0001"
-    st, out = call(server, "GET", f"/api/grade-log?{q}")
-    assert st == 200 and [(e["from"], e["to"], e["reason"]) for e in out["entries"]] == [("85", "100", "ערעור")]
-    assert call(server, "GET", f"/api/grade-log?course={quote(COURSE)}&assignment={quote(HW)}&number=../1")[0] == 400
-    assert call(server, "GET", f"/api/grade-log?course={quote(COURSE)}&assignment=..&number=1")[0] == 404
-    assert actions.grade_history(root, COURSE, HW, "0001")[0]["to"] == "100"
-    # ובעמוד "יומן פעילות" של האתר
-    log = [r for r in actions.state(root)["assignments"][0]["log"] if "ציון עבודה 0001" in r["text"]]
-    assert log and "85 ← 100: ערעור" in log[0]["text"] and log[0]["kind"] == "grade"
-
-
 def test_anyone_may_edit_a_work_that_someone_else_graded_and_approved(root, monkeypatch):
     """פתוח לכולם (מתן, 2026-11-07): כל אחד בצוות עורך כל עבודה, גם כשמישהו אחר לקח אותה, בדק ואישר."""
     a = asg(root)
@@ -205,33 +159,6 @@ def test_anyone_may_edit_a_work_that_someone_else_graded_and_approved(root, monk
     assert grades.read_file(grades.own_file(a.dir, "דנה"))["0001"]["grade"] == "90"  # הקובץ של דנה לא נגעו בו
     assert grading.read_grades(a.dir)["0001"]["grade"] == "100"  # והציון שעולה למודל הוא של העריכה האחרונה
     assert "ציון: 100 מתוך 100" in summary(a)
-
-
-def test_an_edit_updates_the_statistics_database_in_the_drive_as_a_target(root):
-    """מסד הנתונים הסטטיסטי (Statistics/ בתיקייה המשותפת) הוא יעד ברשימה: מתעדכן בכל עריכה ונרשם ב-updated."""
-    import json
-
-    import stats
-    a = graded(root)
-    path = stats.file_for(a.dir)
-    before = json.loads(path.read_text(encoding="utf-8"))
-    out = grading.save_review(a.dir, "0001", FULL, [], "", by="dana (PC)", reason="ערעור")
-    after = json.loads(path.read_text(encoding="utf-8"))
-    assert out["updated"][-1] == "stats_db" and "not_updated" not in out
-    assert before["counts"]["approved"] == 0 and after["counts"]["approved"] == 1
-    assert stats.is_fresh(a.dir, after)  # משקף את קובץ הציונים אחרי העריכה
-    assert grade_edit.history(a.dir, "0001")[-1]["updated"][-1] == "stats_db"
-
-
-def test_a_statistics_failure_keeps_the_edit_and_is_logged(root, monkeypatch):
-    import stats
-    a = graded(root)
-    monkeypatch.setattr(stats, "build", lambda *a_, **k: (_ for _ in ()).throw(OSError("OneDrive נעל את הקובץ")))
-    out = grading.save_review(a.dir, "0001", FULL, [], "", by="x", reason="ערעור")
-    assert out["grade"] == 100 and out["not_updated"] == ["מסד הנתונים הסטטיסטי בדרייב"]
-    assert grading.read_grades(a.dir)["0001"]["grade"] == "100"  # הציון נשמר בכל השאר
-    e = grade_edit.history(a.dir, "0001")[-1]
-    assert e["action"] == "grade_edit" and e["not_updated"][0]["target"] == "stats_db" and "OneDrive" in e["not_updated"][0]["error"]
 
 
 def test_an_edit_updates_the_moodle_table_so_the_new_grade_goes_to_the_right_student(root):

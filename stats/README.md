@@ -6,6 +6,17 @@
 
 התוכנית המלאה ונקודות הוידוא: `docs/Statistics database plan.md`. ההסבר ל-Claude ולצוות: הסקיל `stats-db`.
 
+## ממשק
+
+| | |
+|---|---|
+| **נכנס** | הציונים הממוזגים (`moodle/grades.py`), `Grading notes/`, המחוון (דרך `grading.load_context`), `Copying check.json` |
+| **יוצא** | `Statistics/<קורס>/Assignment N.json`, `Statistics/All assignments.csv`, ייצוא SQLite |
+| **פקודה** | `python -m stats show\|build\|rebuild\|export` |
+| **מפייתון** | `INTERFACE` ב-`stats/__init__.py`: `read`, `build`, `rebuild`, `read_all`, `assignment_dirs`... |
+| **איך הוא מתעדכן** | grading לא מייבא את stats (stats תלוי ב-grading, לא להפך). הדשבורד מחבר את `stats.build` לבדיקה ולעריכת ציון (`grade_edit.connect_stats`), ו-`read` מחשב מחדש כשהמקור השתנה |
+| **תלוי ב** | הליבה, `grading` (המחוון וההערות) |
+
 ## איך קוראים
 
 ```bash

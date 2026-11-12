@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from grading import claude_cli, grade as grading
-from moodle import claude_driver
+from moodle import claude_code
 
 ANSWER = {"questions": [{"label": "שאלה 1", "points": 10, "comment": "יפה"}], "feedback": "עבודה טובה",
           "annotations": [], "needs_review": False, "review_reason": ""}
@@ -88,12 +88,12 @@ def test_failures_become_grading_errors():
 
 def test_without_a_key_claude_ask_uses_claude_code(monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.setattr(claude_driver, "find_claude", lambda: "claude")
-    monkeypatch.setattr(claude_driver, "auth_status", lambda *a, **k: {"logged_in": True, "message": ""})
+    monkeypatch.setattr(claude_code, "find_claude", lambda: "claude")
+    monkeypatch.setattr(claude_code, "auth_status", lambda *a, **k: {"logged_in": True, "message": ""})
     seen = {}
     monkeypatch.setattr(claude_cli, "cli_ask", lambda claude, schema, effort, **k: seen.update(claude=claude) or "ask")
     assert grading.claude_ask() == "ask" and seen == {"claude": "claude"}
-    monkeypatch.setattr(claude_driver, "auth_status", lambda *a, **k: {"logged_in": False, "message": ""})
+    monkeypatch.setattr(claude_code, "auth_status", lambda *a, **k: {"logged_in": False, "message": ""})
     with pytest.raises(grading.NoApiKey) as e:
         grading.claude_ask()
     assert "claude auth login" in str(e.value) and "ANTHROPIC_API_KEY" in str(e.value)
