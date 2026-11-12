@@ -52,7 +52,7 @@ def test_moodle_status_finds_the_synced_folder(synced, monkeypatch):
 def test_grading_finds_the_synced_folder(synced, monkeypatch):
     seen = []
     monkeypatch.setattr(grading_cli.grade, "grade_assignment", lambda folder, *a, **k: seen.append(folder) or
-                        SimpleNamespace(summary=lambda: "", notes=[], failed={}, review=[]))
+                        SimpleNamespace(summary=lambda: "", notes=[], failed={}, review=[], graded=[]))
     assert grading_cli.main([MID]) == 0
     assert seen == [synced]
 

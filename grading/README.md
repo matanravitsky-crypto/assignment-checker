@@ -11,16 +11,21 @@ python -m grading <מזהה מטלה> --ids 0001 0002
 
 בלי `--ids` נבדק כל מה שעוד לא נבדק. עם `--ids` נבדקות רק ההגשות האלה, גם אם כבר נבדקו.
 
+הגשה אחת מחוץ למערכת (עבודה ששלחו בצ'אט, עם מחוון בכל צורה) בודקים עם הסקיל **`exercise-grader`**, שנבנה מהקוד
+הזה (`python tools/extract_skill.py grading`, מ-`grading/skill/SKILL.md`): Claude שבשיחה קורא ובודק, והקוד של
+grading מכין את העמודים, נותן את הוראות הבדיקה, חותך את הניקוד למחוון, מחשב את הציון ומצייר את העבודה המסומנת
+(`one_submission.py`, `python -m grading prepare|rules|rubric|mark`). שום דבר לא נכתב בתיקיית מטלה.
+
 ## ממשק
 
 | | |
 |---|---|
 | **נכנס** | `1 - Submissions to grade/`, `Assignment details.json` (שאלות, מחוון), `פדגוגי/` (`Rubric.md` ועוד), `Official key*`, `Official solution.pdf`; Claude דרך `ANTHROPIC_API_KEY` או Claude Code המחובר |
-| **יוצא** | `2 - Graded with comments/0001.pdf`, `Grades by <name>.csv`, `Grading notes/0001.json`, `Who grades what/<name>.json`, אירועי ציון ב-`Activity log/`, `Grades for Moodle.csv` (דרך `moodle_table.build`), `Grading usage.jsonl` |
-| **פקודה** | `python -m grading <id> [--ids 0001 ...] [--model ...]` (ברירת המחדל של המודל: `GRADING_MODEL` ב-`.env`) |
+| **יוצא** | `2 - Graded with comments/0001.pdf`, `Grades by <name>.csv`, `Grading notes/0001.json`, `Who grades what/<name>.json`, אירועי ציון ב-`Activity log/`, `Grades for Moodle.csv` (כשהוא מחובר, ראו למטה), `Grading usage.jsonl`. הסקיל (`prepare`/`mark`): רק תיקיית העבודה וקובץ הפלט שנותנים לו |
+| **פקודה** | `python -m grading <id> [--ids 0001 ...] [--model ...]` (ברירת המחדל של המודל: `GRADING_MODEL` ב-`.env`). הגשה אחת: `python -m grading prepare\|rules\|rubric\|mark ...` (הסקיל `exercise-grader`) |
 | **מפייתון** | רק מה שב-`INTERFACE` ב-`grading/__init__.py`: `grade_assignment`, `save_review`, `load_context`, `read_grades`, `read_notes`... |
-| **מה מחברים אליו** | `grade_edit.connect_database(store)` (יומן האירועים) ו-`grade_edit.connect_stats(build)` (הסטטיסטיקה): grading לא מייבא אותם, והדשבורד מחבר אותם בהפעלה (`web_server.connect_stores`). בלי חיבור (סקיל, או `python -m grading`) הבדיקה עובדת אותו דבר, והסטטיסטיקה מחושבת אצל הקורא הבא שלה |
-| **תלוי ב** | הליבה (`moodle/paths.py` ושכניו), `moodle.claude_driver` (להריץ את Claude Code), `moodle.moodle_table`, `activity_log`. בחוץ: PyMuPDF, numpy, anthropic |
+| **מה מחברים אליו** | `grade_edit.connect_database(store)` (יומן האירועים), `grade_edit.connect_moodle_table(build)` (`Grades for Moodle.csv`, עם `moodle_table.build`) ו-`grade_edit.connect_stats(build)` (הסטטיסטיקה): grading לא מייבא אותם, והדשבורד מחבר אותם בהפעלה (`web_server.connect_stores`). בלי חיבור (הסקיל, או `python -m grading`) הבדיקה עובדת אותו דבר, הסטטיסטיקה מחושבת אצל הקורא הבא שלה, והטבלה למודל נבנית בהעלאה (ראו "טבלת הציונים למודל" למטה) |
+| **תלוי ב** | הליבה (`moodle/paths.py` ושכניו, כולל `claude_code` להריץ את Claude Code) ו-`activity_log`. בחוץ: PyMuPDF, numpy, anthropic (רק לבדיקה דרך ה-API) |
 
 ## מה הבדיקה מקבלת
 
@@ -105,7 +110,7 @@ python -m grading <מזהה מטלה> --ids 0001 0002
 | `MarkedPdfTarget` | עמוד הסיכום ב-`2 - Graded with comments/0001.pdf` |
 | `NotesTarget` | `Grading notes/0001.json` (הערות, טעויות, מי בדק) |
 | `GradesCsvTarget` | `Grades by <name>.csv` של מי שעורך, כשורה מאושרת: היא גוברת על כל שורה אחרת של העבודה בכל קבצי הציונים, ולכן זה הציון שעולה למודל |
-| `MoodleTableTarget` | `Grades for Moodle.csv` (`moodle/moodle_table.py`): כל ציון ליד מזהה המשתתף של מודל, שממנו הציון עולה לסטודנט הנכון. אחרי קובץ הציונים, ולא optional: טבלה ישנה = הציון הישן היה עולה |
+| `MoodleTableTarget` | `Grades for Moodle.csv` (`moodle/moodle_table.py`): כל ציון ליד מזהה המשתתף של מודל, שממנו הציון עולה לסטודנט הנכון. אחרי קובץ הציונים. מחובר בהפעלת הדשבורד (`connect_moodle_table`), ואז לא optional: טבלה ישנה = הציון הישן היה עולה |
 | `StatsTarget` | מסד הנתונים הסטטיסטי בדרייב (`stats/`, `Statistics/<קורס>/Assignment N.json`): ממוצעים, התפלגות, טעויות נפוצות. נגזר מקובצי הציונים, ולכן אחרון. `optional`: כישלון לא מבטל את העריכה, נרשם ב-`not_updated` ביומן ובתשובה, והקורא הבא מחשב מחדש |
 
 אחר כך היא כותבת ליומן (`activity_log/`, פעולה `grade_edit`): מי, מתי, מאיזה ציון לאיזה, הניקוד לפני ואחרי, הסיבה,
@@ -119,6 +124,14 @@ python -m grading <מזהה מטלה> --ids 0001 0002
 
 **מסד הנתונים** מחובר: `DatabaseTarget` מקבל בהפעלת הדשבורד את `LedgerStore` (`dashboard/web_server.connect_stores`),
 ו-`StatsTarget` מעדכן את הסטטיסטיקה בדרייב. מסד אחר בעתיד: `grade_edit.connect_database(store)` עם `save_grade(edit)`, או יעד חדש ברשימה.
+
+**טבלת הציונים למודל** מחוברת באותו מקום (`grade_edit.connect_moodle_table(moodle_table.build)`), כי `moodle_table`
+מושך איתו את ההחזרה (`upload`, `anonymize`, `pull_check`) ו-grading שיוצא לסקיל לא צריך אותה. בדשבורד היא נבנית בסוף
+כל ריצת בדיקה ואחרי כל עריכה, ועריכה שלא הגיעה אליה נכשלת. `python -m grading` לא מחבר אותה (ייבוא שלה היה מכניס
+את ההחזרה לסקיל), ולכן אחרי בדיקה משורת הפקודה הטבלה בדרייב יכולה להיות ישנה מהציונים, והפקודה אומרת את זה. זה לא
+שולח ציון ישן למודל: "הכן החזרה" (`moodle upload`) בונה אותה מחדש לפני שהיא ממלאת את גיליון מודל, והעלאת הציונים
+(`send_grades`) קוראת את הציונים המאוחדים עצמם, אף פעם לא את הטבלה (`tests/integration/test_moodle_table_after_grading.py`).
+כדי לבנות אותה עכשיו: `python -m moodle table <id>`.
 
 ## כללים
 
@@ -136,7 +149,9 @@ python -m grading <מזהה מטלה> --ids 0001 0002
 | `render.py` | הופך כל עמוד בהגשה לתמונה, לשליחה ל-Claude |
 | `sample.py` | מדגם אקראי של הגשות כתמונות קלות, לבניית מחוון (`python -m grading.sample`, הסקיל `.claude/skills/rubric`) |
 | `submission.py` | מבנה של הגשה כפי שמגיעה ממודל |
-| `__main__.py` | `python -m grading` |
+| `one_submission.py` | הגשה אחת מחוץ למערכת, לסקיל `exercise-grader`: `prepare` (העמודים כמו שהם נשלחים ל-Claude), `rules` (ההוראות והסכמה), `rubric` (המחוון דרך `load_context`), `mark` (`parse_answer`, `marks_to_page`, `mark_pdf`) |
+| `skill/` | `SKILL.md` של `exercise-grader` ו-`scripts/install.ps1` (התקנה מ-ZIP). `python tools/extract_skill.py grading` בונה ממנו את הסקיל |
+| `__main__.py` | `python -m grading`, וגם `python -m grading prepare\|rules\|rubric\|mark` של הסקיל |
 
 ## חיתוך שולי העמודים
 

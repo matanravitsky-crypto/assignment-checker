@@ -26,7 +26,7 @@ from urllib.parse import parse_qs, urlparse
 import stats
 from datastore import ledger
 from grading import grade as grading, grade_edit
-from moodle import paths, settings as cfg
+from moodle import moodle_table, paths, settings as cfg
 
 from . import actions, folder_view, public_status, scheduler, sync, updater
 
@@ -562,9 +562,12 @@ def connect_stores() -> None:
     - יומן האירועים (datastore/ledger.py) לעריכת ציונים: "עריכה התחילה" נרשמת לפני שאר היעדים, כך שקריסה באמצע עריכה
       נראית ב-doctor (incomplete_edit). connect_database(None) מנתק.
     - מסד הנתונים הסטטיסטי (stats/): נבנה מחדש אחרי כל ריצת בדיקה ואחרי כל עריכה. connect_stats(None) מנתק.
+    - טבלת הציונים למודל (moodle/moodle_table.py, Grades for Moodle.csv): נבנית מחדש אחרי כל ריצת בדיקה ואחרי כל
+      עריכה, ועריכה שלא הגיעה אליה נכשלת (טבלה ישנה = ציון ישן למודל). connect_moodle_table(None) מנתק.
     נקרא בהפעלת הדשבורד."""
     grade_edit.connect_database(ledger.LedgerStore())
     grade_edit.connect_stats(lambda assignment_dir, by=None: stats.build(assignment_dir, by=by))
+    grade_edit.connect_moodle_table(moodle_table.build)
 
 
 def serve(port: int = 8765, open_browser: bool = True) -> None:
