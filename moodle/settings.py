@@ -11,6 +11,9 @@
     DOWNLOADS_DIR             לאן כרום מוריד (paths.downloads_dir, ברירת מחדל ~/Downloads)
     GRADER_NAME               השם שלי בצוות (moodle/claims.py)
     GRADING_MODEL             המודל של הבדיקה (grading.default_model, ברירת מחדל grading.grade.DEFAULT_MODEL)
+    GRADE_MAX_SIDE            הצד הארוך של תמונת עמוד בפיקסלים (grading/render.py, ברירת מחדל 1568)
+    GRADE_SOLUTION            auto / always / never: האם לשלוח את הפתרון הרשמי עם כל הגשה (grading/grade.py)
+    GRADE_CROP                off מכבה את חיתוך השוליים של העמודים (grading/render.py)
     MOODLE_MODEL              המודל של ההורדה וההעלאה דרך כרום (ברירת מחדל moodle/claude_driver.DEFAULT_MODEL)
     ועוד, ליד מי שקורא אותן: SCHEDULE_* (dashboard/scheduler.py), AUTO_UPDATE ו-UPDATE_CHECK_MINUTES
     (dashboard/updater.py), PUBLIC_STATUS_GIST (dashboard/public_status.py), INSTALL_SKILLS (dashboard/skills.py),

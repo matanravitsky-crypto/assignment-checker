@@ -31,7 +31,8 @@ TIMEOUT_S = 900
 EXT = {"image/png": ".png", "image/jpeg": ".jpg", "image/gif": ".gif", "image/webp": ".webp", "application/pdf": ".pdf"}
 
 READ_ALL = ("לפני שאתה עונה, קרא עם הכלי Read את כל הקבצים שברשימה, לפי הסדר: הם העמודים של ההגשה "
-            "(והמכוון והפתרון הרשמי, אם הם ברשימה). אל תקרא שום קובץ אחר. בסוף החזר רק את התוצאה המובנית.")
+            "(והמכוון והפתרון הרשמי, אם הם ברשימה). קרא את כולם בבת אחת: בהודעה אחת, קריאת Read לכל קובץ, "
+            "ולא קובץ אחרי קובץ. אל תקרא שום קובץ אחר. בסוף החזר רק את התוצאה המובנית.")
 
 
 USAGE_LOG = paths.USAGE_LOG
@@ -58,8 +59,19 @@ def available() -> bool:
     return claude_code.find_claude() is not None and claude_code.auth_status()["logged_in"] is True
 
 
+def system_text(req: dict) -> str:
+    """ה-system של הבקשה כטקסט אחד: הוראות הבדיקה, ואחריהן הטקסט המשותף של המטלה (build_request של grade.py).
+    הוא זהה בכל ההגשות של המטלה, ולכן Claude Code כותב אותו למטמון פעם אחת וקורא ממנו בכל ריצה שאחריה
+    (--system-prompt-file; המטמון חי כשעה מהקריאה האחרונה)."""
+    system = req.get("system") or ""
+    if isinstance(system, str):
+        return system
+    return "\n\n".join(b.get("text", "") for b in system if b.get("type") == "text")
+
+
 def write_request(req: dict, folder: Path) -> str:
-    """כותב לתיקייה את התמונות ואת הפתרון שבבקשה, ומחזיר את הטקסט שנשלח ל-Claude Code במקומם."""
+    """כותב לתיקייה את התמונות ואת הפתרון שבבקשה, ומחזיר את הטקסט שנשלח ל-Claude Code במקומם (ההודעה).
+    רק מה שמשתנה מהגשה להגשה נמצא כאן: שמות הקבצים (התיקייה הזמנית שונה בכל ריצה) ומספרי העמודים."""
     lines: list[str] = []
     files = 0
     for message in req["messages"]:
@@ -110,7 +122,8 @@ def cli_ask(claude: str, schema: dict, effort: str | None = None, run=subprocess
         try:
             prompt = write_request(req, folder)
             system_file = folder / "system.txt"
-            system_file.write_text(req.get("system") or "", encoding="utf-8")
+            # אותם בייטים בכל מערכת (בלי CRLF): הקובץ הזה הוא מפתח המטמון
+            system_file.write_text(system_text(req), encoding="utf-8", newline="\n")
             cmd = build_command(claude, folder, system_file, schema, req["model"], effort)
             try:
                 proc = run(cmd, input=prompt, capture_output=True, text=True, encoding="utf-8",

@@ -297,9 +297,29 @@ def docx_text(data: bytes) -> str:
     return "\n".join(lines).strip()
 
 
-def load_context(assignment_dir: Path, instructions: str = "", send_solution: bool = True) -> Context:
+# הפתרון הרשמי (Official solution.pdf) נקרא מחדש בכל הגשה (כ-18 אלף טוקנים ל-7 עמודים, נמדד: הוא קובץ, ולא במטמון
+# כמו הטקסט). GRADE_SOLUTION: "auto" (ברירת המחדל) שולח אותו רק כשבתיקייה הפדגוגית אין קובץ פתרונות (Solutions.md של
+# rubric-builder, שכבר כולל את הפתרון המלא), "always" תמיד, "never" אף פעם.
+SOLUTION_MODE = (os.environ.get("GRADE_SOLUTION") or "auto").strip().lower()
+_SOLUTIONS_FILE = re.compile(r"^(solutions?|full solution|פתרונות|פתרון( מלא)?)$", re.I)
+
+
+def send_solution_default(pedagogy: list[Path]) -> bool:
+    """האם לשלוח את הפתרון הרשמי עם כל הגשה (ראו SOLUTION_MODE)."""
+    if SOLUTION_MODE in ("always", "on", "1", "true", "yes"):
+        return True
+    if SOLUTION_MODE in ("never", "off", "0", "false", "no"):
+        return False
+    return not any(_SOLUTIONS_FILE.match(p.stem.strip()) for p in pedagogy)
+
+
+def load_context(assignment_dir: Path, instructions: str = "", send_solution: bool | None = None) -> Context:
+    """המחוון, חומר הבדיקה וההנחיות של המטלה. send_solution: האם לצרף את הפתרון הרשמי; None = לפי SOLUTION_MODE."""
     d = read_details(assignment_dir)
-    pedagogy = pedagogy_text(pedagogy_files(assignment_dir))
+    files = pedagogy_files(assignment_dir)
+    pedagogy = pedagogy_text(files)
+    if send_solution is None:
+        send_solution = send_solution_default(files)
     max_grade = _num(d.get("max_grade"), 100) or 100
     rubric = d.get("rubric")
     rubric_text = no_rubric = ""
@@ -430,7 +450,7 @@ def context_text(ctx: Context) -> str:
     if ctx.instructions:
         lines += ["", "הנחיות מהמרצה:", ctx.instructions]
     if ctx.solution:
-        lines += ["", "הפתרון הרשמי של המטלה מצורף כאן. משתמשים בו כדי לבדוק, אבל לא מעתיקים ממנו למשוב."]
+        lines += ["", "הפתרון הרשמי של המטלה מצורף לבקשה, לפני עמודי ההגשה. משתמשים בו כדי לבדוק, אבל לא מעתיקים ממנו למשוב."]
     return "\n".join(lines)
 
 
@@ -442,7 +462,14 @@ def _image_block(img: PageImage) -> dict:
 
 
 def build_request(ctx: Context, images: list[PageImage], model: str = DEFAULT_MODEL) -> dict:
-    """הבקשה ל-Claude. מה שמשותף לכל ההגשות בא קודם ונשמר במטמון (cache), והעמודים אחריו."""
+    """הבקשה ל-Claude. מה שמשותף לכל ההגשות של המטלה בא קודם ונשמר במטמון (cache), והעמודים אחריו.
+
+    הטקסט המשותף (השאלות, המחוון, חומר הבדיקה, הכללים וההנחיות) יושב ב-system, אחרי הוראות הבדיקה: ה-system זהה
+    בכל ההגשות של המטלה, ולכן גם דרך Claude Code הוא נכתב למטמון פעם אחת ונקרא ממנו בכל ההגשות הבאות (ראו
+    claude_cli.py; נמדד: כ-52 אלף טוקנים לכל הגשה שהפכו מכתיבה לקריאה). בהודעה עצמה נשארים רק הקבצים: המכוון
+    והפתרון הרשמי, ואחריהם עמודי ההגשה."""
+    system: list[dict] = [{"type": "text", "text": SYSTEM},
+                          {"type": "text", "text": context_text(ctx), "cache_control": {"type": "ephemeral"}}]
     shared: list[dict] = []
     for i, f in enumerate(ctx.official_key.files if ctx.official_key else [], start=1):
         media = KEY_MEDIA[f.suffix.lower()]
@@ -457,15 +484,15 @@ def build_request(ctx: Context, images: list[PageImage], model: str = DEFAULT_MO
         shared.append({"type": "document", "title": SOLUTION,
                        "source": {"type": "base64", "media_type": "application/pdf",
                                   "data": base64.b64encode(ctx.solution).decode("ascii")}})
-    shared.append({"type": "text", "text": context_text(ctx)})
-    shared[-1]["cache_control"] = {"type": "ephemeral"}
+    if shared:
+        shared[-1]["cache_control"] = {"type": "ephemeral"}
 
     pages: list[dict] = [{"type": "text", "text": f"ההגשה לבדיקה: {len(images)} עמודים, לפי הסדר."}]
     for img in images:
         pages += [{"type": "text", "text": f"עמוד {img.page}:"}, _image_block(img)]
 
     req = {
-        "model": model, "max_tokens": MAX_TOKENS, "system": SYSTEM,
+        "model": model, "max_tokens": MAX_TOKENS, "system": system,
         "messages": [{"role": "user", "content": shared + pages}],
         "output_config": {"effort": EFFORT, "format": {"type": "json_schema", "schema": SCHEMA}},
     }
@@ -1050,7 +1077,7 @@ class TakenByOther(Exception):
 
 def grade_assignment(assignment_dir: Path, numbers: list[str] | None = None, *, ask: Ask | None = None,
                      model: str | None = None, parallel: int = DEFAULT_PARALLEL, instructions: str = "",
-                     send_solution: bool = True, on_progress: Callable[[str, str], None] | None = None,
+                     send_solution: bool | None = None, on_progress: Callable[[str, str], None] | None = None,
                      stop: threading.Event | None = None, who: str | None = None) -> GradeReport:
     """בודק הגשות של מטלה. numbers=None: כל מה שעוד לא נבדק.
     on_progress(number, "graded"/"failed"/"skipped"/"taken"), כש-"taken" = בודק אחר לקח אותה.

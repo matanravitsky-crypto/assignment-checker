@@ -135,9 +135,14 @@ def test_request_has_only_the_pages_no_names_and_no_key(root):
     with pymupdf.open(asg(root).submissions / "0001.pdf") as doc:
         assert sum(b["type"] == "image" for b in content) == doc.page_count
     assert not any(b["type"] == "document" for b in content)  # אין פתרון רשמי בתיקייה
-    # מה שמשותף לכל ההגשות נשמר במטמון, והשאלות כתובות בו לפי הסדר עם הניקוד
-    shared = next(b for b in content if b.get("cache_control"))
+    # מה שמשותף לכל ההגשות יושב ב-system (זהה בכל ההגשות, ולכן נשמר במטמון גם דרך Claude Code), אחרי הוראות
+    # הבדיקה, והשאלות כתובות בו לפי הסדר עם הניקוד. בהודעה עצמה אין טקסט משותף: רק העמודים
+    assert req["system"][0]["text"] == grading.SYSTEM
+    shared = req["system"][-1]
+    assert shared.get("cache_control") == {"type": "ephemeral"}
     assert "1. דף קבוצות 11 (20 נקודות)" in shared["text"] and "כתב יד, קובץ PDF אחד" in shared["text"]
+    assert not any(b.get("cache_control") for b in content)
+    assert content[0]["text"].startswith("ההגשה לבדיקה:")
     assert req["model"] == grading.DEFAULT_MODEL and req["output_config"]["effort"] == "high"
     assert req["output_config"]["format"]["type"] == "json_schema" and req["fallbacks"] == "default"
     assert "thinking" not in req and "temperature" not in req
@@ -154,12 +159,37 @@ def test_rubric_and_solution_are_sent(root):
     ctx = grading.load_context(a.dir, instructions="הנחיה מהאתר")
     req = grading.build_request(ctx, [], "claude-haiku-5-5")
     content = req["messages"][0]["content"]
+    # הפתרון הוא קובץ, אז הוא בהודעה: ראשון, ונשמר במטמון. הטקסט על המטלה ב-system
     assert content[0]["type"] == "document" and content[0]["source"]["media_type"] == "application/pdf"
-    text = content[1]["text"]
+    assert content[0]["cache_control"] == {"type": "ephemeral"} and content[1]["text"].startswith("ההגשה לבדיקה:")
+    text = req["system"][-1]["text"]
     assert "1. קבוצות (40 נקודות): הכלה דו-כיוונית" in text and "2. מרוכבים (60 נקודות)" in text
     assert "לא מורידים על חישוב" in text and "להקפיד על נימוקים" in text and "הנחיה מהאתר" in text
+    assert "הפתרון הרשמי של המטלה מצורף לבקשה" in text
     assert "fallbacks" not in req  # ל-Haiku אין fallback
     assert "document" not in json.dumps(grading.build_request(grading.load_context(a.dir, send_solution=False), []))
+
+
+def test_the_solution_pdf_stays_home_when_the_pedagogy_folder_has_the_solutions(root, monkeypatch):
+    """הפתרון הרשמי הוא כ-18 אלף טוקנים לכל הגשה (קובץ, לא במטמון). כש-rubric-builder כתב Solutions.md לתיקייה
+    הפדגוגית, הפתרון כבר בטקסט המשותף, והקובץ לא נשלח. GRADE_SOLUTION=always/never דורס."""
+    a = asg(root)
+    (a.dir / grading.SOLUTION).write_bytes(homework_pdf("פתרון", HW, pages=1))
+    monkeypatch.setattr(grading, "SOLUTION_MODE", "auto")
+    assert grading.load_context(a.dir).solution is not None  # אין קובץ פתרונות: הפתרון נשלח
+    ped = a.dir / paths.PEDAGOGY[1]
+    ped.mkdir()
+    (ped / "Solution methods.md").write_text("# דרכי פתרון", encoding="utf-8")
+    assert grading.load_context(a.dir).solution is not None  # דרכי פתרון הן לא הפתרון
+    (ped / "Solutions.md").write_text("# פתרון מלא\n\n| קבוצות 11 | 20 |", encoding="utf-8")
+    ctx = grading.load_context(a.dir)
+    assert ctx.solution is None and "פתרון מלא" in ctx.rubric_text and "מצורף" not in grading.context_text(ctx)
+    assert grading.load_context(a.dir, send_solution=True).solution is not None  # מי שמבקש במפורש מקבל
+    monkeypatch.setattr(grading, "SOLUTION_MODE", "always")
+    assert grading.load_context(a.dir).solution is not None
+    monkeypatch.setattr(grading, "SOLUTION_MODE", "never")
+    (ped / "Solutions.md").unlink()
+    assert grading.load_context(a.dir).solution is None
 
 
 # ---------- התשובה ----------
