@@ -60,17 +60,31 @@
 מהלוגיקה של החלקים, למשל שמירת המכוון הרשמי, מצב קובצי המחוון וזרימת המשיכה. אלה המועמדים הבאים לפיצול, אבל הם לא
 מונעים הוצאה לסקיל.
 
-## איך מוציאים חלק לסקיל
+## סקיל: להוסיף, להוריד, לבדוק
 
-1. החלק צריך `SKILL.md` משלו ב-`<חלק>/skill/` (ראו `copying/skill/SKILL.md`).
+**להוסיף סקיל (חלק שיוצא לסקיל):**
+1. החלק צריך `SKILL.md` משלו ב-`<חלק>/skill/` (ראו `copying/skill/SKILL.md`), ו-`__main__.py` (הסקיל מריץ `python -m <חלק>`).
 2. `python tools/extract_skill.py <חלק>` בונה את הסקיל ב-`~/.claude/skills/<שם>/`: את `SKILL.md`, ו-`scripts/` עם
    החלק, הקבצים של הליבה שהוא צריך, `run.py` (שמריץ `python -m <חלק>` מהעותק), ו-`MANIFEST.json` (מאיזה commit,
    וה-sha256 של כל קובץ).
 3. `python tools/extract_skill.py --stale <תיקיית הסקיל>` אומר אם הסקיל פיגר אחרי הריפו. אם כן, בונים שוב.
+4. כדי שיגיע לכל הצוות: מוסיפים את החלק ל-`TEAM_SKILLS` ב-`dashboard/skills.py`. כל שרת בונה אותו בהפעלה הבאה.
 
-הקוד לא מועתק ביד ולא משוכתב. הכלי מסרב לבנות חלק שצריך חלק שמעליו, ו-`tests/integration/test_copying_skill.py`
-בונה את `copying-check`, מריץ אותו בלי הריפו (`python -I`, מתיקייה אחרת), ומשווה את התוצאה שלו לתוצאה של המערכת על
-אותן הגשות. `tests/integration/test_grading_skill.py` עושה אותו דבר ל-`exercise-grader`.
+**להוריד סקיל:** מוציאים את החלק מ-`TEAM_SKILLS`. בהפעלה הבאה (כלומר תוך שעה ממיזוג) כל שרת מוחק אותו
+(`extract_skill.retire`), אבל רק סקיל שהשרת עצמו התקין: `MANIFEST.json` שלו אומר `"team": true`. סקיל שמישהו בנה ביד
+(`extract_skill.py <חלק>` או `--install`) או כתב ביד לא נמחק לעולם. סקיל ששינה שם (`name:` ב-`SKILL.md`) נמחק בשמו הישן
+ונבנה בחדש. ב-Windows, Claude Code מחזיק את תיקיות הסקילים פתוחות, ולכן התיקייה מתרוקנת קודם. אם Windows לא נותן
+למחוק אותה, נשאר בה רק `REMOVED by Bodek Hacham.txt` (בלי `SKILL.md` זה כבר לא סקיל), וההפעלה הבאה מוחקת אותה.
+ביד: `python tools/extract_skill.py --remove <תיקיית הסקיל>`, שגם הוא מסרב לגעת בסקיל שהכלי לא בנה.
+
+**לבדוק סקיל:** `tests/integration/test_every_skill.py` בודק כל חלק שיש לו `skill/SKILL.md`, בלי בדיקה שנכתבה לו:
+ל-`SKILL.md` יש `name:` חוקי ותיאור, אין שני סקילים באותו שם, החלק הוא פקודה, הסקיל נבנה רק מהחלק וממה שמתחתיו,
+והוא רץ לבד (`run.py --help` עם `python -I`, מתיקייה אחרת) בלי לטעון קוד מהריפו. `tests/dashboard/test_skills.py`
+בודק את ההתקנה וההסרה אצל הצוות, וש-`TEAM_SKILLS` מכיל רק חלקים שיש להם סקיל.
+
+הקוד לא מועתק ביד ולא משוכתב. הכלי מסרב לבנות חלק שצריך חלק שמעליו. מה שהסקיל עושה נבדק בבדיקה משלו:
+`tests/integration/test_copying_skill.py` בונה את `copying-check`, מריץ אותו בלי הריפו, ומשווה את התוצאה שלו לתוצאה של
+המערכת על אותן הגשות. `tests/integration/test_grading_skill.py` עושה אותו דבר ל-`exercise-grader`.
 
 **`exercise-grader` אצל כל הצוות, לבד.** כל מחשב שמריץ את המערכת בונה אותו מהקוד שלו בכל הפעלה של השרת
 (`dashboard/skills.py` → `python tools/extract_skill.py grading --install`), והשרת עולה מחדש אחרי כל עדכון מ-`main`, כך
