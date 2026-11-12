@@ -23,11 +23,12 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+import stats
 from datastore import ledger
 from grading import grade as grading, grade_edit
-from moodle import paths
+from moodle import paths, settings as cfg
 
-from . import actions, folder_view, public_status, scheduler, settings as cfg, sync, updater
+from . import actions, folder_view, public_status, scheduler, sync, updater
 
 WEBSITE = cfg.REPO_DIR / "website"
 HEADER = "X-Assignment-Checker"
@@ -427,7 +428,7 @@ class Handler(SimpleHTTPRequestHandler):
             ids = body.get("ids")
             if ids is not None and (not isinstance(ids, list) or not all(isinstance(i, str) and i.isdigit() for i in ids)):
                 return self._json({"error": "רשימת ההגשות לא תקינה"}, HTTPStatus.BAD_REQUEST)
-            model = body.get("model") or grading.DEFAULT_MODEL
+            model = body.get("model") or grading.default_model()
             if not (isinstance(model, str) and model.startswith("claude-")):
                 return self._json({"error": "מודל לא מוכר"}, HTTPStatus.BAD_REQUEST)
             try:
@@ -547,7 +548,7 @@ class Handler(SimpleHTTPRequestHandler):
             except FileNotFoundError as e:
                 return self._json({"error": str(e)}, HTTPStatus.NOT_FOUND)
             which = body.get("which")
-            target = (Path.home() / "Downloads" if which == "inbox"
+            target = (paths.downloads_dir() if which == "inbox"
                       else asg.dir / folder_view.READY if which == "upload" else asg.dir)
             target.mkdir(exist_ok=True)
             if hasattr(os, "startfile"):
@@ -557,9 +558,13 @@ class Handler(SimpleHTTPRequestHandler):
 
 
 def connect_stores() -> None:
-    """מחבר את יומן האירועים (datastore/ledger.py) לעריכת ציונים: "עריכה התחילה" נרשמת לפני שאר היעדים, כך שקריסה
-    באמצע עריכה נראית ב-doctor (incomplete_edit). נקרא בהפעלת הדשבורד; connect_database(None) מנתק."""
+    """מרכיב את המערכת: מחבר ל-grading את מה שנגזר מהציונים, כי grading לא מייבא אותם בעצמו.
+    - יומן האירועים (datastore/ledger.py) לעריכת ציונים: "עריכה התחילה" נרשמת לפני שאר היעדים, כך שקריסה באמצע עריכה
+      נראית ב-doctor (incomplete_edit). connect_database(None) מנתק.
+    - מסד הנתונים הסטטיסטי (stats/): נבנה מחדש אחרי כל ריצת בדיקה ואחרי כל עריכה. connect_stats(None) מנתק.
+    נקרא בהפעלת הדשבורד."""
     grade_edit.connect_database(ledger.LedgerStore())
+    grade_edit.connect_stats(lambda assignment_dir, by=None: stats.build(assignment_dir, by=by))
 
 
 def serve(port: int = 8765, open_browser: bool = True) -> None:

@@ -10,6 +10,15 @@ read(assignment_dir)                               # הכול, מהישן לחד
 read(assignment_dir, "grade_edit", number="0001")  # רק עריכות הציון של עבודה 0001
 ```
 
+## ממשק
+
+| | |
+|---|---|
+| **נכנס** | `record(folder, action, by, **details)` |
+| **יוצא** | `<folder>/Activity log/<who>.jsonl`, ו-`read(folder, action, **match)` מאחד אותם |
+| **מפייתון** | `INTERFACE` ב-`activity_log/__init__.py`: `record`, `read`, `file_for`, `event_id`, `FOLDER` |
+| **תלוי ב** | רק בליבה (`paths.ACTIVITY_LOG`, `claims.file_name`) |
+
 ## איפה הוא נשמר
 
 `<תיקיית המטלה>/Activity log/<מי>.jsonl`: שורת JSON לכל רשומה, וקובץ נפרד לכל מי שכותב.

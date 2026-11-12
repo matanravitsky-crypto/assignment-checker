@@ -36,13 +36,12 @@ import pymupdf
 
 from copying import check as copying
 from grading import grade as grading, grade_edit
-from moodle import (anonymize as moodle_anonymize, claims, claude_driver, grades as moodle_grades, pull_check,
-                    ingest as moodle_ingest, lock as moodle_lock, paths, send as moodle_send, upload as moodle_upload,
-                    moodle_table, send_grades, upload_log)
-
-from . import folder_view, onedrive_check, settings as cfg, shared_folder, usage as grading_usage
-from datastore import atomic
+from moodle import (anonymize as moodle_anonymize, atomic, claims, claude_driver, grades as moodle_grades, pull_check,
+                    ingest as moodle_ingest, lock as moodle_lock, paths, send as moodle_send, settings as cfg,
+                    shared_folder, upload as moodle_upload, moodle_table, send_grades, upload_log)
 from datastore import doctor as integrity_doctor
+
+from . import folder_view, onedrive_check, usage as grading_usage
 
 
 def root_info() -> tuple[Path | None, str | None]:
@@ -1715,9 +1714,9 @@ def state(root: Path) -> dict:
             "usage": grading_usage.summary(root)}
 
 
-RUBRIC_PDF = "Rubric.pdf"
-RUBRIC_MD = "Rubric.md"
-RUBRIC_LOG = "Rubric PDF changelog.md"
+RUBRIC_PDF = paths.RUBRIC_PDF
+RUBRIC_MD = paths.RUBRIC_MD
+RUBRIC_LOG = paths.RUBRIC_LOG
 NO_RUBRIC_FILE = {"pdf": False, "pdfAt": None, "path": None, "md": None, "approved": False, "rounds": 0}
 
 
@@ -1735,7 +1734,7 @@ def rubric_file_state(a_dir: Path, root: Path | None = None) -> dict:
         head = md.read_text(encoding="utf-8-sig", errors="replace")[:600]
         md_kind = "rendered" if "rubric.json" in head else "council"
     rounds = approved = 0
-    log = ped / "Working notes" / RUBRIC_LOG
+    log = ped / paths.RUBRIC_NOTES / RUBRIC_LOG
     if log.is_file():
         lines = [l for l in log.read_text(encoding="utf-8-sig", errors="replace").splitlines() if l.startswith("- ")]
         rounds = len({m.group(1) for l in lines for m in re.finditer(r"(?:round|סבב) (\d+)", l, re.I)})
@@ -1847,7 +1846,7 @@ def save_official_key(root: Path, course: str, assignment: str, *, file_name: st
                 raise UserError(f"אין במטלה שאלה בשם \"{label}\".")
             if v in (None, ""):
                 continue
-            x = grading._num(v, -1)
+            x = grading.to_points(v, -1)
             if x <= 0 or x > 1000:
                 raise UserError(f"הניקוד של \"{label}\" צריך להיות מספר חיובי.")
             clean[label] = x

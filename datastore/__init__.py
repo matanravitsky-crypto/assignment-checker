@@ -12,5 +12,12 @@
 
 מספרים בלבד: שום הודעה כאן לא מכילה שם או מזהה של סטודנט.
 """
-from . import atomic, schema  # noqa: F401
-from .schema import Invalid, Problem  # noqa: F401
+from moodle import atomic, schema  # noqa: F401  (עברו לליבה ב-moodle/; datastore/atomic.py ו-schema.py הם כינויים)
+from moodle.schema import Invalid, Problem  # noqa: F401
+
+# הממשק: מה שחלקים אחרים מותר להם לקחת מכאן. כל השאר פנימי, ואפשר לשנות אותו בלי לשאול אף חלק אחר.
+# tests/test_modularity.py נופל כשקוד מחוץ לחלק לוקח משהו שלא ברשימה. "*" = כל מה שלא מתחיל ב-_ (הליבה).
+INTERFACE = {
+    "doctor": ["check", "check_all", "fix"],
+    "ledger": ["LedgerStore", "history"],
+}

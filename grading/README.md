@@ -11,6 +11,17 @@ python -m grading <מזהה מטלה> --ids 0001 0002
 
 בלי `--ids` נבדק כל מה שעוד לא נבדק. עם `--ids` נבדקות רק ההגשות האלה, גם אם כבר נבדקו.
 
+## ממשק
+
+| | |
+|---|---|
+| **נכנס** | `1 - Submissions to grade/`, `Assignment details.json` (שאלות, מחוון), `פדגוגי/` (`Rubric.md` ועוד), `Official key*`, `Official solution.pdf`; Claude דרך `ANTHROPIC_API_KEY` או Claude Code המחובר |
+| **יוצא** | `2 - Graded with comments/0001.pdf`, `Grades by <name>.csv`, `Grading notes/0001.json`, `Who grades what/<name>.json`, אירועי ציון ב-`Activity log/`, `Grades for Moodle.csv` (דרך `moodle_table.build`), `Grading usage.jsonl` |
+| **פקודה** | `python -m grading <id> [--ids 0001 ...] [--model ...]` (ברירת המחדל של המודל: `GRADING_MODEL` ב-`.env`) |
+| **מפייתון** | רק מה שב-`INTERFACE` ב-`grading/__init__.py`: `grade_assignment`, `save_review`, `load_context`, `read_grades`, `read_notes`... |
+| **מה מחברים אליו** | `grade_edit.connect_database(store)` (יומן האירועים) ו-`grade_edit.connect_stats(build)` (הסטטיסטיקה): grading לא מייבא אותם, והדשבורד מחבר אותם בהפעלה (`web_server.connect_stores`). בלי חיבור (סקיל, או `python -m grading`) הבדיקה עובדת אותו דבר, והסטטיסטיקה מחושבת אצל הקורא הבא שלה |
+| **תלוי ב** | הליבה (`moodle/paths.py` ושכניו), `moodle.claude_driver` (להריץ את Claude Code), `moodle.moodle_table`, `activity_log`. בחוץ: PyMuPDF, numpy, anthropic |
+
 ## מה הבדיקה מקבלת
 
 בתיקיית כל מטלה, בתיקייה המשותפת:

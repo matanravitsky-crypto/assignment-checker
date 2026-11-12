@@ -124,7 +124,7 @@ def compute(*, course: str, folder: str, moodle_id: str | None, title: str, max_
     # ובשוויון לפי המפתח הגולמי, כדי שהתוצאה לא תלויה בסדר הקלט
     by_number: dict[str, dict] = {}
     for n, r in sorted(rows.items(), key=lambda kv: str(kv[0])):
-        if isinstance(r, dict) and (grades.number_key(n) not in by_number or grades._rank(r) >= grades._rank(by_number[grades.number_key(n)])):
+        if isinstance(r, dict) and (grades.number_key(n) not in by_number or grades.rank(r) >= grades.rank(by_number[grades.number_key(n)])):
             by_number[grades.number_key(n)] = r
     # הערות: רק מילונים, לפי מספר מנורמל (קובץ פגום או מבנה אחר = אין הערות לעבודה הזו)
     notes = {grades.number_key(n): v for n, v in sorted(notes.items(), key=lambda kv: str(kv[0])) if isinstance(v, dict)}

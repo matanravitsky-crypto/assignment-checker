@@ -32,7 +32,7 @@ import json
 import re
 from pathlib import Path
 
-from datastore import atomic, schema
+from . import atomic, schema
 
 from . import anonymize, grades, paths
 

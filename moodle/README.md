@@ -18,6 +18,22 @@
 | `status.py` | מה כבר נעשה במטלה, ואילו שמות קבצים OneDrive יסרב לסנכרן |
 | `guide.py` | קובצי `README.txt` בעברית בתוך התיקייה המשותפת |
 
+## ממשק
+
+כאן גרים שני דברים: **הליבה** שכל חלק במערכת משתמש בה, ו**השלבים מול מודל** (משיכה והחזרה).
+
+**הליבה** (`paths`, `settings`, `shared_folder`, `atomic`, `schema`, `grades`, `claims`, `lock`): השמות והכללים של
+התיקייה המשותפת. היא לא משתמשת בשום חלק אחר (גם לא בשאר `moodle/`), ולכן כל חלק שיוצא לסקיל לוקח איתו את מה שהוא צריך
+ממנה. ההגדרות של כל מחשב (`.env`) מתוארות ב-`settings.py`, ושמות כל התיקיות והקבצים ב-`paths.py`.
+
+| | |
+|---|---|
+| **נכנס** | משיכה: מזהה המטלה, ה-ZIP או החלקים של מודל ב-Downloads (`paths.downloads_dir()`), מה שהטבלה במודל אומרת. החזרה: `2 - Graded with comments/`, הציונים הממוזגים (`grades.read`), טבלת המפתח |
+| **יוצא** | משיכה: `1 - Submissions to grade/`, `Key - number to student.csv`, `Pull log.csv`, `Pull check.json`. החזרה: `3 - Ready to upload to Moodle/` (ZIP-ים, `Upload steps.txt`, `Upload log.csv`, `Upload batch.json`), `Grades for Moodle.csv`, וההעלאה עצמה למודל |
+| **פקודות** | `python -m moodle ingest\|status\|upload\|send\|send-grades\|record\|table\|guide <id>` |
+| **מפייתון** | רק מה שב-`INTERFACE` ב-`moodle/__init__.py`. הליבה פתוחה כולה; מהשאר רק השמות שברשימה |
+| **תלוי ב** | שום חלק של המערכת. בחוץ: 7-Zip, Claude Code, כרום עם Claude in Chrome, מודל |
+
 ## פקודות
 
 ```bash

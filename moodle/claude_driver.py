@@ -42,7 +42,10 @@ import tempfile
 import time
 from pathlib import Path
 
-from moodle import upload_log
+from moodle import claude_code, settings, upload_log
+from moodle.claude_code import (AUTH_PROBLEM, AUTH_TIMEOUT_S, MESSAGE_MAX, NOT_INSTALLED, NOT_LOGGED_IN,  # noqa: F401
+                                STDERR_MAX, UNEXPECTED, crashed, failure_message, find_claude, object_in, read_answer,
+                                read_run, stderr_tail)
 from moodle.send import UploadResult
 from moodle.send_grades import GradesResult
 
@@ -57,28 +60,22 @@ SESSION_RULE = (f'- If a page shows "404 Not Found" or a login page, Moodle\'s s
                 "seconds (Moodle signs in again by itself), and open the address you wanted again. {give_up}")
 
 # Starting values: the test assignment (plan task 11) sets them from real runs
-DEFAULT_MODEL = "claude-sonnet-5-5"
+DEFAULT_MODEL = "claude-sonnet-5-5"  # MOODLE_MODEL ב-.env דורס
 DEFAULT_BUDGET_USD = 2.0
 TIMEOUT_S = 600
 CHECK_BUDGET_USD = 0.5  # "is everything ready" opens one page, so it gets less
 CHECK_TIMEOUT_S = 180
-AUTH_TIMEOUT_S = 30
 DOWNLOAD_BUDGET_USD = 2.0  # opens a page, maybe ticks one box, runs the parts script and waits for it (a check every 20 s)
 DOWNLOAD_TIMEOUT_S = 20 * 60  # the run waits for every part: 15 parts took ~3 minutes on 2026-10-23
-MESSAGE_MAX = 300
 # A run that ends with an error code and no output this soon never reached Moodle: Claude Code itself failed to start
 # (2026-11-03 12:01, right after a `claude update` that hung: exit code 4294967295, and the pull button looked like it did
 # nothing). The check and the download then run once more after a short pause. Reaching Moodle takes Claude several turns,
 # so within this window the parts script cannot have started. Uploads never run twice by themselves
 CRASH_WINDOW_S = 20
 CRASH_PAUSE_S = 5
-STDERR_MAX = 200
 
-NOT_LOGGED_IN = "Claude Code לא מחובר במחשב הזה. מריצים פעם אחת: claude auth login"
-NOT_INSTALLED = "Claude Code לא מותקן במחשב הזה (הפקודה claude לא נמצאה)."
 NO_COPY = "לא הצלחנו להכין עותק של {name} להעלאה (הקובץ חסר או נעול). שום דבר לא הועלה."
 COPY_CHANGED = "העותק של {name} שונה מהקובץ שהוכן. שום דבר לא הועלה: צריך להכין שוב."
-UNEXPECTED = "תשובה לא צפויה מ-Claude Code: אי אפשר לקרוא את התוצאה."
 
 STATUSES = ("imported", "dry_run_ok", "needs_login", "mismatch", "error")
 RESULT_SCHEMA = {
@@ -333,28 +330,12 @@ def grades_prompt(info: dict, csv_path: Path, expected: int, dry_run: bool) -> s
 
 
 # A failed run whose output is one of these means Claude Code itself is not logged in
-AUTH_PROBLEM = re.compile(r"authenticat|oauth|not logged in|/login|invalid api key", re.IGNORECASE)
 # What to say when Claude gives a failing status without a message
 DEFAULT_MESSAGES = {
     "needs_login": "Moodle מבקש התחברות. מתחברים ל-Moodle בכרום ומריצים שוב.",
     "mismatch": "מספר הקבצים ש-Moodle עיבד שונה מהצפוי.",
     "error": "Claude לא פירט מה השתבש.",
 }
-
-
-def find_claude() -> str | None:
-    """The `claude` command: on the PATH, or where the official installer puts it (~/.local/bin).
-
-    A fresh install is often not on the PATH of a server that was already running.
-    """
-    found = shutil.which("claude")
-    if found:
-        return found
-    for name in ("claude.exe", "claude"):
-        candidate = Path.home() / ".local" / "bin" / name
-        if candidate.is_file():
-            return str(candidate)
-    return None
 
 
 CHROME_PATHS = (r"%ProgramFiles%\Google\Chrome\Application\chrome.exe",
@@ -438,61 +419,6 @@ def build_command(prompt: str, add_dir: Path, *, model: str, budget_usd: float, 
     ]
 
 
-def object_in(text) -> dict | None:
-    """The JSON object inside a text (possibly in a ``` fence), or None."""
-    if not isinstance(text, str):
-        return None
-    try:
-        value = json.loads(re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip()))
-    except ValueError:
-        return None
-    return value if isinstance(value, dict) else None
-
-
-def read_answer(stdout: str | None) -> tuple[dict | None, str]:
-    """The structured answer in the CLI's JSON output, or (None, why in Hebrew).
-
-    The answer is in `structured_output`; if it is not, in the `result` text as JSON.
-    """
-    try:
-        data = json.loads(stdout or "")
-    except ValueError:
-        return None, UNEXPECTED
-    if isinstance(data, list):  # a list of messages: the last "result" one is the answer
-        data = next((d for d in reversed(data) if isinstance(d, dict) and d.get("type") == "result"), None)
-    if not isinstance(data, dict):
-        return None, UNEXPECTED
-    if data.get("is_error") or str(data.get("subtype") or "").startswith("error"):
-        text = str(data.get("result") or data.get("subtype") or "").strip()
-        if AUTH_PROBLEM.search(text):
-            return None, NOT_LOGGED_IN
-        return None, f"Claude Code נכשל: {text[:MESSAGE_MAX]}" if text else "Claude Code נכשל."
-    answer = data.get("structured_output")
-    answer = answer if isinstance(answer, dict) else object_in(data.get("result"))
-    return (answer, "") if answer is not None else (None, UNEXPECTED)
-
-
-def crashed(proc) -> bool:
-    """Claude Code ended with an error code and wrote nothing at all: it failed before it could answer."""
-    return bool(getattr(proc, "returncode", 0)) and not str(getattr(proc, "stdout", "") or "").strip()
-
-
-def stderr_tail(proc) -> str:
-    """The last line Claude Code wrote to stderr, short: why it failed, when it says so."""
-    lines = [line.strip() for line in str(getattr(proc, "stderr", "") or "").splitlines() if line.strip()]
-    return lines[-1][:STDERR_MAX] if lines else ""
-
-
-def read_run(proc) -> tuple[dict | None, str]:
-    """read_answer for a finished process. A non-zero exit never counts as an answer."""
-    code = getattr(proc, "returncode", 0)
-    answer, problem = read_answer(proc.stdout)
-    if code and (answer is not None or problem == UNEXPECTED):
-        tail = stderr_tail(proc)
-        return None, f"Claude Code נכשל (קוד יציאה {code})." + (f" הוא כתב: {tail}" if tail else "")
-    return answer, problem
-
-
 def count_or_none(value) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
@@ -513,22 +439,13 @@ def parse_result(stdout: str) -> UploadResult:
     return result_of(*read_answer(stdout))
 
 
-def failure_message(error: Exception, timeout_s: float) -> str:
-    """Hebrew for a run that did not finish. The type of the error only: its text could hold anything."""
-    if isinstance(error, subprocess.TimeoutExpired):
-        return f"Claude Code לא סיים תוך {round(timeout_s / 60)} דקות ונעצר."
-    if isinstance(error, FileNotFoundError):
-        return NOT_INSTALLED
-    return f"Claude Code לא הצליח לרוץ ({type(error).__name__})."
-
-
 class ClaudeChromeDriver:
     """The `MoodleDriver` for Moodle through Claude in Chrome. `run` is subprocess.run, a fake in tests."""
 
-    def __init__(self, model: str = DEFAULT_MODEL, budget_usd: float = DEFAULT_BUDGET_USD,
+    def __init__(self, model: str | None = None, budget_usd: float = DEFAULT_BUDGET_USD,
                  timeout_s: int = TIMEOUT_S, run=subprocess.run, claude: str | None = None,
                  sleep=time.sleep, clock=time.monotonic):
-        self.model = model
+        self.model = model or settings.get("MOODLE_MODEL", DEFAULT_MODEL)
         self.budget_usd = budget_usd
         self.timeout_s = timeout_s
         self.run = run
@@ -700,24 +617,9 @@ class ClaudeChromeDriver:
 
 
 def auth_status(run=subprocess.run, claude: str | None = None) -> dict:
-    """Is Claude Code logged in on this computer? {"logged_in": bool, "message": str}. Never raises.
-
-    `claude auth status --json` prints {"loggedIn": ..., ...} (and exits non-zero when logged out). Nothing of
-    that output is passed on but the yes or no: it holds the account's details.
-    """
+    """Is Claude Code logged in on this computer? See claude_code.auth_status. Finds `claude` through this module's
+    find_claude, so the site's readiness check and its tests see the same one."""
     claude = claude or find_claude()
     if not claude:
         return {"logged_in": False, "message": NOT_INSTALLED}
-    try:
-        proc = run([claude, "auth", "status", "--json"], capture_output=True, text=True, encoding="utf-8",
-                   timeout=AUTH_TIMEOUT_S, stdin=subprocess.DEVNULL)
-        data = json.loads(proc.stdout or "")
-    except FileNotFoundError:
-        return {"logged_in": False, "message": NOT_INSTALLED}
-    except Exception:  # a timeout, odd output...: we only could not check
-        data = None
-    if not isinstance(data, dict) or "loggedIn" not in data:
-        return {"logged_in": False, "message": "לא הצלחנו לבדוק אם Claude Code מחובר."}
-    if data["loggedIn"] is True:
-        return {"logged_in": True, "message": "Claude Code מחובר."}
-    return {"logged_in": False, "message": NOT_LOGGED_IN}
+    return claude_code.auth_status(run, claude)

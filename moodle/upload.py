@@ -24,7 +24,7 @@ import zipfile
 from pathlib import Path
 
 from moodle import anonymize, grades, moodle_table, paths
-from datastore import schema
+from . import schema
 
 # The worksheet's headers follow the Moodle language the user downloaded it in
 GRADE_HEADERS = {"Grade", "ציון"}
@@ -35,15 +35,15 @@ MAX_ZIP_BYTES = 30_000_000
 # When Claude uploads through Claude in Chrome, each file can be at most 10 MB
 CLAUDE_MAX_ZIP_BYTES = 9_000_000
 
-INSTRUCTIONS_FILE = "Upload steps.txt"
-GRADES_FOR_MOODLE = "Grades for Moodle worksheet.csv"
+INSTRUCTIONS_FILE = paths.UPLOAD_STEPS
+GRADES_FOR_MOODLE = paths.GRADES_WORKSHEET
 ZIP_PREFIX = "Graded - part"
 ZIP_NAME = re.compile(rf"{re.escape(ZIP_PREFIX)} \d{{2,}}\.zip")
 
 
 def find_worksheet(assignment_id: str, downloads: Path | None = None) -> Path | None:
     """Return the newest grading worksheet for this assignment in Downloads, if any."""
-    downloads = downloads or Path.home() / "Downloads"
+    downloads = downloads or paths.downloads_dir()
     sheets = [p for p in downloads.glob("*.csv") if p.stem.endswith(f"-{assignment_id}")]
     return max(sheets, key=lambda p: p.stat().st_mtime) if sheets else None
 

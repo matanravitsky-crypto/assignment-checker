@@ -11,7 +11,9 @@ from __future__ import annotations
 import argparse
 import sys
 
-from . import folder_view, settings as cfg, shared_folder
+from moodle import settings as cfg, shared_folder
+
+from . import folder_view
 
 
 def main(argv: list[str] | None = None) -> int:

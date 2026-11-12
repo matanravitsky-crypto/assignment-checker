@@ -30,18 +30,18 @@ from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
-from datastore import schema
+from . import schema
 from moodle import anonymize, lock, paths, upload, upload_log
 
 UPLOAD_LOCK = paths.UPLOAD_LOCK  # the same lock as the files (moodle/send.py)
 
-LOG_FILE = "Grades upload log.csv"
+LOG_FILE = paths.GRADES_UPLOAD_LOG
 LOG_FIELDS = ["number", "grade", "feedback_sha256", "uploaded_at", "by"]
 WORKSHEET_NAME = "Grading worksheet-{id}.csv"  # what the download script saves (Chrome adds " (1)" when it exists)
 WORKSHEET_WAIT_S = 60
 # The worksheet this run uploads, in the upload folder. Its own name: "Grades for Moodle worksheet.csv" there is rebuilt
 # by "Prepare return", and the Drive's worksheet (paths.MOODLE_WORKSHEET) on every grade, so neither changes it mid-run
-RUN_FILE = "Grades for Moodle - this upload.csv"
+RUN_FILE = paths.GRADES_RUN_FILE
 
 NOT_ENABLED = ('במטלה הזו "גיליון ציונים לא מקוון" (Offline grading worksheet) כבוי, ולכן אי אפשר להעלות ציונים. '
                "צריך לבקש מהמרצה להפעיל אותו בהגדרות המטלה (סוגי משוב), ואז ללחוץ שוב. הקבצים עצמם כבר עלו.")

@@ -9,7 +9,6 @@ from pathlib import Path
 
 import pytest
 
-from dashboard import folder_view
 from moodle import grades, paths
 import stats
 from stats import store
@@ -69,8 +68,7 @@ def test_build_writes_one_file_per_assignment_by_slot_and_a_readme(root):
     on_disk = json.loads(f.read_text(encoding="utf-8"))
     assert on_disk == s and on_disk["key"] == "Linear Algebra/Assignment 2" and on_disk["grade"]["mean"] == 85
     assert on_disk["computed_by"] == "אורי"
-    # the statistics folder is not a course
-    assert [c.name for c in folder_view.courses(root)] == ["Discrete Mathematics", "Linear Algebra"]
+    # that the statistics folder is not a course on the site: tests/dashboard/test_stats_api.py
 
 
 def test_read_uses_the_file_while_fresh_and_recomputes_when_the_grades_change(root):
