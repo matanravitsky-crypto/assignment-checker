@@ -145,8 +145,12 @@ def groups(per_question: list[dict]) -> list[tuple[str, list[dict]]]:
 
 
 def _bidi(s: str) -> str:
-    """טקסט עברי לגרף: matplotlib מצייר משמאל לימין, אז מסדרים את האותיות בסדר התצוגה."""
+    """טקסט עברי לגרף. matplotlib עד 3.10 מצייר משמאל לימין, אז מסדרים את האותיות בסדר התצוגה;
+    מ-3.11 הוא מסדר בעצמו, וסידור כפול הופך את הטקסט."""
     try:
+        import matplotlib
+        if tuple(int(x) for x in matplotlib.__version__.split(".")[:2]) >= (3, 11):
+            return s
         from bidi.algorithm import get_display
         return get_display(s)
     except Exception:  # noqa: BLE001  (python-bidi חסר: הטקסט יוצג הפוך, הגרף עדיין נבנה)
