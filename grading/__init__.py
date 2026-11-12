@@ -16,6 +16,6 @@ INTERFACE = {
         # הבדיקה הידנית
         "save_review",
     ],
-    "grade_edit": ["connect_database", "connect_stats", "history", "history_all", "EditIncomplete", "ReasonRequired",
-                   "ACTION_FAILED"],
+    "grade_edit": ["connect_database", "connect_stats", "connect_moodle_table", "history", "history_all",
+                   "EditIncomplete", "ReasonRequired", "ACTION_FAILED"],
 }

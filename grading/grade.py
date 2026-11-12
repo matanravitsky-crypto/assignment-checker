@@ -74,8 +74,19 @@ MAX_BYTES = 2_000_000
 MAX_IMAGE_BYTES = 1_500_000
 
 RED = (0.85, 0, 0)
-_FONTS = Path("C:/Windows/Fonts")
-_CSS = "@font-face {font-family: heb; src: url(arial.ttf);} * {font-family: heb, sans-serif;}"
+# גופן עם אותיות עבריות להערות ולעמוד הסיכום: Arial של Windows, ובלעדיו גופן נפוץ של Linux או macOS (הסקיל
+# exercise-grader רץ גם שם). ב-Windows זה בדיוק כמו קודם: C:/Windows/Fonts ו-url(arial.ttf)
+_FONT_CANDIDATES = [
+    Path("C:/Windows/Fonts/arial.ttf"),
+    Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+    Path("/usr/share/fonts/truetype/noto/NotoSansHebrew-Regular.ttf"),
+    Path("/usr/share/fonts/truetype/freefont/FreeSans.ttf"),
+    Path("/Library/Fonts/Arial.ttf"),
+    Path("/System/Library/Fonts/Supplemental/Arial.ttf"),
+]
+_FONT = next((p for p in _FONT_CANDIDATES if p.is_file()), None)
+_CSS = (f"@font-face {{font-family: heb; src: url({_FONT.name});}} * {{font-family: heb, sans-serif;}}"
+        if _FONT else "* {font-family: sans-serif;}")
 
 NO_KEY = ("אין חיבור ל-Claude, ולכן אי אפשר לבדוק. אחת משתי הדרכים:\n"
           "1. Claude Code מחובר במחשב (כמו להעלאה למודל): מריצים פעם אחת claude auth login.\n"
@@ -637,7 +648,8 @@ def scrub_graded(g: Graded, names: list[str]) -> Graded:
 
 # ---------- סימון על ה-PDF ----------
 def _archive():
-    return pymupdf.Archive(str(_FONTS)) if (_FONTS / "arial.ttf").exists() else None
+    """התיקייה של הגופן העברי, או None כשאין במחשב גופן כזה (אז ההערות בגופן ברירת מחדל, ואולי בלי עברית)."""
+    return pymupdf.Archive(str(_FONT.parent)) if _FONT else None
 
 
 def _html(text: str, size: float = 10, color: str = "#d90000") -> str:
@@ -1222,13 +1234,17 @@ def _ledger(assignment_dir: Path, action: str, by: str, **details) -> None:
 
 
 def _update_moodle_table(assignment_dir: Path) -> None:
-    """מעדכן את Grades for Moodle.csv (moodle/moodle_table.py) אחרי בדיקה. כישלון לא מפיל את הבדיקה: הטבלה נגזרת,
+    """מעדכן את Grades for Moodle.csv (moodle/moodle_table.py) אחרי בדיקה, אם מי שמרכיב את המערכת חיבר אותה
+    (grade_edit.connect_moodle_table; grading לא מייבא את moodle_table). כישלון לא מפיל את הבדיקה: הטבלה נגזרת,
     וההעלאה בונה אותה מחדש לפני שהיא ממלאת את גיליון מודל."""
     import sys
 
+    from .grade_edit import moodle_table_builder  # grade_edit מייבא את הקובץ הזה
+    build = moodle_table_builder()
+    if build is None:
+        return
     try:
-        from moodle import moodle_table
-        moodle_table.build(assignment_dir)
+        build(assignment_dir)
     except Exception as e:  # noqa: BLE001
         print(f"טבלת הציונים למודל לא עודכנה: {e}", file=sys.stderr)
 

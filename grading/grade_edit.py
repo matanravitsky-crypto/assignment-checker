@@ -14,8 +14,13 @@
 datastore/ledger.py נותן LedgerStore: רושם "grade_edit_intent" ביומן לפני שאר היעדים (קריסה באמצע = עריכה לא גמורה
 שה-doctor מראה). הדשבורד יחבר אותו בהפעלה (שלב 3 של הצעה A); העריכה הגמורה נרשמת תמיד ("grade_edit").
 
+טבלת הציונים למודל (MoodleTableTarget, moodle/moodle_table.py): כבויה עד ש-connect_moodle_table(build) מחבר אליה
+את moodle_table.build. כשהיא מחוברת היא לא optional: עריכה שלא הגיעה אליה נכשלת.
+
 מסד הנתונים הסטטיסטי בדרייב (StatsTarget, stats/): אחרון ברשימה, כי הוא נגזר מקובצי הציונים. optional: אם הוא נכשל
 העריכה נשמרת בכל השאר, והכישלון נרשם ביומן (not_updated).
+
+grading לא מייבא אף אחד משלושת אלה. הדשבורד מחבר את שלושתם בהפעלה (web_server.connect_stores).
 """
 from __future__ import annotations
 
@@ -185,16 +190,22 @@ class StatsTarget:
 @dataclass
 class MoodleTableTarget:
     """Grades for Moodle.csv (moodle/moodle_table.py): כל ציון ליד מזהה המשתתף של מודל, שממנו הציון עולה לסטודנט הנכון.
-    נגזר מקובצי הציונים ומהמפתח, ולכן אחרי GradesCsvTarget. לא optional: טבלה ישנה = הציון הישן היה עולה למודל."""
+    נגזר מקובצי הציונים ומהמפתח, ולכן אחרי GradesCsvTarget. לא optional כשהוא מחובר: טבלה ישנה = הציון הישן היה עולה
+    למודל, אז עריכה שלא הגיעה אליה נכשלת ואומרת איפה כן עודכן.
+
+    כבוי עד ש-connect_moodle_table(build) מחבר אליו את moodle_table.build, כמו הסטטיסטיקה: moodle_table מושך איתו את
+    ההחזרה (upload, anonymize, pull_check), ו-grading שיוצא לסקיל לא צריך אותה. מי שמרכיב את המערכת מחבר אותו: הדשבורד
+    ב-web_server.connect_stores. בלי חיבור (סקיל, `python -m grading`) הטבלה לא נבנית כאן, וזה בטוח: ההעלאה בונה אותה
+    מחדש לפני שהיא ממלאת את גיליון מודל (moodle/upload.py), והעלאת הציונים קוראת את הציונים עצמם (moodle/send_grades.py)."""
     name: str = "moodle_table"
     label: str = "טבלת הציונים למודל (Grades for Moodle.csv)"
+    build: Callable[[Path], object] | None = None
 
     def enabled(self) -> bool:
-        return True
+        return self.build is not None
 
     def apply(self, edit: GradeEdit) -> None:
-        from moodle import moodle_table
-        moodle_table.build(edit.assignment_dir)
+        self.build(edit.assignment_dir)
 
 
 # הסדר הוא סדר העדכון. מקום חדש = שורה חדשה כאן
@@ -220,6 +231,19 @@ def connect_stats(build: Callable[..., object] | None) -> None:
 def stats_builder() -> Callable[..., object] | None:
     """מה ש-connect_stats חיבר, או None."""
     return next((t.build for t in TARGETS if isinstance(t, StatsTarget) and t.build is not None), None)
+
+
+def connect_moodle_table(build: Callable[[Path], object] | None) -> None:
+    """מחבר את טבלת הציונים למודל (או מנתק, עם None): build(assignment_dir), כמו moodle_table.build.
+    אחרי כל עריכה (יעד שאינו optional) ובסוף כל ריצת בדיקה (grade.grade_assignment)."""
+    for t in TARGETS:
+        if isinstance(t, MoodleTableTarget):
+            t.build = build
+
+
+def moodle_table_builder() -> Callable[[Path], object] | None:
+    """מה ש-connect_moodle_table חיבר, או None."""
+    return next((t.build for t in TARGETS if isinstance(t, MoodleTableTarget) and t.build is not None), None)
 
 
 # ---------- הפונקציה ----------

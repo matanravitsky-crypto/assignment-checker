@@ -4,6 +4,10 @@
     python tools/extract_skill.py copying <folder>         builds it there
     python tools/extract_skill.py copying --list           only lists the files it would take
     python tools/extract_skill.py --stale <skill folder>   which files of a built skill no longer match the repo
+    python tools/extract_skill.py grading --install        builds ~/.claude/skills/<name>/ only if it is missing or fell
+                                                           behind; a skill there that this tool did not build (an older
+                                                           copy from a ZIP) is first copied to ~/.claude/skill-backups/.
+                                                           The dashboard runs this at every start (dashboard/skills.py)
 
 The skill gets:
   SKILL.md               from <part>/skill/SKILL.md (the part owns its text; its `name:` is the skill's name), and
@@ -19,7 +23,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import shutil
+import stat
 import subprocess
 import sys
 from datetime import datetime
@@ -83,6 +89,25 @@ def _commit() -> str | None:
         return None
 
 
+def _empty(folder: Path) -> None:
+    """Removes everything in the folder but keeps the folder: Claude Code watches its skills folders, and Windows refuses
+    to remove one it holds. Read-only files and folders too (OneDrive marks folders read-only, and an older build copied
+    that attribute)."""
+    def writable(path: str | Path) -> None:
+        folder_ = os.path.isdir(path) and not os.path.islink(path)
+        os.chmod(path, stat.S_IRWXU if folder_ else stat.S_IREAD | stat.S_IWRITE)
+
+    for child in list(folder.iterdir()):
+        writable(child)
+        if child.is_dir() and not child.is_symlink():
+            for root, dirs, names in os.walk(child):  # top down: a folder is writable before it is walked into
+                for name in dirs + names:
+                    writable(os.path.join(root, name))
+            shutil.rmtree(child)
+        else:
+            child.unlink()
+
+
 def build(part: str, dest: Path | None = None) -> Path:
     """Builds the skill and returns its folder. A folder that is there already is replaced only if this tool built it."""
     src = skill_source(part)
@@ -90,10 +115,11 @@ def build(part: str, dest: Path | None = None) -> Path:
     if dest.exists() and any(dest.iterdir()):
         if not (dest / "scripts" / MANIFEST).is_file():
             raise SystemExit(f"{dest} exists and was not built by this tool: not touching it")
-        # empty it but keep the folder: Claude Code watches its skills folders, and Windows refuses to remove one it holds
-        for child in dest.iterdir():
-            shutil.rmtree(child) if child.is_dir() else child.unlink()
-    shutil.copytree(src, dest, ignore=shutil.ignore_patterns("__pycache__"), dirs_exist_ok=True)
+        _empty(dest)
+    for rel, data in _skill_files(part).items():  # files only: copytree's copystat made OneDrive's read-only folders
+        target = dest / rel                         # read-only here, and the next rebuild could not remove them
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
     scripts = dest / "scripts"
     scripts.mkdir(exist_ok=True)
     files = {}
@@ -122,6 +148,59 @@ def stale(skill_dir: Path) -> list[str]:
     return sorted(set(out) | (current - set(manifest["files"])))
 
 
+def _skill_files(part: str) -> dict[str, bytes]:
+    """The files the skill takes from <part>/skill/ (SKILL.md and the rest), by their path in the skill."""
+    src = skill_source(part)
+    return {f.relative_to(src).as_posix(): f.read_bytes() for f in sorted(src.rglob("*"))
+            if f.is_file() and "__pycache__" not in f.parts}
+
+
+def up_to_date(part: str, dest: Path) -> bool:
+    """True when `dest` was built by this tool from this part and nothing in it differs from the repo now: the code
+    (stale), SKILL.md and the other files of <part>/skill/, and run.py."""
+    dest = Path(dest)
+    try:
+        manifest = json.loads((dest / "scripts" / MANIFEST).read_text(encoding="utf-8"))
+        if manifest.get("part") != part or stale(dest):
+            return False
+        if (dest / "scripts" / "run.py").read_text(encoding="utf-8") != RUN.format(part=part):
+            return False
+        return all((dest / rel).is_file() and (dest / rel).read_bytes() == data
+                   for rel, data in _skill_files(part).items())
+    except (OSError, ValueError, KeyError):
+        return False
+
+
+def install(part: str, skills: Path | None = None, backups: Path | None = None) -> dict:
+    """Keeps the part's skill current in a skills folder (default ~/.claude/skills), the way a teammate's computer gets
+    it: nothing is done when it is up to date; a copy this tool built is built again; a copy it did not build (the
+    hand-made exercise-grader that went round as a ZIP) is first copied whole to `backups` (default
+    ~/.claude/skill-backups, outside the skills folder, so it is not a second skill with the same name), and only then
+    replaced. Returns {"skill", "path", "action": "up_to_date" | "installed" | "updated" | "replaced", "backup"}."""
+    name = skill_name(part)
+    skills = Path(skills) if skills else Path.home() / ".claude" / "skills"
+    dest = skills / name
+    out = {"skill": name, "path": str(dest), "action": "up_to_date", "backup": None}
+    there = dest.is_dir() and any(dest.iterdir())
+    if there and up_to_date(part, dest):
+        return out
+    if there and not (dest / "scripts" / MANIFEST).is_file():
+        backups = Path(backups) if backups else skills.parent / "skill-backups"
+        backup = backups / f"{name}-{datetime.now():%Y%m%d-%H%M%S}"
+        n = 2
+        while backup.exists():
+            backup = backups / f"{name}-{datetime.now():%Y%m%d-%H%M%S}-{n}"
+            n += 1
+        shutil.copytree(dest, backup)
+        _empty(dest)  # in place: build() replaces only what it built itself
+        out.update(action="replaced", backup=str(backup))
+    else:
+        out["action"] = "updated" if there else "installed"
+    skills.mkdir(parents=True, exist_ok=True)
+    build(part, dest)
+    return out
+
+
 def main(argv: list[str] | None = None) -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
@@ -130,6 +209,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("dest", nargs="?", type=Path, help="where to build it (default ~/.claude/skills/<name>)")
     p.add_argument("--list", action="store_true", help="only list the files it would take")
     p.add_argument("--stale", type=Path, metavar="SKILL_DIR", help="which files of a built skill fell behind the repo")
+    p.add_argument("--install", action="store_true",
+                   help="build it in ~/.claude/skills only if missing or behind; back up a hand-made one first")
     args = p.parse_args(argv)
     if args.stale:
         behind = stale(args.stale)
@@ -140,6 +221,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.list:
         for f in files_for(args.part):
             print(f.relative_to(M.REPO).as_posix())
+        return 0
+    if args.install:
+        done = install(args.part)
+        print(f"{done['skill']}: {done['action']}  {done['path']}"
+              + (f"  (the earlier one: {done['backup']})" if done["backup"] else ""))
         return 0
     dest = build(args.part, args.dest)
     n = len(json.loads((dest / "scripts" / MANIFEST).read_text(encoding="utf-8"))["files"])
