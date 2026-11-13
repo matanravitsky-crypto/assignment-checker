@@ -66,10 +66,10 @@ def test_server_gives_the_lists_and_files_to_the_lecturers_onedrive_only(data, s
     path = f"{HW}/{paths.TO_GRADE}/0001.pdf".replace(" ", "%20")
     status, headers, body = get(server, f"/api/sync/file?course={COURSE.replace(' ', '%20')}&path={path}", SHAREPOINT)
     assert status == 200 and body.startswith(b"%PDF")
-    # Chrome שואל לפני שאתר פונה לשרת במחשב (preflight): רק הוואן דרייב, ורק לקריאה
+    # Chrome שואל לפני שאתר פונה לשרת במחשב (preflight): רק הוואן דרייב. POST: הכיוון וואן דרייב → מחשב (test_sync_download)
     status, headers, _ = get(server, "/api/sync/list", SHAREPOINT, method="OPTIONS")
     assert status == 204 and headers.get("Access-Control-Allow-Private-Network") == "true"
-    assert headers.get("Access-Control-Allow-Methods") == "GET"
+    assert headers.get("Access-Control-Allow-Methods") == "GET, POST"
 
 
 def test_other_sites_and_other_addresses_get_no_access(data, server):
