@@ -36,9 +36,9 @@ def test_editing_an_existing_grade_needs_a_reason_and_changes_nothing_without_on
 def test_an_edit_updates_the_pdf_the_grades_file_and_the_log(root):
     a = graded(root)
     out = grading.save_review(a.dir, "0001", FULL, [], "יפה מאוד", by="dana (PC)", reason="ערעור: הנימוק בשאלה 12 נמצא בעמוד 2")
-    assert out == {"number": "0001", "grade": 100, "from": "85", "updated": ["marked_pdf", "notes", "grades_csv", "moodle_table"]}
+    assert out == {"number": "0001", "grade": 100, "from": "85", "updated": ["marked_pdf", "notes", "grades_csv"]}
     # 2. עמוד הסיכום ב-PDF המסומן
-    assert "ציון: 100 מתוך 100" in summary(a)
+    assert "100 מתוך 100" in summary(a)
     # 3. Grades by <name>.csv של מי שערך, ומשם (הקריאה המאוחדת) הציון עולה למודל
     mine = grades.read_file(grades.own_file(a.dir))["0001"]
     assert mine["grade"] == "100" and mine["approved"].startswith("dana (PC) ") and mine["points"] == "20;20;20;20;20"
@@ -48,7 +48,7 @@ def test_an_edit_updates_the_pdf_the_grades_file_and_the_log(root):
     assert (e["action"], e["by"], e["number"], e["from"], e["to"], e["kind"]) == ("grade_edit", "dana (PC)", "0001", "85", "100", "edit")
     assert e["reason"] == "ערעור: הנימוק בשאלה 12 נמצא בעמוד 2" and e["at"]
     assert e["points_from"] == "20;15;20;20;10" and e["points_to"] == "20;20;20;20;20"
-    assert e["updated"] == ["marked_pdf", "notes", "grades_csv", "moodle_table"]  # stats_db: only when connected
+    assert e["updated"] == ["marked_pdf", "notes", "grades_csv"]  # database, moodle_table, stats_db: only when connected
     assert grade_edit.history(a.dir, "1") == [e]
 
 
@@ -58,7 +58,7 @@ def test_a_second_edit_logs_from_the_edited_grade(root):
     grading.save_review(a.dir, "0001", [20, 20, 20, 20, 0], [], "", by="ori (LAPTOP)", reason="טעות שלי בעריכה")
     assert [(e["from"], e["to"], e["by"]) for e in grade_edit.history(a.dir, "0001")] == [
         ("85", "100", "dana (PC)"), ("100", "80", "ori (LAPTOP)")]
-    assert grading.read_grades(a.dir)["0001"]["grade"] == "80" and "ציון: 80 מתוך 100" in summary(a)
+    assert grading.read_grades(a.dir)["0001"]["grade"] == "80" and "80 מתוך 100" in summary(a)
 
 
 def test_approving_from_the_review_queue_needs_no_reason_but_is_logged(root):
@@ -158,16 +158,64 @@ def test_anyone_may_edit_a_work_that_someone_else_graded_and_approved(root, monk
     assert out["from"] == "90" and out["grade"] == 100
     assert grades.read_file(grades.own_file(a.dir, "דנה"))["0001"]["grade"] == "90"  # הקובץ של דנה לא נגעו בו
     assert grading.read_grades(a.dir)["0001"]["grade"] == "100"  # והציון שעולה למודל הוא של העריכה האחרונה
-    assert "ציון: 100 מתוך 100" in summary(a)
+    assert "100 מתוך 100" in summary(a)
 
 
-def test_an_edit_updates_the_moodle_table_so_the_new_grade_goes_to_the_right_student(root):
-    from moodle import moodle_table
+class Table:
+    """Stands in for moodle_table.build: grading never imports moodle_table, the system connects it (connect_moodle_table)."""
+
+    def __init__(self, fail: str = ""):
+        self.built, self.fail = [], fail
+
+    def __call__(self, assignment_dir):
+        if self.fail:
+            raise OSError(self.fail)
+        self.built.append((assignment_dir, grading.read_grades(assignment_dir).get("0001", {}).get("grade")))
+
+
+@pytest.fixture
+def table():
+    t = Table()
+    grade_edit.connect_moodle_table(t)
+    yield t
+    grade_edit.connect_moodle_table(None)
+
+
+def test_the_moodle_table_is_off_until_connected(root):
+    """grading alone (the exercise-grader skill, `python -m grading`) does not build Grades for Moodle.csv: every upload
+    builds it again before it fills Moodle's worksheet (tests/integration/test_moodle_table_after_grading.py)."""
+    (t,) = [t for t in grade_edit.TARGETS if isinstance(t, grade_edit.MoodleTableTarget)]
+    assert not t.enabled() and grade_edit.moodle_table_builder() is None
     a = graded(root)
-    before = {r["number"]: r for r in moodle_table.read(a.dir)}
-    assert before["0001"]["grade"] == "85" and before["0001"]["participant_id"] == "1001"  # הבדיקה כבר בנתה את הטבלה
+    assert not (a.dir / paths.MOODLE_TABLE).exists()
+    out = grading.save_review(a.dir, "0001", FULL, [], "", by="x", reason="ערעור")
+    assert "moodle_table" not in out["updated"] and not (a.dir / paths.MOODLE_TABLE).exists()
+
+
+def test_once_connected_the_moodle_table_is_built_after_a_run_and_after_each_edit(root, table):
+    a = graded(root)
+    assert table.built == [(a.dir, "85")]  # at the end of the grading run
     out = grading.save_review(a.dir, "0001", FULL, [], "", by="dana (PC)", reason="ערעור")
-    after = {r["number"]: r for r in moodle_table.read(a.dir)}
-    assert "moodle_table" in out["updated"]
-    assert after["0001"]["grade"] == "100" and after["0001"]["moodle_identifier"] == "Participant 1001"
-    assert after["0001"]["approved"].startswith("dana (PC)")
+    # after the grades file: the table is built from the edited grade, and before the statistics
+    assert out["updated"] == ["marked_pdf", "notes", "grades_csv", "moodle_table"]
+    assert table.built[-1] == (a.dir, "100")
+    names = [t.name for t in grade_edit.TARGETS]
+    assert names.index("grades_csv") < names.index("moodle_table") < names.index("stats_db")
+
+
+def test_a_connected_moodle_table_is_not_optional_an_edit_that_misses_it_fails(root):
+    """A stale table would send the old grade to Moodle: unlike the statistics, a failure stops the edit and says so."""
+    a = graded(root)
+    grade_edit.connect_moodle_table(Table(fail="OneDrive נעל את הקובץ"))
+    try:
+        with pytest.raises(grade_edit.EditIncomplete) as e:
+            grading.save_review(a.dir, "0001", FULL, [], "", by="x", reason="ערעור")
+        # a grading run is not stopped by it: the table is derived, and the upload builds it again
+        rep = grading.grade_assignment(a.dir, ["0001", "0003"], ask=lambda req: answer())
+    finally:
+        grade_edit.connect_moodle_table(None)
+    assert e.value.failed == "moodle_table" and e.value.updated == ["marked_pdf", "notes", "grades_csv"]
+    assert "Grades for Moodle.csv" in str(e.value) and "אפשר לשמור שוב" in str(e.value)
+    (entry,) = grade_edit.history(a.dir, "0001")
+    assert entry["action"] == "grade_edit_failed" and entry["failed"] == "moodle_table"
+    assert rep.graded == ["0003"]

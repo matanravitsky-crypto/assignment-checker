@@ -42,9 +42,15 @@ def section(s):
         o += [f"**דרך חלופית: {m['name']}** (מי שפתר כך מנוקד לפי החלוקה הזאת)", "",
               table(["שלב", "נק'"], [[x["desc"], x["points"]] for x in m["steps"]]), ""]
     if s.get("errors"):
-        o += ["**טעויות וניכויים** (הבוט מוריד לפי \"רגיל\")", "",
-              table(["טעות", "סוג", "רגיל", "מחמיר"],
-                    [[er["desc"], er["type"], er["regular"], er["strict"]] for er in s["errors"]]), ""]
+        # "טעות" הוא הנוסח שהבוט כותב כתגית (מילה במילה, כדי שאותה טעות תיספר יחד); הדוגמה בעמודה משלה, לא בתוך התגית
+        if any(er.get("example") for er in s["errors"]):
+            o += ["**טעויות וניכויים** (הבוט מוריד לפי \"רגיל\"; התגית היא עמודת \"טעות\" בלבד)", "",
+                  table(["טעות", "דוגמה", "סוג", "רגיל", "מחמיר"],
+                        [[er["desc"], er.get("example", ""), er["type"], er["regular"], er["strict"]] for er in s["errors"]]), ""]
+        else:
+            o += ["**טעויות וניכויים** (הבוט מוריד לפי \"רגיל\")", "",
+                  table(["טעות", "סוג", "רגיל", "מחמיר"],
+                        [[er["desc"], er["type"], er["regular"], er["strict"]] for er in s["errors"]]), ""]
     return "\n".join(o)
 
 
@@ -67,6 +73,9 @@ def render(r):
     rules = r.get("general_rules") or default_rules()  # the same fallback as the PDF: the bot must see the same rules
     if rules:
         o += ["## כללי בדיקה", ""] + [f"- **{g['label']}:** {g['text']}" for g in rules] + [""]
+    u = universal_rules()
+    if u["rules"]:
+        o += [f"## {u['heading']}", "", u["intro"], ""] + [f"- **{g['label']}:** {g['text']}" for g in u["rules"]] + [""]
     for q in r.get("questions", []):
         label = f"שאלה {q['n']}" if str(q["n"]).isdigit() else str(q["n"])
         o += [f"## {label} ({q['points']} נק')", ""]
@@ -76,6 +85,17 @@ def render(r):
               table(["שאלה", "תשובה", "נק'", "נימוק"],
                     [[a["n"], a["answer"], a["points"], a.get("reason", "")] for a in r["american"]]), ""]
     return "\n".join(o).rstrip() + "\n"
+
+
+def universal_rules():
+    """assets/universal-rules.json: the rules every rubric gets on top of its own (the same file grading adds to a rubric
+    that was not rendered here, grading/grade.py universal_rules_text)."""
+    import os
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets", "universal-rules.json")
+    try:
+        return json.load(open(path, encoding="utf-8-sig"))
+    except FileNotFoundError:
+        return {"heading": "", "intro": "", "rules": []}
 
 
 def default_rules():

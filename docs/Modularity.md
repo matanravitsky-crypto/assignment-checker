@@ -28,6 +28,7 @@
 | | `moodle` כתב דרך `datastore/atomic.py` ו-`schema.py`, ו-`datastore` משתמש ב-`moodle` | `atomic.py` ו-`schema.py` עברו לליבה ב-`moodle/` |
 | | `grading` קרא ל-`stats.build`, ו-`stats` קורא את המחוון דרך `grading` | `grading` לא מייבא את `stats`. הדשבורד מחבר אותו בהפעלה (`grade_edit.connect_stats`, כמו `connect_database`) |
 | | `grading` היה צריך את `moodle/claude_driver.py` (כרום, מודל, ההעלאה) רק כדי להריץ את Claude Code | `moodle/claude_code.py` בליבה: למצוא את Claude Code, לבדוק שהוא מחובר, לקרוא תשובה |
+| `grading` מושך את ההחזרה למודל | `grade._update_moodle_table` ו-`grade_edit.MoodleTableTarget` ייבאו את `moodle.moodle_table`, וממנו `upload`, `anonymize` ו-`pull_check` (23 קבצים בסקיל) | מחובר כמו `stats`: `grade_edit.connect_moodle_table(moodle_table.build)` ב-`web_server.connect_stores` (2026-11-12). כשהוא מחובר הוא לא optional. `python -m grading` לא מחבר אותו: ההעלאה בונה את הטבלה מחדש, והעלאת הציונים קוראת את הציונים עצמם (`tests/integration/test_moodle_table_after_grading.py`) |
 | גישה לפנימיות | `datastore` ו-`stats` השתמשו ב-`grades._rank`, והדשבורד ב-`grading._num` | `grades.rank`, `grading.to_points` (השמות הישנים נשארו בפנים) |
 | שמות שנכתבו ביד | `"Upload batch.json"` ב-`datastore/doctor.py`, `"Assignment details.json"` ו-`"Key - number to student.csv"` ב-`schema.py`, `"YallaLinearit"` ו-`"Exercise Checking System"` ב-`shared_folder.py`, `Path.home() / "Downloads"` בשלושה מקומות, קובצי ההעלאה, `Grading usage.jsonl`, קובצי המחוון שהאתר קורא | כולם ב-`moodle/paths.py` (`UPLOAD_BATCH`, `PULL_CHECK`, `USAGE_LOG`, `RUBRIC_*`, `DATA_FOLDER`, `downloads_dir()`...) |
 | מודל שנכתב ביד | `claude-opus-5-5` (הבדיקה) ו-`claude-sonnet-5-5` (כרום) | נשארו ברירת מחדל, ו-`GRADING_MODEL` / `MOODLE_MODEL` ב-`.env` דורסים (`settings.get`) |
@@ -46,7 +47,7 @@
 |---|---|---|---|---|---|
 | `copying/` | חשד להעתקה בין הגשות | הליבה בלבד | 10 | **כן, והוצא בפועל**: הסקיל `copying-check` | כלום |
 | `activity_log/` | יומן "מי עשה מה" | הליבה בלבד | 5 | כן, כספרייה | אין לו פעולה משלו (אין CLI): הוא חלק של סקיל אחר, לא סקיל לבד |
-| `grading/` | בדיקה עם Claude, בדיקה ידנית, עריכת ציון | הליבה, `activity_log`, `moodle.moodle_table` | 23 | **כמעט** | `moodle_table` (טבלת הציונים למודל) מושך איתו את `upload`, `anonymize` ו-`pull_check`. אם מחברים אותו כמו את `stats`, סקיל הבדיקה לא צריך את שלב ההחזרה. אחרי זה אפשר לבנות את `exercise-grader` מהקוד עצמו במקום ההעתקה הידנית מ-43b48dc |
+| `grading/` | בדיקה עם Claude, בדיקה ידנית, עריכת ציון | הליבה, `activity_log` | 20 | **כן, והוצא בפועל**: הסקיל `exercise-grader` (הגשה אחת, `grading/one_submission.py`), במקום ההעתקה הידנית מ-43b48dc | כלום. `tests/integration/test_grading_skill.py` משווה אותו למערכת: אותן תמונות ל-Claude, ואותו ציון, ניקוד, סימונים ו-PDF מסומן מאותה תשובה |
 | `moodle/` (משיכה והחזרה) | משיכה ממודל והחזרה למודל | הליבה (שבתוכו) | 22 | **טכנית כן** (יש CLI, ואין תלות בחלק אחר) | צריך כרום עם Claude in Chrome ומשתמש מחובר למודל. הממשק רחב (כ-50 שמות), כי הדשבורד מנהל בעצמו את זרימת המשיכה וההעלאה. כדי לצמצם: להעביר את הזרימה מ-`dashboard/actions.py` לפונקציות של `moodle` |
 | `stats/` | מסד הנתונים הסטטיסטי | הליבה, `grading` | 25 | **כמעט** | הוא צריך את המחוון ואת ההערות דרך `grading.load_context`, שמושך את כל `grading` (ו-PyMuPDF). אפשר להפריד את קריאת המחוון למודול קטן בלי PyMuPDF. הסקיל `stats-db` שבריפו היום קורא דרך `python -m stats`, לא מחוצה לו |
 | `datastore/` | בדיקת שלמות ויומן הציונים | הליבה, `grading`, `activity_log` | 25 | **כמעט** | כמו `stats`: המחוון דרך `grading` |
@@ -59,14 +60,36 @@
 מהלוגיקה של החלקים, למשל שמירת המכוון הרשמי, מצב קובצי המחוון וזרימת המשיכה. אלה המועמדים הבאים לפיצול, אבל הם לא
 מונעים הוצאה לסקיל.
 
-## איך מוציאים חלק לסקיל
+## סקיל: להוסיף, להוריד, לבדוק
 
-1. החלק צריך `SKILL.md` משלו ב-`<חלק>/skill/` (ראו `copying/skill/SKILL.md`).
+**להוסיף סקיל (חלק שיוצא לסקיל):**
+1. החלק צריך `SKILL.md` משלו ב-`<חלק>/skill/` (ראו `copying/skill/SKILL.md`), ו-`__main__.py` (הסקיל מריץ `python -m <חלק>`).
 2. `python tools/extract_skill.py <חלק>` בונה את הסקיל ב-`~/.claude/skills/<שם>/`: את `SKILL.md`, ו-`scripts/` עם
    החלק, הקבצים של הליבה שהוא צריך, `run.py` (שמריץ `python -m <חלק>` מהעותק), ו-`MANIFEST.json` (מאיזה commit,
    וה-sha256 של כל קובץ).
 3. `python tools/extract_skill.py --stale <תיקיית הסקיל>` אומר אם הסקיל פיגר אחרי הריפו. אם כן, בונים שוב.
+4. כדי שיגיע לכל הצוות: מוסיפים את החלק ל-`TEAM_SKILLS` ב-`dashboard/skills.py`. כל שרת בונה אותו בהפעלה הבאה.
 
-הקוד לא מועתק ביד ולא משוכתב. הכלי מסרב לבנות חלק שצריך חלק שמעליו, ו-`tests/integration/test_copying_skill.py`
-בונה את `copying-check`, מריץ אותו בלי הריפו (`python -I`, מתיקייה אחרת), ומשווה את התוצאה שלו לתוצאה של המערכת על
-אותן הגשות.
+**להוריד סקיל:** מוציאים את החלק מ-`TEAM_SKILLS`. בהפעלה הבאה (כלומר תוך שעה ממיזוג) כל שרת מוחק אותו
+(`extract_skill.retire`), אבל רק סקיל שהשרת עצמו התקין: `MANIFEST.json` שלו אומר `"team": true`. סקיל שמישהו בנה ביד
+(`extract_skill.py <חלק>` או `--install`) או כתב ביד לא נמחק לעולם. סקיל ששינה שם (`name:` ב-`SKILL.md`) נמחק בשמו הישן
+ונבנה בחדש. ב-Windows, Claude Code מחזיק את תיקיות הסקילים פתוחות, ולכן התיקייה מתרוקנת קודם. אם Windows לא נותן
+למחוק אותה, נשאר בה רק `REMOVED by Bodek Hacham.txt` (בלי `SKILL.md` זה כבר לא סקיל), וההפעלה הבאה מוחקת אותה.
+ביד: `python tools/extract_skill.py --remove <תיקיית הסקיל>`, שגם הוא מסרב לגעת בסקיל שהכלי לא בנה.
+
+**לבדוק סקיל:** `tests/integration/test_every_skill.py` בודק כל חלק שיש לו `skill/SKILL.md`, בלי בדיקה שנכתבה לו:
+ל-`SKILL.md` יש `name:` חוקי ותיאור, אין שני סקילים באותו שם, החלק הוא פקודה, הסקיל נבנה רק מהחלק וממה שמתחתיו,
+והוא רץ לבד (`run.py --help` עם `python -I`, מתיקייה אחרת) בלי לטעון קוד מהריפו. `tests/dashboard/test_skills.py`
+בודק את ההתקנה וההסרה אצל הצוות, וש-`TEAM_SKILLS` מכיל רק חלקים שיש להם סקיל.
+
+הקוד לא מועתק ביד ולא משוכתב. הכלי מסרב לבנות חלק שצריך חלק שמעליו. מה שהסקיל עושה נבדק בבדיקה משלו:
+`tests/integration/test_copying_skill.py` בונה את `copying-check`, מריץ אותו בלי הריפו, ומשווה את התוצאה שלו לתוצאה של
+המערכת על אותן הגשות. `tests/integration/test_grading_skill.py` עושה אותו דבר ל-`exercise-grader`.
+
+**`exercise-grader` אצל כל הצוות, לבד.** כל מחשב שמריץ את המערכת בונה אותו מהקוד שלו בכל הפעלה של השרת
+(`dashboard/skills.py` → `python tools/extract_skill.py grading --install`), והשרת עולה מחדש אחרי כל עדכון מ-`main`, כך
+שכל אחד מקבל את הגרסה שב-`main` בתוך שעה ממיזוג. נבנה רק כשהסקיל חסר או נשאר מאחור (הקוד, `SKILL.md` או
+`run.py`). הגרסה הקודמת הייתה העתקה ידנית (`grade_tool.py`) שהופצה כ-ZIP: תיקייה שהכלי לא בנה מועתקת קודם כולה
+ל-`%USERPROFILE%\.claude\skill-backups\exercise-grader-<תאריך>` (מחוץ לתיקיית הסקילים, כדי שלא יהיו שני סקילים באותו
+שם), ורק אז מוחלפת. `INSTALL_SKILLS=off` ב-`.env` מכבה. למי שאין מערכת במחשב: מכווצים את תיקיית הסקיל שנבנתה
+(`exercise-grader\SKILL.md` בתוכו), והוא מתקין אותה עם `scripts/install.ps1` שבתוכה.

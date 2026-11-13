@@ -22,6 +22,7 @@ def system():
     yield
     grade_edit.connect_database(None)
     grade_edit.connect_stats(None)
+    grade_edit.connect_moodle_table(None)
 
 
 def stats_file(root):

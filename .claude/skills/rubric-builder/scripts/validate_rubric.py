@@ -133,6 +133,28 @@ def problems(r):
     return e
 
 
+def warnings(r):
+    """Not errors (the rubric still builds), but what made grading inconsistent in the audit of 2026-11-12:
+    an error text the bot cannot copy as a short tag, and the same error priced differently in two sections."""
+    w, seen = [], {}
+    for q in r.get("questions", []) or []:
+        for s in q.get("sections", []) or [] if isinstance(q, dict) else []:
+            for er in s.get("errors", []) or [] if isinstance(s, dict) else []:
+                if not isinstance(er, dict):
+                    continue
+                desc = " ".join(str(er.get("desc", "")).split())
+                sid = f"{q.get('n')} {s.get('letter')}"
+                if len(desc) > 80:
+                    w.append(f"{sid}: נוסח טעות ארוך ({len(desc)} תווים), הבוט מעתיק אותו כתגית; דוגמאות עוברות לשדה example: {desc[:40]}…")
+                if er.get("type") == "סימון":  # טעות צורה: לא תלויה בגודל הסעיף (סעיף חסר או טעות חשבון כן)
+                    key = desc.split(", כמו")[0].split(" (")[0]
+                    seen.setdefault(key, set()).add((sid, str(er.get("regular"))))
+    for key, rows in seen.items():
+        if len({reg for _, reg in rows}) > 1:
+            w.append("אותה טעות סימון במחיר שונה (" + "; ".join(f"{sid}: {reg}" for sid, reg in sorted(rows)) + f"): {key[:50]}")
+    return w
+
+
 def load(path):
     try:
         with open(path, encoding="utf-8-sig") as f: return json.load(f)
@@ -145,6 +167,8 @@ def main(path):
     e = problems(r)
     if e:
         print("rubric.json לא תקין:"); [print("  -", x) for x in e]; sys.exit(1)
+    for x in warnings(r):
+        print("  אזהרה:", x)
     tot = sum(int(q["points"]) for q in r["questions"]) + sum(int(a["points"]) for a in r.get("american", []) or [])
     print(f"OK — {len(r['questions'])} שאלות, {tot} נק' סה\"כ")
 

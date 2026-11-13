@@ -50,5 +50,21 @@ def test_label_that_does_not_fit_is_shown_as_written():
     assert lines([{"req": "בונוס", "pts": 5}]) == ["בונוס - 5 נקודות"]
 
 
+def short_names(labels):
+    code = ("const R = require(process.argv[1]); const labels = JSON.parse(require('fs').readFileSync(0, 'utf8'));"
+            "process.stdout.write(JSON.stringify(labels.map(R.shortName)));")
+    out = subprocess.run([NODE, "-e", code, str(SCRIPT)], input=json.dumps(labels), capture_output=True, text=True,
+                         encoding="utf-8", check=True).stdout
+    return json.loads(out)
+
+
+def test_short_name_drops_the_sheet_the_table_title_already_says():
+    assert short_names(["דף תרגילים 0 (תחשיב הפסוקים) 4", "דף תרגילים 1 (שקילויות) 7א"]) == ["שאלה 4", "7א"]
+
+
+def test_short_name_keeps_the_topic_and_section_of_linear_algebra():
+    assert short_names(["קבוצות 11א", "מרוכבים 6ב", "8א", "16", "בונוס"]) == ["קבוצות 11א", "מרוכבים 6ב", "8א", "שאלה 16", "בונוס"]
+
+
 def test_one_point_is_singular():
     assert lines([{"req": "3", "pts": 1}]) == ["שאלה 3 - 1 נקודה"]

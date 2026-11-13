@@ -1,5 +1,6 @@
-"""עריכת ציון בתוך המערכת כולה: הדשבורד מחבר ל-grading את יומן האירועים (datastore/ledger.py) ואת מסד הנתונים
-הסטטיסטי (stats/) בהפעלה (web_server.connect_stores), כי grading לא מייבא אותם בעצמו.
+"""עריכת ציון בתוך המערכת כולה: הדשבורד מחבר ל-grading את יומן האירועים (datastore/ledger.py), את טבלת הציונים
+למודל (moodle/moodle_table.py) ואת מסד הנתונים הסטטיסטי (stats/) בהפעלה (web_server.connect_stores), כי grading לא
+מייבא אותם בעצמו.
 
 הועבר מ-tests/grading/test_grade_edit.py ב-2026-11-12 (tests/test_modularity.py): שם נבדקת העריכה של grading לבד.
 """
@@ -19,11 +20,12 @@ from tests.integration.test_grading_in_the_dashboard import call, server  # noqa
 
 @pytest.fixture
 def system():
-    """המערכת כמו שהדשבורד מפעיל אותה: היומן והסטטיסטיקה מחוברים לעריכת ציונים, ומנותקים בסוף."""
+    """המערכת כמו שהדשבורד מפעיל אותה: היומן, טבלת הציונים למודל והסטטיסטיקה מחוברים לעריכת ציונים, ומנותקים בסוף."""
     web_server.connect_stores()
     yield
     grade_edit.connect_database(None)
     grade_edit.connect_stats(None)
+    grade_edit.connect_moodle_table(None)
 
 def test_the_dashboard_connects_the_ledger_and_an_edit_is_intent_then_done(root, server, system):
     a = graded(root)
@@ -88,3 +90,17 @@ def test_a_statistics_failure_keeps_the_edit_and_is_logged(root, monkeypatch, sy
     assert grading.read_grades(a.dir)["0001"]["grade"] == "100"  # הציון נשמר בכל השאר
     e = grade_edit.history(a.dir, "0001")[-1]
     assert e["action"] == "grade_edit" and e["not_updated"][0]["target"] == "stats_db" and "OneDrive" in e["not_updated"][0]["error"]
+
+
+def test_the_dashboard_connects_the_moodle_table_so_an_edit_reaches_the_right_student(root, system):
+    """הועבר מ-tests/grading: grading לבד לא בונה את Grades for Moodle.csv. בתוך המערכת הטבלה נבנית בסוף הבדיקה
+    ואחרי כל עריכה, אחרי קובץ הציונים ולפני הסטטיסטיקה."""
+    from moodle import moodle_table
+    a = graded(root)
+    before = {r["number"]: r for r in moodle_table.read(a.dir)}
+    assert before["0001"]["grade"] == "85" and before["0001"]["participant_id"] == "1001"  # הבדיקה כבר בנתה את הטבלה
+    out = grading.save_review(a.dir, "0001", FULL, [], "", by="dana (PC)", reason="ערעור")
+    after = {r["number"]: r for r in moodle_table.read(a.dir)}
+    assert out["updated"] == ["database", "marked_pdf", "notes", "grades_csv", "moodle_table", "stats_db"]
+    assert after["0001"]["grade"] == "100" and after["0001"]["moodle_identifier"] == "Participant 1001"
+    assert after["0001"]["approved"].startswith("dana (PC)")

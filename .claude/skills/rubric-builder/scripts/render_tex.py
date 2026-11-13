@@ -94,6 +94,21 @@ def section(s):
     return "\n".join(o)
 
 
+def universal_box():
+    """The rules every rubric gets (assets/universal-rules.json), in a box of their own under the rubric's rules."""
+    path = os.path.join(HERE, "..", "assets", "universal-rules.json")
+    if not os.path.isfile(path):
+        return ""
+    u = json.load(open(path, encoding="utf-8-sig"))
+    if not u.get("rules"):
+        return ""
+    items = "\n".join(r"\item \textbf{%s:} %s" % (fix(x["label"]), fix(x["text"])) for x in u["rules"])
+    return ("\\begin{tcolorbox}[enhanced, breakable, sharp corners, colback=palegreen!25, colframe=teal!70, boxrule=0.5pt, "
+            "title=\\textbf{%s}, coltitle=white, fonttitle=\\bfseries, left=4pt, right=4pt, top=3pt, bottom=3pt]\n"
+            "{\\small %s\\par}\n\\begin{itemize}[itemsep=1pt, parsep=0pt, leftmargin=*]\n%s\n\\end{itemize}\n\\end{tcolorbox}"
+            % (fix(u["heading"]), fix(u["intro"]), items))
+
+
 def main(src, dst):
     r = json.load(open(src, encoding="utf-8-sig"))
     rules = r.get("general_rules") or json.load(open(os.path.join(HERE, "..", "assets", "default-rules.json"), encoding="utf-8-sig"))
@@ -114,6 +129,7 @@ def main(src, dst):
     for k, v in {"FONT": pick_font(), "COURSE": fix(r.get("course", "")), "CODE": fix(r.get("code", "")), "TERM": fix(r.get("term", "")),
                  "DATE": fix(r.get("date", "")), "PEOPLE": people(r),
                  "RULES": "\n".join(r"\item \textbf{%s:} %s" % (fix(x["label"]), fix(x["text"])) for x in rules),
+                 "UNIVERSAL": universal_box(),
                  "BODY": "\n\n".join(body)}.items():
         tex = tex.replace("<<%s>>" % k, v)
     open(dst, "w", encoding="utf-8").write(tex)

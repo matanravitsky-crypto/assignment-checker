@@ -31,18 +31,22 @@ TIMEOUT_S = 900
 EXT = {"image/png": ".png", "image/jpeg": ".jpg", "image/gif": ".gif", "image/webp": ".webp", "application/pdf": ".pdf"}
 
 READ_ALL = ("לפני שאתה עונה, קרא עם הכלי Read את כל הקבצים שברשימה, לפי הסדר: הם העמודים של ההגשה "
-            "(והמכוון והפתרון הרשמי, אם הם ברשימה). אל תקרא שום קובץ אחר. בסוף החזר רק את התוצאה המובנית.")
+            "(והמכוון והפתרון הרשמי, אם הם ברשימה). אל תקרא שום קובץ אחר. מספר העמוד הוא המספר שבשם הקובץ "
+            "(page-03 = עמוד 3), לא מקום הקובץ ברשימה. בסוף החזר רק את התוצאה המובנית.")
 
+
+READ_CROPS = ("לפני שאתה עונה, קרא עם הכלי Read את כל הקבצים שברשימה, לפי הסדר: הם החיתוכים (crop-01 = חיתוך 1). "
+              "אל תקרא שום קובץ אחר. בסוף החזר רק את התוצאה המובנית.")
 
 USAGE_LOG = paths.USAGE_LOG
 
 
-def log_usage(stdout: str, model: str) -> None:
+def log_usage(stdout: str, model: str, purpose: str = "grade") -> None:
     """One line per run in the data folder: tokens and cost only (no names, no content). Never fails the grading."""
     try:
         data = json.loads(stdout)
         usage = data.get("usage") or {}
-        row = {"at": datetime.now().isoformat(timespec="seconds"), "model": model,
+        row = {"at": datetime.now().isoformat(timespec="seconds"), "model": model, "purpose": purpose,
                "input": usage.get("input_tokens"), "output": usage.get("output_tokens"),
                "cache_read": usage.get("cache_read_input_tokens"),
                "cache_write": usage.get("cache_creation_input_tokens"),
@@ -61,7 +65,8 @@ def available() -> bool:
 def write_request(req: dict, folder: Path) -> str:
     """כותב לתיקייה את התמונות ואת הפתרון שבבקשה, ומחזיר את הטקסט שנשלח ל-Claude Code במקומם."""
     lines: list[str] = []
-    files = 0
+    pages = docs = 0
+    crops = req.get("file_prefix") == "crop"  # מעבר הזום (locate.py): חיתוכים ולא עמודים
     for message in req["messages"]:
         for block in message["content"]:
             kind = block.get("type")
@@ -71,12 +76,24 @@ def write_request(req: dict, folder: Path) -> str:
             source = block.get("source") or {}
             if kind not in ("image", "document") or source.get("type") != "base64":
                 continue
-            files += 1
-            path = folder / f"{files:03d}{EXT.get(source.get('media_type'), '.bin')}"
+            ext = EXT.get(source.get("media_type"), ".bin")
+            # העמודים נקראים לפי מספר העמוד, והמסמכים בנפרד. כשהכול היה 001, 002... (הפתרון 001, עמוד 1 = 002)
+            # Claude דיווח לפעמים את מספר הקובץ כמספר העמוד, והסימונים נפלו עמוד אחד מאוחר מדי (2026-11-11)
+            if kind == "image" and crops:
+                pages += 1
+                path = folder / f"crop-{pages:02d}{ext}"
+                what = f"תמונת חיתוך {pages}"
+            elif kind == "image":
+                pages += 1
+                path = folder / f"page-{pages:02d}{ext}"
+                what = f"תמונת עמוד {pages}"
+            else:
+                docs += 1
+                path = folder / f"attachment-{docs}{ext}"
+                what = block.get("title") or "קובץ"
             path.write_bytes(base64.b64decode(source["data"]))
-            what = (block.get("title") or "קובץ") if kind == "document" else "תמונת העמוד"
             lines.append(f"{what}: {path}")
-    lines += ["", READ_ALL]
+    lines += ["", READ_CROPS if crops else READ_ALL]
     return "\n".join(lines)
 
 
@@ -119,7 +136,7 @@ def cli_ask(claude: str, schema: dict, effort: str | None = None, run=subprocess
                 raise error(claude_code.failure_message(e, TIMEOUT_S)) from e
         finally:
             shutil.rmtree(folder, ignore_errors=True)
-        log_usage(proc.stdout, req["model"])
+        log_usage(proc.stdout, req["model"], "locate" if req.get("file_prefix") == "crop" else "grade")
         answer, problem = claude_code.read_run(proc)
         if answer is None:
             if problem == claude_code.NOT_LOGGED_IN:

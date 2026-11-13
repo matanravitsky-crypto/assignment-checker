@@ -13,7 +13,8 @@
     GRADING_MODEL             המודל של הבדיקה (grading.default_model, ברירת מחדל grading.grade.DEFAULT_MODEL)
     MOODLE_MODEL              המודל של ההורדה וההעלאה דרך כרום (ברירת מחדל moodle/claude_driver.DEFAULT_MODEL)
     ועוד, ליד מי שקורא אותן: SCHEDULE_* (dashboard/scheduler.py), AUTO_UPDATE ו-UPDATE_CHECK_MINUTES
-    (dashboard/updater.py), PUBLIC_STATUS_GIST (dashboard/public_status.py), CLAUDE_UPDATE_WAIT_S (start.bat).
+    (dashboard/updater.py), PUBLIC_STATUS_GIST (dashboard/public_status.py), INSTALL_SKILLS (dashboard/skills.py),
+    CLAUDE_UPDATE_WAIT_S (start.bat).
 """
 from __future__ import annotations
 
