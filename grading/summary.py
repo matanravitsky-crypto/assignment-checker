@@ -1,14 +1,16 @@
 """עמוד הסיכום של עבודה בדוקה, בכיוון "תעודה": למעלה הציון בטבעת, שם המטלה ומשפט אחד; באמצע מפה של
 השאלות (כל סעיף משבצת: ירוק ✓ ניקוד מלא, כתום ✗ ירדו נקודות, אדום ✗ אפס); למטה רק מה שירד, עם ההערה.
-תחליף ל-grade._summary_page: אותה חתימה. הצורות מצוירות ב-PyMuPDF, והטקסט העברי ב-insert_htmlbox."""
+תחליף ל-grade._summary_page: אותה חתימה. הצורות מצוירות ב-PyMuPDF, והטקסט העברי ב-grading/rtl.py: כל שורה
+מסודרת כאן וכל קטע (עברית / ביטוי מתמטי) נכתב במקומו. עד 2026-11-14 הטקסט נכתב ב-insert_htmlbox, וה-bidi של MuPDF
+(שמתעלם מכל סימן כיוון) הפך "-4" ל-"4-" ו-"1+8=-7" ל-"7-=1+8"."""
 from __future__ import annotations
 
 import re
-from pathlib import Path
 
 import pymupdf
 
-from .grade import (Context, Graded, _CSS, _FONT, _esc, _pts, _rich, assigned, shown_labels)
+from . import rtl
+from .grade import (Context, Graded, _FONT, _pts, assigned, shown_labels)
 
 # ---------- הפלטה של "בודק חכם" (website/styles.css) ----------
 def _rgb(h: str) -> tuple[float, float, float]:
@@ -29,7 +31,6 @@ M = 38.0                     # שוליים
 # גופן מודגש מאותה תיקייה של הגופן העברי (ה-archive של grade), לכותרות ולמספרים
 _BOLD_NAMES = ["arialbd.ttf", "Arial Bold.ttf", "DejaVuSans-Bold.ttf", "NotoSansHebrew-Bold.ttf", "FreeSansBold.ttf"]
 _BOLD = next((_FONT.parent / n for n in _BOLD_NAMES if _FONT and (_FONT.parent / n).is_file()), None)
-CSS = _CSS + (f" @font-face {{font-family: heb; font-weight: bold; src: url({_BOLD.name});}}" if _BOLD else "")
 
 _SECTION = re.compile(r"^(.*\d)\s*([א-ת])$")   # "קבוצות 11ב" -> "קבוצות 11", "ב"
 
@@ -55,7 +56,7 @@ def _band(frac: float) -> tuple[str, str]:
 
 
 class _Pen:
-    """טקסט קצר בלי עברית רב-אותית (מספרים, אות סעיף אחת): insert_text, מהיר ומדויק. כל השאר: insert_htmlbox."""
+    """טקסט קצר בלי עברית רב-אותית (מספרים, אות סעיף אחת): insert_text, מהיר ומדויק. כל השאר: para (rtl)."""
 
     def __init__(self, page: pymupdf.Page, archive):
         self.page, self.archive = page, archive
@@ -80,8 +81,30 @@ class _Pen:
         x0 = x - w if align == "right" else x - w / 2 if align == "center" else x
         self.page.insert_text((x0, y), text, fontsize=size, fontname=self._font(bold), color=_rgb(color))
 
-    def html(self, rect: pymupdf.Rect, html: str) -> tuple[float, float]:
-        return self.page.insert_htmlbox(rect, html, css=CSS, archive=self.archive, scale_low=0)
+    def para(self, rect: pymupdf.Rect, text: str, size: float, color: str, bold: bool = False, align: str = "right",
+             lh: float = 1.25, shrink: bool = True) -> float:
+        """עברית (עם ביטויים מתמטיים) במלבן, מלמעלה, מימין לשמאל. מוקטן עד שנכנס. מחזיר את הגובה שנכתב."""
+        return rtl.draw(self.page, rect, text, size, color, bold=bold, align=align, lh=lh, shrink=shrink,
+                        min_size=2.0) or 0.0
+
+
+def _stack(page: pymupdf.Page, rect: pymupdf.Rect, items: list[dict], lh: float) -> None:
+    """פסקאות זו מתחת לזו במלבן (text, size, color, bold, mt = רווח מעל). הכול מוקטן יחד עד שנכנס (כמו scale_low=0)."""
+    items = [it for it in items if str(it["text"]).strip()]
+
+    def height(s: float) -> float:
+        return sum(it.get("mt", 0) * s + rtl.measure(it["text"], rect.width, it["size"] * s, it.get("bold", False), lh)
+                   for it in items)
+    s = 1.0
+    while s > 0.3 and height(s) > rect.height:
+        s *= 0.95
+    y = rect.y0
+    for it in items:
+        y += it.get("mt", 0) * s
+        size = it["size"] * s
+        lay = rtl.layout(it["text"], rect.width / size, it.get("bold", False))
+        rtl.write(page, pymupdf.Rect(rect.x0, y, rect.x1, y + 1), lay, size, it["color"], bold=it.get("bold", False), lh=lh)
+        y += len(lay.lines) * size * lh
 
 
 def _icon(page: pymupdf.Page, x: float, y: float, s: float, kind: str, color: str) -> None:
@@ -111,8 +134,8 @@ def _ring(page: pymupdf.Page, pen: _Pen, cx: float, cy: float, r: float, g: Grad
     num = _pts(g.grade)
     size = r * (0.78 if len(num) <= 2 else 0.62)
     pen.text(cx, cy + size * .3, num, size, INK, bold=True, align="center")
-    pen.html(pymupdf.Rect(cx - r, cy + size * .42, cx + r, cy + size * .42 + 14),
-             f'<div dir="rtl" style="text-align:center; font-size:8.5px; color:{INK3}">מתוך {_pts(ctx.max_grade)}</div>')
+    pen.para(pymupdf.Rect(cx - r, cy + size * .42, cx + r, cy + size * .42 + 14), f"מתוך {_pts(ctx.max_grade)}",
+             8.5, INK3, align="center")
 
 
 def _groups(ctx: Context, g: Graded) -> list[dict]:
@@ -188,12 +211,11 @@ def _grid(page: pymupdf.Page, pen: _Pen, groups: list[dict], top: float, budget:
             got = sum(it["p"] for it in gr["items"])
             full = sum(it["full"] for it in gr["items"])
             single = len(gr["items"]) == 1
-            tail = "" if single else (
-                f'<br><span style="font-size:8.5px; color:{INK3}; font-weight:normal">'
-                f'{_rich(f"{_pts(got)}/{_pts(full)}")} נקודות</span>')
-            pen.html(pymupdf.Rect(x_right - label_w, y + row_pad - 1, x_right, y + row_h),
-                     f'<div dir="rtl" style="font-size:11px; font-weight:bold; color:{INK}; line-height:1.25">'
-                     f'{_rich(gr["name"])}{tail}</div>')
+            box = pymupdf.Rect(x_right - label_w, y + row_pad - 1, x_right, y + row_h)
+            h = pen.para(box, gr["name"], 11, INK, bold=True)
+            if not single:
+                pen.para(pymupdf.Rect(box.x0, box.y0 + h, box.x1, box.y1 + 4), f"{_pts(got)}/{_pts(full)} נקודות",
+                         8.5, INK3)
             x_right -= label_w + 8
         per = max(1, int((x_right - M + gap) / (cw + gap) + 1e-6))
         for j, it in enumerate(gr["items"]):
@@ -215,8 +237,8 @@ def _tile(page: pymupdf.Page, pen: _Pen, r: pymupdf.Rect, it: dict) -> None:
     s = 12.0
     if it["kind"] != "none":
         _icon(page, r.x0 + pad, r.y0 + pad - 1, s, "full" if it["kind"] == "full" else "x", color)
-    pen.html(pymupdf.Rect(r.x0 + pad + s + 4, r.y0 + pad - 2.5, r.x1 - pad - 2, r.y0 + pad + 14),
-             f'<div dir="rtl" style="font-size:10.5px; font-weight:bold; color:{INK}">{_rich(it["sec"])}</div>')
+    pen.para(pymupdf.Rect(r.x0 + pad + s + 4, r.y0 + pad - 2.5, r.x1 - pad - 2, r.y0 + pad + 14), it["sec"],
+             10.5, INK, bold=True)
     got, full = _pts(it["p"]), _pts(it["full"])
     size = min(16.0, r.height * .32)
     w_got = pen.width(got, size, bold=True)
@@ -245,8 +267,7 @@ def _cell(page: pymupdf.Page, pen: _Pen, r: pymupdf.Rect, it: dict) -> None:
         sec_w = pen.width(sec, size, bold=True)
     elif sec:   # שם שלם (שאלות בלי מספר קצר)
         sec_w = r.width * .5
-        pen.html(pymupdf.Rect(r.x1 - pad - sec_w, r.y0 + 2, r.x1 - pad, r.y1 - 2),
-                 f'<div dir="rtl" style="font-size:8.5px; font-weight:bold; color:{INK}; line-height:1.15">{_rich(sec)}</div>')
+        pen.para(pymupdf.Rect(r.x1 - pad - sec_w, r.y0 + 2, r.x1 - pad, r.y1 - 2), sec, 8.5, INK, bold=True, lh=1.15)
     got, full = _pts(it["p"]), _pts(it["full"])
     w_got = pen.width(got, size, bold=True)
     w_full = pen.width(f"/{full}", size * .8)
@@ -268,8 +289,7 @@ def _legend(page: pymupdf.Page, pen: _Pen, y: float, kinds: set[str]) -> None:
             continue
         color, soft = _COLORS[kind]
         w = pen.width(word, 8.5) + 4
-        pen.html(pymupdf.Rect(x, y - 10.2, x + w, y + 4),
-                 f'<div dir="rtl" style="font-size:8.5px; color:{INK2}">{word}</div>')
+        pen.para(pymupdf.Rect(x, y - 10.2, x + w, y + 4), word, 8.5, INK2)
         bx = x + w + 3
         page.draw_rect(pymupdf.Rect(bx, y - 9, bx + 11, y + 2), color=_rgb(color), fill=_rgb(soft), width=0.6, radius=0.25)
         _icon(page, bx + 2, y - 7, 7, "full" if kind == "full" else "x", color)
@@ -304,17 +324,15 @@ def summary_page(doc: pymupdf.Document, g: Graded, ctx: Context, archive, extra:
     else:
         line = (f"ניקוד מלא ב-{n_full} מתוך {len(graded)} {unit}. "
                 f"ירדו נקודות ב-{len(lost)} {unit}, והם מפורטים למטה.")
-    pen.html(pymupdf.Rect(head.x0 + 2 * r + 46, head.y0 + 14, head.x1 - 18, head.y1 - 10),
-             f'<div dir="rtl" style="color:{INK}; line-height:1.3">'
-             f'<p style="margin:0; font-size:9.5px; color:{INK3}">{_esc(ctx.course)}</p>'
-             f'<p style="margin:2px 0 0; font-size:16px; font-weight:bold">{_esc(ctx.title)}</p>'
-             f'<p style="margin:7px 0 0; font-size:19px; font-weight:bold; color:{color}">{verdict}</p>'
-             f'<p style="margin:3px 0 0; font-size:10.5px; color:{INK2}">{_rich(line)}</p></div>')
+    _stack(page, pymupdf.Rect(head.x0 + 2 * r + 46, head.y0 + 14, head.x1 - 18, head.y1 - 10), [
+        {"text": ctx.course, "size": 9.5, "color": INK3},
+        {"text": ctx.title, "size": 16, "color": INK, "bold": True, "mt": 2},
+        {"text": verdict, "size": 19, "color": color, "bold": True, "mt": 7},
+        {"text": line, "size": 10.5, "color": INK2, "mt": 3}], lh=1.3)
 
     # ---------- המפה ----------
     y = head.y1 + 22
-    pen.html(pymupdf.Rect(W / 2, y - 12, W - M, y + 4),
-             f'<div dir="rtl" style="font-size:12px; font-weight:bold; color:{INK}">הניקוד בכל שאלה</div>')
+    pen.para(pymupdf.Rect(W / 2, y - 12, W - M, y + 4), "הניקוד בכל שאלה", 12, INK, bold=True)
     _legend(page, pen, y, {it["kind"] for it in items})
     y += 7
     page.draw_line((M, y), (W - M, y), color=_rgb(RULE), width=0.6)
@@ -323,42 +341,76 @@ def summary_page(doc: pymupdf.Document, g: Graded, ctx: Context, archive, extra:
     # ---------- איפה ירדו נקודות, הערות בלי הורדה, משוב ----------
     footer = H - M - 4
     page.draw_line((M, footer - 8), (W - M, footer - 8), color=_rgb(RULE), width=0.5)
-    pen.html(pymupdf.Rect(M, footer - 4, W - M, footer + 12),
-             f'<div dir="rtl" style="font-size:8.5px; color:{INK3}">'
-             'הסימונים וההערות המלאות כתובים על העבודה עצמה, בעמודים הבאים.</div>')
+    pen.para(pymupdf.Rect(M, footer - 4, W - M, footer + 12),
+             "הסימונים וההערות המלאות כתובים על העבודה עצמה, בעמודים הבאים.", 8.5, INK3)
 
-    def rows(entries, color, soft, minus):
-        out = []
-        for it, extra_text in entries:
-            delta = it["full"] - it["p"]
-            tag = (f'<b style="color:{color}">{_rich(f"-{_pts(delta)}")}</b>' if minus
-                   else f'<span style="color:{color}">✓</span>')
-            text = it["comment"] or extra_text
-            # שם, ניקוד והערה בשלושה תאים: "שאלה 11" ליד "-6" באותו תא התערבבו ל-"6- 11".
-            # MuPDF מסדר עמודות של טבלה תמיד משמאל לימין, גם ב-dir="rtl": לכן התאים כתובים בסדר הפוך
-            cell = f'background-color:{soft}; border-bottom:1.5px solid #FFFFFF; white-space:nowrap'
-            out.append(
-                f'<tr><td style="padding:2.5px 8px 2.5px 2px; border-bottom:0.6px solid {RULE}"><div dir="rtl">{_rich(text)}</div></td>'
-                f'<td style="{cell}; padding:2.5px 2px 2.5px 7px">&#160;{tag}</td>'
-                f'<td style="{cell}; padding:2.5px 6px 2.5px 2px"><b>{_rich(it["label"])}</b>&#160;&#160;</td></tr>')
-        return "".join(out)
-
-    parts = []
+    blocks: list[tuple] = []
     if lost:
-        body = "".join(rows([(it, "")], *_COLORS[it["kind"]], True) for it in lost)
-        parts.append(f'<p style="margin:0 0 5px; font-size:12px; font-weight:bold; color:{BAD}">איפה איבדתם נקודות</p>'
-                     f'<table style="width:100%; border-collapse:collapse">{body}</table>')
+        blocks.append(("title", "איפה איבדתם נקודות", BAD, 0, 5))
+        blocks.append(("table", [(it["label"], f"-{_pts(it['full'] - it['p'])}", *_COLORS[it["kind"]], True, it["comment"])
+                                 for it in lost]))
     if notes:
-        parts.append(f'<p style="margin:12px 0 5px; font-size:12px; font-weight:bold; color:{NOTE}">'
-                     'שימו לב (בלי הורדת נקודות)</p>'
-                     f'<table style="width:100%; border-collapse:collapse">'
-                     f'{rows([(it, "") for it, _ in notes], NOTE, NOTE_SOFT, False)}</table>')
+        blocks.append(("title", "שימו לב (בלי הורדת נקודות)", NOTE, 12, 5))
+        blocks.append(("table", [(it["label"], "✓", NOTE, NOTE_SOFT, False, it["comment"]) for it, _ in notes]))
     if g.feedback:
-        parts.append(f'<p style="margin:12px 0 3px; font-size:12px; font-weight:bold; color:{INK}">משוב</p>'
-                     f'<p style="margin:0; color:{INK2}">{_rich(g.feedback)}</p>')
+        blocks += [("title", "משוב", INK, 12, 3), ("p", g.feedback, 0)]
     if extra:
-        parts.append(f'<p style="margin:12px 0 3px; font-size:12px; font-weight:bold; color:{INK}">הערות נוספות</p>'
-                     + "".join(f'<p style="margin:0 0 3px; color:{INK2}">{_rich(t)}</p>' for t in extra))
-    if parts:
-        pen.html(pymupdf.Rect(M, y + 14, W - M, footer - 14),
-                 f'<div dir="rtl" style="font-size:10px; line-height:1.35; color:{INK}">{"".join(parts)}</div>')
+        blocks.append(("title", "הערות נוספות", INK, 12, 3))
+        blocks += [("p", t, 3) for t in extra]
+    if blocks:
+        _body(page, pymupdf.Rect(M, y + 14, W - M, footer - 14), blocks)
+
+
+LH = 1.35   # גובה שורה בחלק התחתון
+
+
+def _lines(page, x0: float, x1: float, y: float, text: str, size: float, color: str, bold: bool, draw: bool,
+           align: str = "right") -> float:
+    """פסקה ברוחב x0..x1 שמתחילה ב-y. מחזיר את הגובה שלה."""
+    lay = rtl.layout(text, (x1 - x0) / size, bold)
+    if draw:
+        rtl.write(page, pymupdf.Rect(x0, y, x1, y + 1), lay, size, color, bold=bold, align=align, lh=LH)
+    return len(lay.lines) * size * LH
+
+
+def _table(page, rect: pymupdf.Rect, y: float, rows: list[tuple], s: float, draw: bool) -> float:
+    """טבלה מימין לשמאל: שם השאלה (מודגש, על רקע בצבע), התג ("-4" או ✓) על אותו רקע, וההערה, עם קו דק מתחת.
+    מחזיר את הגובה שלה."""
+    size, pad = 10 * s, 2.5 * s
+    lw = min(max(rtl.width(r[0], size, bold=True) for r in rows), rect.width * 0.4) + 14 * s
+    tw = max(rtl.width(r[1], size, bold=r[4]) for r in rows) + 12 * s
+    xt = rect.x1 - lw - tw                    # הקצה הימני של עמודת ההערה
+    top = y
+    for label, tag, color, soft, bold, text in rows:
+        h_label = _lines(page, rect.x1 - lw + 2 * s, rect.x1 - 6 * s, y + pad, label, size, INK, True, False)
+        h_text = _lines(page, rect.x0 + 2 * s, xt - 8 * s, y + pad, text, size, INK, False, False)
+        row_h = max(h_label, h_text, size * LH) + 2 * pad
+        if draw:
+            page.draw_rect(pymupdf.Rect(xt, y, rect.x1, y + row_h - 1.5 * s), color=None, fill=_rgb(soft))
+            page.draw_line((rect.x0, y + row_h - 0.3), (xt, y + row_h - 0.3), color=_rgb(RULE), width=0.6)
+            _lines(page, rect.x1 - lw + 2 * s, rect.x1 - 6 * s, y + pad, label, size, INK, True, True)
+            _lines(page, xt + 2 * s, rect.x1 - lw, y + pad, tag, size, color, bold, True, align="center")
+            _lines(page, rect.x0 + 2 * s, xt - 8 * s, y + pad, text, size, INK, False, True)
+        y += row_h
+    return y - top
+
+
+def _body(page: pymupdf.Page, rect: pymupdf.Rect, blocks: list[tuple]) -> None:
+    """החלק התחתון: כותרות, טבלאות ופסקאות זו מתחת לזו. הכול מוקטן יחד עד שנכנס לעמוד אחד."""
+    def run(s: float, draw: bool) -> float:
+        y = rect.y0
+        for k, b in enumerate(blocks):
+            if b[0] == "title":
+                _, text, color, mt, mb = b
+                y += (mt if k else 0) * s
+                y += _lines(page, rect.x0, rect.x1, y, text, 12 * s, color, True, draw) + mb * s
+            elif b[0] == "p":
+                y += _lines(page, rect.x0, rect.x1, y, b[1], 10 * s, INK2, False, draw) + b[2] * s
+            else:
+                y += _table(page, rect, y, b[1], s, draw)
+        return y - rect.y0
+
+    s = 1.0
+    while s > 0.3 and run(s, False) > rect.height:
+        s *= 0.95
+    run(s, True)

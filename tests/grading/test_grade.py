@@ -232,13 +232,14 @@ def test_a_note_that_cannot_be_written_goes_to_the_summary(monkeypatch):
     doc, page = _scan_page((100, 200, 300, 230))
     ctx = grading.Context("מטלה", "קורס", [grading.Question("שאלה 1", 100)])
     g = grading.Graded([90], [""], 90, "", [grading.Mark(1, 168, 237, 504, 273, "הערה שלא נכנסת")])
-    real = pymupdf.Page.insert_htmlbox
+    from grading import rtl
+    real = rtl.write
 
-    def failing(self, rect, html, **kw):
-        if "הערה שלא נכנסת" in html and "line-height: 1.25" in html:  # ההערה על הדף (_html), לא עמוד הסיכום
+    def failing(page, rect, lay, size, color, **kw):
+        if color == "#d90000":  # ההערה האדומה על הדף (_write), לא עמוד הסיכום
             raise OverflowError("int too large to convert to float")
-        return real(self, rect, html, **kw)
-    monkeypatch.setattr(pymupdf.Page, "insert_htmlbox", failing)
+        return real(page, rect, lay, size, color, **kw)
+    monkeypatch.setattr(rtl, "write", failing)
     with pymupdf.open(stream=grading.mark_pdf(doc.tobytes(), g, ctx), filetype="pdf") as out:
         assert "הערה שלא נכנסת" in text(out[0]) and "עמוד 1" in text(out[0])
     assert len(g.marks) == 1  # המלבן עצמו כן צויר
@@ -313,7 +314,7 @@ def test_math_in_a_note_reads_left_to_right():
     assert grading._ltr("חסר להראות ש-(2,2)∉A") == "חסר להראות ש-\u202a(2,2)∉A\u202c"
     assert grading._ltr("הקבוע -2+i") == "הקבוע \u202a-2+i\u202c"
     assert grading._ltr("בלי נוסחה בכלל") == "בלי נוסחה בכלל"
-    assert "\u202a" not in grading._html("{(0,0)}", math=False)
+    assert grading._html("{(0,0)}", math=False).math is False  # \u05d4\u05d4\u05e2\u05e8\u05d4 \u05e2\u05dc \u05d4\u05d3\u05e3 \u05e0\u05db\u05ea\u05d1\u05ea \u05d1-grading/rtl.py (test_rtl.py)
 
 
 def test_a_note_far_from_its_box_gets_a_line_to_it():
