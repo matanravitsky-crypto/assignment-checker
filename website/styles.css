@@ -1042,12 +1042,3 @@ span.rv-arrow { visibility: hidden; }
 .sq-list .track { height: 8px; }
 .sq-list small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 @media (max-width: 640px) { .sq-list li { grid-template-columns: 64px 1fr 44px; } .sq-list small { display: none; } }
-
-/* "מה חדש" (whats-new.js): כרטיס בראש העמוד, עד שסוגרים אותו */
-.news { display: flex; gap: 20px; align-items: flex-start; padding: 18px 20px; margin-bottom: 20px; border-radius: var(--r-md); background: var(--blue-soft); border: 1px solid var(--rule); flex-wrap: wrap; }
-.news-text { flex: 1 1 320px; min-width: 0; }
-.news-tag { display: inline-block; font-size: 12px; font-weight: 600; color: var(--blue); margin-bottom: 4px; }
-.news h2 { margin: 0 0 8px; font-size: 17px; }
-.news ul { margin: 0 0 12px; padding-inline-start: 20px; display: flex; flex-direction: column; gap: 4px; font-size: 14px; color: var(--ink-2); }
-.news-img { flex: 0 0 220px; max-width: 100%; }
-.news-img img { width: 100%; border-radius: var(--r-md); border: 1px solid var(--rule); box-shadow: 0 2px 8px rgba(0,0,0,.08); background: #fff; }

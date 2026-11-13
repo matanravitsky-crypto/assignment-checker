@@ -130,6 +130,17 @@ for the user: `explorer.exe "<Desktop>\עבודות בדוקות"`. No names, no
 If the user gave a whole folder of submissions, grade them one by one with the same rubric, and at the end give
 a short table: number | grade | needs review.
 
+**What's new, once per update:** if `<skill>\scripts\news-shown.txt` does not exist, end the reply with one short
+paragraph "מה חדש בבדיקה" from the newest entry of "What's new" below, then create that file (empty). Every rebuild
+of the skill starts without it, so each teammate hears about each update once.
+
+## What's new
+
+- **2026-11-14:** העמוד הראשון של העבודה הבדוקה עוצב מחדש: הציון בטבעת צבעונית, מפה של כל הסעיפים (ירוק ✓ מלא,
+  כתום ירדו נקודות, אדום אפס), ומתחת רק איפה ירדו נקודות ולמה. בעבודה עצמה: ✓ / ✗ / ✓✗ בעיגול ליד כל שאלה, לא על
+  כתב היד, ושאלה שלא נשאלה לא מסומנת. המלבנים צמודים לטעות וההערות בשוליים עם קו אליה. "כללים לכל מחוון" חלים גם
+  כאן, והבודק לא כותב לסטודנט ספקות שלו בקריאה.
+
 ## Keeping it current
 
 On a computer that runs the system, the dashboard builds this skill again from its own code at every start (and so

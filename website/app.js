@@ -1983,18 +1983,6 @@
     }
   }
 
-  // "מה חדש" (whats-new.js): העדכון האחרון, עד שהמשתמש סוגר אותו בדפדפן הזה
-  function newsHTML() {
-    const n = (window.WHATS_NEW || [])[0];
-    if (!n || store.get("newsSeen", "") === n.id) return "";
-    return `<section class="news" aria-label="מה חדש">
-      <div class="news-text"><span class="news-tag">מה חדש</span><h2>${esc(n.title)}</h2>
-        <ul>${(n.items || []).map((t) => `<li>${esc(t)}</li>`).join("")}</ul>
-        <button class="btn small" data-act="news-close">הבנתי</button></div>
-      ${n.image ? `<a class="news-img" href="${esc(n.image)}" target="_blank" rel="noopener"><img src="${esc(n.image)}" alt="${esc(n.imageAlt || "")}"></a>` : ""}
-    </section>`;
-  }
-
   function bannerHTML() {
     if (LOCAL.on && !LOCAL.health?.root) {
       return `<div class="banner warn">${ICON.warn}<div><b>המערכת פועלת, אבל תיקיית OneDrive של הקורס עוד לא נמצאה במחשב.</b><pre class="banner-pre">${esc(LOCAL.health?.error || "")}</pre></div><button class="btn secondary small" data-act="recheck">בדוק שוב</button></div>`;
@@ -2688,7 +2676,7 @@
     if (state.loading && !booted) html = `<div class="loading">${ICON.spin}טוען…</div>`;
     else if (!cur() && !["/settings", "/runs", "/stats"].includes(route())) html = offlineHTML();
     else html = views[route()]();
-    $("#main").innerHTML = newsHTML() + bannerHTML() + html;
+    $("#main").innerHTML = bannerHTML() + html;
     renderNav();
     renderStatus();
 
@@ -2751,7 +2739,6 @@
     if (act) {
       const a = act.dataset.act, id = act.dataset.id;
       if (a === "close") closeDrawer();
-      if (a === "news-close") { store.set("newsSeen", (window.WHATS_NEW || [])[0]?.id || ""); render(); }
       if (a === "grade-one") gradeOne(id);
       if (a === "grade-stop") stopLocalGrade();
       if (a === "open-folder") openFolder("folder");
