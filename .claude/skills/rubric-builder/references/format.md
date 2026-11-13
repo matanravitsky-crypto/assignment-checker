@@ -43,6 +43,14 @@ Types: `הבנה` · `חוסר` · `חישוב` · `סימון` · `נימוק �
 }
 ```
 
+Every error `desc` is the tag the grading bot copies word for word (so the same error is counted together in the
+statistics): short, general, no examples (≤ 80 characters; `validate_rubric.py` warns above). Put an example in
+`"example"` on the error (`{"desc": "n-יה שנכתבה כקבוצה", "example": "$\\{0,-2,4\\}$ במקום $\\{(0,-2,4)\\}$", ...}`): it is shown in
+its own column. The same form error (type `סימון`) costs the same `regular` in every section; the validator warns when it doesn't.
+
+Every rubric also gets `assets/universal-rules.json` ("כללים לכל מחוון"), rendered under its own rules in `Rubric.md`
+and in the PDF. They say how a rubric is applied, never how many points; don't repeat them in `general_rules`.
+
 Optional: `count` on a section — one block for several identical sections (`"letter": "א, ב, ד, ה", "points": 3, "count": 4`; the question's sum uses points × count). `alt_methods` — a list of `{"name": "לגרנז'", "steps": [{"desc": "...", "points": n}, ...]}`; each alternative's steps must sum to the section points (students who used it are graded by that split). `solution` (display math, one or two lines), `note` on a section (plain remark, e.g. "שגיאות קטנות בפירוק – הערה בלבד"), `american` (omit if none), `general_rules` (omit → defaults from `assets/default-rules.json`).
 
 `validate_rubric.py` rejects: section steps ≠ section points · alt_method steps ≠ section points · sections ≠ question points · unknown type · deduction > section points · מחמיר < רגיל · מחמיר = רגיל while רגיל < section points (מחמיר is the strict regime: רגיל + 1, capped) · empty answer.

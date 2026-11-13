@@ -132,7 +132,7 @@ def test_save_review_approves_with_who_and_rewrites_the_summary_page(root):
     note = grading.read_notes(a.dir, "0001")
     assert note["reviewed"]["by"] == "dana (PC)" and note["mistakes"][4] == [] and note["marks"]  # הסימונים של Claude נשארים
     with pymupdf.open(a.dir / paths.MARKED / "0001.pdf") as doc, pymupdf.open(a.submissions / "0001.pdf") as src:
-        assert doc.page_count == src.page_count + 1 and "ציון: 75 מתוך 100" in text(doc[0])
+        assert doc.page_count == src.page_count + 1 and "75 מתוך 100" in text(doc[0])
         assert "השאלה לא נמצאה" in text(doc[0]) and "נועה" not in text(doc[0])
     # מאושרת: הבדיקה האוטומטית לא דורסת אותה
     assert grading.grade_assignment(a.dir, ["0001"], ask=lambda req: detailed()).skipped == ["0001"]

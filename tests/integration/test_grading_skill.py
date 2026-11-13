@@ -165,3 +165,18 @@ def test_every_computer_gets_the_skill_and_a_hand_made_one_is_kept_aside(tmp_pat
     # and a computer that never had it
     fresh = extract_skill.install("grading", tmp_path / "other" / "skills", backups)
     assert fresh["action"] == "installed" and extract_skill.up_to_date("grading", tmp_path / "other" / "skills" / "exercise-grader")
+
+
+def test_the_skill_carries_the_rules_for_every_rubric_and_the_summary_page(tmp_path):
+    # 2026-11-13: exercise-grader graded without "כללים לכל מחוון" (a json, not a module), so a teammate's grading with
+    # the skill was not the system's. The first page (grading/summary.py) must go out with it too.
+    skill = extract_skill.build("grading", tmp_path / "exercise-grader")
+    rules = skill / "scripts" / ".claude" / "skills" / "rubric-builder" / "assets" / "universal-rules.json"
+    assert rules.read_bytes() == (M.REPO / ".claude/skills/rubric-builder/assets/universal-rules.json").read_bytes()
+    assert (skill / "scripts" / "grading" / "summary.py").is_file()
+    assert extract_skill.stale(skill) == []
+    out = subprocess.run([sys.executable, "-I", "-X", "utf8", "-c", "import sys; sys.path.insert(0, r'%s'); from grading import grade; "
+                          "print(grade.universal_rules_text('x')[:20])" % (skill / "scripts")],
+                         capture_output=True, text=True, encoding="utf-8", timeout=120,
+                         env={**os.environ, "PYTHONIOENCODING": "utf-8"})
+    assert "כללים לכל מחוון" in out.stdout, out.stderr
