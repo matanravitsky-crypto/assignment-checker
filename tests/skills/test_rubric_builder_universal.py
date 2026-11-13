@@ -87,3 +87,13 @@ def test_the_grading_context_carries_them(tmp_path):
     ctx = grade.load_context(a, send_solution=False)
     assert ctx.rubric_text.count(UNIVERSAL["heading"]) == 1
     assert UNIVERSAL["heading"] in grade.context_text(ctx)
+
+
+def test_grading_swaps_an_old_rules_block_for_the_current_one():
+    # 2026-11-13: a fix in a rule reached a rubric only after it was rebuilt and delivered; now grading puts the
+    # current wording in place of the block the rubric was rendered with, and keeps everything after it
+    old = "# מחוון\n\n## כללים לכל מחוון\n\nנוסח ישן\n- **x:** y\n\n## שאלה 1\nשורה"
+    new = grade.with_universal_rules(old)
+    assert new.count("## כללים לכל מחוון") == 1 and "נוסח ישן" not in new
+    assert "ההערה והניכוי מסכימים" in new and new.startswith("# מחוון") and new.endswith("## שאלה 1\nשורה")
+    assert grade.with_universal_rules("מחוון ביד").count("## כללים לכל מחוון") == 1

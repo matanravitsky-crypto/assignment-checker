@@ -736,3 +736,44 @@ def test_model_images_carry_a_numbered_grid_but_files_do_not():
     assert len(top) > 20
     assert not [(x, y) for y in range(2, int(pix.height * 0.03)) for x in range(int(pix.width * 0.4), int(pix.width * 0.6), 2)
                 if pymupdf.Pixmap(plain.data).pixel(x, y)[2] < 120]
+
+
+def test_one_sheet_summary_shows_short_labels_in_order_and_skips_an_unasked_question():
+    # 2026-11-13, הגשה 1: "דף וקטורים וגאומטריה ב-ℝ² וב-ℝ³ 11" חזר בכל שורה והתערבב עם המספרים, ושאלה 8 (שהמחוון
+    # אומר להתעלם ממנה) הופיעה "0 מתוך 0" עם ✗ אדום
+    sheet = "דף וקטורים וגאומטריה ב-ℝ² וב-ℝ³"
+    ctx = grading.Context("מטלה", "קורס", [grading.Question(f"{sheet} {n}", p) for n, p in ((8, 0), (11, 60), (13, 40))])
+    assert grading.shown_labels(ctx.questions) == ["שאלה 8", "שאלה 11", "שאלה 13"]
+    assert grading.assigned(ctx) == [False, True, True]
+    two = [grading.Question("קבוצות 11", 10), grading.Question("מרוכבים 7", 10)]
+    assert grading.shown_labels(two) == ["קבוצות 11", "מרוכבים 7"]  # כמה דפים: השם המלא
+    assert grading.shown_labels([grading.Question("כל המטלה", 0)]) == ["כל המטלה"]
+    assert grading.assigned(grading.Context("מטלה", "קורס", [grading.Question("א", 0), grading.Question("ב", 0)])) == [True, True]
+    doc, _ = _scan_page((100, 200, 300, 230))
+    places = [grading.Mark(1, 700, 100 + 200 * i, 760, 130 + 200 * i, "") for i in range(3)]
+    g = grading.Graded([0, 60, 40], ["לא נדרשה", "נכון: 1+8=-7", "טוב"], 100, "", [], places=places)
+    with pymupdf.open(stream=grading.mark_pdf(doc.tobytes(), g, ctx), filetype="pdf") as out:
+        summary = text(out[0])
+        assert "שאלה 11" in summary and sheet not in summary and "לא נדרשה" not in summary
+        assert len(_strokes(out[1], grading.RED)) == 0 and len(_strokes(out[1], grading.GREEN)) == 4  # שני ✓, בלי ✗ לשאלה 8
+
+
+def test_a_minus_written_after_the_number_goes_back_in_front():
+    # 2026-11-13: הבודק כתב "1+8=7-" ו"כ-7-" (במקום -7), והסטודנט ראה את המינוס בצד הלא נכון
+    assert grading._ltr("הרכיב הוא 1+8=7-, כלומר 7") == "הרכיב הוא \u202a1+8=-7\u202c, כלומר \u202a7\u202c"
+    assert grading._ltr("נראה כ-7- ולא 7") == "נראה כ-\u202a-7\u202c ולא \u202a7\u202c"
+    assert grading._ltr("הקבוע 3-i") == "הקבוע \u202a3-i\u202c"  # לא נוגעים בביטוי רגיל
+
+
+def test_a_badge_finds_free_paper_when_the_label_is_at_the_edge_and_writing_follows_it():
+    # 2026-11-13, 7 מ-20 עבודות של הגשה 1: "13) א" בקצה השמאלי, הכתב מתחיל מיד אחריו וממשיך לשורה הבאה,
+    # ושמונת המקומות שליד התווית היו כולם על כתב. מעל השורה ריק
+    doc, page = _scan_page((8, 120, 560, 150))
+    for y in range(160, 400, 3):  # עוד שורות כתב מתחת
+        page.draw_line((8, y), (560, y), color=(0, 0, 0.3), width=1.2)
+    ctx = grading.Context("מטלה", "קורס", [grading.Question("שאלה 1", 10)])
+    g = grading.Graded([10], [""], 100, "", [], places=[grading.Mark(1, 14, 142, 60, 178, "שאלה 1")])
+    ink = grading.Ink(page)
+    (badge,) = grading._place_checks(doc, g, ctx)[1]
+    assert ink.density(badge.x0 / 595 * 1000, badge.y0 / 842 * 1000, badge.x1 / 595 * 1000, badge.y1 / 842 * 1000) < 0.02
+    assert badge.y1 <= 125 and badge.x0 < 150  # מעל השורה, ליד התווית

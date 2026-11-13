@@ -248,18 +248,37 @@ def pedagogy_files(assignment_dir: Path) -> list[Path]:
 UNIVERSAL_RULES = Path(__file__).resolve().parents[1] / ".claude" / "skills" / "rubric-builder" / "assets" / "universal-rules.json"
 
 
-def universal_rules_text(rubric_text: str) -> str:
-    """הכללים לכל מחוון (rubric-builder, assets/universal-rules.json), כטקסט שמתווסף למחוון שלא נבנה מ-rubric.json:
-    מחוון שנבנה שם כבר כולל אותם (תחת הכותרת שלהם), ואז לא מוסיפים שוב. כך כל בדיקה, בכל מחשב, מקבלת אותם בלי
-    שמישהו יבנה את המחוון מחדש."""
+def _universal() -> tuple[str, str]:
+    """(הכותרת, הבלוק כ-markdown) של הכללים לכל מחוון, או ("", "") כשהקובץ חסר או שבור."""
     try:
         u = json.loads(UNIVERSAL_RULES.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
-        return ""
-    if not u.get("rules") or not u.get("heading") or u["heading"] in rubric_text:
-        return ""
-    return "\n".join([f"## {u['heading']}", "", str(u.get("intro") or ""), ""] +
-                      [f"- **{g['label']}:** {g['text']}" for g in u["rules"]])
+        return "", ""
+    if not u.get("rules") or not u.get("heading"):
+        return "", ""
+    return u["heading"], "\n".join([f"## {u['heading']}", "", str(u.get("intro") or ""), ""] +
+                                   [f"- **{g['label']}:** {g['text']}" for g in u["rules"]])
+
+
+def universal_rules_text(rubric_text: str) -> str:
+    """הכללים לכל מחוון (rubric-builder, assets/universal-rules.json), כטקסט שמתווסף למחוון שלא נבנה מ-rubric.json:
+    מחוון שנבנה שם כבר כולל אותם (תחת הכותרת שלהם), ואז לא מוסיפים שוב."""
+    heading, block = _universal()
+    return "" if not heading or heading in rubric_text else block
+
+
+def with_universal_rules(rubric_text: str) -> str:
+    """המחוון עם הנוסח הנוכחי של הכללים לכל מחוון: מחוון שנבנה עם נוסח ישן מקבל את החדש במקומו (2026-11-13: תיקון
+    בכלל הגיע למחוון רק אחרי בנייה ומסירה מחדש), ומחוון בלי הבלוק מקבל אותו בסוף. כך תיקון בכלל מגיע לכל בדיקה,
+    בכל מחשב, עם main."""
+    heading, block = _universal()
+    if not heading:
+        return rubric_text
+    start = rubric_text.find(f"## {heading}")
+    if start < 0:
+        return "\n\n".join(t for t in (rubric_text, block) if t)
+    end = rubric_text.find("\n## ", start + 3)
+    return rubric_text[:start] + block + ("\n\n" + rubric_text[end + 1:] if end >= 0 else "")
 
 
 def pedagogy_text(files: list[Path]) -> str:
@@ -343,7 +362,7 @@ def load_context(assignment_dir: Path, instructions: str = "", send_solution: bo
     if pedagogy:
         rubric_text = "\n\n".join(t for t in (rubric_text, "חומר הבדיקה של המטלה (מחוון, פתרונות ודרכי פתרון):\n\n" + pedagogy) if t)
     if rubric_text:
-        rubric_text = "\n\n".join(t for t in (rubric_text, universal_rules_text(rubric_text)) if t)
+        rubric_text = with_universal_rules(rubric_text)
     key = official_key(assignment_dir)
     if key:
         # המכוון קובע את הניקוד. שאלה שאין לה ניקוד במכוון שומרת את הניקוד מהמחוון, ובלי שניהם אין ציונים
@@ -378,7 +397,7 @@ SYSTEM = """אתה מתרגל שבודק תרגילי בית במתמטיקה (�
 questions: אחד לכל שאלה במטלה, באותו סדר ועם אותה תווית (label) בדיוק כמו ברשימת השאלות. חייבים להחזיר את כולן: תשובה חלקית נפסלת כולה.
 - comment: משפט קצר על התשובה.
 - page, x0, y0, x1, y1: איפה התשובה לשאלה מתחילה: המלבן סביב מספר הסעיף שהסטודנט כתב או סביב השורה הראשונה של התשובה (באותן אלפיות כמו annotations). לידו יצויר ✓ לניקוד מלא, ✗ לאפס, ✓✗ לניקוד חלקי. שאלה שלא נמצאה: page 0 וכל השאר 0.
-- mistakes: סוגי הטעויות בתשובה, ריק אם היא נכונה. כל טעות בניסוח קצר וכללי, 2 עד 6 מילים, שלא תלוי בעבודה הזו, כך שאותה טעות אצל סטודנטים שונים תקבל בדיוק אותו ניסוח (למשל "חסר נימוק להכלה ההפוכה"). אם במחוון יש לשאלה טעויות מוכרות, משתמשים בניסוח שלהן מילה במילה ומורידים כמו שכתוב שם.
+- mistakes: סוגי הטעויות בתשובה, ריק אם היא נכונה. כל טעות בניסוח קצר וכללי, 2 עד 6 מילים, שלא תלוי בעבודה הזו, כך שאותה טעות אצל סטודנטים שונים תקבל בדיוק אותו ניסוח (למשל "חסר נימוק להכלה ההפוכה"). אם במחוון יש לשאלה טעויות מוכרות, משתמשים בניסוח שלהן מילה במילה ומורידים כמו שכתוב שם. תגית רק משורה של הסעיף הזה (או לפי "כללים לכל מחוון" כשיש ניכוי); טעות בלי שורה ובלי ניכוי: הערה בלבד, בלי תגית, ולא שורה שהתנאי שלה לא מתקיים.
 - unsure: true אם הניקוד בשאלה הזו לא ודאי (לא קריא, תשובה חלקית שקשה להעריך, דרך שלא בטוח שהיא נכונה).
 
 בדיקה ידנית: עבודה עם needs_review=true עוברת לתור "בדיקה ידנית" באתר. שם מתרגל רואה את review_reason, את השאלות שסומנו unsure ואת הסימונים, ומחליט בכמה לחיצות. לכן:
@@ -391,8 +410,8 @@ annotations, סימונים על גבי העבודה:
 - כל סימון מקיף מקום מדויק בעבודה של הסטודנט: הכתב היד של הטעות, של הצעד החסר או של הנימוק הלא מספיק. מלבן שמקיף שטח ריק, או את נוסח השאלה המודפס, שגוי. דברים נכונים לא מסמנים.
 - page: מספר העמוד, מ-1: המספר שכתוב בכותרת "עמוד N" לפני התמונה ובפינה העליונה של התמונה ("page N"). לא מספר הקובץ ולא מקומו ברשימה.
 - x0, y0, x1, y1: המלבן שמקיף את המקום, באלפיות של רוחב העמוד ושל גובהו. (0, 0) היא הפינה השמאלית העליונה ו-(1000, 1000) הימנית התחתונה. המלבן צמוד לביטוי שההערה מדברת עליו: בדרך כלל חלק משורה אחת (2%-6% מגובה העמוד), לכל היותר 2-3 שורות. אף פעם לא סעיף שלם ולא שורות נכונות מסביב.
-- סימון אחד לכל טעות. על אותה טעות בכמה מקומות מסמנים את הראשון.
-- text: הערה קצרה בעברית, עד 12 מילים, שאומרת מה לא נכון. מתמטיקה בטקסט פשוט (A^-1, det(A)), בלי LaTeX.
+- סימון אחד לכל טעות. על אותה טעות בכמה מקומות מסמנים את הראשון. ספק שלכם בקריאה, בלי טעות של הסטודנט, אינו סימון: הוא unsure.
+- text: הערה קצרה בעברית, עד 12 מילים, שאומרת מה לא נכון. מתמטיקה בטקסט פשוט (A^-1, det(A)), בלי LaTeX, בסדר הרגיל משמאל לימין: 1+8=-7, (3,7,-6), המינוס לפני המספר ולא 7-. כך גם בהערות ובמשוב.
 
 לפני שמחזירים, בדיקה עצמית של כל שאלה:
 - כל ניכוי נשען על שורת טעות במחוון, והתגית שלו ב-mistakes היא נוסח השורה. ניכוי בלי שורה: לפי "כללים לכל מחוון" (אותה טעות בסעיף אחר, כלל הסימון), ובתגית הנוסח של אותה שורה. לא ממציאים קטגוריה ("פליטת קולמוס") ולא סיבת פטור.
@@ -741,15 +760,40 @@ def _ltr(text: str) -> str:
         core = run.rstrip(" ,;:.")
         if not core:
             return lead + run
-        return lead + "\u202a" + core + "\u202c" + run[len(core):]
+        rest = run[len(core):]
+        # "1+8=7-": \u05d4\u05de\u05d9\u05e0\u05d5\u05e1 \u05e0\u05db\u05ea\u05d1 \u05d0\u05d7\u05e8\u05d9 \u05d4\u05de\u05e1\u05e4\u05e8 (\u05db\u05d0\u05d9\u05dc\u05d5 \u05d1\u05e1\u05d3\u05e8 \u05de\u05d9\u05de\u05d9\u05df \u05dc\u05e9\u05de\u05d0\u05dc, 2026-11-13). \u05d1\u05d9\u05d8\u05d5\u05d9 \u05dc\u05d0 \u05e0\u05d2\u05de\u05e8 \u05d1\u05de\u05d9\u05e0\u05d5\u05e1
+        core = re.sub(r"(\d+(?:[./]\d+)?)-$", r"-\1", core)
+        return lead + "\u202a" + core + "\u202c" + rest
     return _MATH.sub(wrap, text)
 
 
-def _html(text: str, size: float = 10, color: str = "#d90000", math: bool = True) -> str:
+def _rich(text: str, math: bool = True) -> str:
+    """טקסט עברי ל-HTML: כל ביטוי מתמטי משמאל לימין ושלם (_ltr), ונוסחה לא נשברת באמצע שורה
+    ("4-4i+2i+2 =" ואז "6-2i" בשורה הבאה): אם צריך, הטקסט כולו קטן קצת."""
     body = _esc(_ltr(text) if math else text)
-    # נוסחה לא נשברת באמצע שורה ("4-4i+2i+2 =" ואז "6-2i" בשורה הבאה): אם צריך, הטקסט כולו קטן קצת
-    body = re.sub("‪(.*?)‬", lambda m: '<span style="white-space: nowrap">‪' + m.group(1) + "‬</span>", body)
-    return f'<div dir="rtl" style="color: {color}; font-size: {size:g}px; line-height: 1.25">{body}</div>'
+    return re.sub("‪(.*?)‬", lambda m: '<span style="white-space: nowrap">‪' + m.group(1) + "‬</span>", body)
+
+
+def _html(text: str, size: float = 10, color: str = "#d90000", math: bool = True) -> str:
+    return f'<div dir="rtl" style="color: {color}; font-size: {size:g}px; line-height: 1.25">{_rich(text, math)}</div>'
+
+
+def shown_labels(questions: list[Question]) -> list[str]:
+    """השמות שהסטודנט רואה בעמוד הסיכום. כשכל השאלות מאותו דף ("דף וקטורים וגאומטריה ב-ℝ² וב-ℝ³ 11"...) השם
+    הארוך של הדף חוזר בכל שורה, וה-bidi ערבב אותו עם המספרים ("ב-ℝ² וב-24 :11 ℝ³ מתוך 24", 2026-11-13):
+    אז "שאלה 11". כמה דפים (קבוצות, מרוכבים): השם כמו שהוא."""
+    labels = [q.label for q in questions]
+    parts = [l.rsplit(" ", 1) for l in labels]
+    if len(labels) > 1 and all(len(x) == 2 and x[1][:1].isdigit() for x in parts) and len({x[0] for x in parts}) == 1:
+        return [f"שאלה {x[1]}" for x in parts]
+    return labels
+
+
+def assigned(ctx: "Context") -> list[bool]:
+    """שאלה ששווה 0 כשלאחרות יש ניקוד לא נשאלה במטלה (המחוון אומר להתעלם ממנה, כמו שאלה 8 בהגשה 1): היא לא
+    מופיעה בעמוד הסיכום ולא מקבלת ✗. בלי ניקוד בכלל (אין מחוון) כל השאלות מוצגות."""
+    some = any(q.points for q in ctx.questions)
+    return [bool(q.points) or not some for q in ctx.questions]
 
 
 def _esc(s: str) -> str:
@@ -931,17 +975,18 @@ def _summary_page(doc: pymupdf.Document, g: Graded, ctx: Context, archive, extra
     first = doc[0].rect
     page = doc.new_page(0, width=first.width, height=first.height)
     rows = "".join(
-        f'<p style="margin: 0 0 6px"><b>{_esc(q.label)}: {_pts(p)} מתוך {_pts(q.points)}</b>'
-        + (f". {_esc(c)}" if c else "") + "</p>"
-        for q, p, c in zip(ctx.questions, g.points, g.comments)
+        f'<p style="margin: 0 0 6px"><b>{_rich(label)}: {_pts(p)} מתוך {_pts(q.points)}</b>'
+        + (f". {_rich(c)}" if c else "") + "</p>"
+        for q, label, p, c, shown in zip(ctx.questions, shown_labels(ctx.questions), g.points, g.comments, assigned(ctx))
+        if shown
     )
-    more = "".join(f'<p style="margin: 6px 0 0">{_esc(t)}</p>' for t in extra or [])
+    more = "".join(f'<p style="margin: 6px 0 0">{_rich(t)}</p>' for t in extra or [])
     html = (
         '<div dir="rtl" style="color: #d90000; font-size: 13px; line-height: 1.45">'
         f'<p style="font-size: 16px; margin: 0">{_esc(ctx.title)}</p>'
         f'<p style="font-size: 22px; font-weight: bold; margin: 8px 0 16px">ציון: {_pts(g.grade)} מתוך {_pts(ctx.max_grade)}</p>'
         f"{rows}"
-        f'<p style="margin-top: 16px">{_esc(g.feedback)}</p>{more}</div>'
+        f'<p style="margin-top: 16px">{_rich(g.feedback)}</p>{more}</div>'
     )
     m = 50
     page.insert_htmlbox(pymupdf.Rect(m, m, first.width - m, first.height - m), html, css=_CSS, archive=archive, scale_low=0)
@@ -1039,8 +1084,8 @@ def _place_checks(doc: pymupdf.Document, g: Graded, ctx: Context) -> dict[int, l
     כל סימן בתוך עיגול (_badge), ליד המלבן במקום הפנוי ביותר מכתב יד; שני סימנים לא נערמים זה על זה. שאלה בלי מקום (page 0) לא מסומנת. מחזיר לכל עמוד את המקומות שתפסו, כדי שההערות יעקפו אותם."""
     taken: dict[int, list[pymupdf.Rect]] = {}
     inks: dict[int, Ink | None] = {}
-    for q, p, place in zip(ctx.questions, g.points, g.places):
-        if not place or not 1 <= place.page <= len(doc):
+    for q, p, place, shown in zip(ctx.questions, g.points, g.places, assigned(ctx)):
+        if not shown or not place or not 1 <= place.page <= len(doc):
             continue
         page = doc[place.page - 1]
         shown = page.rect
@@ -1063,15 +1108,23 @@ def _place_checks(doc: pymupdf.Document, g: Graded, ctx: Context) -> dict[int, l
         # העיגול ישב על "A=" שאחרי "(ב)")
         spots = [(box.x1 + gap, cy), (box.x0 - gap - w, cy), (box.x1 + gap, box.y0 - d - gap), (box.x0 - gap - w, box.y0 - d - gap),
                  (box.x1 - w, box.y0 - d - gap), (box.x1 + gap, box.y1 + gap), (box.x1 + gap + w, cy), (box.x0 - 2 * gap - 2 * w, cy)]
+        # 2026-11-13 (הגשה 1, 7 מ-20 עבודות): כותרת בקצה העמוד והכתב מתחיל מיד אחריה, ושמונת המקומות שליד התווית כולם
+        # על כתב. אז מחפשים גם לאורך השורה, שורה מעל ומתחת, ובשוליים בגובה התווית; קרוב עדיף, נקי חשוב יותר
+        for dy in (cy, box.y0 - d - gap, box.y1 + gap, box.y0 - 2 * d - gap):
+            for k in range(1, 6):
+                spots += [(box.x1 + gap + k * w * 0.7, dy), (box.x0 - gap - w - k * w * 0.7, dy)]
+        spots += [(6 * scale, cy), (shown.width - w - 6 * scale, cy)]
 
         def cost(xy, i):
             r = pymupdf.Rect(xy[0], xy[1], xy[0] + w, xy[1] + d)
             if r.x0 < 3 or r.y0 < 3 or r.x1 > shown.width - 3 or r.y1 > shown.height - 3:
                 return 99.0
             clash = 9 if any(r.intersects(t) for t in mine) else 0
-            dens = ink.density(r.x0 / shown.width * 1000, r.y0 / shown.height * 1000,
-                               r.x1 / shown.width * 1000, r.y1 / shown.height * 1000) if ink is not None and ink.usable else 0
-            return 6 * dens + clash + 0.01 * i
+            p = r + (-2 * gap, -gap, 2 * gap, gap)  # עיגול שנוגע בכתב גם מכסה אותו
+            dens = ink.density(p.x0 / shown.width * 1000, p.y0 / shown.height * 1000,
+                               p.x1 / shown.width * 1000, p.y1 / shown.height * 1000) if ink is not None and ink.usable else 0
+            far = abs(r.x0 + w / 2 - (box.x0 + box.x1) / 2) + abs(r.y0 + d / 2 - (box.y0 + box.y1) / 2)
+            return 30 * dens + clash + 0.004 * far / scale + 0.001 * i
         best = min(enumerate(spots), key=lambda t: cost(t[1], t[0]))[1]
         x, y = best
         if cost(best, 0) >= 99:  # שום מקום לא בתוך העמוד: הכי קרוב שאפשר
