@@ -1220,8 +1220,8 @@ def write_notes(assignment_dir: Path, number: str, data: dict) -> None:
     tmp.replace(path)
 
 
-def graded_notes(g: Graded, model: str) -> dict:
-    return {"points": g.points, "comments": g.comments, "mistakes": g.mistakes, "unsure": g.unsure,
+def graded_notes(g: Graded, model: str, via: str = "") -> dict:
+    return {"via": via, "effort": EFFORT, "points": g.points, "comments": g.comments, "mistakes": g.mistakes, "unsure": g.unsure,
             "review": g.review, "review_kind": g.review_kind,
             "marks": [{"page": m.page, "x0": m.x0, "y0": m.y0, "x1": m.x1, "y1": m.y1, "text": m.text} for m in g.marks],
             "places": [{"page": m.page, "x0": m.x0, "y0": m.y0, "x1": m.x1, "y1": m.y1, "text": m.text} for m in g.places],
@@ -1343,9 +1343,11 @@ def grade_assignment(assignment_dir: Path, numbers: list[str] | None = None, *, 
     כשנגמרת המכסה של Claude הבדיקה נעצרת לבד באותה דרך, ואחרי שמה שבאמצע נשמר זורקת ClaudeLimit."""
     stop = stop or threading.Event()
     model = model or default_model()
+    via = ""  # נרשם ב-Grading notes: איך רצה הבדיקה, כדי שיהיה אפשר לראות באתר מה בדק כל עבודה
     locate_ask = None
     if ask is None:
         ask = claude_ask()
+        via = "api" if os.environ.get("ANTHROPIC_API_KEY") else "code"
         from . import locate
         if locate.enabled():  # רק בבדיקה אמיתית: בדיקה עם Claude מדומה לא שולחת חיתוכים
             locate_ask = claude_ask(locate.SCHEMA, locate.EFFORT)
@@ -1417,7 +1419,7 @@ def grade_assignment(assignment_dir: Path, numbers: list[str] | None = None, *, 
             # סדר הכתיבה: הערות, PDF מסומן, ולבסוף שורת הציון. השורה היא נקודת ההתחייבות: בלעדיה העבודה לא נחשבת
             # בדוקה (pending, האתר, הסטטיסטיקה) ולא תעלה למודל, אז קריסה באמצע משאירה "בדיקה לא גמורה", לא ציון חסר.
             # השורה נכתבת דרך grades.update_own: נעילת תהליך ובדיקת סכמה (ציון לא חוקי לא נכתב)
-            write_notes(assignment_dir, n, graded_notes(g, model))
+            write_notes(assignment_dir, n, graded_notes(g, model, via))
             tmp = marked / f"{n}.pdf.tmp"
             tmp.write_bytes(out)
             tmp.replace(marked / f"{n}.pdf")
