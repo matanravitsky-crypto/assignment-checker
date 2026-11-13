@@ -134,6 +134,48 @@ def test_max_grade_other_than_100():
     assert s["grade"]["pass_pct"] == 50 and s["grade"]["full_marks"] == 1
 
 
+def test_timing_splits_runs_by_a_half_hour_gap_and_gives_wall_time_per_work():
+    notes = {"0001": {"graded_at": "2026-11-11T13:00:00"}, "0002": {"graded_at": "2026-11-11T13:01:00"},
+             "0003": {"graded_at": "2026-11-11T13:02:00"}, "0004": {"failed_at": "2026-11-11T13:03:00"},
+             "0005": {"graded_at": "2026-11-11T15:00:00"}, "0006": {}}
+    rows = {"0006": {"grade": "50", "graded_at": "2026-11-11T15:00:30"}, "0007": {"grade": "50"}}
+    t = sc.timing_of(notes, rows)
+    assert t["works"] == 6 and t["first"] == "2026-11-11T13:00:00" and t["last"] == "2026-11-11T15:00:30"
+    assert [(r["works"], r["seconds"], r["seconds_per_work"]) for r in t["sessions"]] == [(4, 180, 60), (2, 30, 30)]
+    assert t["wall_seconds"] == 210 and t["seconds_per_work"] == 52  # 210 s over the 4 works that followed a first one, whole seconds
+    empty = sc.timing_of({}, {})
+    assert empty["works"] == 0 and empty["sessions"] == [] and empty["seconds_per_work"] is None
+
+
+def test_usage_rows_belong_by_key_or_by_the_time_of_a_run():
+    timing = sc.timing_of({"0001": {"graded_at": "2026-11-11T13:00:00"}, "0002": {"graded_at": "2026-11-11T13:10:00"}}, {})
+    rows = [
+        {"at": "2026-11-11T12:50:00", "model": "claude-opus-5-5", "input": 10, "output": 100, "cache_read": 1000, "cache_write": 200, "cost_usd": 1.0},   # in the window: 15 min before the first work
+        {"at": "2026-11-11T13:09:00", "model": "claude-sonnet-5-5", "input": 10, "output": 50, "cache_read": 500, "cache_write": 100, "cost_usd": 0.2, "seconds": 70},
+        {"at": "2026-11-11T13:11:00", "model": "claude-opus-5-5", "cost_usd": 9.0},                                                                     # after the run: not ours
+        {"at": "2026-10-01T10:00:00", "model": "claude-opus-5-5", "cost_usd": 0.5, "key": "Linear Algebra/Assignment 0", "seconds": 30},                # ours by key, whenever
+        {"at": "2026-11-11T13:05:00", "model": "claude-opus-5-5", "cost_usd": 9.0, "key": "Linear Algebra/Assignment 1"},                               # another assignment's
+        "junk", {"at": "no date", "cost_usd": 9.0},
+    ]
+    u = sc.usage_of(rows, "Linear Algebra/Assignment 0", timing)
+    assert u["runs"] == 3 and u["cost_usd"] == 1.7 and u["cost_per_run"] == 0.567
+    assert u["input"] == 20 and u["output"] == 150 and u["cache_read"] == 1500 and u["cache_write"] == 300
+    assert u["cache_read_share"] == round(1500 / (1500 + 320), 2)
+    assert [(m["model"], m["runs"], m["cost_usd"], m["cost_per_run"]) for m in u["by_model"]] == [("claude-opus-5-5", 2, 1.5, 0.75), ("claude-sonnet-5-5", 1, 0.2, 0.2)]
+    assert u["run_seconds"] == {"n": 2, "median": 50, "mean": 50}
+    none = sc.usage_of([], "x", sc.timing_of({}, {}))
+    assert none["runs"] == 0 and none["cost_usd"] == 0 and none["by_model"] == [] and none["run_seconds"] is None
+
+
+def test_compute_carries_timing_usage_and_earlier():
+    s = compute()
+    assert s["timing"]["works"] == 5 and s["timing"]["sessions"][0]["works"] == 5
+    assert s["usage"]["runs"] == 0 and s["earlier"] == []
+    old = compute(rows={"0001": row("0001", 60, [10, 20, 30], at="2026-10-01T10:00:00")}, notes={}, title="Old test grading")
+    s = compute(earlier=[old])
+    assert s["earlier"] == [{"folder": "Old test grading", "counts": old["counts"], "grade": old["grade"], "timing": old["timing"], "usage": old["usage"]}]
+
+
 # ---------- from a real-looking folder ----------
 
 @pytest.fixture
@@ -185,6 +227,33 @@ def test_a_limit_error_is_not_a_failure(folder):
     assert s["counts"]["pending"] == 2
 
 
+def test_an_old_grading_folder_and_the_usage_log_are_read_from_the_folder(folder):
+    root = folder.parent.parent
+    old = folder / "Old test grading"
+    (old / paths.NOTES).mkdir(parents=True)
+    grades.write_file(old / paths.GRADES_BY.format("אורי"), {"0001": row("0001", 60, [10, 20, 30], at="2026-10-23T14:00:00"),
+                                                              "0002": row("0002", 40, [10, 10, 20], at="2026-10-23T14:05:00")})
+    (old / paths.NOTES / "0001.json").write_text(json.dumps(note([[], [], []]) | {"graded_at": "2026-10-23T14:00:00"}), encoding="utf-8")
+    (old / "Assignment details (before).json").write_text("{}", encoding="utf-8")
+    (folder / "Earlier versions").mkdir()  # not a grading folder: no grades files
+    usage = lambda at, **kw: json.dumps({"at": at, "model": "claude-opus-5-5", "input": 1, "output": 10, "cache_read": 100, "cache_write": 10, "cost_usd": 1.0, **kw})  # noqa: E731
+    (root / paths.USAGE_LOG).write_text("\n".join([usage("2026-10-23T13:59:00"), usage("2026-11-01T09:58:00"), usage("2026-11-01T09:58:00"),
+                                                   usage("2026-09-01T09:00:00", key="Linear Algebra/Assignment 0", seconds=42)]) + "\n", encoding="utf-8")
+    (root / "Grading usage-DESKTOP-ABC.jsonl").write_text(usage("2026-11-01T09:58:00") + "\n" + usage("2026-11-01T09:59:00") + "\n", encoding="utf-8")
+    assert [p.name for p in stats.earlier_dirs(folder)] == ["Old test grading"]
+    s = stats.compute_assignment(folder)
+    assert s["counts"]["graded"] == 5 and s["grade"]["mean"] == 76        # the old grading is not mixed into the current one
+    e, = s["earlier"]
+    assert e["folder"] == "Old test grading" and e["grade"]["n"] == 2 and e["grade"]["mean"] == 50 and e["counts"]["graded"] == 2
+    assert e["timing"]["sessions"][0]["works"] == 2 and e["usage"]["runs"] == 1  # the run 1 minute before its first work
+    assert s["usage"]["runs"] == 3 and s["usage"]["run_seconds"]["n"] == 1    # a duplicated line counts once; the keyed row counts
+    assert s["sources"]["usage"] and s["sources"]["earlier"][0]["name"] == "Old test grading"
+    assert stats.is_fresh(folder, stats.build(folder))
+    (root / paths.USAGE_LOG).open("a", encoding="utf-8").write(usage("2026-11-01T10:00:00") + "\n")
+    assert not stats.is_fresh(folder, stats.store.read_file(stats.file_for(folder)))
+    assert stats.read(folder)["usage"]["runs"] == 4
+
+
 def test_nothing_in_the_statistics_identifies_a_student(folder):
     """The whole JSON, as text: no name, participant id, original folder or file, and no submission number."""
     s = stats.compute_assignment(folder)
@@ -193,10 +262,10 @@ def test_nothing_in_the_statistics_identifies_a_student(folder):
         assert pid not in text and name not in text and name.split()[0] not in text
     assert "assignsubmission" not in text
     # a submission number could only leak inside a text value (a label, a mistake, a grader): none there
-    assert not [t for t in strings(s) if re.search(r"\b\d{4}\b", t) and t != s["computed_at"]]
+    assert not [t for t in strings(s) if re.search(r"\b\d{4}\b", t) and not re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d", t)]
     # the fields are a closed list: a new top-level field must be added here on purpose
     assert set(stats.compute_assignment(folder)) == {
         "version", "key", "course", "slot", "folder", "moodle_id", "title", "max_grade", "computed_at", "computed_by",
-        "sources", "counts", "grade", "per_question", "over_rubric", "graders", "copying"}
+        "sources", "counts", "grade", "per_question", "over_rubric", "graders", "copying", "timing", "usage", "earlier"}
     assert set(stats.compute_assignment(folder)["per_question"][0]) == {
         "key", "index", "label", "points", "graded", "mean", "success_pct", "full_marks_pct", "zero_pct", "unsure", "mistakes"}

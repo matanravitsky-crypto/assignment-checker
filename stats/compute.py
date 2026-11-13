@@ -17,15 +17,18 @@ from __future__ import annotations
 import math
 import re
 from collections import Counter
+from datetime import datetime, timedelta
 
 from moodle import grades
 
-VERSION = 1
+VERSION = 2                 # 2: timing ו-usage (זמן לעבודה ועלות לפי מודל), earlier (בדיקה ישנה שהועברה הצידה)
 MAX_GRADE_LIMIT = 1000      # ציון מרבי מעל זה הוא טעות בפרטי המטלה
 PASS_SHARE = 0.6            # עוברים: ציון של 60% מהציון המרבי ומעלה, כמו באתר
 HISTOGRAM_BINS = 10         # 10 תאים של 10 נקודות (0-9, 10-19, ..., 90-100), לפי ההחלטה של אורי (2026-11-08)
 REVIEW_KINDS = ("missing_question", "missing_page", "other_assignment", "unreadable_file",
                 "unreadable", "missing", "uncertain", "format", "failed", "other")
+SESSION_GAP_S = 30 * 60     # שתי עבודות שנגמרו במרווח גדול מזה שייכות לריצות (sessions) שונות
+USAGE_LEAD_S = 15 * 60      # ריצת Claude של עבודה נגמרת עד כך וכך לפני שההערות שלה נכתבות: החלון לשיוך לפי זמן
 
 
 def slot(folder: str) -> int | None:
@@ -108,6 +111,7 @@ def histogram(scores: list[float], max_grade: float) -> dict:
 def compute(*, course: str, folder: str, moodle_id: str | None, title: str, max_grade: float,
             questions: list[dict], rows: dict[str, dict], notes: dict[str, dict], submitted: int,
             marked: set[str] | None = None, copying_pairs: int | None = None,
+            usage_rows: list[dict] | None = None, earlier: list[dict] | None = None,
             computed_at: str = "", computed_by: str = "", sources: dict | None = None) -> dict:
     """הסטטיסטיקה של מטלה אחת.
 
@@ -115,6 +119,8 @@ def compute(*, course: str, folder: str, moodle_id: str | None, title: str, max_
     rows: הציונים הממוזגים לפי מספר (grades.read). notes: הערות הבדיקה לפי מספר (Grading notes/NNNN.json),
     אחרי ש-`error` של "נגמרה המכסה" הוסר (עבודה כזו עוד לא נבדקה). submitted: כמה הגשות יש בתיקייה.
     marked: מספרים שיש להם קובץ מסומן (נחשבים בדוקים גם בלי שורת ציון, כמו באתר).
+    usage_rows: השורות של יומן השימוש של Claude Code (`Grading usage*.jsonl`, כל המטלות): כאן נבחרות אלה של
+    המטלה הזו (ראו `usage_of`). earlier: בדיקות ישנות של המטלה שהועברו הצידה, כבר מחושבות (`compute` על התיקייה שלהן).
     """
     max_grade = _num(max_grade) or 100.0
     if not 1 <= max_grade <= MAX_GRADE_LIMIT:  # 0, שלילי, זעיר או עצום = פרטי מטלה פגומים: ברירת המחדל
@@ -172,6 +178,8 @@ def compute(*, course: str, folder: str, moodle_id: str | None, title: str, max_
 
     graders = Counter(str(r.get("graded_by") or "").strip() for r in graded.values())
     graders.pop("", None)
+    timing = timing_of(notes, by_number)
+    usage = usage_of(usage_rows or [], assignment_key(course, folder), timing)
     return {
         "version": VERSION, "key": assignment_key(course, folder), "course": course, "slot": slot(folder),
         "folder": folder, "moodle_id": str(moodle_id) if moodle_id is not None else None, "title": title,
@@ -196,7 +204,116 @@ def compute(*, course: str, folder: str, moodle_id: str | None, title: str, max_
         "graders": {"count": len(graders),
                     "by": [{"name": n, "graded": c} for n, c in sorted(graders.items(), key=lambda kv: (-kv[1], kv[0]))]},
         "copying": {"pairs": copying_pairs} if copying_pairs is not None else None,
+        "timing": timing,
+        "usage": usage,
+        "earlier": [_earlier_summary(e) for e in earlier or []],
     }
+
+
+# ---------- זמן ועלות ----------
+
+def _when(x) -> datetime | None:
+    try:
+        return datetime.fromisoformat(str(x)).replace(tzinfo=None) if x else None
+    except ValueError:
+        return None
+
+
+def _iso(t: datetime) -> str:
+    return t.isoformat(timespec="seconds")
+
+
+def sessions(times: list[datetime], gap_s: float = SESSION_GAP_S) -> list[list[datetime]]:
+    """מחלק זמני סיום של עבודות לריצות: מרווח של יותר מ-gap_s בין שתי עבודות פותח ריצה חדשה."""
+    out: list[list[datetime]] = []
+    for t in sorted(times):
+        if out and (t - out[-1][-1]).total_seconds() <= gap_s:
+            out[-1].append(t)
+        else:
+            out.append([t])
+    return out
+
+
+def timing_of(notes: dict[str, dict], rows: dict[str, dict]) -> dict:
+    """מתי נבדקה המטלה וכמה זמן לקחה כל עבודה, מחותמות הזמן שהבדיקה כבר כותבת: `graded_at` (או `failed_at`) בהערות
+    של כל מספר, ובלעדיהן `graded_at` בשורת הציון. ריצה (session) = עבודות שנגמרו ברצף, בלי הפסקה של חצי שעה.
+    הזמן לעבודה הוא זמן קיר: אורך הריצה חלקי העבודות שנגמרו בה אחרי הראשונה (הבדיקה רצה כמה עבודות במקביל,
+    והראשונה פותחת את השעון). ריצה של עבודה אחת היא בלי אורך. מספרים בלבד."""
+    times: list[datetime] = []
+    for n in set(notes) | set(rows):
+        note = notes.get(n) or {}
+        t = _when(note.get("graded_at")) or _when(note.get("failed_at")) or _when((rows.get(n) or {}).get("graded_at"))
+        if t is not None:
+            times.append(t)
+    runs = sessions(times)
+    out_runs = []
+    for run in runs:
+        secs = (run[-1] - run[0]).total_seconds()
+        out_runs.append({"started": _iso(run[0]), "finished": _iso(run[-1]), "works": len(run),
+                         "seconds": _round(secs, 0) if len(run) > 1 else None,
+                         "seconds_per_work": _round(secs / (len(run) - 1), 0) if len(run) > 1 else None})
+    timed = [r for r in out_runs if r["seconds"] is not None]
+    wall = sum(r["seconds"] for r in timed)
+    works = sum(r["works"] - 1 for r in timed)
+    return {
+        "first": _iso(runs[0][0]) if runs else None, "last": _iso(runs[-1][-1]) if runs else None,
+        "works": len(times), "sessions": out_runs,
+        "wall_seconds": _round(wall, 0) if timed else None,
+        "seconds_per_work": _round(wall / works, 0) if works else None,
+    }
+
+
+def usage_of(rows: list[dict], key: str, timing: dict) -> dict:
+    """הטוקנים והעלות של המטלה הזו מיומן השימוש של Claude Code. שורה שייכת למטלה כשה-`key` שלה הוא המטלה; שורה
+    בלי `key` (יומן ישן) שייכת כשה-`at` שלה בתוך אחת הריצות (מ-USAGE_LEAD_S לפני העבודה הראשונה שנגמרה ועד
+    האחרונה). העלות היא שוות ערך ל-API, לא חיוב: הבדיקה רצה במנוי של הצוות. `seconds` (אורך הריצה של עבודה
+    אחת, ביומן מגרסה 2) נותן את הזמן האמיתי לעבודה, חציון וממוצע."""
+    windows = []
+    for r in timing.get("sessions") or []:
+        a, b = _when(r.get("started")), _when(r.get("finished"))
+        if a and b:
+            windows.append((a - timedelta(seconds=USAGE_LEAD_S), b))
+    mine = []
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        k = str(r.get("key") or "")
+        if k:
+            if k == key:
+                mine.append(r)
+            continue
+        t = _when(r.get("at"))
+        if t is not None and any(a <= t <= b for a, b in windows):
+            mine.append(r)
+    by_model: dict[str, dict] = {}
+    for r in mine:
+        name = str(r.get("model") or "?")
+        m = by_model.setdefault(name, {"model": name, "runs": 0, "input": 0, "output": 0, "cache_read": 0,
+                                       "cache_write": 0, "cost_usd": 0.0})
+        m["runs"] += 1
+        for f in ("input", "output", "cache_read", "cache_write"):
+            m[f] += int(_num(r.get(f)) or 0)
+        m["cost_usd"] += _num(r.get("cost_usd")) or 0.0
+    models = sorted(by_model.values(), key=lambda m: (-m["cost_usd"], m["model"]))
+    for m in models:
+        m["cost_per_run"] = _round(m["cost_usd"] / m["runs"], 3) if m["runs"] else None
+        m["cost_usd"] = _round(m["cost_usd"], 2)
+    secs = [v for r in mine if (v := _num(r.get("seconds"))) is not None and v >= 0]
+    total = {f: sum(m[f] for m in models) for f in ("runs", "input", "output", "cache_read", "cache_write")}
+    cost = sum(_num(r.get("cost_usd")) or 0.0 for r in mine)
+    read, fresh = total["cache_read"], total["input"] + total["cache_write"]
+    return {
+        **total, "cost_usd": _round(cost, 2), "cost_per_run": _round(cost / total["runs"], 3) if total["runs"] else None,
+        "cache_read_share": _round(read / (read + fresh), 2) if read + fresh else None,
+        "by_model": models,
+        "run_seconds": {"n": len(secs), "median": _round(_median(secs), 0), "mean": _round(_mean(secs), 0)} if secs else None,
+    }
+
+
+def _earlier_summary(e: dict) -> dict:
+    """בדיקה ישנה של המטלה, בקיצור: מתי, כמה, ציונים, זמן ועלות. בלי שאלות: המחוון שלה היה אחר."""
+    return {"folder": e.get("title"), "counts": e.get("counts"), "grade": e.get("grade"),
+            "timing": e.get("timing"), "usage": e.get("usage")}
 
 
 def _flag(note: dict | None, field: str, i: int) -> bool:

@@ -2,6 +2,7 @@
 python -m stats build <מזהה מטלה>      מחשב ושומר את המטלה ב-Statistics/
 python -m stats rebuild                 כל המטלות, וה-CSV
 python -m stats export [--csv <path>] [--sqlite <path>]
+python -m stats report <מזהה מטלה> [--pdf <path>] [--preview <png>]   דוח PDF לצוות (stats/report.py)
 
 זו הדרך של Claude ושל שורת הפקודה לקרוא את המסד: לא פותחים את הקבצים בעצמנו. `show` קורא דרך `stats.read`: הקובץ
 השמור אם הוא עדיין משקף את תיקיית המטלה, אחרת חישוב מחדש ושמירה. `--fresh` מחשב בלי לקרוא ובלי לשמור.
@@ -55,6 +56,10 @@ def main(argv: list[str] | None = None) -> int:
     e = sub.add_parser("export", help="ייצוא לניתוח: CSV (ברירת מחדל ב-Statistics/) ו/או SQLite מקומי")
     e.add_argument("--csv", help="נתיב ל-CSV (ברירת מחדל: Statistics/All assignments.csv)")
     e.add_argument("--sqlite", help="נתיב לקובץ SQLite (במחשב שלך, לא בתיקייה המשותפת)")
+    r = sub.add_parser("report", help="דוח PDF של מטלה אחת לצוות: היקף, זמן, עלות, ציונים, סעיפים, טעויות, תובנות")
+    r.add_argument("id")
+    r.add_argument("--pdf", help='נתיב ל-PDF (ברירת מחדל: "Statistics/<קורס>/Assignment N - grading report <תאריך>.pdf")')
+    r.add_argument("--preview", help="לשמור גם תמונת PNG של העמוד הראשון בנתיב הזה")
     args = p.parse_args(argv)
     from moodle import shared_folder  # the same folder as the site and the other commands: the synced one
     shared_folder.use_for_commands()
@@ -79,6 +84,14 @@ def main(argv: list[str] | None = None) -> int:
         for s_ in rebuild(paths.data_dir()):
             print(_brief(s_))
         print(f"נשמר ב-{stats_dir(paths.data_dir())} (וגם {paths.STATS_EXPORT})")
+        return 0
+    if args.cmd == "report":
+        from . import report as _report
+
+        out = _report.build_report(_targets(args)[0], args.pdf)
+        print(f"PDF: {out}")
+        if args.preview:
+            print(f"PNG: {_report.preview_png(out, Path(args.preview))}")
         return 0
     if args.cmd == "export":
         root = paths.data_dir()

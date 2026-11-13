@@ -18,7 +18,12 @@ description: The statistics database of the grading - the one place that holds, 
 python -m stats show 3438636            # מטלה אחת, JSON מלא
 python -m stats show --course "Linear Algebra" --brief   # שורה לכל מטלה בקורס
 python -m stats show --all --brief      # כל המטלות בשני הקורסים
+python -m stats report 3438636          # דוח PDF לצוות (stats/report.py): ליד ה-JSON, "Assignment N - grading report <תאריך>.pdf"
 ```
+
+מגרסה 2 יש בכל מטלה גם `timing` (מתי נבדקה, ריצות, זמן קיר לעבודה), `usage` (טוקנים ועלות שוות ערך ל-API לפי מודל,
+מיומן השימוש של Claude Code) ו-`earlier` (בדיקה ישנה שהועברה לתיקיית "Old ..." בתוך תיקיית המטלה). "כמה עלתה הבדיקה",
+"כמה זמן לעבודה", "דוח לצוות": משם, לא מהיומן ביד.
 
 מתוך Python: `stats.compute_assignment(assignment_dir)`. האתר יקרא מ-`GET /api/stats` (שלב 3 בתוכנית).
 

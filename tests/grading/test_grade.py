@@ -159,6 +159,8 @@ def test_rubric_and_solution_are_sent(root):
     assert "1. קבוצות (40 נקודות): הכלה דו-כיוונית" in text and "2. מרוכבים (60 נקודות)" in text
     assert "לא מורידים על חישוב" in text and "להקפיד על נימוקים" in text and "הנחיה מהאתר" in text
     assert "fallbacks" not in req  # ל-Haiku אין fallback
+    assert ctx.key == "Linear Algebra/Assignment 0" and req["assignment"] == ctx.key  # ליומן השימוש: איזו מטלה כל ריצה בדקה
+    assert "assignment" not in grading.build_request(grading.Context("t", "c", []), [])
     assert "document" not in json.dumps(grading.build_request(grading.load_context(a.dir, send_solution=False), []))
 
 

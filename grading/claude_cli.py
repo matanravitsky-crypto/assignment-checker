@@ -21,6 +21,7 @@ import json
 import shutil
 import subprocess
 import tempfile
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -34,11 +35,10 @@ READ_ALL = ("לפני שאתה עונה, קרא עם הכלי Read את כל ה�
             "(והמכוון והפתרון הרשמי, אם הם ברשימה). אל תקרא שום קובץ אחר. בסוף החזר רק את התוצאה המובנית.")
 
 
-USAGE_LOG = paths.USAGE_LOG
-
-
-def log_usage(stdout: str, model: str) -> None:
-    """One line per run in the data folder: tokens and cost only (no names, no content). Never fails the grading."""
+def log_usage(stdout: str, model: str, seconds: float | None = None, key: str = "") -> None:
+    """One line per run in the data folder: tokens, cost, how long the run took and which assignment it graded
+    (its statistics key, "<course>/Assignment N"). Numbers only, no names and no content. Never fails the grading.
+    The statistics database (stats/) sums these per assignment: time per work and cost per model."""
     try:
         data = json.loads(stdout)
         usage = data.get("usage") or {}
@@ -47,7 +47,11 @@ def log_usage(stdout: str, model: str) -> None:
                "cache_read": usage.get("cache_read_input_tokens"),
                "cache_write": usage.get("cache_creation_input_tokens"),
                "turns": data.get("num_turns"), "cost_usd": data.get("total_cost_usd")}
-        with (paths.data_dir() / USAGE_LOG).open("a", encoding="utf-8") as f:
+        if seconds is not None:
+            row["seconds"] = round(seconds, 1)
+        if key:
+            row["key"] = key
+        with (paths.data_dir() / paths.USAGE_LOG).open("a", encoding="utf-8") as f:
             f.write(json.dumps(row) + "\n")
     except Exception:
         pass
@@ -112,6 +116,7 @@ def cli_ask(claude: str, schema: dict, effort: str | None = None, run=subprocess
             system_file = folder / "system.txt"
             system_file.write_text(req.get("system") or "", encoding="utf-8")
             cmd = build_command(claude, folder, system_file, schema, req["model"], effort)
+            started = time.monotonic()
             try:
                 proc = run(cmd, input=prompt, capture_output=True, text=True, encoding="utf-8",
                            timeout=TIMEOUT_S, cwd=folder)
@@ -119,7 +124,7 @@ def cli_ask(claude: str, schema: dict, effort: str | None = None, run=subprocess
                 raise error(claude_code.failure_message(e, TIMEOUT_S)) from e
         finally:
             shutil.rmtree(folder, ignore_errors=True)
-        log_usage(proc.stdout, req["model"])
+        log_usage(proc.stdout, req["model"], time.monotonic() - started, str(req.get("assignment") or ""))
         answer, problem = claude_code.read_run(proc)
         if answer is None:
             if problem == claude_code.NOT_LOGGED_IN:
