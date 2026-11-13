@@ -69,6 +69,19 @@ def test_pages_go_to_a_temp_folder_and_only_read_is_allowed():
     assert not folder.exists()  # התיקייה נמחקת בסוף
 
 
+def test_the_zoom_pass_sends_crops_not_pages_and_is_logged_as_locate(monkeypatch, tmp_path):
+    req = request()
+    req["file_prefix"] = "crop"
+    run = FakeRun(output())
+    logged = []
+    monkeypatch.setattr(claude_cli, "log_usage", lambda out, model, purpose="grade": logged.append(purpose))
+    ask(run)(req)
+    files = run.seen[0]
+    assert "crop-01.png" in files and not [f for f in files if f.startswith("page-")]
+    assert claude_cli.READ_CROPS in run.calls[0][1]["input"] and claude_cli.READ_ALL not in run.calls[0][1]["input"]
+    assert logged == ["locate"]
+
+
 def test_failures_become_grading_errors():
     with pytest.raises(grading.GradingError, match="דקות"):
         ask(FakeRun(raises=subprocess.TimeoutExpired("claude", 900)))(request())

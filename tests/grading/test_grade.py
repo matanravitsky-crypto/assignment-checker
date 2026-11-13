@@ -269,13 +269,66 @@ def test_check_cross_or_half_is_drawn_where_each_answer_starts():
     with pymupdf.open(stream=grading.mark_pdf(doc.tobytes(), g, ctx), filetype="pdf") as out:
         page = out[1]
         green, red, orange = (_strokes(page, c) for c in (grading.GREEN, grading.RED, grading.ORANGE))
-    assert len(green) == 1 and len(red) == 2 and len(orange) == 3  # ✓ · ✗ (שני קווים) · ✓✗ (קו + שני קווים)
-    # ✓ של שאלה 1 מימין למלבן שלה, בגובה שלו
-    r = green[0]["rect"]
-    assert r.x0 >= 760 / 1000 * 595 and abs((r.y0 + r.y1) / 2 - 115 / 1000 * 842) < 20
-    # שאלה 4 בלי מקום: שום סימן נוסף
-    assert len(green) + len(red) + len(orange) == 6
+    # כל סימן בעיגול לבן עם מסגרת בצבע שלו: ✓ = עיגול + קו · ✗ = עיגול + שני קווים · ✓✗ = אליפסה + קו + שני קווים
+    assert len(green) == 2 and len(red) == 3 and len(orange) == 4
+    circles = [d for d in green + red + orange if d.get("fill") == (1.0, 1.0, 1.0)]
+    assert len(circles) == 3
+    # העיגול של שאלה 1 מימין למלבן שלה, בגובה שלו, וגדול מספיק כדי לבלוט
+    r = next(d["rect"] for d in green if d.get("fill"))
+    assert r.x0 >= 760 / 1000 * 595 and abs((r.y0 + r.y1) / 2 - 115 / 1000 * 842) < 20 and r.height >= 20
+    # ✓✗ רחב יותר מ-✓
+    assert next(d["rect"] for d in orange if d.get("fill")).width > r.width * 1.5
     assert grading.check_kind(10, 10) == "check" and grading.check_kind(0, 10) == "cross" and grading.check_kind(3, 10) == "half"
+
+
+def test_a_badge_sits_on_free_paper_next_to_the_label_not_on_the_writing():
+    # 2026-11-12: מימין למספר הסעיף בלבד, העיגול ישב על "A=" שהסטודנט כתב אחרי "(ב)"
+    doc, page = _scan_page((130, 300, 560, 330))   # "(ב) A = ..." : התווית בשמאל, והכתב ממשיך ימינה
+    ctx = grading.Context("מטלה", "קורס", [grading.Question("שאלה 1", 10)])
+    g = grading.Graded([10], [""], 100, "", [], places=[grading.Mark(1, 210, 352, 290, 395, "שאלה 1")])
+    ink = grading.Ink(page)  # לפני שהעיגול מצויר (אחרי, הוא עצמו נספר כדיו)
+    (badge,) = grading._place_checks(doc, g, ctx)[1]
+    assert ink.density(badge.x0 / 595 * 1000, badge.y0 / 842 * 1000, badge.x1 / 595 * 1000, badge.y1 / 842 * 1000) < 0.02
+    assert abs((badge.y0 + badge.y1) / 2 - 315) < 45 or badge.x1 < 130  # עדיין ליד התווית
+
+
+def test_badges_do_not_pile_up_and_notes_go_around_them():
+    doc, page = _scan_page((100, 100, 500, 130))
+    ctx = grading.Context("מטלה", "קורס", [grading.Question("שאלה 1", 10), grading.Question("שאלה 2", 10)])
+    places = [grading.Mark(1, 700, 118, 800, 150, "שאלה 1"), grading.Mark(1, 700, 125, 800, 157, "שאלה 2")]  # כמעט באותו מקום
+    marks = [grading.Mark(1, 170, 118, 840, 156, "הערה שלא עולה על הסימן")]
+    g = grading.Graded([10, 0], ["", ""], 50, "", marks, places=places)
+    taken = grading._place_checks(doc, g, ctx)
+    a, b = taken[1]
+    assert not a.intersects(b)
+    grading._place_marks(doc, g, grading._archive(), taken)
+    note = next(b for b in page.get_text("blocks") if "הערה" in b[4])
+    assert not pymupdf.Rect(note[:4]).intersects(a) and not pymupdf.Rect(note[:4]).intersects(b)
+
+
+def test_math_in_a_note_reads_left_to_right():
+    # MuPDF הפך את "3-i" בסוף משפט ל-"i-3": כל ביטוי עטוף ב-LRE...PDF, מקף אחרי אות עברית נשאר בחוץ
+    assert grading._ltr("4-4i+2i+2 = 6-2i, לא 6+2i; הקבוע 3-i") == \
+        "\u202a4-4i+2i+2 = 6-2i\u202c, לא \u202a6+2i\u202c; הקבוע \u202a3-i\u202c"
+    assert grading._ltr("חסר להראות ש-(2,2)∉A") == "חסר להראות ש-\u202a(2,2)∉A\u202c"
+    assert grading._ltr("הקבוע -2+i") == "הקבוע \u202a-2+i\u202c"
+    assert grading._ltr("בלי נוסחה בכלל") == "בלי נוסחה בכלל"
+    assert "\u202a" not in grading._html("{(0,0)}", math=False)
+
+
+def test_a_note_far_from_its_box_gets_a_line_to_it():
+    doc, page = _scan_page((60, 300, 560, 360))   # שורה כתובה ברוחב כל העמוד
+    for y in range(240, 300, 3):                  # וגם מעליה ומתחתיה
+        page.draw_line((60, y), (560, y), color=(0, 0, 0.3), width=1.2)
+    for y in range(360, 420, 3):
+        page.draw_line((60, y), (560, y), color=(0, 0, 0.3), width=1.2)
+    ctx = grading.Context("מטלה", "קורס", [grading.Question("שאלה 1", 100)])
+    g = grading.Graded([90], [""], 90, "", [grading.Mark(1, 300, 360, 700, 425, "הערה בשוליים")])
+    with pymupdf.open(stream=grading.mark_pdf(doc.tobytes(), g, ctx), filetype="pdf") as out:
+        lines = [d for d in out[1].get_drawings() if d.get("color") and d["color"][0] > 0.8 and d["color"][1] < 0.1
+                 and len(d["items"]) == 1 and d["items"][0][0] == "l"]
+        assert "הערה בשוליים" in text(out[1])
+    assert lines  # ההערה לא ליד המלבן (הכול כתוב סביבו), אז קו מוביל אליו
 
 
 def test_names_are_removed_even_if_claude_copies_them(root):

@@ -245,6 +245,23 @@ def pedagogy_files(assignment_dir: Path) -> list[Path]:
                                         not re.search(r"rubric|מחוון", p.stem, re.I), p.name))
 
 
+UNIVERSAL_RULES = Path(__file__).resolve().parents[1] / ".claude" / "skills" / "rubric-builder" / "assets" / "universal-rules.json"
+
+
+def universal_rules_text(rubric_text: str) -> str:
+    """הכללים לכל מחוון (rubric-builder, assets/universal-rules.json), כטקסט שמתווסף למחוון שלא נבנה מ-rubric.json:
+    מחוון שנבנה שם כבר כולל אותם (תחת הכותרת שלהם), ואז לא מוסיפים שוב. כך כל בדיקה, בכל מחשב, מקבלת אותם בלי
+    שמישהו יבנה את המחוון מחדש."""
+    try:
+        u = json.loads(UNIVERSAL_RULES.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return ""
+    if not u.get("rules") or not u.get("heading") or u["heading"] in rubric_text:
+        return ""
+    return "\n".join([f"## {u['heading']}", "", str(u.get("intro") or ""), ""] +
+                      [f"- **{g['label']}:** {g['text']}" for g in u["rules"]])
+
+
 def pedagogy_text(files: list[Path]) -> str:
     return "\n\n".join(f"--- {p.name} ---\n{p.read_text(encoding='utf-8-sig').strip()}" for p in files)
 
@@ -325,6 +342,8 @@ def load_context(assignment_dir: Path, instructions: str = "", send_solution: bo
             no_rubric = f"במחוון אין ניקוד ל{', '.join(unset)}. {RUBRIC_RULE}"
     if pedagogy:
         rubric_text = "\n\n".join(t for t in (rubric_text, "חומר הבדיקה של המטלה (מחוון, פתרונות ודרכי פתרון):\n\n" + pedagogy) if t)
+    if rubric_text:
+        rubric_text = "\n\n".join(t for t in (rubric_text, universal_rules_text(rubric_text)) if t)
     key = official_key(assignment_dir)
     if key:
         # המכוון קובע את הניקוד. שאלה שאין לה ניקוד במכוון שומרת את הניקוד מהמחוון, ובלי שניהם אין ציונים
@@ -371,8 +390,16 @@ annotations, סימונים על גבי העבודה:
 - בכל תמונה מצוירת רשת עזר כתומה: קו כל 100 אלפיות, ומספריו כתובים בארבעת הקצוות. המספרים האלה הם הקואורדינטות. קודם מוצאים את הכתב עצמו בין קווי הרשת, ואז קוראים את הקואורדינטות שלו מהמספרים. לא מנחשים לפי הרגשה.
 - כל סימון מקיף מקום מדויק בעבודה של הסטודנט: הכתב היד של הטעות, של הצעד החסר או של הנימוק הלא מספיק. מלבן שמקיף שטח ריק, או את נוסח השאלה המודפס, שגוי. דברים נכונים לא מסמנים.
 - page: מספר העמוד, מ-1: המספר שכתוב בכותרת "עמוד N" לפני התמונה ובפינה העליונה של התמונה ("page N"). לא מספר הקובץ ולא מקומו ברשימה.
-- x0, y0, x1, y1: המלבן שמקיף את המקום, באלפיות של רוחב העמוד ושל גובהו. (0, 0) היא הפינה השמאלית העליונה ו-(1000, 1000) הימנית התחתונה. המלבן צמוד לשורה או לשורות הרלוונטיות בכתב היד (בדרך כלל פחות מ-15% מגובה העמוד), לא לחצי עמוד.
+- x0, y0, x1, y1: המלבן שמקיף את המקום, באלפיות של רוחב העמוד ושל גובהו. (0, 0) היא הפינה השמאלית העליונה ו-(1000, 1000) הימנית התחתונה. המלבן צמוד לביטוי שההערה מדברת עליו: בדרך כלל חלק משורה אחת (2%-6% מגובה העמוד), לכל היותר 2-3 שורות. אף פעם לא סעיף שלם ולא שורות נכונות מסביב.
+- סימון אחד לכל טעות. על אותה טעות בכמה מקומות מסמנים את הראשון.
 - text: הערה קצרה בעברית, עד 12 מילים, שאומרת מה לא נכון. מתמטיקה בטקסט פשוט (A^-1, det(A)), בלי LaTeX.
+
+לפני שמחזירים, בדיקה עצמית של כל שאלה:
+- כל ניכוי נשען על שורת טעות במחוון, והתגית שלו ב-mistakes היא נוסח השורה. ניכוי בלי שורה: לפי "כללים לכל מחוון" (אותה טעות בסעיף אחר, כלל הסימון), ובתגית הנוסח של אותה שורה. לא ממציאים קטגוריה ("פליטת קולמוס") ולא סיבת פטור.
+- חסר אחד, תשובה אחת או שורה אחת שנפגעו מכמה טעויות: מורידים פעם אחת, לפי השורה הגדולה מביניהן, אלא אם המחוון אומר אחרת.
+- לפני הערה על משהו שכתוב (סימן, סוגר, ספרה, נקודה): קוראים שוב את השורה ואת השורות שלפניה ואחריה. הערה על דבר שכתוב נכון גרועה מאין הערה.
+- 0 של "סעיף חסר" רק כשאין על הסעיף שום עבודה בכל העמודים; ניסיון קטוע מנוקד לפי מה שנעשה.
+- ההערות והמשוב נכתבים לסטודנט: מה שגוי ומה היה צריך להיכתב, בלי מילים של הבודק ("קריאה נמוכה", "לא הורד", "unsure", "לפי המחוון"). ספק בקריאה נכתב כך: "הסימן ב-... לא ברור, נקרא כ-...".
 
 feedback, המשוב לסטודנט:
 - בעברית, בגוף שני רבים, ענייני ומעודד. קודם מה שנעשה טוב, ואז מה צריך לתקן, לפי שאלות. עד 120 מילים, בלי LaTeX.
@@ -483,7 +510,7 @@ def build_request(ctx: Context, images: list[PageImage], model: str = DEFAULT_MO
 Ask = Callable[[dict], str]
 
 
-def claude_ask() -> Ask:
+def claude_ask(schema: dict | None = None, effort: str | None = None) -> Ask:
     """שולח בקשה ל-Claude ומחזיר את ה-JSON שחזר.
 
     עם ANTHROPIC_API_KEY: דרך ה-API. בלי מפתח: דרך Claude Code שמחובר במחשב (claude_cli.py, במנוי של הצוות).
@@ -493,13 +520,14 @@ def claude_ask() -> Ask:
         from . import claude_cli
         if not claude_cli.available():
             raise NoApiKey()
-        return claude_cli.cli_ask(claude_code.find_claude(), SCHEMA, EFFORT, error=GradingError,
+        return claude_cli.cli_ask(claude_code.find_claude(), schema or SCHEMA, effort or EFFORT, error=GradingError,
                                   not_logged_in=NoApiKey)
     import anthropic
 
     client = anthropic.Anthropic(api_key=key, max_retries=4)
 
     def ask(req: dict) -> str:
+        req = {k: v for k, v in req.items() if k != "file_prefix"}  # רק לריצה דרך Claude Code (שמות הקבצים)
         try:
             with client.beta.messages.stream(**req) as stream:
                 msg = stream.get_final_message()
@@ -698,8 +726,30 @@ def _archive():
     return pymupdf.Archive(str(_FONT.parent)) if _FONT else None
 
 
-def _html(text: str, size: float = 10, color: str = "#d90000") -> str:
-    return f'<div dir="rtl" style="color: {color}; font-size: {size:g}px; line-height: 1.25">{_esc(text)}</div>'
+_MATH = re.compile(r"[^\u0590-\u05FF\s,;:]*[A-Za-z0-9∅][^\u0590-\u05FF]*")
+
+
+def _ltr(text: str) -> str:
+    """כל ביטוי מתמטי בתוך עברית עטוף ב-LRE...PDF (U+202A, U+202C), כדי שיוצג משמאל לימין ובשלמותו:
+    בלי זה MuPDF הפך את "3-i" בסוף משפט ל-"i-3" ואת "{(0,0)}" ל-"{(0,0)}" הפוך. (LRI/RLI לא נתמכים ב-MuPDF;
+    <span dir="ltr"> שובר את סדר המשפט כולו. נבדק 2026-11-12.)"""
+    def wrap(m: re.Match) -> str:
+        run, lead = m.group(0), ""
+        # "\u05e9-(2,2)", "\u05d1-A": \u05d4\u05de\u05e7\u05e3 \u05d0\u05d7\u05e8\u05d9 \u05d0\u05d5\u05ea \u05e2\u05d1\u05e8\u05d9\u05ea \u05e9\u05d9\u05d9\u05da \u05dc\u05de\u05d9\u05dc\u05d4, \u05dc\u05d0 \u05dc\u05d1\u05d9\u05d8\u05d5\u05d9
+        if run.startswith("-") and m.start() > 0 and "\u0590" <= text[m.start() - 1] <= "\u05ff":
+            lead, run = "-", run[1:]
+        core = run.rstrip(" ,;:.")
+        if not core:
+            return lead + run
+        return lead + "\u202a" + core + "\u202c" + run[len(core):]
+    return _MATH.sub(wrap, text)
+
+
+def _html(text: str, size: float = 10, color: str = "#d90000", math: bool = True) -> str:
+    body = _esc(_ltr(text) if math else text)
+    # נוסחה לא נשברת באמצע שורה ("4-4i+2i+2 =" ואז "6-2i" בשורה הבאה): אם צריך, הטקסט כולו קטן קצת
+    body = re.sub("‪(.*?)‬", lambda m: '<span style="white-space: nowrap">‪' + m.group(1) + "‬</span>", body)
+    return f'<div dir="rtl" style="color: {color}; font-size: {size:g}px; line-height: 1.25">{body}</div>'
 
 
 def _esc(s: str) -> str:
@@ -735,6 +785,10 @@ class Ink:
         # עמוד ריק, או צל/רקע כהה שמכסה הכול: אין מה ללמוד ממנו
         self.usable = total >= 200 and total / self.ink.size < 0.4
         self.sums = np.pad(self.ink.cumsum(0).cumsum(1), ((1, 0), (1, 0))).astype(np.int64)
+        # מאיפה עד איפה כתוב לרוחב העמוד (אלפיות): צילום של דף על רקע לבן משאיר שוליים ריקים, מקום טוב להערות
+        xs = np.flatnonzero(self.ink.sum(0) >= 3)
+        self.xspan = ((xs[int(len(xs) * 0.01)] / self.w * 1000, (xs[int(len(xs) * 0.99) - 1] + 1) / self.w * 1000)
+                      if len(xs) > 10 else (0.0, 1000.0))
 
     def _px(self, x0, y0, x1, y1):
         def c(v, n):
@@ -752,12 +806,12 @@ class Ink:
         a, b, c, d = self._px(x0, y0, x1, y1)
         return self.count(x0, y0, x1, y1) / max((c - a) * (d - b), 1)
 
-    def bbox(self, x0, y0, x1, y1):
-        """המלבן הצמוד לדיו שבתוך המלבן הנתון (אלפיות), או None אם אין שם מספיק דיו."""
+    def bbox(self, x0, y0, x1, y1, least: int | None = None):
+        """המלבן הצמוד לדיו שבתוך המלבן הנתון (אלפיות), או None אם אין שם מספיק דיו (least פיקסלים, ברירת מחדל MIN_INK)."""
         import numpy as np
         a, b, c, d = self._px(x0, y0, x1, y1)
         sub = self.ink[b:d, a:c]
-        if sub.sum() < self.MIN_INK:
+        if sub.sum() < (self.MIN_INK if least is None else least):
             return None
         rows = np.flatnonzero(sub.sum(1) >= 2)
         cols = np.flatnonzero(sub.sum(0) >= 2)
@@ -771,27 +825,32 @@ PAD = 8  # אלפיות: כמה אוויר סביב הכתב שהמלבן מקי
 
 
 def refine_box(ink: Ink | None, box: tuple[float, float, float, float]):
-    """מצמיד מלבן של Claude לכתב היד שבתוכו. מלבן שנפל על מקום ריק מורחב עד הכתב הקרוב, ואם אין כתב בסביבה
-    מחזיר None (אין מה לסמן שם). בלי מסכה שאפשר לסמוך עליה המלבן נשאר כמו שהוא."""
+    """מצמיד מלבן של Claude לכתב היד שבתוכו: רק מכווץ אותו אל הדיו שבפנים. מלבן שנפל על מקום ריק עובר לכתב הקרוב,
+    אבל רק לחלק שבתוך חלון החיפוש, ואם אין כתב בסביבה מחזיר None (אין מה לסמן שם). בלי מסכה המלבן נשאר כמו שהוא.
+    (עד 2026-11-12 הקוד "השלים" את הכתב שנתפס בהרחבות של 25 אלפיות שוב ושוב: בכתב דהוי, שבו במלבן קטן יש פחות מ-20
+    פיקסלים של דיו, מלבן של שורה אחת גדל לחצי עמוד.)"""
     if ink is None or not ink.usable:
         return box
     x0, y0, x1, y1 = box
-    for grow in (0, 30, 60, 100, 150):
-        found = ink.bbox(max(x0 - grow, 0), max(y0 - grow, 0), min(x1 + grow, 1000), min(y1 + grow, 1000))
-        if found and grow:  # תפסנו רק את קצה הכתב שבגבול החיפוש: ממשיכים עד שהכתב הצמוד נגמר
-            for _ in range(4):
-                more = ink.bbox(max(found[0] - 25, 0), max(found[1] - 25, 0), min(found[2] + 25, 1000), min(found[3] + 25, 1000))
-                if not more or more == found:
-                    break
-                found = more
-        if found:
-            return (max(found[0] - PAD, 0), max(found[1] - PAD, 0), min(found[2] + PAD, 1000), min(found[3] + PAD, 1000))
-    return None
+    inside = ink.bbox(x0, y0, x1, y1, least=6)
+    if inside:
+        found = inside
+    elif ink.count(x0, y0, x1, y1):  # מעט דיו, כתב דהוי: המלבן כנראה במקום (למשל ממעבר הזום), לא מזיזים אותו
+        return box
+    else:
+        found = None
+        for grow in (30, 60, 100, 150):
+            found = ink.bbox(max(x0 - grow, 0), max(y0 - grow, 0), min(x1 + grow, 1000), min(y1 + grow, 1000))
+            if found:
+                break
+    if not found:
+        return None
+    return (max(found[0] - PAD, 0), max(found[1] - PAD, 0), min(found[2] + PAD, 1000), min(found[3] + PAD, 1000))
 
 
 def _note_size(text: str, size: float, page: pymupdf.Rect, box: pymupdf.Rect) -> tuple[float, float]:
     """רוחב וגובה להערה, לפי אורך הטקסט: רחבה כמו המלבן (לפחות 150 ועד חצי עמוד), ובגובה שמספיק לשורות."""
-    width = min(max(box.width, 150), page.width * 0.55, page.width - 8)
+    width = min(max(box.width, 190), page.width * 0.5, page.width - 8)
     per_line = max(int(width / (size * 0.52)), 8)
     lines = sum(max(math.ceil(len(part) / per_line), 1) for part in str(text).split("\n"))
     return width, lines * size * 1.3 + 4
@@ -819,6 +878,21 @@ def _note_rect(box: pymupdf.Rect, page: pymupdf.Rect, text: str = "", size: floa
         pymupdf.Rect(box.x0 - gap - w, box.y0, box.x0 - gap, box.y0 + h),                # משמאל
         pymupdf.Rect(box.x1 + gap, box.y0, box.x1 + gap + w, box.y0 + h),                # מימין
     ]
+    # ובשוליים של הדף באותו גובה (צילום של דף על רקע לבן משאיר שוליים ריקים רחבים): צר יותר, ושורות נוספות
+    # כמה הערות באותו גובה נערמות בשוליים אחת מתחת לשנייה (או מעל), עם קו אל המלבן: בצד המלבן, ובשוליים הריקים
+    # של הדף (מחוץ לאזור הכתוב, Ink.xspan)
+    columns = [(margin, box.x0 - gap), (box.x1 + gap, page.width - margin)]
+    if ink is not None and ink.usable:
+        lo, hi = ink.xspan[0] / 1000 * page.width, ink.xspan[1] / 1000 * page.width
+        columns += [(margin, min(lo - gap, box.x0 - gap)), (max(hi + gap, box.x1 + gap), page.width - margin)]
+    for x0, x1 in columns:
+        mw = min(x1 - x0, w)
+        if mw >= 55:
+            mh = _note_size(text, size * 0.85, pymupdf.Rect(0, 0, mw, 1), pymupdf.Rect(0, 0, mw, 1))[1]
+            mx = x1 - mw if x0 == margin else x0
+            for k in (0, 1, -1, 2, -2, 3):
+                y = min(max(box.y0 + k * (mh + gap), margin), page.height - margin - mh)
+                cands.append(pymupdf.Rect(mx, y, mx + mw, y + mh))
     inside = pymupdf.Rect(margin, margin, page.width - margin, page.height - margin)
     fits = [r for r in cands if r in inside]
     if ink is None or not ink.usable:
@@ -829,7 +903,9 @@ def _note_rect(box: pymupdf.Rect, page: pymupdf.Rect, text: str = "", size: floa
         # r & t is a new rectangle. r.intersect(t) changes r itself in PyMuPDF: from the second note on a page the
         # candidate shrank to the overlap (or turned inside out) and the note was never written
         clash = sum(max((r & t).get_area(), 0) for t in taken or []) / max(r.get_area(), 1)
-        return ink.density(*norm) + 5 * clash
+        far = max(r.x0 - box.x1, box.x0 - r.x1, r.y0 - box.y1, box.y0 - r.y1, 0) / page.width
+        # כתב יד מתחת להערה הוא הגרוע מכול (גם כתב דהוי, שצפיפות הדיו בו כ-0.03); הערה רחוקה מהמלבן עדיפה, עם קו אליו
+        return 4 * ink.density(*norm) + 5 * clash + 0.1 * far
 
     pool = fits or [_clamp(r, inside) for r in cands]
     return min(pool, key=cost)  # בשוויון נשארת הראשונה: מתחת למלבן
@@ -871,11 +947,11 @@ def _summary_page(doc: pymupdf.Document, g: Graded, ctx: Context, archive, extra
     page.insert_htmlbox(pymupdf.Rect(m, m, first.width - m, first.height - m), html, css=_CSS, archive=archive, scale_low=0)
 
 
-def _place_marks(doc: pymupdf.Document, g: Graded, archive) -> list[str]:
+def _place_marks(doc: pymupdf.Document, g: Graded, archive, taken: dict[int, list[pymupdf.Rect]] | None = None) -> list[str]:
     """מצייר את הסימונים: מצמיד כל מלבן לכתב היד, וכותב את ההערה במקום פנוי. משנה את g.marks למה שצויר באמת
     (מלבנים מוצמדים, בלי סימונים שאין להם כתב בסביבה). מחזיר את ההערות שלא היה להן איפה להיצמד."""
     inks: dict[int, Ink | None] = {}
-    taken: dict[int, list[pymupdf.Rect]] = {}
+    taken = taken if taken is not None else {}
     placed: list[Mark] = []
     unplaced: list[str] = []
     for mark in g.marks:
@@ -905,6 +981,12 @@ def _place_marks(doc: pymupdf.Document, g: Graded, archive) -> list[str]:
             dark = bool(ink and getattr(ink, "dark", False))
             if not _write(page, note, _html(mark.text, size, "#ff7b7b" if dark else "#d90000"), archive, backdrop=not dark):
                 unplaced.append(f"עמוד {mark.page}: {mark.text}")
+            elif not (note + (-6, -6, 6, 6)).intersects(box):  # ההערה בשוליים: קו דק מההערה למלבן
+                a = pymupdf.Point(note.x1 if note.x1 <= box.x0 else note.x0 if note.x0 >= box.x1 else (note.x0 + note.x1) / 2,
+                                  (note.y0 + note.y1) / 2)
+                b = pymupdf.Point(box.x0 if a.x <= box.x0 else box.x1 if a.x >= box.x1 else a.x, (box.y0 + box.y1) / 2)
+                m_ = page.derotation_matrix
+                page.draw_line(a * m_, b * m_, color=RED, width=1.1 * scale, stroke_opacity=0.85, overlay=True)
     g.marks = placed
     return unplaced
 
@@ -932,9 +1014,31 @@ def _draw_cross(page: pymupdf.Page, x: float, y: float, size: float, color, widt
                    color=color, width=width, overlay=True)
 
 
-def _place_checks(doc: pymupdf.Document, g: Graded, ctx: Context) -> None:
+def _badge(page: pymupdf.Page, x: float, y: float, d: float, kind: str, scale: float) -> pymupdf.Rect:
+    """עיגול לבן עם מסגרת צבעונית וסימן בתוכו: ✓ ירוק, ✗ אדום, ✓✗ כתום (אליפסה ברוחב שני סימנים).
+    (x, y) הפינה השמאלית-העליונה. מחזיר את המלבן שהוא תופס."""
+    color = {"check": GREEN, "cross": RED, "half": ORANGE}[kind]
+    w = d * (1.7 if kind == "half" else 1)
+    r = pymupdf.Rect(x, y, x + w, y + d)
+    m = page.derotation_matrix
+    page.draw_oval(r * m, color=color, fill=(1, 1, 1), fill_opacity=0.92, width=2 * scale, overlay=True)
+    s, pad = d * 0.56, d * 0.22
+    sw = 2.6 * scale
+    if kind == "check":
+        _draw_check(page, x + pad, y + pad, s, color, sw)
+    elif kind == "cross":
+        _draw_cross(page, x + pad, y + pad, s, color, sw)
+    else:
+        _draw_check(page, x + w / 2 + d * 0.02, y + pad, s * 0.9, color, sw)   # ✓ מימין, ✗ משמאלו: ✓✗ מימין לשמאל
+        _draw_cross(page, x + w / 2 - d * 0.02 - s * 0.9, y + pad, s * 0.9, color, sw)
+    return r
+
+
+def _place_checks(doc: pymupdf.Document, g: Graded, ctx: Context) -> dict[int, list[pymupdf.Rect]]:
     """ליד תחילת התשובה לכל שאלה (g.places, מ-Claude): ✓ ירוק לניקוד מלא, ✗ אדום לאפס, ✓✗ כתום לניקוד חלקי.
-    הסימן יושב מימין למלבן (שם מספר הסעיף בכתיבה מימין לשמאל), ואם אין שם מקום, משמאלו. שאלה בלי מקום (page 0) לא מסומנת."""
+    כל סימן בתוך עיגול (_badge), ליד המלבן במקום הפנוי ביותר מכתב יד; שני סימנים לא נערמים זה על זה. שאלה בלי מקום (page 0) לא מסומנת. מחזיר לכל עמוד את המקומות שתפסו, כדי שההערות יעקפו אותם."""
+    taken: dict[int, list[pymupdf.Rect]] = {}
+    inks: dict[int, Ink | None] = {}
     for q, p, place in zip(ctx.questions, g.points, g.places):
         if not place or not 1 <= place.page <= len(doc):
             continue
@@ -944,19 +1048,36 @@ def _place_checks(doc: pymupdf.Document, g: Graded, ctx: Context) -> None:
         box = pymupdf.Rect(place.x0 / 1000 * shown.width, place.y0 / 1000 * shown.height,
                            place.x1 / 1000 * shown.width, place.y1 / 1000 * shown.height)
         kind = check_kind(p, q.points)
-        size = min(max(box.height, 14 * scale), 24 * scale)
-        gap = 4 * scale
-        n = 2 if kind == "half" else 1
-        x = box.x1 + gap if box.x1 + gap + n * size <= shown.width - 2 else max(box.x0 - gap - n * size, 2)
-        y = min(max(box.y0 + (box.height - size) / 2, 2), shown.height - size - 2)
-        width = 2.2 * scale
-        if kind == "check":
-            _draw_check(page, x, y, size, GREEN, width)
-        elif kind == "cross":
-            _draw_cross(page, x, y, size, RED, width)
-        else:
-            _draw_check(page, x + size, y, size, ORANGE, width)  # ✓ מימין, ✗ משמאלו: ✓✗ כשקוראים מימין לשמאל
-            _draw_cross(page, x, y, size, ORANGE, width)
+        d = 24 * scale
+        w = d * (1.7 if kind == "half" else 1)
+        gap = 5 * scale
+        mine = taken.setdefault(place.page, [])
+        if place.page not in inks:
+            try:
+                inks[place.page] = Ink(page)
+            except Exception:  # noqa: BLE001 - בלי מסכה: המקום הראשון שפנוי מסימנים אחרים
+                inks[place.page] = None
+        ink = inks[place.page]
+        cy = box.y0 + (box.height - d) / 2
+        # ליד מספר הסעיף: מימין, משמאל, מעל או מתחת, במקום שהכי פחות מכסה כתב יד (2026-11-12: מימין למלבן בלבד
+        # העיגול ישב על "A=" שאחרי "(ב)")
+        spots = [(box.x1 + gap, cy), (box.x0 - gap - w, cy), (box.x1 + gap, box.y0 - d - gap), (box.x0 - gap - w, box.y0 - d - gap),
+                 (box.x1 - w, box.y0 - d - gap), (box.x1 + gap, box.y1 + gap), (box.x1 + gap + w, cy), (box.x0 - 2 * gap - 2 * w, cy)]
+
+        def cost(xy, i):
+            r = pymupdf.Rect(xy[0], xy[1], xy[0] + w, xy[1] + d)
+            if r.x0 < 3 or r.y0 < 3 or r.x1 > shown.width - 3 or r.y1 > shown.height - 3:
+                return 99.0
+            clash = 9 if any(r.intersects(t) for t in mine) else 0
+            dens = ink.density(r.x0 / shown.width * 1000, r.y0 / shown.height * 1000,
+                               r.x1 / shown.width * 1000, r.y1 / shown.height * 1000) if ink is not None and ink.usable else 0
+            return 6 * dens + clash + 0.01 * i
+        best = min(enumerate(spots), key=lambda t: cost(t[1], t[0]))[1]
+        x, y = best
+        if cost(best, 0) >= 99:  # שום מקום לא בתוך העמוד: הכי קרוב שאפשר
+            x, y = min(max(box.x1 + gap, 3), shown.width - w - 3), min(max(cy, 3), shown.height - d - 3)
+        mine.append(_badge(page, x, y, d, kind, scale))
+    return taken
 
 
 def _flatten(doc: pymupdf.Document, side: int, quality: int) -> bytes:
@@ -980,8 +1101,8 @@ def mark_pdf(pdf: bytes, g: Graded, ctx: Context, max_bytes: int = MAX_BYTES) ->
     """מצייר את הסימונים באדום על העבודה, מוסיף עמוד סיכום בהתחלה, ושומר עד max_bytes אם אפשר."""
     archive = _archive()
     with pymupdf.open(stream=pdf, filetype="pdf") as doc:
-        unplaced = _place_marks(doc, g, archive)
-        _place_checks(doc, g, ctx)
+        badges = _place_checks(doc, g, ctx)
+        unplaced = _place_marks(doc, g, archive, badges)
         _summary_page(doc, g, ctx, archive, g.lost + unplaced)
         doc.subset_fonts()
         out = doc.tobytes(garbage=4, deflate=True)
@@ -1132,13 +1253,17 @@ def marks_to_page(marks: list[Mark], images: list[PageImage]) -> list[Mark]:
 
 
 def grade_one(pdf: bytes, ctx: Context, ask: Ask, model: str = DEFAULT_MODEL, names: list[str] | None = None,
-              crop: bool = CROP_DEFAULT) -> tuple[Graded, bytes]:
+              crop: bool = CROP_DEFAULT, locate_ask: Ask | None = None) -> tuple[Graded, bytes]:
+    """locate_ask: מעבר הזום (locate.py), שממקם מחדש כל מלבן על חיתוך מוגדל של העמוד. None = בלי."""
     images = render_pdf(pdf, grid=True, crop=crop)
     if not images:
         raise GradingError("אין עמודים בקובץ.")
     g = parse_answer(ask(build_request(ctx, images, model)), ctx, len(images))
     g.marks = marks_to_page(g.marks, images)
     g.places = marks_to_page(g.places, images)
+    if locate_ask is not None and g.marks:
+        from . import locate
+        g.marks = locate.relocate(pdf, g.marks, locate_ask, Mark)
     scrub_graded(g, names or [])
     return g, mark_pdf(pdf, g, ctx)
 
@@ -1162,8 +1287,12 @@ def grade_assignment(assignment_dir: Path, numbers: list[str] | None = None, *, 
     כשנגמרת המכסה של Claude הבדיקה נעצרת לבד באותה דרך, ואחרי שמה שבאמצע נשמר זורקת ClaudeLimit."""
     stop = stop or threading.Event()
     model = model or default_model()
+    locate_ask = None
     if ask is None:
         ask = claude_ask()
+        from . import locate
+        if locate.enabled():  # רק בבדיקה אמיתית: בדיקה עם Claude מדומה לא שולחת חיתוכים
+            locate_ask = claude_ask(locate.SCHEMA, locate.EFFORT)
     who = who or claims.me()
     rep = GradeReport()
     todo = pending(assignment_dir) if numbers is None else [number_key(n) for n in numbers]
@@ -1212,7 +1341,7 @@ def grade_assignment(assignment_dir: Path, numbers: list[str] | None = None, *, 
         if not pdf:
             raise GradingError(f"אין בהגשה קובץ שאפשר לבדוק ({', '.join(skipped)}).")
         try:
-            g, out = grade_one(pdf, ctx, ask, model, names.get(n))
+            g, out = grade_one(pdf, ctx, ask, model, names.get(n), locate_ask=locate_ask)
         except Exception as e:
             if is_limit(str(e)):
                 # נגמרה המכסה: עוצרים מיד, לפני שההגשה הבאה נשלחת. העבודה הזו לא "נכשלה", היא עוד לא נבדקה
