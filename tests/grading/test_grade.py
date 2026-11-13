@@ -235,7 +235,7 @@ def test_a_note_that_cannot_be_written_goes_to_the_summary(monkeypatch):
     real = pymupdf.Page.insert_htmlbox
 
     def failing(self, rect, html, **kw):
-        if "הערה שלא נכנסת" in html and "ציון:" not in html:  # ההערה על הדף, לא עמוד הסיכום
+        if "הערה שלא נכנסת" in html and "line-height: 1.25" in html:  # ההערה על הדף (_html), לא עמוד הסיכום
             raise OverflowError("int too large to convert to float")
         return real(self, rect, html, **kw)
     monkeypatch.setattr(pymupdf.Page, "insert_htmlbox", failing)
@@ -365,7 +365,7 @@ def test_grading_writes_grades_csv_and_marked_pdfs(root, monkeypatch):
     assert out.stat().st_size <= grading.MAX_BYTES
     with pymupdf.open(a.submissions / "0001.pdf") as src, pymupdf.open(out) as doc:
         assert doc.page_count == src.page_count + 1  # עמוד סיכום בהתחלה
-        assert "ציון: 85 מתוך 100" in text(doc[0])
+        assert "85 מתוך 100" in text(doc[0])
         red = [d for d in doc[1].get_drawings() if d.get("color") and d["color"][0] > 0.8 and d["color"][1] < 0.1]
         assert red, "לא צויר מלבן אדום"
         r = red[0]["rect"]
@@ -572,7 +572,7 @@ def test_save_review_of_work_graded_before_notes_keeps_its_marks(root):
         pages, marked_page = doc.page_count, len(doc[1].get_drawings())
     grading.save_review(a.dir, "0002", [20] * 5, [], "", by="x", reason="ערעור התקבל")
     with pymupdf.open(a.dir / paths.MARKED / "0002.pdf") as doc:
-        assert doc.page_count == pages and "ציון: 100 מתוך 100" in text(doc[0]) and len(doc[1].get_drawings()) == marked_page
+        assert doc.page_count == pages and "100 מתוך 100" in text(doc[0]) and len(doc[1].get_drawings()) == marked_page
 
 
 def test_save_review_refuses_what_it_cannot_match(root):
@@ -777,3 +777,13 @@ def test_a_badge_finds_free_paper_when_the_label_is_at_the_edge_and_writing_foll
     (badge,) = grading._place_checks(doc, g, ctx)[1]
     assert ink.density(badge.x0 / 595 * 1000, badge.y0 / 842 * 1000, badge.x1 / 595 * 1000, badge.y1 / 842 * 1000) < 0.02
     assert badge.y1 <= 125 and badge.x0 < 150  # מעל השורה, ליד התווית
+
+
+def test_an_opening_bracket_after_a_number_stays_with_the_hebrew_that_follows():
+    # 2026-11-13: "הגשה 0 (הערה בלבד)" הוצג "0הערה בלבד)": הסוגר נכנס לביטוי שמשמאל לימין
+    assert grading._ltr("הגשה 0 (הערה בלבד)") == "הגשה \u202a0\u202c (הערה בלבד)"
+    assert grading._ltr("הנקודה (1,2) נכונה") == "הנקודה \u202a(1,2)\u202c נכונה"
+
+
+def test_a_dash_after_a_number_is_punctuation_not_a_minus():
+    assert grading._ltr("הגשה 0 - קבוצות") == "הגשה \u202a0\u202c - קבוצות"

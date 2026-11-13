@@ -38,7 +38,7 @@ def test_an_edit_updates_the_pdf_the_grades_file_and_the_log(root):
     out = grading.save_review(a.dir, "0001", FULL, [], "יפה מאוד", by="dana (PC)", reason="ערעור: הנימוק בשאלה 12 נמצא בעמוד 2")
     assert out == {"number": "0001", "grade": 100, "from": "85", "updated": ["marked_pdf", "notes", "grades_csv"]}
     # 2. עמוד הסיכום ב-PDF המסומן
-    assert "ציון: 100 מתוך 100" in summary(a)
+    assert "100 מתוך 100" in summary(a)
     # 3. Grades by <name>.csv של מי שערך, ומשם (הקריאה המאוחדת) הציון עולה למודל
     mine = grades.read_file(grades.own_file(a.dir))["0001"]
     assert mine["grade"] == "100" and mine["approved"].startswith("dana (PC) ") and mine["points"] == "20;20;20;20;20"
@@ -58,7 +58,7 @@ def test_a_second_edit_logs_from_the_edited_grade(root):
     grading.save_review(a.dir, "0001", [20, 20, 20, 20, 0], [], "", by="ori (LAPTOP)", reason="טעות שלי בעריכה")
     assert [(e["from"], e["to"], e["by"]) for e in grade_edit.history(a.dir, "0001")] == [
         ("85", "100", "dana (PC)"), ("100", "80", "ori (LAPTOP)")]
-    assert grading.read_grades(a.dir)["0001"]["grade"] == "80" and "ציון: 80 מתוך 100" in summary(a)
+    assert grading.read_grades(a.dir)["0001"]["grade"] == "80" and "80 מתוך 100" in summary(a)
 
 
 def test_approving_from_the_review_queue_needs_no_reason_but_is_logged(root):
@@ -158,7 +158,7 @@ def test_anyone_may_edit_a_work_that_someone_else_graded_and_approved(root, monk
     assert out["from"] == "90" and out["grade"] == 100
     assert grades.read_file(grades.own_file(a.dir, "דנה"))["0001"]["grade"] == "90"  # הקובץ של דנה לא נגעו בו
     assert grading.read_grades(a.dir)["0001"]["grade"] == "100"  # והציון שעולה למודל הוא של העריכה האחרונה
-    assert "ציון: 100 מתוך 100" in summary(a)
+    assert "100 מתוך 100" in summary(a)
 
 
 class Table:

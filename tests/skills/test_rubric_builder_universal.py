@@ -95,5 +95,5 @@ def test_grading_swaps_an_old_rules_block_for_the_current_one():
     old = "# מחוון\n\n## כללים לכל מחוון\n\nנוסח ישן\n- **x:** y\n\n## שאלה 1\nשורה"
     new = grade.with_universal_rules(old)
     assert new.count("## כללים לכל מחוון") == 1 and "נוסח ישן" not in new
-    assert "ההערה והניכוי מסכימים" in new and new.startswith("# מחוון") and new.endswith("## שאלה 1\nשורה")
+    assert "סעיף שהתחיל" in new and new.startswith("# מחוון") and new.endswith("## שאלה 1\nשורה")
     assert grade.with_universal_rules("מחוון ביד").count("## כללים לכל מחוון") == 1

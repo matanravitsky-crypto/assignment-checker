@@ -84,6 +84,15 @@ def files_for(part: str) -> list[Path]:
     return sorted({M.module_file(m) for m in needed} - {M.module_file(a) for a in M.ALIASES})
 
 
+# Files that are not modules but that a part reads, at the same path relative to the repo (so the code finds them in
+# the skill as in the repo). 2026-11-13: exercise-grader graded without "כללים לכל מחוון" (grade.UNIVERSAL_RULES)
+DATA = {"grading": [".claude/skills/rubric-builder/assets/universal-rules.json"]}
+
+
+def data_for(part: str) -> list[Path]:
+    return [M.REPO / rel for rel in DATA.get(part, []) if (M.REPO / rel).is_file()]
+
+
 def _sha(p: Path) -> str:
     return hashlib.sha256(p.read_bytes()).hexdigest()
 
@@ -131,7 +140,7 @@ def build(part: str, dest: Path | None = None, team: bool = False) -> Path:
     scripts = dest / "scripts"
     scripts.mkdir(exist_ok=True)
     files = {}
-    for f in files_for(part):
+    for f in files_for(part) + data_for(part):
         rel = f.relative_to(M.REPO).as_posix()
         target = scripts / rel
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -152,7 +161,7 @@ def stale(skill_dir: Path) -> list[str]:
         here, there = M.REPO / rel, Path(skill_dir) / "scripts" / rel
         if not here.is_file() or not there.is_file() or _sha(here) != sha or _sha(there) != sha:
             out.append(rel)
-    current = {f.relative_to(M.REPO).as_posix() for f in files_for(manifest["part"])}
+    current = {f.relative_to(M.REPO).as_posix() for f in files_for(manifest["part"]) + data_for(manifest["part"])}
     return sorted(set(out) | (current - set(manifest["files"])))
 
 

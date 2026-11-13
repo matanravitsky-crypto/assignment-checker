@@ -757,7 +757,7 @@ def _ltr(text: str) -> str:
         # "\u05e9-(2,2)", "\u05d1-A": \u05d4\u05de\u05e7\u05e3 \u05d0\u05d7\u05e8\u05d9 \u05d0\u05d5\u05ea \u05e2\u05d1\u05e8\u05d9\u05ea \u05e9\u05d9\u05d9\u05da \u05dc\u05de\u05d9\u05dc\u05d4, \u05dc\u05d0 \u05dc\u05d1\u05d9\u05d8\u05d5\u05d9
         if run.startswith("-") and m.start() > 0 and "\u0590" <= text[m.start() - 1] <= "\u05ff":
             lead, run = "-", run[1:]
-        core = run.rstrip(" ,;:.")
+        core = re.sub(r"\s+[-–]\s*$", "", run).rstrip(" ,;:.([{")  # מקף של משפט ("הגשה 0 - ...") וסוגר פותח ("0 (הערה)") שייכים לעברית שאחריהם
         if not core:
             return lead + run
         rest = run[len(core):]
@@ -971,25 +971,9 @@ def _write(page: pymupdf.Page, rect: pymupdf.Rect, html: str, archive, backdrop:
 
 
 def _summary_page(doc: pymupdf.Document, g: Graded, ctx: Context, archive, extra: list[str] | None = None) -> None:
-    """עמוד ראשון חדש: הציון, הניקוד לכל שאלה והמשוב (ואחריהם הערות שלא היה להן מקום על העבודה)."""
-    first = doc[0].rect
-    page = doc.new_page(0, width=first.width, height=first.height)
-    rows = "".join(
-        f'<p style="margin: 0 0 6px"><b>{_rich(label)}: {_pts(p)} מתוך {_pts(q.points)}</b>'
-        + (f". {_rich(c)}" if c else "") + "</p>"
-        for q, label, p, c, shown in zip(ctx.questions, shown_labels(ctx.questions), g.points, g.comments, assigned(ctx))
-        if shown
-    )
-    more = "".join(f'<p style="margin: 6px 0 0">{_rich(t)}</p>' for t in extra or [])
-    html = (
-        '<div dir="rtl" style="color: #d90000; font-size: 13px; line-height: 1.45">'
-        f'<p style="font-size: 16px; margin: 0">{_esc(ctx.title)}</p>'
-        f'<p style="font-size: 22px; font-weight: bold; margin: 8px 0 16px">ציון: {_pts(g.grade)} מתוך {_pts(ctx.max_grade)}</p>'
-        f"{rows}"
-        f'<p style="margin-top: 16px">{_rich(g.feedback)}</p>{more}</div>'
-    )
-    m = 50
-    page.insert_htmlbox(pymupdf.Rect(m, m, first.width - m, first.height - m), html, css=_CSS, archive=archive, scale_low=0)
+    """עמוד ראשון חדש: הציון בטבעת, מפת השאלות (ירוק/כתום/אדום) ורק מה שירד, עם ההערה (grading/summary.py)."""
+    from .summary import summary_page
+    summary_page(doc, g, ctx, archive, extra)
 
 
 def _place_marks(doc: pymupdf.Document, g: Graded, archive, taken: dict[int, list[pymupdf.Rect]] | None = None) -> list[str]:
