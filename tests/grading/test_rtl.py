@@ -146,8 +146,13 @@ def test_an_expression_wider_than_the_line_breaks_at_its_spaces_and_each_part_re
     joined = " | ".join(lines)
     for part in ("4-4i+2i+2", "6-2i", "6-2i+0", "6-2i+0+0"):
         assert part in joined
-    # בתוך שורה, חלקים של אותו ביטוי נשארים משמאל לימין: "=" אחרי האיבר שלפניו, לא לפניו
-    assert all(not l.startswith("=") for l in lines if "6-2i" in l)
+    # בתוך שורה, חלקים של אותו ביטוי נשארים משמאל לימין ובסדר המקורי (איפה השורה נשברת תלוי ברוחב הגופן:
+    # Arial ב-Windows, DejaVu ב-CI), כלומר כל שורה היא רצף רציף של הביטוי
+    orig = ["4-4i+2i+2", "=", "6-2i", "=", "6-2i+0", "=", "6-2i+0+0"]
+    for l in lines:
+        toks = [t for t in l.split() if not any("֐" <= ch <= "׿" for ch in t)]
+        if toks:
+            assert any(orig[i:i + len(toks)] == toks for i in range(len(orig))), l
 
 
 def test_measure_matches_what_is_drawn_and_fit_gives_up_when_nothing_fits():
