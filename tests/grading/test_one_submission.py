@@ -28,7 +28,8 @@ def test_the_skills_rubric_json_is_read_like_the_systems_rubric(tmp_path):
     ctx = one.context(f)
     assert (ctx.title, ctx.course, ctx.max_grade) == ("הגשה 0", "בדידה", 50)
     assert [(q.label, q.points) for q in ctx.questions] == [("שאלה 4", 25), ("שאלה 5", 75)]
-    assert ctx.questions[0].deductions == [{"text": "חסר נימוק", "points": 5}] and ctx.rubric_text == "בלי LaTeX"
+    assert ctx.questions[0].deductions == [{"text": "חסר נימוק", "points": 5}] and ctx.rubric_text.startswith("בלי LaTeX")
+    assert ctx.rubric_text.count("## כללים לכל מחוון") == 1  # like the system: every rubric gets the universal rules
     assert ctx.official_key is None
     out = one.rubric(f)
     assert out["total_points"] == 100 and out["read_first"] == [] and out["context"] == grade.context_text(ctx)
