@@ -248,14 +248,13 @@
   }
 
   // LaTeX בתוך טקסט: $...$ בשורה, $$...$$ כתצוגה
-  // inline: גם $$...$$ נכתב באותה שורה עם העברית (בסטטיסטיקה: הערה קצרה בתוך משפט, לא נוסחה בשורה משלה)
-  function tex(str, { inline = false } = {}) {
+  function tex(str) {
     return String(str).split(/(\$\$[\s\S]+?\$\$|\$[^$]+?\$)/g).map((part) => {
-      const dbl = part.startsWith("$$");
-      if (!(dbl || (part.startsWith("$") && part.length > 1))) return esc(part);
-      const src = part.slice(dbl ? 2 : 1, dbl ? -2 : -1);
+      const display = part.startsWith("$$");
+      if (!(display || (part.startsWith("$") && part.length > 1))) return esc(part);
+      const src = part.slice(display ? 2 : 1, display ? -2 : -1);
       if (!window.katex) return `<code dir="ltr">${esc(src)}</code>`;
-      return window.katex.renderToString(src, { displayMode: dbl && !inline, throwOnError: false });
+      return window.katex.renderToString(src, { displayMode: display, throwOnError: false });
     }).join("");
   }
 
@@ -1763,7 +1762,7 @@
       const k = `${m.q}|${m.text}`, open = state.mistakeOpen === k;
       return `<li class="${open ? "open" : ""}">
         <button class="mk-row" data-mistake="${esc(k)}" aria-expanded="${open}">
-          <span class="mk-text"><b>${tex(m.text, INLINE)}</b><small>${esc((qs[m.q]?.req && window.RubricPoints.shortName(qs[m.q].req)) || `שאלה ${m.q + 1}`)}${m.ded != null ? ` · בדרך כלל −${fmt(m.ded)}` : ""}</small></span>
+          <span class="mk-text"><b>${window.PlainMath.html(m.text, esc)}</b><small>${esc((qs[m.q]?.req && window.RubricPoints.shortName(qs[m.q].req)) || `שאלה ${m.q + 1}`)}${m.ded != null ? ` · בדרך כלל −${fmt(m.ded)}` : ""}</small></span>
           <span class="track"><i style="width:${(m.count / most) * 100}%"></i></span>
           <span class="mk-n num">${m.count}<small>${m.pct}%</small></span>
         </button>
@@ -2339,7 +2338,6 @@
 
   // הסטטיסטיקה של מטלה, מאותו מסד נתונים (Statistics/ בדרייב): בשלב "בדיקה וציון" לכל מטלה שיש בה עבודות בדוקות
   // השם האמיתי של הסעיף במחוון ("קבוצות 11א", "8ב"), כי כך מתייחסים אליו. בלי שם: מספר הסידור
-  const INLINE = { inline: true };  // הערות בסטטיסטיקה: עברית מימין לשמאל, נוסחאות משמאל לימין, הכול באותה שורה
   const qName = (q) => (q.label && window.RubricPoints.shortName(q.label)) || `שאלה ${q.index}`;
   const statKeyOf = (A) => (A ? `${A.courseFolder}/Assignment ${A.n - 1}` : null);
   const statOfAssignment = (A) => statOf(statKeyOf(A));
@@ -2350,7 +2348,7 @@
     const tile = (label, value, sub = "", cls = "") => `<div class="stat ${cls}"><span class="stat-l">${label}</span><b class="stat-v num">${value}</b>${sub ? `<span class="stat-s">${sub}</span>` : ""}</div>`;
     const qs = S.per_question.map((q) => `<li><span class="sq-l">${esc(qName(q))}</span>
         <span class="track"><i style="width:${q.success_pct ?? 0}%"></i></span><b class="num">${pctCell(q.success_pct)}</b>
-        <small class="muted">${q.mistakes[0] ? tex(q.mistakes[0].text, INLINE) : ""}</small></li>`).join("");
+        <small class="muted">${q.mistakes[0] ? window.PlainMath.html(q.mistakes[0].text, esc) : ""}</small></li>`).join("");
     const top = S.per_question.flatMap((q) => q.mistakes.map((m) => ({ ...m, q: q.index, ql: qName(q) }))).sort((a, b) => b.count - a.count).slice(0, 3);
     return `<section class="panel a-stats" aria-label="הסטטיסטיקה של המטלה">
       <div class="panel-head"><h3>הסטטיסטיקה של המטלה</h3>
@@ -2366,7 +2364,7 @@
           ${tile("אושרו", `${k.approved}<small>/${k.graded}</small>`, "ציונים שאדם אישר")}
         </div>
         ${qs ? `<ol class="sq-list" aria-label="הצלחה לפי שאלה">${qs}</ol>` : ""}
-        ${top.length ? `<p class="hint">הטעויות הנפוצות: ${top.map((m) => `${tex(m.text, INLINE)} <small class="num">(${esc(m.ql)}, ${m.count})</small>`).join(" · ")}</p>` : ""}
+        ${top.length ? `<p class="hint">הטעויות הנפוצות: ${top.map((m) => `${window.PlainMath.html(m.text, esc)} <small class="num">(${esc(m.ql)}, ${m.count})</small>`).join(" · ")}</p>` : ""}
       </div>
     </section>`;
   }
@@ -2449,7 +2447,7 @@
         <td class="num col-hide">${pctCell(q.full_marks_pct)}</td>
         <td class="num col-hide">${pctCell(q.zero_pct)}</td>
         <td class="num">${q.unsure ? `<span class="st-warn">${q.unsure}</span>` : "0"}</td>
-        <td>${top ? `${tex(top.text, INLINE)} <small class="muted num">(${top.count}, ${top.pct}%)</small>` : `<span class="muted">—</span>`}</td>
+        <td>${top ? `${window.PlainMath.html(top.text, esc)} <small class="muted num">(${top.count}, ${top.pct}%)</small>` : `<span class="muted">—</span>`}</td>
       </tr>`;
     }).join("");
     const mistakes = S.per_question.flatMap((q) => q.mistakes.map((m) => ({ ...m, q: q.index, ql: qName(q) }))).sort((a, b) => b.count - a.count || a.q - b.q);
@@ -2457,7 +2455,7 @@
     const hardest = S.per_question.filter((q) => q.success_pct != null).sort((a, b) => a.success_pct - b.success_pct)[0];
     const live = cur() && `${cur().courseFolder}/Assignment ${cur().n - 1}` === S.key && mistakeStats(cur()).length ? cur() : null;
     const mkList = top.length ? `<ol class="mk-list">${top.map((m) => `<li><div class="mk-row">
-        <span class="mk-text"><b>${tex(m.text, INLINE)}</b><small>${esc(m.ql)}${m.in_rubric ? " · במחוון" : ""}${m.deduction != null ? ` · בדרך כלל −${fmt(m.deduction)}` : ""}</small></span>
+        <span class="mk-text"><b>${window.PlainMath.html(m.text, esc)}</b><small>${esc(m.ql)}${m.in_rubric ? " · במחוון" : ""}${m.deduction != null ? ` · בדרך כלל −${fmt(m.deduction)}` : ""}</small></span>
         <span class="track"><i style="width:${(m.count / mostM) * 100}%"></i></span>
         <span class="mk-n num">${m.count}<small>${m.pct}%</small></span></div></li>`).join("")}</ol>
       ${mistakes.length > top.length ? `<p class="hint">ועוד ${mistakes.length - top.length} סוגי טעויות פחות נפוצים.</p>` : ""}` : `<p class="muted empty-line">אין טעויות רשומות.</p>`;
@@ -2477,7 +2475,7 @@
           sum: g.n ? `${g.n} ציונים · מינימום ${numCell(g.min)} · מקסימום ${numCell(g.max)} · ${g.full_marks} ציון מלא` : "אין ציונים",
           body: () => (g.n ? hist : `<p class="muted empty-line">אין ציונים.</p>`) })}
         ${foldHTML("stats:mistakes", { title: "טעויות נפוצות",
-          sum: mistakes.length ? `${mistakes.length} סוגים · הנפוצה: ${tex(mistakes[0].text, INLINE)} (${mistakes[0].count})` : "אין טעויות רשומות",
+          sum: mistakes.length ? `${mistakes.length} סוגים · הנפוצה: ${window.PlainMath.html(mistakes[0].text, esc)} (${mistakes[0].count})` : "אין טעויות רשומות",
           body: () => (live ? mistakesHTML(live) : mkList) })}
         ${foldHTML("stats:questions", { title: "לפי שאלה",
           sum: hardest ? `${S.per_question.length} שאלות · הקשה ביותר: ${esc(qName(hardest))} (${pctCell(hardest.success_pct)} הצלחה)` : "אין מחוון, אז אין ניקוד לפי שאלה",
