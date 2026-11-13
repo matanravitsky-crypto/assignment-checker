@@ -65,6 +65,21 @@ def test_pages_go_to_a_temp_folder_and_only_read_is_allowed():
     assert not folder.exists()  # התיקייה נמחקת בסוף
 
 
+def test_the_shared_text_goes_to_the_system_file_and_only_the_files_to_the_prompt():
+    """ה-system של build_request הוא רשימה: הוראות הבדיקה ואחריהן הטקסט המשותף של המטלה. שניהם נכנסים לקובץ
+    ה-system (זהה בכל ההגשות, ולכן במטמון), וההודעה מחזיקה רק את הקבצים ואת מספרי העמודים."""
+    req = request()
+    req["system"] = [{"type": "text", "text": "אתה מתרגל"},
+                     {"type": "text", "text": "מטלה: הגשה 0\nמחוון: הכול", "cache_control": {"type": "ephemeral"}}]
+    assert claude_cli.system_text(req) == "אתה מתרגל\n\nמטלה: הגשה 0\nמחוון: הכול"
+    run = FakeRun(output())
+    ask(run)(req)
+    (cmd, kwargs), = run.calls
+    assert run.seen[0]["system.txt"].decode() == "אתה מתרגל\n\nמטלה: הגשה 0\nמחוון: הכול"
+    assert "מחוון: הכול" not in kwargs["input"] and "עמוד 1:" in kwargs["input"]
+    assert "בבת אחת" in claude_cli.READ_ALL  # כל העמודים בהודעה אחת: פחות סבבים, פחות קריאות מהמטמון
+
+
 def test_failures_become_grading_errors():
     with pytest.raises(grading.GradingError, match="דקות"):
         ask(FakeRun(raises=subprocess.TimeoutExpired("claude", 900)))(request())

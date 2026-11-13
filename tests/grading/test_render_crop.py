@@ -40,6 +40,18 @@ def test_marks_come_back_to_full_page_coordinates():
     assert (marks[1].x0, marks[1].y0) == (10, 10)  # an uncropped page is left alone
 
 
+def test_the_long_side_follows_max_side(monkeypatch):
+    """טוקני תמונה הם רוחב × גובה / 750: 1200 במקום 1568 הם 41% פחות. GRADE_MAX_SIDE קובע את MAX_SIDE בטעינה."""
+    from grading import render
+    pdf = scan_with_margins()
+    monkeypatch.setattr(render, "MAX_SIDE", 1200)
+    img = render_pdf(pdf)[0]
+    assert abs(max(img.width, img.height) - 1200) <= 1
+    monkeypatch.setattr(render, "MAX_SIDE", 1568)
+    big = render_pdf(pdf)[0]
+    assert 0.55 < (img.width * img.height) / (big.width * big.height) < 0.62
+
+
 def test_a_blank_page_is_not_cropped():
     doc = pymupdf.open()
     doc.new_page(width=595, height=842)
