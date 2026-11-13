@@ -1025,6 +1025,8 @@ span.rv-arrow { visibility: hidden; }
 .st-bar-cell { min-width: 150px; }
 .st-bar-cell .track { display: inline-block; width: calc(100% - 52px); vertical-align: middle; margin-inline-end: 8px; }
 .st-q td small { font-size: 12px; }
+.st-q td:last-child { min-width: 260px; line-height: 1.6; }  /* "הטעות הנפוצה ביותר": משפט שלם, לא עמודה צרה */
+.pm { unicode-bidi: isolate; direction: ltr; }  /* ביטוי מתמטי בתוך עברית: משמאל לימין, באותה שורה (plain-math.js) */
 @media (max-width: 980px) { .st-grid { grid-template-columns: 1fr; } }
 
 /* ---------- Integrity banner (datastore doctor) ---------- */
