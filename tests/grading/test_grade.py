@@ -703,6 +703,43 @@ def test_a_note_does_not_cover_another_red_box_and_its_line_is_the_shortest():
     assert (a.x, a.y, b.x, b.y) == (90, 400, 100, 330)  # מהפינה הקרובה של ההערה לפינה הקרובה של המלבן
 
 
+def _tool_page(color, width):
+    """עמוד עם "שורות כתב": קווים קצרים ומעוקלים בצבע ובעובי נתונים (נקודות)."""
+    doc = pymupdf.open()
+    page = doc.new_page()
+    for row in range(8):
+        y = 120 + row * 40
+        for k in range(14):
+            x = 80 + k * 30
+            page.draw_bezier((x, y), (x + 8, y - 14), (x + 16, y + 14), (x + 22, y), color=color, width=width)
+    return doc, page
+
+
+def test_the_writing_tool_is_recognised_and_sets_the_style():
+    _, marker = _tool_page((0, 0, 0), 4.5)
+    _, pencil = _tool_page((0.55, 0.55, 0.55), 0.8)
+    _, pen = _tool_page((0.05, 0.1, 0.6), 1.0)
+    assert grading.Ink(marker).tool == "marker"
+    assert grading.Ink(pencil).tool == "pencil"
+    assert grading.Ink(pen).tool == "pen"
+    # ליד טוש: מלבן עבה יותר והערה מודגשת וגדולה יותר; ליד עיפרון: מלבן דק יותר
+    assert grading.TOOL_STYLE["marker"]["bold"] and grading.TOOL_STYLE["marker"]["box"] > 1 > grading.TOOL_STYLE["pencil"]["box"]
+
+
+def test_a_note_avoids_a_row_of_thin_writing_even_where_the_ink_itself_is_sparse():
+    # שורה של כתב דק: מעט דיו, אבל כולה "אזור כתוב". מעל המלבן השורה, מתחתיו נייר ריק: ההערה הולכת למטה
+    doc = pymupdf.open()
+    page = doc.new_page()
+    for k in range(40):
+        page.draw_line((60 + k * 12, 300), (64 + k * 12, 290), color=(0.2, 0.2, 0.2), width=0.6)
+    ink = grading.Ink(page)
+    row = (60 / 595 * 1000, 285 / 842 * 1000, 540 / 595 * 1000, 305 / 842 * 1000)
+    assert ink.written(*row) > 5 * ink.density(*row)  # הדיו עצמו 3%, האזור הכתוב פי 5 ומעלה
+    box = pymupdf.Rect(200, 320, 300, 340)
+    note = grading._note_rect(box, page.rect, "חסר נימוק", 12, ink, [], [box])
+    assert note.y0 >= 340 or note.y1 <= 285
+
+
 def test_box_on_empty_paper_snaps_to_the_nearby_writing():
     doc, page = _scan_page((100, 400, 300, 440))
     ink = grading.Ink(page)
