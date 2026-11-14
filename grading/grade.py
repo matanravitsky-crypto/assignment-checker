@@ -918,8 +918,55 @@ def _clamp(r: pymupdf.Rect, inside: pymupdf.Rect) -> pymupdf.Rect:
     return pymupdf.Rect(r.x0 + dx, r.y0 + dy, r.x1 + dx, r.y1 + dy)
 
 
+NOTE_COST = {"ink": 8, "over": 60, "far": 0.6, "line": 2}  # משקלות המקום של הערה (_note_rect); נבחרו ב-2026-11-14 מ-36 צירופים על 67 הערות
+
+
+def _link(note: pymupdf.Rect, box: pymupdf.Rect) -> tuple[pymupdf.Point, pymupdf.Point]:
+    """הקו הקצר ביותר מההערה למלבן: מהנקודה הקרובה בשולי ההערה לנקודה הקרובה בשולי המלבן. (עד 2026-11-14 הקו יצא
+    מאמצע הצד של ההערה לאמצע הצד של המלבן, והערה שמתחת ומשמאל קיבלה קו אלכסוני ארוך דרך כתב היד.)"""
+    def axis(a0, a1, b0, b1):
+        if a1 < b0:
+            return a1, b0
+        if b1 < a0:
+            return a0, b1
+        m = (max(a0, b0) + min(a1, b1)) / 2
+        return m, m
+    ax, bx = axis(note.x0, note.x1, box.x0, box.x1)
+    ay, by = axis(note.y0, note.y1, box.y0, box.y1)
+    return pymupdf.Point(ax, ay), pymupdf.Point(bx, by)
+
+
+def _line_ink(ink: Ink, a: pymupdf.Point, b: pymupdf.Point, page: pymupdf.Rect) -> float:
+    """כמה כתב יד הקו מההערה למלבן חוצה: צפיפות הדיו בריבועים קטנים לאורכו."""
+    n = 12
+    s = 6 / 1000 * page.width
+    tot = 0.0
+    for i in range(1, n):
+        x, y = a.x + (b.x - a.x) * i / n, a.y + (b.y - a.y) * i / n
+        tot += ink.density((x - s) / page.width * 1000, (y - s) / page.height * 1000,
+                           (x + s) / page.width * 1000, (y + s) / page.height * 1000)
+    return tot / (n - 1)
+
+
+def _hits(a: pymupdf.Point, b: pymupdf.Point, r: pymupdf.Rect) -> bool:
+    """הקטע a-b עובר דרך המלבן r (בדיקה בדגימה של 20 נקודות לאורכו: מספיקה לעיגולים ולהערות)."""
+    return any(pymupdf.Point(a.x + (b.x - a.x) * i / 20, a.y + (b.y - a.y) * i / 20) in r for i in range(21))
+
+
+def _crosses(r: pymupdf.Rect, lines: list[pymupdf.Rect]) -> bool:
+    """ההערה חוצה קו הפרדה בין שאלות (מלבן דק של הקו)."""
+    return any(r.y0 < (t.y0 + t.y1) / 2 < r.y1 and r.x1 > t.x0 and r.x0 < t.x1 for t in lines)
+
+
+def rtl_measure(text: str, width: float, size: float) -> float:
+    """גובה ההערה ברוחב width (כמו ב-_note_size)."""
+    from . import rtl
+    return rtl.measure(str(text), width, size, lh=1.25) + 4
+
+
 def _note_rect(box: pymupdf.Rect, page: pymupdf.Rect, text: str = "", size: float = 10, ink: Ink | None = None,
-               taken: list[pymupdf.Rect] | None = None) -> pymupdf.Rect:
+               taken: list[pymupdf.Rect] | None = None, boxes: list[pymupdf.Rect] | None = None,
+               lines: list[pymupdf.Rect] | None = None) -> pymupdf.Rect:
     """איפה לכתוב את ההערה: ליד המלבן, במקום הכי פנוי מכתב יד (מתחת, מעל, או בצדדים), בלי לכסות הערה אחרת.
     מיושר לצד ימין, כמו עברית. בלי מסכה: מתחת למלבן, ואם אין מקום אז מעליו."""
     margin, gap = 4, 3
@@ -934,6 +981,17 @@ def _note_rect(box: pymupdf.Rect, page: pymupdf.Rect, text: str = "", size: floa
         pymupdf.Rect(box.x0 - gap - w, box.y0, box.x0 - gap, box.y0 + h),                # משמאל
         pymupdf.Rect(box.x1 + gap, box.y0, box.x1 + gap + w, box.y0 + h),                # מימין
     ]
+    # ועוד צורות: רחבה ונמוכה (נכנסת לרווח שבין שתי שורות כתב), וצרה וגבוהה, מיושרות לימין המלבן, לשמאלו או לאמצעו.
+    # (2026-11-14: בלעדיהן הערה בגובה שתי שורות כיסתה כתב גם כשמעל המלבן היה רווח של שורה אחת)
+    for k in (1.6, 0.7):
+        ww = min(max(w * k, 80), page.width - 2 * margin)
+        hh = rtl_measure(text, ww, size)
+        for x in (right(box.x1) - w + ww if k < 1 else max(min(box.x1, page.width - margin) - ww, margin),
+                  max(min(box.x0, page.width - margin - ww), margin),
+                  max(min((box.x0 + box.x1 - ww) / 2, page.width - margin - ww), margin)):
+            cands += [pymupdf.Rect(x, box.y1 + gap, x + ww, box.y1 + gap + hh), pymupdf.Rect(x, box.y0 - gap - hh, x + ww, box.y0 - gap)]
+        cands += [pymupdf.Rect(box.x0 - gap - ww, box.y0, box.x0 - gap, box.y0 + hh),
+                  pymupdf.Rect(box.x1 + gap, box.y0, box.x1 + gap + ww, box.y0 + hh)]
     # ובשוליים של הדף באותו גובה (צילום של דף על רקע לבן משאיר שוליים ריקים רחבים): צר יותר, ושורות נוספות
     # כמה הערות באותו גובה נערמות בשוליים אחת מתחת לשנייה (או מעל), עם קו אל המלבן: בצד המלבן, ובשוליים הריקים
     # של הדף (מחוץ לאזור הכתוב, Ink.xspan)
@@ -959,9 +1017,24 @@ def _note_rect(box: pymupdf.Rect, page: pymupdf.Rect, text: str = "", size: floa
         # r & t is a new rectangle. r.intersect(t) changes r itself in PyMuPDF: from the second note on a page the
         # candidate shrank to the overlap (or turned inside out) and the note was never written
         clash = sum(max((r & t).get_area(), 0) for t in taken or []) / max(r.get_area(), 1)
+        # נגיעה בעיגול ✓/✗ או בהערה אחרת אסורה כמעט לגמרי, גם כשהשטח המשותף קטן (2026-11-14: עיגול ✓✗ ישב על אמצע הערה)
+        clash += 1.0 if any(r.intersects(t) for t in taken or []) else 0.0
         far = max(r.x0 - box.x1, box.x0 - r.x1, r.y0 - box.y1, box.y0 - r.y1, 0) / page.width
-        # כתב יד מתחת להערה הוא הגרוע מכול (גם כתב דהוי, שצפיפות הדיו בו כ-0.03); הערה רחוקה מהמלבן עדיפה, עם קו אליו
-        return 4 * ink.density(*norm) + 5 * clash + 0.1 * far
+        # כתב יד מתחת להערה הוא הגרוע מכול (גם כתב דהוי, שצפיפות הדיו בו כ-0.03); הערה רחוקה מהמלבן עדיפה, עם קו אליו.
+        # 2026-11-14 (27 עבודות, 67 הערות): הערה שישבה 80-130 נקודות מתחת למלבן קיבלה קו ארוך דרך כתב היד, והערה כיסתה
+        # מלבן אדום של טעות אחרת. אז: מרחק עולה יותר, קו שחוצה כתב עולה, מלבן אדום אחר וקו הפרדה בין שאלות אסורים כמעט
+        cover = sum(max((r & t).get_area(), 0) for t in boxes or []) / max(r.get_area(), 1)
+        line = 0.0
+        if far > 0.01:
+            a, b = _link(r, box)
+            line = _line_ink(ink, a, b, page)
+            seg = pymupdf.Rect(min(a.x, b.x), min(a.y, b.y), max(a.x, b.x) + 0.1, max(a.y, b.y) + 0.1)
+            # קו שעובר דרך עיגול ✓/✗ או הערה אחרת (2026-11-14: קו ארוך חצה את ה-✓✗ של הסעיף)
+            line += 0.5 if any(seg.intersects(t) and _hits(a, b, t) for t in taken or []) else 0.0
+        cross = 3.0 if lines and _crosses(r, lines) else 0.0
+        w_ = NOTE_COST
+        d = ink.density(*norm)  # מעל 0.02 זה כבר כתב של ממש מתחת להערה (הרקע הלבן מסתיר אותו): הרבה יותר יקר מקו ארוך
+        return (w_["ink"] * d + w_["over"] * max(d - 0.02, 0) + 5 * clash + 3 * cover + w_["far"] * far + w_["line"] * line + cross)
 
     pool = fits or [_clamp(r, inside) for r in cands]
     return min(pool, key=cost)  # בשוויון נשארת הראשונה: מתחת למלבן
@@ -996,47 +1069,61 @@ def _summary_page(doc: pymupdf.Document, g: Graded, ctx: Context, archive, extra
     summary_page(doc, g, ctx, archive, extra)
 
 
-def _place_marks(doc: pymupdf.Document, g: Graded, archive, taken: dict[int, list[pymupdf.Rect]] | None = None) -> list[str]:
+def _page_ink(doc: pymupdf.Document, inks: dict[int, Ink | None], n: int) -> Ink | None:
+    """מסכת הדיו של עמוד n (מ-1), פעם אחת לעמוד ולפני שמשהו צויר עליו. None כשאי אפשר (המסכה היא רק שיפור)."""
+    if n not in inks:
+        try:
+            inks[n] = Ink(doc[n - 1])
+        except Exception:  # noqa: BLE001
+            inks[n] = None
+    return inks[n]
+
+
+def _place_marks(doc: pymupdf.Document, g: Graded, archive, taken: dict[int, list[pymupdf.Rect]] | None = None,
+                 lines: dict[int, list[pymupdf.Rect]] | None = None, inks: dict[int, Ink | None] | None = None) -> list[str]:
     """מצייר את הסימונים: מצמיד כל מלבן לכתב היד, וכותב את ההערה במקום פנוי. משנה את g.marks למה שצויר באמת
-    (מלבנים מוצמדים, בלי סימונים שאין להם כתב בסביבה). מחזיר את ההערות שלא היה להן איפה להיצמד."""
-    inks: dict[int, Ink | None] = {}
+    (מלבנים מוצמדים, בלי סימונים שאין להם כתב בסביבה). מחזיר את ההערות שלא היה להן איפה להיצמד.
+    קודם מוצמדים כל המלבנים, ורק אז נכתבות ההערות: הערה לא מכסה מלבן אדום של טעות אחרת, ולא חוצה קו הפרדה (lines)."""
+    inks = inks if inks is not None else {}
     taken = taken if taken is not None else {}
-    placed: list[Mark] = []
+    lines = lines or {}
+    placed: list[tuple[Mark, pymupdf.Rect]] = []
     unplaced: list[str] = []
     for mark in g.marks:
         page = doc[mark.page - 1]
-        if mark.page not in inks:
-            try:
-                inks[mark.page] = Ink(page)
-            except Exception:  # המסכה היא רק שיפור: בלעדיה מציירים איפה ש-Claude ביקש
-                inks[mark.page] = None
-        ink = inks[mark.page]
+        ink = _page_ink(doc, inks, mark.page)
         refined = refine_box(ink, (mark.x0, mark.y0, mark.x1, mark.y1))
         if refined is None:
             if mark.text:
                 unplaced.append(f"עמוד {mark.page}: {mark.text}")
             continue
         mark = Mark(mark.page, *refined, mark.text)
-        placed.append(mark)
         shown = page.rect  # העמוד כפי שהוא מוצג, אחרי סיבוב
-        scale = min(max(shown.width / 612, 0.8), 1.6)
-        box = pymupdf.Rect(mark.x0 / 1000 * shown.width, mark.y0 / 1000 * shown.height,
-                           mark.x1 / 1000 * shown.width, mark.y1 / 1000 * shown.height)
+        placed.append((mark, pymupdf.Rect(mark.x0 / 1000 * shown.width, mark.y0 / 1000 * shown.height,
+                                          mark.x1 / 1000 * shown.width, mark.y1 / 1000 * shown.height)))
+    for mark, box in placed:
+        page = doc[mark.page - 1]
+        scale = min(max(page.rect.width / 612, 0.8), 1.6)
         page.draw_rect(box * page.derotation_matrix, color=RED, width=1.6 * scale, overlay=True)
-        if mark.text:
-            size = 12 * scale
-            note = _note_rect(box, shown, mark.text, size, ink, taken.setdefault(mark.page, []))
-            taken[mark.page].append(note)
-            dark = bool(ink and getattr(ink, "dark", False))
-            if not _write(page, note, _html(mark.text, size, "#ff7b7b" if dark else "#d90000"), archive, backdrop=not dark):
-                unplaced.append(f"עמוד {mark.page}: {mark.text}")
-            elif not (note + (-6, -6, 6, 6)).intersects(box):  # ההערה בשוליים: קו דק מההערה למלבן
-                a = pymupdf.Point(note.x1 if note.x1 <= box.x0 else note.x0 if note.x0 >= box.x1 else (note.x0 + note.x1) / 2,
-                                  (note.y0 + note.y1) / 2)
-                b = pymupdf.Point(box.x0 if a.x <= box.x0 else box.x1 if a.x >= box.x1 else a.x, (box.y0 + box.y1) / 2)
-                m_ = page.derotation_matrix
-                page.draw_line(a * m_, b * m_, color=RED, width=1.1 * scale, stroke_opacity=0.85, overlay=True)
-    g.marks = placed
+    for mark, box in placed:
+        if not mark.text:
+            continue
+        page = doc[mark.page - 1]
+        shown = page.rect
+        scale = min(max(shown.width / 612, 0.8), 1.6)
+        ink = inks.get(mark.page)
+        size = 12 * scale
+        boxes = [b for m, b in placed if m.page == mark.page]
+        note = _note_rect(box, shown, mark.text, size, ink, taken.setdefault(mark.page, []), boxes, lines.get(mark.page))
+        taken[mark.page].append(note)
+        dark = bool(ink and getattr(ink, "dark", False))
+        if not _write(page, note, _html(mark.text, size, "#ff7b7b" if dark else "#d90000"), archive, backdrop=not dark):
+            unplaced.append(f"עמוד {mark.page}: {mark.text}")
+        elif not (note + (-6, -6, 6, 6)).intersects(box):  # ההערה רחוקה מהמלבן: קו דק, הקצר ביותר, ממנה אליו
+            a, b = _link(note, box)
+            m_ = page.derotation_matrix
+            page.draw_line(a * m_, b * m_, color=RED, width=1.1 * scale, stroke_opacity=0.85, overlay=True)
+    g.marks = [m for m, _ in placed]
     return unplaced
 
 
@@ -1083,11 +1170,68 @@ def _badge(page: pymupdf.Page, x: float, y: float, d: float, kind: str, scale: f
     return r
 
 
-def _place_checks(doc: pymupdf.Document, g: Graded, ctx: Context) -> dict[int, list[pymupdf.Rect]]:
+def exercise_of(label: str) -> str:
+    """התרגיל שהסעיף שייך אליו: "קבוצות 11ב" ו-"שאלה 3 (ב)" הם תרגילים 11 ו-3. סעיף בלי אות נשאר כמו שהוא."""
+    s = " ".join(str(label).split())
+    return re.sub(r"(?<=\d)\s*(?:\(\s*[א-ת]['׳]?\s*\)|[א-ת]['׳]?)$", "", s).strip() or s
+
+
+def _dividers(doc: pymupdf.Document, g: Graded, ctx: Context, inks: dict[int, Ink | None]) -> dict[int, list[pymupdf.Rect]]:
+    """קו אדום לרוחב העמוד בין תרגיל לתרגיל (בין סעיפים של אותו תרגיל אין קו). הקו נמתח רק כשהתרגיל הקודם, לפי סדר
+    הקריאה, מתחיל באותו עמוד מעליו, ורק ברווח ריק של ממש בין שניהם: הרווח הרחב ביותר בין תחילת הסעיף האחרון של
+    התרגיל הקודם לתחילת התרגיל הזה. אין רווח ריק (כתב בשני טורים, שורות צפופות): אין קו, כי קו על כתב היד מפריע
+    יותר משהוא עוזר. מחזיר לכל עמוד מלבן דק סביב כל קו, כדי שהעיגולים וההערות לא יחצו אותו.
+    (2026-11-14, 27 עבודות: קו "מעל תחילת התשובה" עבר בין נוסח השאלה המודפס שהסטודנט הדביק לבין התשובה שלו, והופיע
+    גם בראש עמוד מעל כותרת או צל.)"""
+    spots = sorted(((p.page, p.y0, p.y1, exercise_of(q.label)) for q, p in zip(ctx.questions, g.places)
+                    if p and 1 <= p.page <= len(doc)))
+    out: dict[int, list[pymupdf.Rect]] = {}
+    seen: set[str] = set()
+    for i, (pg, y0, _y1, key) in enumerate(spots):
+        new = key not in seen
+        seen.add(key)
+        if not new or i == 0:
+            continue
+        prev = spots[i - 1]
+        if prev[3] == key or prev[0] != pg:  # התרגיל הקודם בעמוד אחר: המעבר לעמוד מפריד, ומעל יש אולי נוסח השאלה
+            continue
+        ink = _page_ink(doc, inks, pg)
+        if ink is None or not ink.usable:
+            continue
+        lo, hi = ink.xspan
+        x0, x1 = max(lo - 15, 10), min(hi + 15, 990)
+        top, bottom = prev[2] + 4, y0 - 2
+        run, best = 0, (0, 0.0)
+        y = top
+        while y <= bottom:
+            # ריקה: כמעט בלי דיו. קו שוליים אנכי של מחברת או קו של הסטודנט לאורך הדף לא הופכים שורה ל"כתובה"
+            if ink.density(x0, y - 1.5, x1, y + 1.5) <= 0.012:
+                run += 1
+                if run > best[0]:
+                    best = (run, y - (run - 1) / 2)
+            else:
+                run = 0
+            y += 1
+        if best[0] < 4:  # פחות מ-4 אלפיות ריקות: אין איפה לעבור בלי לחצות כתב
+            continue
+        page = doc[pg - 1]
+        shown = page.rect
+        scale = min(max(shown.width / 612, 0.8), 1.6)
+        yy = best[1] / 1000 * shown.height
+        a, b = pymupdf.Point(x0 / 1000 * shown.width, yy), pymupdf.Point(x1 / 1000 * shown.width, yy)
+        m = page.derotation_matrix
+        page.draw_line(a * m, b * m, color=RED, width=1.8 * scale, stroke_opacity=0.9, overlay=True)
+        out.setdefault(pg, []).append(pymupdf.Rect(a.x, yy - 3 * scale, b.x, yy + 3 * scale))
+    return out
+
+
+def _place_checks(doc: pymupdf.Document, g: Graded, ctx: Context, lines: dict[int, list[pymupdf.Rect]] | None = None,
+                  inks: dict[int, Ink | None] | None = None) -> dict[int, list[pymupdf.Rect]]:
     """ליד תחילת התשובה לכל שאלה (g.places, מ-Claude): ✓ ירוק לניקוד מלא, ✗ אדום לאפס, ✓✗ כתום לניקוד חלקי.
     כל סימן בתוך עיגול (_badge), ליד המלבן במקום הפנוי ביותר מכתב יד; שני סימנים לא נערמים זה על זה. שאלה בלי מקום (page 0) לא מסומנת. מחזיר לכל עמוד את המקומות שתפסו, כדי שההערות יעקפו אותם."""
     taken: dict[int, list[pymupdf.Rect]] = {}
-    inks: dict[int, Ink | None] = {}
+    inks = inks if inks is not None else {}
+    lines = lines or {}
     for q, p, place, shown in zip(ctx.questions, g.points, g.places, assigned(ctx)):
         if not shown or not place or not 1 <= place.page <= len(doc):
             continue
@@ -1101,12 +1245,7 @@ def _place_checks(doc: pymupdf.Document, g: Graded, ctx: Context) -> dict[int, l
         w = d * (1.7 if kind == "half" else 1)
         gap = 5 * scale
         mine = taken.setdefault(place.page, [])
-        if place.page not in inks:
-            try:
-                inks[place.page] = Ink(page)
-            except Exception:  # noqa: BLE001 - בלי מסכה: המקום הראשון שפנוי מסימנים אחרים
-                inks[place.page] = None
-        ink = inks[place.page]
+        ink = _page_ink(doc, inks, place.page)  # בלי מסכה: המקום הראשון שפנוי מסימנים אחרים
         cy = box.y0 + (box.height - d) / 2
         # ליד מספר הסעיף: מימין, משמאל, מעל או מתחת, במקום שהכי פחות מכסה כתב יד (2026-11-12: מימין למלבן בלבד
         # העיגול ישב על "A=" שאחרי "(ב)")
@@ -1124,6 +1263,7 @@ def _place_checks(doc: pymupdf.Document, g: Graded, ctx: Context) -> dict[int, l
             if r.x0 < 3 or r.y0 < 3 or r.x1 > shown.width - 3 or r.y1 > shown.height - 3:
                 return 99.0
             clash = 9 if any(r.intersects(t) for t in mine) else 0
+            clash += 9 if any(r.intersects(t) for t in lines.get(place.page, [])) else 0  # לא על קו ההפרדה
             p = r + (-2 * gap, -gap, 2 * gap, gap)  # עיגול שנוגע בכתב גם מכסה אותו
             dens = ink.density(p.x0 / shown.width * 1000, p.y0 / shown.height * 1000,
                                p.x1 / shown.width * 1000, p.y1 / shown.height * 1000) if ink is not None and ink.usable else 0
@@ -1158,8 +1298,10 @@ def mark_pdf(pdf: bytes, g: Graded, ctx: Context, max_bytes: int = MAX_BYTES) ->
     """מצייר את הסימונים באדום על העבודה, מוסיף עמוד סיכום בהתחלה, ושומר עד max_bytes אם אפשר."""
     archive = _archive()
     with pymupdf.open(stream=pdf, filetype="pdf") as doc:
-        badges = _place_checks(doc, g, ctx)
-        unplaced = _place_marks(doc, g, archive, badges)
+        inks: dict[int, Ink | None] = {}  # מסכת הדיו של כל עמוד, לפני שמשהו צויר עליו
+        lines = _dividers(doc, g, ctx, inks)
+        badges = _place_checks(doc, g, ctx, lines, inks)
+        unplaced = _place_marks(doc, g, archive, badges, lines, inks)
         _summary_page(doc, g, ctx, archive, g.lost + unplaced)
         doc.subset_fonts()
         out = doc.tobytes(garbage=4, deflate=True)
