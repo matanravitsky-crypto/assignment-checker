@@ -270,6 +270,9 @@ def test_check_cross_or_half_is_drawn_where_each_answer_starts():
     with pymupdf.open(stream=grading.mark_pdf(doc.tobytes(), g, ctx), filetype="pdf") as out:
         page = out[1]
         green, red, orange = (_strokes(page, c) for c in (grading.GREEN, grading.RED, grading.ORANGE))
+    lines = [d for d in red if d["rect"].width > 150 and d["rect"].height < 2]  # הקווים בין התרגילים (שלוש שאלות בעמוד)
+    red = [d for d in red if d not in lines]
+    assert len(lines) == 2
     # כל סימן בעיגול לבן עם מסגרת בצבע שלו: ✓ = עיגול + קו · ✗ = עיגול + שני קווים · ✓✗ = אליפסה + קו + שני קווים
     assert len(green) == 2 and len(red) == 3 and len(orange) == 4
     circles = [d for d in green + red + orange if d.get("fill") == (1.0, 1.0, 1.0)]
@@ -648,6 +651,58 @@ def _scan_page(ink_rect=(100, 100, 300, 140)):
     return doc, page
 
 
+def _written(*bands, pages=1):
+    """עמודים לבנים עם פסים של "כתב יד": bands = (עמוד, y0, y1) בנקודות, לרוחב 80-500."""
+    doc = pymupdf.open()
+    for _ in range(pages):
+        doc.new_page()
+    for n, y0, y1 in bands:
+        for y in range(y0, y1, 3):
+            doc[n - 1].draw_line((80, y), (500, y), color=(0, 0, 0.3), width=1.2)
+    return doc
+
+
+def _dividers_of(doc, labels, places):
+    ctx = grading.Context("מטלה", "קורס", [grading.Question(l, 10) for l in labels])
+    g = grading.Graded([10] * len(labels), [""] * len(labels), 100, "", [], places=places)
+    with pymupdf.open(stream=grading.mark_pdf(doc.tobytes(), g, ctx), filetype="pdf") as out:
+        return [[d["rect"] for d in _strokes(p, grading.RED) if d["rect"].width > 150 and d["rect"].height < 2]
+                for p in list(out)[1:]]
+
+
+def test_a_red_line_separates_exercises_but_not_the_parts_of_one():
+    doc = _written((1, 80, 160), (1, 250, 330), (1, 420, 500))  # שלושה סעיפים בעמוד: 11א, 11ב, 12א
+    places = [grading.Mark(1, 800, 95, 850, 110, ""), grading.Mark(1, 800, 297, 850, 312, ""),
+              grading.Mark(1, 800, 499, 850, 514, "")]
+    (lines,) = _dividers_of(doc, ["קבוצות 11א", "קבוצות 11ב", "קבוצות 12א"], places)
+    assert len(lines) == 1  # בין 11 ל-12 בלבד
+    y = (lines[0].y0 + lines[0].y1) / 2
+    assert 330 < y < 420  # ברווח הריק שבין התרגילים, לא על הכתב
+    assert grading.exercise_of("שאלה 3 (ב)") == "שאלה 3" and grading.exercise_of("מרוכבים 7ד") == "מרוכבים 7"
+
+
+def test_no_red_line_at_a_page_break_or_through_writing():
+    # תרגיל 2 מתחיל באמצע עמוד 2, והתרגיל הקודם בעמוד 1: מעליו אולי נוסח השאלה המודפס, ולכן אין קו
+    doc = _written((1, 80, 400), (2, 80, 160), (2, 300, 500), pages=2)
+    places = [grading.Mark(1, 800, 95, 850, 110, ""), grading.Mark(2, 800, 357, 850, 372, "")]
+    assert _dividers_of(doc, ["שאלה 1", "שאלה 2"], places) == [[], []]
+    # שני תרגילים באותו עמוד בלי שום רווח ריק ביניהם: קו היה חוצה כתב, אז אין קו
+    doc = _written((1, 80, 500))
+    places = [grading.Mark(1, 800, 95, 850, 110, ""), grading.Mark(1, 800, 357, 850, 372, "")]
+    assert _dividers_of(doc, ["שאלה 1", "שאלה 2"], places) == [[]]
+
+
+def test_a_note_does_not_cover_another_red_box_and_its_line_is_the_shortest():
+    page = pymupdf.Rect(0, 0, 595, 842)
+    doc, p = _scan_page((100, 300, 500, 330))
+    ink = grading.Ink(p)
+    box, other = pymupdf.Rect(100, 300, 200, 330), pymupdf.Rect(300, 335, 500, 380)
+    note = grading._note_rect(box, page, "חסרה בדיקה שהנקודה על הישר השני", 12, ink, [], [box, other])
+    assert not note.intersects(other) and not note.intersects(box)
+    a, b = grading._link(pymupdf.Rect(10, 400, 90, 430), pymupdf.Rect(100, 300, 200, 330))
+    assert (a.x, a.y, b.x, b.y) == (90, 400, 100, 330)  # מהפינה הקרובה של ההערה לפינה הקרובה של המלבן
+
+
 def test_box_on_empty_paper_snaps_to_the_nearby_writing():
     doc, page = _scan_page((100, 400, 300, 440))
     ink = grading.Ink(page)
@@ -756,7 +811,8 @@ def test_one_sheet_summary_shows_short_labels_in_order_and_skips_an_unasked_ques
     with pymupdf.open(stream=grading.mark_pdf(doc.tobytes(), g, ctx), filetype="pdf") as out:
         summary = text(out[0])
         assert "שאלה 11" in summary and sheet not in summary and "לא נדרשה" not in summary
-        assert len(_strokes(out[1], grading.RED)) == 0 and len(_strokes(out[1], grading.GREEN)) == 4  # שני ✓, בלי ✗ לשאלה 8
+        crosses = [d for d in _strokes(out[1], grading.RED) if not (d["rect"].width > 150 and d["rect"].height < 2)]
+        assert len(crosses) == 0 and len(_strokes(out[1], grading.GREEN)) == 4  # שני ✓, בלי ✗ לשאלה 8 (רק קווים בין תרגילים)
 
 
 def test_a_minus_written_after_the_number_goes_back_in_front():
