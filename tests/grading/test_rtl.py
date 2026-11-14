@@ -221,3 +221,12 @@ def test_a_crowded_summary_still_fits_one_page():
                  for s in l["spans"] for c in s["chars"])
     assert bottom <= page.rect.height - 20
     assert sum("1+8=-7" in l for l in visual(page)) >= 5 + 6 + 8    # הכול נכתב, מוקטן
+
+
+def test_a_note_is_balanced_with_no_word_alone_on_its_last_line():
+    # 2026-11-14: "חסרה בדיקה שהנקודה (1,-1) נמצאת על" ואז "L2" לבד בשורה השנייה
+    text = "חסרה בדיקה שהנקודה (1,-1) נמצאת על L2"
+    greedy = rtl.layout(text, 150 / 10)
+    even = rtl.balance(text, 150, 10)
+    assert len(even.lines) == len(greedy.lines) == 2
+    assert min(even.widths) > 0.5 * max(even.widths) and min(greedy.widths) < min(even.widths)

@@ -322,8 +322,11 @@ def summary_page(doc: pymupdf.Document, g: Graded, ctx: Context, archive, extra:
     elif not lost:
         line = f"ניקוד מלא בכל {len(graded)} ה{unit}."
     else:
+        one = "בסעיף אחד" if unit == "סעיפים" else "בשאלה אחת"
+        two = "בשני סעיפים" if unit == "סעיפים" else "בשתי שאלות"
+        where = one if len(lost) == 1 else two if len(lost) == 2 else f"ב-{len(lost)} {unit}"
         line = (f"ניקוד מלא ב-{n_full} מתוך {len(graded)} {unit}. "
-                f"ירדו נקודות ב-{len(lost)} {unit}, והם מפורטים למטה.")
+                f"ירדו נקודות {where}, {'והוא מפורט' if len(lost) == 1 else 'והם מפורטים'} למטה.")
     _stack(page, pymupdf.Rect(head.x0 + 2 * r + 46, head.y0 + 14, head.x1 - 18, head.y1 - 10), [
         {"text": ctx.course, "size": 9.5, "color": INK3},
         {"text": ctx.title, "size": 16, "color": INK, "bold": True, "mt": 2},
@@ -353,7 +356,9 @@ def summary_page(doc: pymupdf.Document, g: Graded, ctx: Context, archive, extra:
         blocks.append(("title", "שימו לב (בלי הורדת נקודות)", NOTE, 12, 5))
         blocks.append(("table", [(it["label"], "✓", NOTE, NOTE_SOFT, False, it["comment"]) for it, _ in notes]))
     if g.feedback:
-        blocks += [("title", "משוב", INK, 12, 3), ("p", g.feedback, 0)]
+        # שורה לכל נושא (המשוב כתוב בשורות: מה טוב, "מה לתקן:", ואז שאלה בכל שורה), עם רווח קטן ביניהן
+        lines = [l.strip() for l in str(g.feedback).splitlines() if l.strip()]
+        blocks += [("title", "משוב", INK, 12, 3)] + [("p", l, 3 if i else 0) for i, l in enumerate(lines)]
     if extra:
         blocks.append(("title", "הערות נוספות", INK, 12, 3))
         blocks += [("p", t, 3) for t in extra]

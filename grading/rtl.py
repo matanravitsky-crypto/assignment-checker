@@ -260,6 +260,23 @@ def fit(text: str, rect: pymupdf.Rect, size: float, bold: bool = False, lh: floa
     return None
 
 
+def balance(text: str, width: float, size: float, bold: bool = False, math: bool = True) -> Layout:
+    """אותו מספר שורות כמו בשבירה החמדנית ברוחב width (נקודות), אבל ברוחב הקטן ביותר שמחזיק אותן: השורות יוצאות
+    שוות בערך, בלי מילה אחת לבד בשורה האחרונה ("חסרה בדיקה שהנקודה (1,-1) נמצאת על" ואז "L2", 2026-11-14)."""
+    lay = layout(text, width / size, bold, math)
+    n = len(lay.lines)
+    if n < 2:
+        return lay
+    lo, hi = 0.3 * width, width
+    for _ in range(14):
+        mid = (lo + hi) / 2
+        if len(layout(text, mid / size, bold, math).lines) <= n:
+            hi = mid
+        else:
+            lo = mid
+    return layout(text, hi / size, bold, math)
+
+
 def _rgb(color) -> tuple[float, float, float]:
     if isinstance(color, str):
         return tuple(int(color[i:i + 2], 16) / 255 for i in (1, 3, 5))

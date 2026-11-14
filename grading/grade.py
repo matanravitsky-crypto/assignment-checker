@@ -983,6 +983,7 @@ def _write(page: pymupdf.Page, rect: pymupdf.Rect, note: _Note, archive, backdro
         if backdrop:
             page.draw_rect(box, color=None, fill=(1, 1, 1), fill_opacity=0.8, overlay=True)
         size, lay = got
+        lay = rtl.balance(note.text, rect.width, size, math=note.math)  # שורות שוות, בלי מילה לבד בסוף
         rtl.write(page, rect, lay, size, note.color, lh=note.lh)
     except Exception:
         return False
