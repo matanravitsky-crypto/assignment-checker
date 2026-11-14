@@ -1379,7 +1379,13 @@ def _place_checks(doc: pymupdf.Document, g: Graded, ctx: Context, lines: dict[in
             if r.x0 < 3 or r.y0 < 3 or r.x1 > shown.width - 3 or r.y1 > shown.height - 3:
                 return 99.0
             clash = 9 if any(r.intersects(t) for t in mine) else 0
-            clash += 9 if any(r.intersects(t) for t in lines.get(place.page, [])) else 0  # לא על קו ההפרדה
+            # קו בין תרגילים: העיגול לא בצד של התרגיל הקודם (מעל הקו שמעל מספר התרגיל נראה שייך לקודם, 2026-11-14,
+            # עבודה 0338). על הקו עצמו מותר: כשהקו צמוד למספר אין מקום אחר, והחלופה הייתה עיגול על כתב היד
+            cy_ = (r.y0 + r.y1) / 2
+            for t in lines.get(place.page, []):
+                ly = (t.y0 + t.y1) / 2
+                if r.x1 > t.x0 and r.x0 < t.x1 and not r.y0 < ly < r.y1 and (cy_ - ly) * ((box.y0 + box.y1) / 2 - ly) < 0:
+                    clash += 9
             p = r + (-2 * gap, -gap, 2 * gap, gap)  # עיגול שנוגע בכתב גם מכסה אותו
             dens = ink.density(p.x0 / shown.width * 1000, p.y0 / shown.height * 1000,
                                p.x1 / shown.width * 1000, p.y1 / shown.height * 1000) if ink is not None and ink.usable else 0
