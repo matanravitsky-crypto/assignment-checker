@@ -2335,6 +2335,18 @@
   const statOf = (key) => D.stats.find((s) => s.key === key);
   const pctCell = (v) => (v == null ? `<span class="muted">—</span>` : `${v}%`);
   const numCell = (v) => (v == null ? `<span class="muted">—</span>` : fmt(v));
+  // צבע פס "הצלחה" לפי אחוז: אדום מתחת ל-60, ירוק מ-90 ומעלה, ובין לבין מעבר הדרגתי אדום ← כתום ← ירוק.
+  // צבעי האתר עצמם (--red, --warn, --ok), אז זה עובד גם במצב כהה
+  const successColor = (pct) => {
+    if (pct == null) return "";
+    if (pct < 60) return "var(--red)";
+    if (pct >= 90) return "var(--ok)";
+    const t = (pct - 60) / 30;
+    return t < 0.5
+      ? `color-mix(in srgb, var(--warn) ${Math.round(t * 200)}%, var(--red))`
+      : `color-mix(in srgb, var(--ok) ${Math.round((t - 0.5) * 200)}%, var(--warn))`;
+  };
+  const successBar = (pct) => `<i style="width:${pct ?? 0}%${pct == null ? "" : `;background:${successColor(pct)}`}"></i>`;
 
   // הסטטיסטיקה של מטלה, מאותו מסד נתונים (Statistics/ בדרייב): בשלב "בדיקה וציון" לכל מטלה שיש בה עבודות בדוקות
   // השם האמיתי של הסעיף במחוון ("קבוצות 11א", "8ב"), כי כך מתייחסים אליו. בלי שם: מספר הסידור
@@ -2347,7 +2359,7 @@
     const g = S.grade, k = S.counts;
     const tile = (label, value, sub = "", cls = "") => `<div class="stat ${cls}"><span class="stat-l">${label}</span><b class="stat-v num">${value}</b>${sub ? `<span class="stat-s">${sub}</span>` : ""}</div>`;
     const qs = S.per_question.map((q) => `<li><span class="sq-l">${esc(qName(q))}</span>
-        <span class="track"><i style="width:${q.success_pct ?? 0}%"></i></span><b class="num">${pctCell(q.success_pct)}</b>
+        <span class="track">${successBar(q.success_pct)}</span><b class="num">${pctCell(q.success_pct)}</b>
         <small class="muted">${q.mistakes[0] ? window.PlainMath.html(q.mistakes[0].text, esc) : ""}</small></li>`).join("");
     const top = S.per_question.flatMap((q) => q.mistakes.map((m) => ({ ...m, q: q.index, ql: qName(q) }))).sort((a, b) => b.count - a.count).slice(0, 3);
     return `<section class="panel a-stats" aria-label="הסטטיסטיקה של המטלה">
@@ -2443,7 +2455,7 @@
         <td class="num">${numCell(q.points)}</td>
         <td class="num">${q.graded}</td>
         <td class="num">${numCell(q.mean)}</td>
-        <td class="st-bar-cell"><span class="track"><i style="width:${q.success_pct ?? 0}%"></i></span><b class="num">${pctCell(q.success_pct)}</b></td>
+        <td class="st-bar-cell"><span class="track">${successBar(q.success_pct)}</span><b class="num">${pctCell(q.success_pct)}</b></td>
         <td class="num col-hide">${pctCell(q.full_marks_pct)}</td>
         <td class="num col-hide">${pctCell(q.zero_pct)}</td>
         <td class="num">${q.unsure ? `<span class="st-warn">${q.unsure}</span>` : "0"}</td>
