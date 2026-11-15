@@ -12,6 +12,13 @@ Claude Code מחובר במחשב עם החשבון של הצוות (כמו בה
 - ההנחיות (SYSTEM של grade.py) כ---system-prompt-file, והבקשה עצמה ב-stdin (שורת פקודה ארוכה נשברת ב-Windows).
 - --setting-sources project בתיקייה ריקה: בלי ההגדרות, ה-hooks והתוספים של המשתמש.
 
+עלות וזמן (2026-11-15):
+- מה שמשותף לכל ההגשות של המטלה (הבלוק שבנה context_text, עם cache_control) עובר לסוף קובץ ההנחיות ולא לבקשה.
+  המטמון עובד לפי התחלה זהה של הבקשה ובגבולות של בלוקים: כשהמחוון היה בתוך הבקשה, באותו בלוק טקסט עם נתיבי התיקייה
+  הזמנית (שם אקראי) ועם רשימת העמודים, כל הגשה כתבה את כל ההקשר למטמון מחדש (כ-100 אלף טוקנים, כ-80% מהעלות לפי
+  Grading usage.jsonl). בקובץ ההנחיות הוא זהה בכל ההגשות, נכתב פעם אחת ונקרא מהמטמון בשאר.
+- את כל הקבצים קוראים בצעד אחד (קריאות Read מקבילות), ולא קובץ אחרי קובץ: פחות צעדים, פחות זמן.
+
 החוזה זהה ל-claude_ask של grade.py: מקבלים את הבקשה שבנה build_request ומחזירים טקסט JSON בסכמה SCHEMA.
 """
 from __future__ import annotations
@@ -30,13 +37,32 @@ BUDGET_USD = 5.0
 TIMEOUT_S = 900
 EXT = {"image/png": ".png", "image/jpeg": ".jpg", "image/gif": ".gif", "image/webp": ".webp", "application/pdf": ".pdf"}
 
-READ_ALL = ("לפני שאתה עונה, קרא עם הכלי Read את כל הקבצים שברשימה, לפי הסדר: הם העמודים של ההגשה "
-            "(והמכוון והפתרון הרשמי, אם הם ברשימה). אל תקרא שום קובץ אחר. מספר העמוד הוא המספר שבשם הקובץ "
-            "(page-03 = עמוד 3), לא מקום הקובץ ברשימה. בסוף החזר רק את התוצאה המובנית.")
+AT_ONCE = ("קרא את כולם בבת אחת: בתגובה אחת, קריאה אחת ל-Read לכל קובץ, כולן במקביל ולפי סדר הרשימה, "
+           "ולא קובץ אחרי קובץ.")
+
+READ_ALL = ("לפני שאתה עונה, קרא עם הכלי Read את כל הקבצים שברשימה: הם העמודים של ההגשה "
+            "(והמכוון והפתרון הרשמי, אם הם ברשימה). " + AT_ONCE + " אל תקרא שום קובץ אחר. מספר העמוד הוא המספר "
+            "שבשם הקובץ (page-03 = עמוד 3), לא מקום הקובץ ברשימה. בסוף החזר רק את התוצאה המובנית.")
 
 
-READ_CROPS = ("לפני שאתה עונה, קרא עם הכלי Read את כל הקבצים שברשימה, לפי הסדר: הם החיתוכים (crop-01 = חיתוך 1). "
-              "אל תקרא שום קובץ אחר. בסוף החזר רק את התוצאה המובנית.")
+READ_CROPS = ("לפני שאתה עונה, קרא עם הכלי Read את כל הקבצים שברשימה: הם החיתוכים (crop-01 = חיתוך 1). "
+              + AT_ONCE + " אל תקרא שום קובץ אחר. בסוף החזר רק את התוצאה המובנית.")
+
+# בראש החלק המשותף בקובץ ההנחיות: הקבצים שהוא מזכיר (המכוון, הפתרון הרשמי) נמצאים ברשימת הקבצים שבבקשה
+SHARED_HEAD = ("פרטי המטלה, זהים לכל ההגשות שלה. קבצים שמוזכרים כאן כמצורפים (המכוון הרשמי, הפתרון הרשמי) "
+               "נמצאים ברשימת הקבצים שבבקשה.")
+
+
+def shared_text(req: dict) -> str:
+    """הטקסט המשותף לכל ההגשות (הבלוקים עם cache_control), שעובר לקובץ ההנחיות."""
+    return "\n\n".join(block["text"] for message in req["messages"] for block in message["content"]
+                       if block.get("type") == "text" and block.get("cache_control"))
+
+
+def system_text(req: dict) -> str:
+    """קובץ ההנחיות: SYSTEM ואחריו החלק המשותף. בלי שום דבר שמשתנה בין הגשות (נתיבים, עמודים)."""
+    shared = shared_text(req)
+    return (req.get("system") or "") + (f"\n\n{SHARED_HEAD}\n\n{shared}" if shared else "")
 
 USAGE_LOG = paths.USAGE_LOG
 
@@ -63,7 +89,8 @@ def available() -> bool:
 
 
 def write_request(req: dict, folder: Path) -> str:
-    """כותב לתיקייה את התמונות ואת הפתרון שבבקשה, ומחזיר את הטקסט שנשלח ל-Claude Code במקומם."""
+    """כותב לתיקייה את התמונות ואת הפתרון שבבקשה, ומחזיר את הטקסט שנשלח ל-Claude Code במקומם.
+    הטקסט המשותף (cache_control) לא נכנס לכאן: הוא בקובץ ההנחיות (system_text)."""
     lines: list[str] = []
     pages = docs = 0
     crops = req.get("file_prefix") == "crop"  # מעבר הזום (locate.py): חיתוכים ולא עמודים
@@ -71,7 +98,8 @@ def write_request(req: dict, folder: Path) -> str:
         for block in message["content"]:
             kind = block.get("type")
             if kind == "text":
-                lines.append(block["text"])
+                if not block.get("cache_control"):  # המשותף עובר לקובץ ההנחיות (system_text)
+                    lines.append(block["text"])
                 continue
             source = block.get("source") or {}
             if kind not in ("image", "document") or source.get("type") != "base64":
@@ -127,7 +155,7 @@ def cli_ask(claude: str, schema: dict, effort: str | None = None, run=subprocess
         try:
             prompt = write_request(req, folder)
             system_file = folder / "system.txt"
-            system_file.write_text(req.get("system") or "", encoding="utf-8")
+            system_file.write_text(system_text(req), encoding="utf-8")
             cmd = build_command(claude, folder, system_file, schema, req["model"], effort)
             try:
                 proc = run(cmd, input=prompt, capture_output=True, text=True, encoding="utf-8",

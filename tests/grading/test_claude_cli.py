@@ -69,6 +69,29 @@ def test_pages_go_to_a_temp_folder_and_only_read_is_allowed():
     assert not folder.exists()  # התיקייה נמחקת בסוף
 
 
+def test_the_shared_rubric_goes_to_the_system_file_so_the_cache_is_shared():
+    """המחוון זהה לכל ההגשות: בקובץ ההנחיות, ולא בבקשה עם הנתיבים האקראיים והעמודים (2026-11-15)."""
+    def req(pages):
+        r = request()
+        content = r["messages"][0]["content"]
+        content[1]["cache_control"] = {"type": "ephemeral"}  # "השאלות", כמו context_text ב-build_request
+        content += [{"type": "text", "text": f"עמוד {n}:"} for n in range(2, pages + 1)]
+        return r
+
+    run = FakeRun(output())
+    ask(run)(req(1))
+    ask(run)(req(3))
+    first, second = (seen["system.txt"].decode() for seen in run.seen)
+    assert first == second and first.startswith("אתה מתרגל") and "השאלות" in first and claude_cli.SHARED_HEAD in first
+    for cmd, kwargs in run.calls:
+        assert "השאלות" not in kwargs["input"] and "Official solution.pdf" in kwargs["input"]
+        assert str(kwargs["cwd"]) not in first
+
+
+def test_all_files_are_read_in_one_step():
+    assert claude_cli.AT_ONCE in claude_cli.READ_ALL and claude_cli.AT_ONCE in claude_cli.READ_CROPS
+
+
 def test_the_zoom_pass_sends_crops_not_pages_and_is_logged_as_locate(monkeypatch, tmp_path):
     req = request()
     req["file_prefix"] = "crop"
