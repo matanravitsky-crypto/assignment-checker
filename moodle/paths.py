@@ -98,6 +98,11 @@ PULL_LOCK = "Pull in progress.txt"      # in the assignment folder while a pull 
 UPLOAD_LOCK = "Upload in progress.txt"  # in the assignment folder while an upload to Moodle runs
 # The last pull's check, in the assignment folder: nothing lost, missed, doubled or changed (pull_check.py)
 PULL_CHECK = "Pull check.json"
+PULL_REPORT = "Pull report.txt"      # the same, in Hebrew for a person: how many came, how many were expected
+# The last return's check, in the assignment folder: every file in every ZIP against the key, the marked file and the
+# grade (return_check.py), and the same in Hebrew
+RETURN_CHECK = "Return check.json"
+RETURN_REPORT = "Return check.txt"
 # In "3 - Ready to upload to Moodle" (upload.py, upload_log.py, send.py, send_grades.py)
 UPLOAD_STEPS = "Upload steps.txt"                        # the steps and a checklist for an upload by hand
 UPLOAD_LOG = "Upload log.csv"                            # what went up, per number (numbers only)

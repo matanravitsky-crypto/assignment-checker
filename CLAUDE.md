@@ -440,6 +440,16 @@ CLI: `python -m moodle send <id> [--dry-run] [--yes]` (files only) and `send-gra
 **Before the first real upload:** do it once on a test assignment (ask the lecturer for one). Never try it for the
 first time on an assignment with real students.
 
+**Claude never touches Moodle (Ori, 2026-11-16).** A person downloads and uploads in their own browser; the code checks,
+numbers, prepares, verifies and records. `python -m moodle list` (which data folder, which assignment is which id),
+`ingest [--expected N]` (every ZIP of the assignment waiting in Downloads, a page of the grading table each, numbered
+once; `Pull report.txt`), `upload` (a batch of new or changed marked work in ZIPs of Moodle's size, the grades filled
+into a hand-downloaded worksheet by participant id, then `moodle/return_check.py` re-reads every ZIP from the disk and
+checks every file against the key, the marked file and the grade, or removes the batch; `Return check.txt`,
+`Upload steps.txt`), `record` after each ZIP a person uploaded. The skill `.claude/skills/moodle-manual` runs it, the
+guide for people is `docs/Protocol - manual pull and return.md` (a copy in the data folder). The Claude-in-Chrome
+paths below (`send`, `send-grades`, the site's pull, the night pull) stay in the code and are not used.
+
 **Real Moodle only (Noa's decision, 2026-10-26).** There is no demo or simulated mode: no fake data folder, no
 simulated driver, no `MOODLE_DRIVER=simulate` / `MOODLE_READY=simulate`, no `send --simulate`. Every pull and every upload
 first runs `actions.require_moodle`: the Claude extension in Chrome must be connected and Chrome logged in to Moodle (a

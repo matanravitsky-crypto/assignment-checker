@@ -1,14 +1,17 @@
 """Command line for the Moodle steps. Assignments are named by their Moodle id.
 
-    python -m moodle ingest <assignment id> [--course "Linear Algebra" --name "Assignment 1 - Vectors"] [--zip PATH]
-        Downloaded ZIP -> the assignment's folder, numbered for grading.
+    python -m moodle ingest <assignment id> [--course "Linear Algebra" --name "Assignment 1 - Vectors"] [--zip PATH ...]
+        Downloaded ZIP(s) -> the assignment's folder, numbered for grading. By default every ZIP of the assignment
+        waiting in Downloads: one "download all", or a ZIP per page of the grading table downloaded by hand.
         --course and --name (folder names) are needed the first time an assignment comes in.
 
     python -m moodle status <assignment id>
         What's done for the assignment, and any file names OneDrive would refuse.
 
-    python -m moodle upload <assignment id> [--worksheet PATH] [--for-claude]
-        Grades and marked files -> "3 - Ready to upload to Moodle", with upload steps.
+    python -m moodle upload <assignment id> [--worksheet PATH] [--max-mb N]
+        The return by hand: marked files that are new or changed since their last upload -> ZIPs of Moodle's size in
+        "3 - Ready to upload to Moodle/Upload batch <id>/", the batch list (so `record` works), the grades filled into
+        Moodle's worksheet when one was downloaded, and "Upload steps.txt". Nothing here touches Moodle.
 
     python -m moodle send <assignment id> [--dry-run] [--yes]
         Marked files -> Moodle, through Claude in Chrome. Prepares the batch (new or changed work only), prints
@@ -30,6 +33,7 @@
 """
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -54,6 +58,35 @@ def print_summary(summary: send.BatchSummary) -> None:
         print(f"הוגשו מחדש אחרי הבדיקה, לא נכללו ({len(summary.resubmitted)}): {', '.join(summary.resubmitted)}")
     if summary.not_approved:
         print(f"עדיין לא אושרו, ויעלו בכל זאת: {len(summary.not_approved)}")
+
+
+def print_list(only_id: str | None = None) -> None:
+    """The data folder (the synced shared one, or a local copy) and one line per assignment: course, folder, Moodle id,
+    Hebrew title, and the counts. Numbers only. This is how a person (or Claude) tells which assignment is meant."""
+    data = paths.data_dir()
+    where = "התיקייה המשותפת המסונכרנת" if paths.in_shared_folder(data / "x") else "עותק מקומי (ASSIGNMENT_DATA או ~)"
+    print(f"תיקיית הנתונים: {data}  [{where}]")
+    if not data.is_dir():
+        print("התיקייה לא קיימת במחשב הזה. צריך את התיקייה המשותפת (OneDrive: YallaLinearit, \"Add shortcut to My files\") "
+              "או ASSIGNMENT_DATA ב-.env שמצביע על עותק של \"Exercise Checking System\".")
+        return
+    found = 0
+    for folder in paths.assignment_dirs():
+        info = paths.read_info_or_none(folder) or {}
+        mid = str(info.get("id") or "")
+        if only_id and mid != str(only_id):
+            continue
+        found += 1
+        rep = status.status(folder)
+        returned = len({r["number"] for r in upload_log.read_log(folder)})
+        pulled = ingest.pulls(folder)
+        slot = re.match(r"Assignment (\d+)", folder.name)
+        print(f"{folder.parent.name} / {folder.name}" + (f"  (הגשה {slot.group(1)})" if slot else ""))
+        print(f"    מזהה מודל: {mid or 'עוד אין'}   כותרת: {info.get('title') or '-'}   מועד: {(info.get('due') or '-')[:16].replace('T', ' ')}")
+        print(f"    נמשכו: {rep['to_grade']}   בדוקות: {rep['marked']}   הוחזרו: {returned}   "
+              f"משיכה אחרונה: {pulled[-1] if pulled else 'אף פעם'}")
+    if only_id and not found:
+        print(f"אין מטלה עם מזהה מודל {only_id} בתיקייה הזו.")
 
 
 def run_send(target: Path, args) -> int:
@@ -119,7 +152,10 @@ def main() -> None:
     ingest_cmd.add_argument("assignment_id")
     ingest_cmd.add_argument("--course", help="course folder name in English, for a new assignment")
     ingest_cmd.add_argument("--name", help="assignment folder name in English, for a new assignment")
-    ingest_cmd.add_argument("--zip", type=Path, help="default: newest matching ZIP in Downloads")
+    ingest_cmd.add_argument("--expected", type=int, help="how many submitted, as Moodle's page shows (the report compares)")
+    ingest_cmd.add_argument("--zip", type=Path, action="append", dest="zips",
+                            help="a ZIP downloaded by hand; repeat it for several. Default: every ZIP of the assignment "
+                                 "waiting in Downloads (or the list of parts the site's download left there)")
 
     status_cmd = commands.add_parser("status", help="show what's done for an assignment")
     status_cmd.add_argument("assignment_id")
@@ -128,9 +164,7 @@ def main() -> None:
     upload_cmd.add_argument("assignment_id")
     upload_cmd.add_argument("--worksheet", type=Path, help="default: newest matching CSV in Downloads")
     upload_cmd.add_argument("--max-mb", type=int, default=upload.MAX_ZIP_BYTES // 1_000_000,
-                            help="largest ZIP Moodle takes (default: %(default)s)")
-    upload_cmd.add_argument("--for-claude", action="store_true",
-                            help="split for Claude in Chrome, which uploads up to 10 MB per file")
+                            help="largest ZIP Moodle takes, as its upload page says (default: %(default)s)")
 
     send_cmd = commands.add_parser("send", help="upload the marked files to Moodle with Claude in Chrome")
     send_cmd.add_argument("assignment_id")
@@ -150,6 +184,9 @@ def main() -> None:
 
     commands.add_parser("guide", help="rewrite the README files")
 
+    list_cmd = commands.add_parser("list", help="where the data folder is, and every assignment with its id and state")
+    list_cmd.add_argument("assignment_id", nargs="?", help="only this assignment")
+
     args = parser.parse_args()
 
     if args.command == "guide":
@@ -158,9 +195,20 @@ def main() -> None:
         return
 
     if args.command == "ingest":
-        rows = ingest.ingest(args.assignment_id, args.zip, args.course, args.name)
+        downloads = args.zips or ingest.find_downloads(args.assignment_id)
+        print(f"לוקח {len(downloads)} קבצים מההורדות:")  # Moodle's names: course code and the assignment's title, no student
+        for path in downloads:
+            print(f"  {path.name}  ({path.stat().st_size / 1_000_000:.1f} MB)")
+        rows = ingest.ingest(args.assignment_id, downloads, args.course, args.name, expected=args.expected)
         students = len({row["number"] for row in rows})
-        print(f"{students} submissions, {len(rows)} files -> {paths.assignment_dir(args.assignment_id) / paths.TO_GRADE}")
+        target = paths.assignment_dir(args.assignment_id)
+        print(f"{students} submissions, {len(rows)} files -> {target / paths.TO_GRADE}")
+        if (target / paths.PULL_REPORT).exists():
+            print((target / paths.PULL_REPORT).read_text(encoding="utf-8-sig"))
+        return
+
+    if args.command == "list":
+        print_list(args.assignment_id)
         return
 
     target = paths.assignment_dir(args.assignment_id)
@@ -207,24 +255,27 @@ def main() -> None:
             print("All file names are safe to sync")
         return
 
+    # upload: the return by hand. A batch like the automatic one (only work that is new or changed since its last
+    # upload, a batch list so `record` works), in ZIPs of Moodle's size, plus the grades in Moodle's worksheet
     worksheet = args.worksheet or upload.find_worksheet(args.assignment_id)
-    if args.for_claude:
-        args.max_mb = upload.CLAUDE_MAX_ZIP_BYTES // 1_000_000
-    report = upload.prepare_upload(target, worksheet, args.max_mb * 1_000_000)
-    print(f"Submissions: {report['submissions']}, grades: {report['results']}")
-    if report["missing_results"]:
-        print(f"No grade yet for {len(report['missing_results'])}: {', '.join(report['missing_results'][:20])}")
-    if report["unknown_numbers"]:
-        print(f"Grades for numbers not in the key table: {', '.join(report['unknown_numbers'])}")
-    if report["grades_filled"] is None:
-        print("No grading worksheet found: download it from Moodle to fill in the grades")
+    try:
+        summary = send.prepare_batch(target, args.max_mb * 1_000_000, worksheet=worksheet)
+    except ValueError as blocked:  # includes BatchBlocked
+        print(blocked)
+        raise SystemExit(1)
+    print_summary(summary)
+    if not summary.zips:
+        print("אין עבודות בדוקות חדשות להעלאה (מה שכבר נרשם ביומן ההעלאה לא נארז שוב)")
     else:
-        print(f"{upload.GRADES_FOR_MOODLE}: {report['grades_filled']} grades filled")
-    print(f"ZIPs: {len(report['feedback_zips'])}")
-    if report["too_big"]:
-        limit = "Claude in Chrome" if args.for_claude else "Moodle"
-        print(f"Too big for {limit} ({args.max_mb} MB), save smaller: {', '.join(report['too_big'])}")
-    print(f"-> {target / paths.UPLOAD} (steps in '{upload.INSTRUCTIONS_FILE}')")
+        print(f"אומת מחדש מהדיסק: {summary.verified['students']} סטודנטים, {summary.verified['files']} קבצים, "
+              f"כל קובץ מול טבלת המפתח והעבודה המסומנת ({paths.RETURN_REPORT})")
+    if worksheet is None:
+        print(f"לא נמצא גיליון ציונים של מודל בהורדות: הציונים לא מולאו. מורידים אותו במודל (פעולות ← הורדת גיליון ציונים; "
+              f"צריך ש\"גיליון ציונים לא מקוון\" יהיה דלוק) ומריצים שוב, או נותנים --worksheet")
+    else:
+        print(f"{upload.GRADES_FOR_MOODLE}: {summary.grades_filled} ציונים מולאו מתוך {summary.worksheet_students} בגיליון "
+              f"({worksheet.name})")
+    print(f"-> {target / paths.UPLOAD} (השלבים ב-'{upload.INSTRUCTIONS_FILE}')")
 
 
 if __name__ == "__main__":

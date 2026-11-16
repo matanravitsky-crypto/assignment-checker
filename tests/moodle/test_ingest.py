@@ -265,3 +265,78 @@ def test_one_moodle_id_in_two_folders_is_refused(tmp_path, monkeypatch):
     (tmp_path / "Discrete Mathematics" / "Assignment 1" / paths.INFO).write_text(json.dumps({"id": "3500001"}), encoding="utf-8")
     assert paths.find_assignment("3438636") == tmp_path / "Linear Algebra" / "Assignment 0"
     assert paths.find_assignment("3500001") == tmp_path / "Discrete Mathematics" / "Assignment 1"
+
+
+# ---------- a pull by hand: a person downloads, the code takes every ZIP that waits ----------
+def _hand_zip(path, pids):
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_STORED) as z:
+        for pid in pids:
+            z.writestr(f"Student {pid}_{pid}_assignsubmission_file/hw.pdf", b"%PDF " + pid.encode())
+
+
+def test_find_downloads_takes_every_zip_downloaded_by_hand_oldest_first(tmp_path):
+    """Moodle names every "download selected" ZIP the same, so Chrome adds " (1)", " (2)"... A ZIP set aside as
+    incomplete, a ZIP of another assignment, and the parts of the site's own download are not taken."""
+    names = [f"{STEM}.zip", f"{STEM} (1).zip", f"{STEM} (2).zip"]
+    for i, name in enumerate(names):
+        _hand_zip(tmp_path / name, [str(1000 + i)])
+        os.utime(tmp_path / name, (1_700_000_000 + i, 1_700_000_000 + i))
+    _hand_zip(tmp_path / f"{STEM} ({ingest.INCOMPLETE}).zip", ["1"])
+    _hand_zip(tmp_path / "214193210120271-הגשה 1-3438638.zip", ["2"])
+    _hand_zip(tmp_path / f"{STEM} part 001 of 002.zip", ["3"])
+    assert [p.name for p in ingest.find_downloads("3438636", tmp_path)] == names
+    assert ingest.name_from_zip(tmp_path / names[2], "3438636") == "הגשה 0"
+
+
+def test_find_downloads_prefers_the_sites_list_of_parts(tmp_path):
+    _hand_zip(tmp_path / f"{STEM}.zip", ["1"])
+    listed = _parts(tmp_path, [["a_1"]])
+    assert ingest.find_downloads("3438636", tmp_path) == [listed]
+    with pytest.raises(FileNotFoundError):
+        ingest.find_downloads("3500000", tmp_path)
+
+
+def test_ingest_takes_several_zips_downloaded_by_hand_and_numbers_once(tmp_path, monkeypatch):
+    """Three pages of the grading table, downloaded one by one; a student who is on two pages (the table moved
+    between downloads) is numbered once. All three ZIPs are kept together, and the next pull keeps every number."""
+    _seven_zip_or_skip()
+    monkeypatch.setenv("ASSIGNMENT_DATA", str(tmp_path / "data"))
+    monkeypatch.setenv("ASSIGNMENT_WORK", str(tmp_path / "work"))
+    downloads = tmp_path / "Downloads"
+    downloads.mkdir()
+    pages = [["1001", "1002"], ["1002", "1003"], ["1004"]]
+    for i, pids in enumerate(pages):
+        _hand_zip(downloads / (f"{STEM}.zip" if i == 0 else f"{STEM} ({i}).zip"), pids)
+    monkeypatch.setattr(ingest, "downloads_dir", lambda: downloads)
+    rows = ingest.ingest("3438636", None, "Linear Algebra", "Assignment 0")
+    assert sorted(r["participant_id"] for r in rows) == ["1001", "1002", "1003", "1004"]
+    assert len({r["number"] for r in rows}) == 4
+    assert not list(downloads.glob("*.zip"))  # taken, not copied
+    target = paths.assignment_dir("3438636")
+    kept = [p for p in paths.backup_dir(target).iterdir() if p.is_dir()]
+    assert len(kept) == 1 and sorted(p.name for p in kept[0].iterdir()) == ["part 001.zip", "part 002.zip", "part 003.zip"]
+    log = (target / paths.PULL_LOG).read_text(encoding="utf-8-sig").splitlines()
+    assert log[-1].split(",")[2:6] == ["4", "4", "4", "3"]  # students, new, files, parts
+    numbers = {r["participant_id"]: r["number"] for r in rows}
+
+    # the next pull by hand brings one page again plus a new student: nobody changes number
+    _hand_zip(downloads / f"{STEM}.zip", ["1003", "1005"])
+    rows = ingest.ingest("3438636", None)
+    again = {r["participant_id"]: r["number"] for r in rows}
+    assert {p: again[p] for p in numbers} == numbers and set(again) == set(numbers) | {"1005"}
+
+
+def test_the_pull_report_compares_with_what_moodle_showed(tmp_path, monkeypatch):
+    _seven_zip_or_skip()
+    monkeypatch.setenv("ASSIGNMENT_DATA", str(tmp_path / "data"))
+    monkeypatch.setenv("ASSIGNMENT_WORK", str(tmp_path / "work"))
+    z = tmp_path / f"{STEM}.zip"
+    _hand_zip(z, ["1001", "1002", "1003"])
+    ingest.ingest("3438636", z, "Linear Algebra", "Assignment 0", expected=5)
+    target = paths.assignment_dir("3438636")
+    text = (target / paths.PULL_REPORT).read_text(encoding="utf-8-sig")
+    assert "חסרים 2" in text and "3 סטודנטים" in text
+    assert (target / paths.PULL_CHECK).exists() and "Student" not in text
+    _hand_zip(tmp_path / f"{STEM}.zip", ["1004", "1005"])
+    ingest.ingest("3438636", tmp_path / f"{STEM}.zip", expected=5)
+    assert "תואם" in (target / paths.PULL_REPORT).read_text(encoding="utf-8-sig")

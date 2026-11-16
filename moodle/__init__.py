@@ -14,10 +14,11 @@ INTERFACE = {
     "paths": "*", "settings": "*", "shared_folder": "*", "atomic": "*", "schema": "*",
     "grades": "*", "claims": "*", "lock": "*", "claude_code": "*",
     # the pull
-    "ingest": ["ingest", "wait_for_download", "name_from_zip", "parts_progress", "pulls", "INCOMPLETE", "LIST",
+    "ingest": ["ingest", "find_downloads", "wait_for_download", "name_from_zip", "parts_progress", "pulls", "INCOMPLETE", "LIST",
                "NO_FOLDERS"],
     "anonymize": ["check_key", "key_conflicts", "submission_conflicts", "KeyBroken", "KEY_EMPTY"],
     "pull_check": ["read", "PullCheckFailed"],
+    "return_check": ["check", "read", "ReturnCheckFailed"],
     # the return
     "upload": ["prepare_upload", "find_worksheet", "INSTRUCTIONS_FILE"],
     "upload_log": ["read_log", "read_batch", "last_hashes", "file_hash", "log_conflicts"],

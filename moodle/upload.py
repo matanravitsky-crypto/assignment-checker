@@ -44,7 +44,8 @@ ZIP_NAME = re.compile(rf"{re.escape(ZIP_PREFIX)} \d{{2,}}\.zip")
 def find_worksheet(assignment_id: str, downloads: Path | None = None) -> Path | None:
     """Return the newest grading worksheet for this assignment in Downloads, if any."""
     downloads = downloads or paths.downloads_dir()
-    sheets = [p for p in downloads.glob("*.csv") if p.stem.endswith(f"-{assignment_id}")]
+    # Moodle names it "<...>-<assignment name>-<id>.csv"; Chrome adds " (1)" when that name is already there
+    sheets = [p for p in downloads.glob("*.csv") if re.sub(r" \(\d+\)$", "", p.stem).endswith(f"-{assignment_id}")]
     return max(sheets, key=lambda p: p.stat().st_mtime) if sheets else None
 
 
@@ -246,7 +247,8 @@ def write_instructions(out: Path, report: dict, max_bytes: int) -> None:
         "",
         "שלב 1: עבודות בדוקות עם הערות",
         "במודל, במטלה: הגשות ← פעולות ← \"העלאת מספר קובצי משוב כקובץ 7Zip אחד\".",
-        f"מעלים כל קובץ בנפרד, לפי הסדר (מודל מקבל עד {limit_mb} MB בכל העלאה):",
+        f"מעלים כל קובץ בנפרד, לפי הסדר (מודל מקבל עד {limit_mb} MB בכל העלאה; הגבול כתוב בדף עצמו, \"הגודל המירבי לקבצים חדשים\", "
+        f"ואם הוא קטן יותר מכינים שוב עם --max-mb):",
     ]
     if report.get("zip_folder"):
         lines.append(f"קובצי ה-ZIP נמצאים בתיקייה \"{report['zip_folder']}\" שבתוך \"{paths.UPLOAD}\".")
@@ -256,6 +258,8 @@ def write_instructions(out: Path, report: dict, max_bytes: int) -> None:
         "אחרי היבוא מודל מציג הודעה \"N קבצים יובאו\". בודקים ש-N שווה למספר הקבצים ב-ZIP (פותחים אותו ורואים כמה קבצים יש בו).",
         "אם המספר שונה, עוצרים ולא ממשיכים ל-ZIP הבא. כל העלאה מוסיפה לקודמות ולא מוחקת אותן, וההעלאה של אותו ZIP שוב מחליפה את אותם קבצים.",
     ]
+    if report.get("verified"):
+        lines.append(f"אומת: כל קובץ בכל ZIP נבדק מחדש מול טבלת המפתח, העבודה המסומנת והציון (\"{paths.RETURN_REPORT}\" בתיקיית המטלה).")
     # `record` needs the batch list that prepare_batch writes, so only a prepared batch (it has the id) gets this line
     if report.get("assignment_id"):
         lines.append(f"מי שמעלה ביד: אחרי כל ZIP מריצים `python -m moodle record {report['assignment_id']} \"<שם ה-ZIP>\"`, כדי שהאתר ידע מה הוחזר.")
@@ -267,13 +271,19 @@ def write_instructions(out: Path, report: dict, max_bytes: int) -> None:
             "צריך לשמור אותם מחדש בגודל קטן יותר ולהריץ שוב את ההכנה.",
             "",
         ]
-    lines.append("שלב 2: ציונים")
+    lines.append("שלב 2: ציונים (אחרי שכל ה-ZIP-ים עלו)")
     if report["grades_filled"] is None:
-        lines.append("עוד לא מוכן: צריך להוריד ממודל את גיליון הציונים (Offline grading worksheet) ולהריץ שוב את ההכנה.")
+        lines += [
+            "עוד לא מוכן: צריך להוריד ממודל את גיליון הציונים ולהריץ שוב את ההכנה:",
+            "במודל: הגשות ← פעולות ← \"הורדת גיליון ציונים\" (מופיע רק כש\"גיליון ציונים לא מקוון\" דלוק בהגדרות המטלה; המרצה מדליק).",
+            f"הקובץ יורד ל-Downloads, ואז: python -m moodle upload {report.get('assignment_id', '<מזהה>')}",
+        ]
     else:
         lines += [
-            f"\"{GRADES_FOR_MOODLE}\" מוכן ({report['grades_filled']} ציונים).",
-            f"במודל: הגשות ← פעולות ← \"העלאת גיליון ציונים\" ← בוחרים \"{GRADES_FOR_MOODLE}\" ← בודקים את התצוגה המקדימה ← אישור.",
+            f"\"{GRADES_FOR_MOODLE}\" מוכן ({report['grades_filled']} ציונים). כל ציון לפי מזהה המשתתף של הסטודנט, לא לפי סדר השורות.",
+            f"במודל: הגשות ← פעולות ← \"העלאת גיליון ציונים\" ← בוחרים \"{GRADES_FOR_MOODLE}\" ← מודל מציג רשימה של השינויים ←",
+            f"מאשרים רק אם מספר הציונים ברשימה הוא {report['grades_filled']} (או פחות, אם חלק כבר היו במודל כפי שהם). אחרת מבטלים.",
+            "הגיליון שהורד ממודל (ב-Downloads) מכיל שמות ומיילים: מוחקים אותו אחרי ההעלאה. העותק בתיקיית המטלה נשמר בלי שמות.",
         ]
     if report["missing_results"]:
         lines += ["", f"שימו לב: {len(report['missing_results'])} הגשות עוד בלי ציון: {', '.join(report['missing_results'][:30])}"]

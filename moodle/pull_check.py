@@ -158,3 +158,46 @@ def read(assignment_dir: Path) -> dict | None:
         return json.loads((assignment_dir / CHECK_FILE).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
+
+
+REPORT_FILE = paths.PULL_REPORT
+
+
+def report_text(report: dict) -> str:
+    """The pull's check in Hebrew, for a person: how many came, how many were expected, what was checked."""
+    came = report.get("in_this_download", report.get("came_from_moodle", 0))
+    after, new = report.get("students_after", 0), report.get("new_students", 0)
+    lines = [f"דוח משיכה: {report.get('checked_at', '')} ({report.get('by', '')})", "=" * 20]
+    if report.get("nothing_changed"):
+        lines.append("שום דבר לא השתנה במודל מאז המשיכה הקודמת: שום קובץ לא נגע.")
+    else:
+        lines.append(f"הגיעו במשיכה הזו: {came} סטודנטים. נכתבו {report.get('files_written', 0)} קבצים, "
+                     f"{report.get('files_moved_to_earlier', 0)} גרסאות קודמות נשמרו ב-\"{paths.EARLIER}\".")
+    lines.append(f"סך הכול במטלה: {after} סטודנטים ({new} חדשים במשיכה הזו), "
+                 f"{report.get('files_in_folder', 0)} קבצים ב-\"{paths.TO_GRADE}\".")
+    expected = report.get("expected")
+    if expected:
+        if after == expected:
+            lines.append(f"צפוי לפי מודל: {expected}. תואם.")
+        elif after < expected:
+            lines.append(f"צפוי לפי מודל: {expected}. חסרים {expected - after}: כנראה עמוד שלא ירד, או סטודנטים שהגישו טקסט בלי קובץ. "
+                         "מורידים את החסר ומריצים שוב: המשיכה מוסיפה רק מה שחדש.")
+        else:
+            lines.append(f"צפוי לפי מודל: {expected}. יש {after - expected} יותר מהצפוי: הגשות שהגיעו אחרי הספירה, או ספירה לא עדכנית. "
+                         "כדאי לרענן את עמוד ההגשות ולהשוות שוב.")
+    else:
+        lines.append("לא נמסר כמה 'הוגש' מודל מראה, ולכן לא הושוו המספרים. אפשר להריץ שוב עם --expected <מספר>.")
+    lines += ["",
+              "נבדק לפני שטבלת המפתח נכתבה (אחרת המשיכה הייתה מחזירה הכול למקום):",
+              "  כל סטודנט שהיה בטבלת המפתח שומר על המספר שלו. אף מספר לא לשני סטודנטים, אף סטודנט לא בשני מספרים.",
+              "  שום קובץ ממוספר לא אבד ולא השתנה אלא אם הסטודנט שלו היה בהורדה הזו, ואז הגרסה הקודמת נשמרה.",
+              "  כל קובץ מההורדה נמצא בתיקייה עם הבייטים שלו, ולכל שורה במפתח יש קובץ.",
+              "", "הפירוט במספרים: " + CHECK_FILE]
+    return "\n".join(lines) + "\n"
+
+
+def write_report(assignment_dir: Path, report: dict) -> Path:
+    """"Pull report.txt" next to the JSON, from the same numbers."""
+    path = assignment_dir / REPORT_FILE
+    path.write_text(report_text(report), encoding="utf-8-sig")
+    return path
