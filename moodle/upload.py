@@ -170,7 +170,7 @@ def fill_for_upload(worksheet: Path, out: Path, results: dict, mapping: dict, ma
 
 
 def plan_parts(
-    marked: Path, mapping: dict, max_bytes: int, numbers: set[str] | None = None
+    marked: Path, mapping: dict, max_bytes: int, numbers: set[str] | None = None, per_zip: int | None = None
 ) -> tuple[list[list[tuple[Path, str]]], list[str]]:
     """Split the marked files into parts, each under max_bytes: a list of (source file, name inside the ZIP).
 
@@ -178,10 +178,13 @@ def plan_parts(
     numbers (None: all). A number goes whole or not at all: if one of its files is bigger than
     max_bytes on its own, that file can't go through Moodle, so its name is returned in the second
     list (to be saved smaller) and none of the number's files is in any part.
+    `per_zip`: at most that many students (numbers) in a part, so the parts are light for Moodle's import
+    (say 100 per ZIP); a part still never goes over max_bytes.
     """
     parts: list[list[tuple[Path, str]]] = [[]]
     too_big = []
     size = 0
+    students = 0  # numbers in the current part
     for number, files in paths.files_by_number(marked).items():
         if len(number) != 4 or (numbers is not None and number not in numbers):
             continue
@@ -192,11 +195,15 @@ def plan_parts(
         if big:
             too_big += big
             continue
+        if per_zip and parts[-1] and students >= per_zip:
+            parts.append([])
+            size, students = 0, 0
+        students += 1
         for file in files:
             file_size = file.stat().st_size
             if parts[-1] and size + file_size > max_bytes:
                 parts.append([])
-                size = 0
+                size, students = 0, 1
             # Moodle skips files identical to the submission, so give them a new name
             name = f"feedback{file.stem[len(number):]}{file.suffix.lower()}"
             parts[-1].append((file, f"{row['original_folder']}/{name}"))

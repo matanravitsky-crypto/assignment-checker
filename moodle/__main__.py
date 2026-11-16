@@ -8,7 +8,7 @@
     python -m moodle status <assignment id>
         What's done for the assignment, and any file names OneDrive would refuse.
 
-    python -m moodle upload <assignment id> [--worksheet PATH] [--max-mb N]
+    python -m moodle upload <assignment id> [--worksheet PATH] [--max-mb N] [--per-zip N]
         The return by hand: marked files that are new or changed since their last upload -> ZIPs of Moodle's size in
         "3 - Ready to upload to Moodle/Upload batch <id>/", the batch list (so `record` works), the grades filled into
         Moodle's worksheet when one was downloaded, and "Upload steps.txt". Nothing here touches Moodle.
@@ -165,6 +165,7 @@ def main() -> None:
     upload_cmd.add_argument("--worksheet", type=Path, help="default: newest matching CSV in Downloads")
     upload_cmd.add_argument("--max-mb", type=int, default=upload.MAX_ZIP_BYTES // 1_000_000,
                             help="largest ZIP Moodle takes, as its upload page says (default: %(default)s)")
+    upload_cmd.add_argument("--per-zip", type=int, help="at most this many students in a ZIP (e.g. 100): lighter imports")
 
     send_cmd = commands.add_parser("send", help="upload the marked files to Moodle with Claude in Chrome")
     send_cmd.add_argument("assignment_id")
@@ -259,7 +260,7 @@ def main() -> None:
     # upload, a batch list so `record` works), in ZIPs of Moodle's size, plus the grades in Moodle's worksheet
     worksheet = args.worksheet or upload.find_worksheet(args.assignment_id)
     try:
-        summary = send.prepare_batch(target, args.max_mb * 1_000_000, worksheet=worksheet)
+        summary = send.prepare_batch(target, args.max_mb * 1_000_000, worksheet=worksheet, per_zip=args.per_zip)
     except ValueError as blocked:  # includes BatchBlocked
         print(blocked)
         raise SystemExit(1)

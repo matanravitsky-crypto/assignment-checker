@@ -170,3 +170,21 @@ def test_find_worksheet_takes_chromes_copy_too(tmp_path):
         os.utime(tmp_path / name, (1_700_000_000 + i, 1_700_000_000 + i))
     assert find_worksheet("3438636", tmp_path).name == "ציונים-x-הגשה 0-3438636 (1).csv"
     assert find_worksheet("3500000", tmp_path) is None
+
+
+def test_plan_parts_per_zip_limits_the_students_in_a_part():
+    with tempfile.TemporaryDirectory() as tmp:
+        marked = Path(tmp)
+        mapping = {}
+        for i in range(1, 26):
+            n = f"{i:04d}"
+            (marked / f"{n}.pdf").write_bytes(b"x" * 10)
+            if i % 5 == 0:
+                (marked / f"{n}-2.pdf").write_bytes(b"y" * 10)  # a second file stays with its number
+            mapping[n] = {"participant_id": str(100 + i), "original_folder": f"s_{100 + i}_assignsubmission_file"}
+        parts, too_big = plan_parts(marked, mapping, 10_000_000, per_zip=10)
+        students = [len({name.split("/")[0] for _, name in part}) for part in parts]
+        assert students == [10, 10, 5] and too_big == []
+        assert sum(len(p) for p in parts) == 30  # 25 files + 5 second files
+        assert len(plan_parts(marked, mapping, 10_000_000)[0]) == 1  # without the cap: one part
+        assert [len(p) for p in plan_parts(marked, mapping, 35, per_zip=10)[0]][:2] == [3, 3]  # the size cap still wins

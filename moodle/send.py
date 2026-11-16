@@ -133,11 +133,12 @@ def check_can_prepare(assignment_dir: Path) -> None:
 
 
 def prepare_batch(assignment_dir: Path, max_bytes: int = upload.CLAUDE_MAX_ZIP_BYTES,
-                  worksheet: Path | None = None) -> BatchSummary:
+                  worksheet: Path | None = None, per_zip: int | None = None) -> BatchSummary:
     """`worksheet`: Moodle's grading worksheet a person downloaded (Actions > download the grading worksheet; needs
     "Offline grading worksheet" on). Then the grades are filled into it too, by participant id, never by row order,
     as "Grades for Moodle worksheet.csv", and a copy without anything that identifies a person is kept in the
-    assignment folder (moodle_table.save_worksheet). The downloaded file itself (names, emails) is left where it is."""
+    assignment folder (moodle_table.save_worksheet). The downloaded file itself (names, emails) is left where it is.
+    `per_zip`: at most that many students in a ZIP (upload.plan_parts), for lighter imports."""
     check_can_prepare(assignment_dir)
 
     mapping = anonymize.read_mapping(assignment_dir)
@@ -155,7 +156,7 @@ def prepare_batch(assignment_dir: Path, max_bytes: int = upload.CLAUDE_MAX_ZIP_B
 
     upload_dir = assignment_dir / paths.UPLOAD
     upload_dir.mkdir(parents=True, exist_ok=True)
-    parts, too_big = upload.plan_parts(marked_dir, mapping, max_bytes, going)
+    parts, too_big = upload.plan_parts(marked_dir, mapping, max_bytes, going, per_zip=per_zip)
     # Hash before zipping: if a file changes in between, the log then holds the older hash and the number goes up again
     hashes = {src: upload_log.file_hash(src) for part in parts for src, _ in part}
 
