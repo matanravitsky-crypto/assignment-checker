@@ -85,7 +85,10 @@ def fill_worksheet(worksheet: Path, out: Path, results: dict, mapping: dict, max
         rows = list(csv.reader(f))
     header, body = rows[0], rows[1:]
     grade_col = find_column(header, GRADE_HEADERS)
-    feedback_col = find_column(header, FEEDBACK_HEADERS)
+    try:
+        feedback_col = find_column(header, FEEDBACK_HEADERS)
+    except ValueError:  # "feedback comments" is off in the assignment: grades only
+        feedback_col = None
 
     filled = 0
     for row in body:
@@ -97,7 +100,8 @@ def fill_worksheet(worksheet: Path, out: Path, results: dict, mapping: dict, max
                 skipped.append(str(result.get("number") or ""))
             continue
         row[grade_col] = result["grade"]
-        row[feedback_col] = result.get("feedback", "")
+        if feedback_col is not None:
+            row[feedback_col] = result.get("feedback", "")
         filled += 1
 
     with open(out, "w", encoding="utf-8-sig", newline="") as f:

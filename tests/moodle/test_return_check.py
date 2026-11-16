@@ -146,3 +146,13 @@ def test_the_steps_give_the_moodle_pages_and_a_shortcut_next_to_the_zips(assignm
     shortcut = (folder / paths.UPLOAD_SHORTCUT).read_text(encoding="ascii")
     assert shortcut.startswith("[InternetShortcut]") and "pluginaction=uploadzip" in shortcut and "id=555" in shortcut
     assert "pluginaction=uploadgrades" in (assignment / paths.UPLOAD / paths.GRADES_SHORTCUT).read_text(encoding="ascii")
+
+
+def test_a_worksheet_without_a_feedback_column_gets_grades_only(assignment, tmp_path):
+    """"Feedback comments" off in the assignment: Moodle's worksheet has no feedback column. The grades still go in."""
+    sheet = tmp_path / "ציונים-c-הגשה 1-555.csv"
+    write_csv(sheet, ["מזהה", "שם מלא", "ציון", "ציון מירבי"], [[f"משתתף {p}", "x", "", "100"] for p in ("100", "200", "300")])
+    s = prepare_batch(assignment, max_bytes=10_000_000, worksheet=sheet)
+    assert s.grades_filled == 3 and s.verified["grades_matched"] == 3
+    rows = {r[0]: r for r in csv.reader((assignment / paths.UPLOAD / GRADES_FOR_MOODLE).read_text(encoding="utf-8-sig").splitlines())}
+    assert rows["משתתף 200"][2] == "80"
