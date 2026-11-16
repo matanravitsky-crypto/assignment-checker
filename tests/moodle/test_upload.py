@@ -160,3 +160,13 @@ def test_write_zips_never_deletes_an_onedrive_conflict_copy(tmp_path):
     (tmp_path / "a.pdf").write_bytes(b"marked")
     write_zips(tmp_path, [])
     assert sorted(p.name for p in tmp_path.glob("*.zip")) == ["Graded - part 01-DESKTOP-ABC.zip"]
+
+
+def test_find_worksheet_takes_chromes_copy_too(tmp_path):
+    from moodle.upload import find_worksheet
+    import os
+    for i, name in enumerate(["ציונים-x-הגשה 0-3438636.csv", "ציונים-x-הגשה 0-3438636 (1).csv", "other-3438638.csv"]):
+        (tmp_path / name).write_text("מזהה\n", encoding="utf-8-sig")
+        os.utime(tmp_path / name, (1_700_000_000 + i, 1_700_000_000 + i))
+    assert find_worksheet("3438636", tmp_path).name == "ציונים-x-הגשה 0-3438636 (1).csv"
+    assert find_worksheet("3500000", tmp_path) is None

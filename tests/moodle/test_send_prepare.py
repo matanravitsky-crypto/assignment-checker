@@ -338,3 +338,31 @@ def test_a_batch_list_with_a_folder_name_that_is_not_ours_has_no_folder(assignme
     for bad in ("..", "../..", "Upload batch x", "C:/Windows", None):
         write_batch(assignment, {**batch, "folder": bad})
         assert zip_dir(assignment) is None
+
+
+# ---------- the return by hand: the same batch, plus the grades in Moodle's worksheet ----------
+def test_prepare_fills_a_worksheet_downloaded_by_hand_by_participant_and_keeps_no_names(assignment, tmp_path):
+    from moodle import moodle_table
+    from moodle.upload import GRADES_FOR_MOODLE
+    write_grades(assignment, [("0001", "90", "yes"), ("0002", "80", "")])
+    sheet = tmp_path / "ציונים-course-הגשה 1-555 (1).csv"
+    write_csv(sheet, ["מזהה", "שם מלא", "כתובת דוא\"ל", "ציון", "ציון מירבי", "הערות למשוב"],
+              [["משתתף 300", "מאיה מזרחי", "m@x", "", "100", ""], ["משתתף 100", "נועה כהן", "n@x", "", "100", ""],
+               ["משתתף 200", "איתי לוי", "i@x", "", "100", ""]])
+    s = prepare_batch(assignment, max_bytes=10_000_000, worksheet=sheet)
+    assert (s.grades_filled, s.worksheet_students, s.students) == (2, 3, 2)
+    filled = {r[0]: r for r in csv.reader((assignment / paths.UPLOAD / GRADES_FOR_MOODLE)
+                                          .read_text(encoding="utf-8-sig").splitlines())}
+    assert filled["משתתף 100"][3] == "90" and filled["משתתף 200"][3] == "80" and filled["משתתף 300"][3] == ""
+    kept = moodle_table.worksheet_path(assignment).read_text(encoding="utf-8-sig")
+    assert "משתתף 100" in kept and "נועה" not in kept and "n@x" not in kept
+    assert sheet.exists()  # the person's download is not deleted by the code
+    steps = (assignment / paths.UPLOAD / INSTRUCTIONS_FILE).read_text(encoding="utf-8-sig")
+    assert "2 ציונים" in steps and GRADES_FOR_MOODLE in steps and "uploadgrades" in steps
+
+
+def test_prepare_without_a_worksheet_says_how_to_get_one(assignment):
+    s = prepare_batch(assignment)
+    assert s.grades_filled is None
+    steps = (assignment / paths.UPLOAD / INSTRUCTIONS_FILE).read_text(encoding="utf-8-sig")
+    assert "הורדת גיליון ציונים" in steps and "python -m moodle upload 555" in steps

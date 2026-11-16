@@ -27,20 +27,42 @@ SEVEN_ZIP_PATHS = [r"C:\Program Files\7-Zip\7z.exe", r"C:\Program Files (x86)\7-
 # last, after its parts "<name>-<id> part 003 of 015.zip" (Moodle cuts a big ZIP early, so the dashboard downloads in parts)
 LIST = ".json"
 ARCHIVES = (".zip", LIST)
+# Chrome's name for a download whose name is taken: "<name>-<id> (1).zip". A person who downloads by hand in parts
+# (select 100 students, download) gets the same Moodle name every time, so every part but the first has one
+CHROME_COPY = re.compile(r" \(\d+\)$")
 
 
-def _archives(downloads: Path, assignment_id: str) -> list[Path]:
-    return [p for p in downloads.iterdir()
-            if p.suffix.lower() in ARCHIVES and p.stem.endswith(f"-{assignment_id}") and p.is_file()]
+def _is_download(p: Path, assignment_id: str, copies: bool) -> bool:
+    stem = CHROME_COPY.sub("", p.stem) if copies else p.stem
+    return p.is_file() and p.suffix.lower() in ARCHIVES and stem.endswith(f"-{assignment_id}")
+
+
+def _archives(downloads: Path, assignment_id: str, copies: bool = False) -> list[Path]:
+    return [p for p in downloads.iterdir() if _is_download(p, assignment_id, copies)]
 
 
 def find_download(assignment_id: str, downloads: Path | None = None) -> Path:
-    """Return the newest finished ZIP (or list of parts) for this assignment in Downloads."""
+    """Return the newest finished ZIP (or list of parts) for this assignment in Downloads (the site's own download:
+    a "(1)" copy Chrome made is not taken; a pull by hand takes them all, find_downloads)."""
     downloads = downloads or downloads_dir()
     zips = _archives(downloads, assignment_id)
     if not zips:
         raise FileNotFoundError(f"No ZIP ending in -{assignment_id}.zip in {downloads}")
     return max(zips, key=lambda p: p.stat().st_mtime)
+
+
+def find_downloads(assignment_id: str, downloads: Path | None = None) -> list[Path]:
+    """Everything of this assignment that waits in Downloads, for one pull: a list of parts from
+    moodle/download_parts.js (then only the newest list), or every ZIP a person downloaded by hand, oldest first
+    (one "download all", or a ZIP per page of the grading table). A ZIP set aside as "(incomplete)" is not taken."""
+    downloads = downloads or downloads_dir()
+    found = _archives(downloads, assignment_id, copies=True)
+    if not found:
+        raise FileNotFoundError(f"No ZIP ending in -{assignment_id}.zip in {downloads}")
+    lists = [p for p in found if p.suffix.lower() == LIST]
+    if lists:
+        return [max(lists, key=lambda p: p.stat().st_mtime)]
+    return sorted(found, key=lambda p: (p.stat().st_mtime, p.name))
 
 
 def downloads_dir() -> Path:
@@ -131,7 +153,7 @@ def remove_tree(path: Path) -> None:
 
 def name_from_zip(zip_path: Path, assignment_id: str) -> str:
     """'214193210120271-הגשה 0 - קבוצות ומרוכבים-3438636.zip' -> 'הגשה 0 - קבוצות ומרוכבים'."""
-    stem = zip_path.stem.removesuffix(f"-{assignment_id}")
+    stem = CHROME_COPY.sub("", zip_path.stem).removesuffix(f"-{assignment_id}")
     _course_code, _, name = stem.partition("-")
     return name.strip() or stem
 
@@ -270,24 +292,34 @@ def _in_steps(report, phase: str, i: int, n: int):
     return lambda pct: report(phase, (i * 100 + pct) // n, 100)
 
 
-def ingest(assignment_id: str, zip_path: Path | None = None,
-           course: str | None = None, name: str | None = None, on_progress=None) -> list[dict]:
+def ingest(assignment_id: str, zip_path: Path | list[Path] | None = None,
+           course: str | None = None, name: str | None = None, on_progress=None,
+           expected: int | None = None) -> list[dict]:
     """`on_progress(phase, done, total)` tells the dashboard where it is: "check" and "extract" in percent (of 100),
-    "number" in student folders.
+    "number" in student folders. `expected`: how many submitted, as Moodle's page shows it (a person reads it; the
+    code never opens Moodle): the pull's report then says whether that many are in the folder now.
 
-    `zip_path` is one ZIP of all submissions, or the list of parts from moodle/download_parts.js (each part is a
-    ZIP of some of the students, all in Moodle's folder per student), which are extracted into the same folder.
-    A list of only what changed (its "since") holds only those students: everyone else keeps what they have."""
+    `zip_path` is one ZIP of all submissions, the list of parts from moodle/download_parts.js (each part is a
+    ZIP of some of the students, all in Moodle's folder per student), or several ZIPs a person downloaded by hand
+    (a page of the grading table each, "download selected"; Moodle cuts one big ZIP): all are extracted into the same
+    folder and numbered once, and a student who is in two of them is taken once. None: whatever waits in Downloads
+    (find_downloads). A list of only what changed (its "since") holds only those students: everyone else keeps what
+    they have; so does a pull by hand, which brings only the students whose folders are in its ZIPs."""
     report = on_progress or (lambda *_: None)
-    zip_path = zip_path or find_download(assignment_id)
-    in_parts = zip_path.suffix.lower() == LIST
-    if in_parts and nothing_changed(zip_path):
-        return _log_unchanged(assignment_id, zip_path, course, name)
-    zips = gather_parts(zip_path) if in_parts else [zip_path]
+    if isinstance(zip_path, Path):
+        downloads = [zip_path]
+    else:
+        downloads = list(zip_path or []) or find_downloads(assignment_id)
+    first = downloads[0]
+    in_parts = len(downloads) == 1 and first.suffix.lower() == LIST
+    if in_parts and nothing_changed(first):
+        return _log_unchanged(assignment_id, first, course, name)
+    zips = gather_parts(first) if in_parts else downloads
     report("check", 0, 100)
     for i, z in enumerate(zips):
-        check_whole(z, on_percent=on_progress and _in_steps(report, "check", i, len(zips)), download=zip_path)
-    target = assignment_folder(assignment_id, zip_path, course, name)
+        check_whole(z, on_percent=on_progress and _in_steps(report, "check", i, len(zips)),
+                    download=first if in_parts else z)
+    target = assignment_folder(assignment_id, first, course, name)
     anonymize.check_key(target)  # before anything moves: a broken key must leave the folder as it is
 
     # Keep every download: a later one (after the due date) must not erase the first, even a minute later. Parts go
@@ -295,18 +327,20 @@ def ingest(assignment_id: str, zip_path: Path | None = None,
     backup = paths.backup_dir(target)
     backup.mkdir(parents=True, exist_ok=True)
     stamp = _free_stamp(backup)
-    if in_parts:
+    kept_dir = None
+    if in_parts or len(zips) > 1:
         kept_dir = backup / f"{paths.DOWNLOAD_PREFIX} {stamp}"
         kept_dir.mkdir()
         moved = []
         for i, z in enumerate(zips, 1):
             moved.append(kept_dir / f"part {i:03}.zip")
             shutil.move(z, moved[-1])
-        shutil.move(zip_path, kept_dir / "parts.json")
+        if in_parts:
+            shutil.move(first, kept_dir / "parts.json")
         zips = moved
     else:
         kept = backup / f"{paths.DOWNLOAD_PREFIX} {stamp}.zip"
-        shutil.move(zip_path, kept)
+        shutil.move(first, kept)
         zips = [kept]
 
     original = paths.original_dir(target)
@@ -331,8 +365,10 @@ def ingest(assignment_id: str, zip_path: Path | None = None,
     check: dict = {}
     rows = anonymize.prepare(original, target, on_folder=on_progress and (lambda done, total: report("number", done, total)),
                              check=check)
-    pull_check.write(target, {"by": lock.me(), "ok": True, **check, **moodle})
-    log_pull(target, rows, before, len(zips), partial=partial_of(zip_path, kept_dir / "parts.json" if in_parts else None))
+    result = {"by": lock.me(), "ok": True, **check, **moodle, "expected": expected}
+    pull_check.write(target, result)
+    pull_check.write_report(target, pull_check.read(target) or result)
+    log_pull(target, rows, before, len(zips), partial=partial_of(first, kept_dir / "parts.json" if in_parts else None))
     guide.write_guides(paths.data_dir())
     return rows
 

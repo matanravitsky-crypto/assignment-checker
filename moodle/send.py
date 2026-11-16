@@ -36,7 +36,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
-from moodle import anonymize, lock, paths, upload, upload_log
+from moodle import anonymize, lock, moodle_table, paths, return_check, upload, upload_log
 from moodle import grades as moodle_grades
 
 UPLOAD_LOCK = paths.UPLOAD_LOCK
@@ -62,6 +62,9 @@ class BatchSummary:
     too_big: list[str]
     resubmitted: list[str]
     not_approved: list[str]
+    grades_filled: int | None = None  # grades filled into Moodle's worksheet (a worksheet was given), else None
+    worksheet_students: int = 0  # rows in the worksheet Moodle gave
+    verified: dict | None = None  # the return check's report (return_check.py): the batch passed it
 
 
 def is_approved(row: dict | None) -> bool:
@@ -129,7 +132,12 @@ def check_can_prepare(assignment_dir: Path) -> None:
         raise BatchBlocked(f"טבלת המפתח לא תקינה, ולכן לא מעלים כלום: {lines}. צריך לתקן את הטבלה לפני העלאה.")
 
 
-def prepare_batch(assignment_dir: Path, max_bytes: int = upload.CLAUDE_MAX_ZIP_BYTES) -> BatchSummary:
+def prepare_batch(assignment_dir: Path, max_bytes: int = upload.CLAUDE_MAX_ZIP_BYTES,
+                  worksheet: Path | None = None) -> BatchSummary:
+    """`worksheet`: Moodle's grading worksheet a person downloaded (Actions > download the grading worksheet; needs
+    "Offline grading worksheet" on). Then the grades are filled into it too, by participant id, never by row order,
+    as "Grades for Moodle worksheet.csv", and a copy without anything that identifies a person is kept in the
+    assignment folder (moodle_table.save_worksheet). The downloaded file itself (names, emails) is left where it is."""
     check_can_prepare(assignment_dir)
 
     mapping = anonymize.read_mapping(assignment_dir)
@@ -173,15 +181,35 @@ def prepare_batch(assignment_dir: Path, max_bytes: int = upload.CLAUDE_MAX_ZIP_B
 
     grades = upload.read_results(assignment_dir) if moodle_grades.files(assignment_dir) else {}
     in_batch = {f["number"] for z in batch["zips"] for f in z["files"]}
+    grades_filled, worksheet_students = None, 0
+    if worksheet is not None:
+        worksheet_students = moodle_table.save_worksheet(assignment_dir, worksheet)["rows"]  # no names kept
+        grades_filled = upload.fill_worksheet(worksheet, upload_dir / upload.GRADES_FOR_MOODLE, grades, mapping,
+                                              table=moodle_table.read(assignment_dir))
+
+    # Then the check that does not trust any of the above: the ZIPs, the key, the marked files and the filled
+    # worksheet are read again from the disk and compared (return_check.py). A failure leaves nothing "ready"
+    try:
+        verified = return_check.check(assignment_dir, batch, max_bytes)
+    except return_check.ReturnCheckFailed as bad:
+        for z in zips:
+            z.unlink(missing_ok=True)
+        (upload_dir / upload_log.BATCH_FILE).unlink(missing_ok=True)
+        (upload_dir / upload.GRADES_FOR_MOODLE).unlink(missing_ok=True)
+        raise BatchBlocked(f"האימות של ההחזרה נכשל, ולכן שום דבר לא מוכן להעלאה ({bad}). "
+                           "צריך לבדוק את טבלת המפתח ואת העבודות המסומנות לפני הכנה נוספת.") from bad
+    return_check.write(assignment_dir, verified)
+
     upload.write_instructions(upload_dir / upload.INSTRUCTIONS_FILE, {
         "assignment_id": batch["assignment_id"],
         "submissions": len(mapping),
         "results": len(grades),
         "missing_results": sorted(set(mapping) - set(grades)),
-        "grades_filled": None,
+        "grades_filled": grades_filled,
         "feedback_zips": zips,
         "zip_folder": zip_dir.name,
         "too_big": too_big,
+        "verified": True,
     }, max_bytes)
 
     return BatchSummary(
@@ -195,6 +223,9 @@ def prepare_batch(assignment_dir: Path, max_bytes: int = upload.CLAUDE_MAX_ZIP_B
         too_big=too_big,
         resubmitted=resubmitted,
         not_approved=sorted(n for n in in_batch if not is_approved(grades.get(n))),
+        grades_filled=grades_filled,
+        worksheet_students=worksheet_students,
+        verified=verified,
     )
 
 

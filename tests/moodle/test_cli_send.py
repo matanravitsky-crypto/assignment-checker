@@ -184,3 +184,14 @@ def test_send_never_touches_the_grades_and_send_grades_asks_first(data, run_cli,
     assert run_cli(["send-grades", ID, "--yes"]) == 0
     assert [r["number"] for r in send_grades.read_log(a)] == ["0001"]
     assert "ציונים עלו" in capsys.readouterr().out
+
+
+def test_list_shows_the_folder_and_every_assignment_in_numbers(data, monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["moodle", "list"])
+    cli.main()
+    out = capsys.readouterr().out
+    assert "תיקיית הנתונים" in out and ID in out and "נמשכו: 2" in out and "הוחזרו: 0" in out
+    assert "נועה" not in out
+    monkeypatch.setattr(sys, "argv", ["moodle", "list", "999"])
+    cli.main()
+    assert "אין מטלה" in capsys.readouterr().out

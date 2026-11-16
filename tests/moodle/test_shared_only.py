@@ -23,7 +23,10 @@ def test_ingest_runs_from_a_local_copy_too(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("ASSIGNMENT_DATA", str(tmp_path / "Exercise Checking System"))
     monkeypatch.setattr(sys, "argv", ["moodle", "ingest", "3453769"])
     seen = []
+    waiting = tmp_path / "x-3453769.zip"
+    waiting.write_bytes(b"")
+    monkeypatch.setattr(cli.ingest, "find_downloads", lambda _id: [waiting])
     monkeypatch.setattr(cli.ingest, "ingest", lambda *a, **k: seen.append(a) or [])
     monkeypatch.setattr(cli.paths, "assignment_dir", lambda _id: tmp_path / "x")
     cli.main()
-    assert seen and seen[0][0] == "3453769"
+    assert seen and seen[0][:2] == ("3453769", [waiting])
