@@ -276,6 +276,10 @@ def main() -> None:
         print(f"{upload.GRADES_FOR_MOODLE}: {summary.grades_filled} ציונים מולאו מתוך {summary.worksheet_students} בגיליון "
               f"({worksheet.name})")
     print(f"-> {target / paths.UPLOAD} (השלבים ב-'{upload.INSTRUCTIONS_FILE}')")
+    if summary.zips:
+        print(f"דף ההעלאה במודל (לגרור לשם כל ZIP, לפי הסדר): {paths.MOODLE_UPLOAD_ZIP_PAGE.format(id=summary.assignment_id)}")
+    if summary.grades_filled:
+        print(f"דף העלאת הציונים (אחרי ה-ZIP-ים): {paths.MOODLE_UPLOAD_GRADES_PAGE.format(id=summary.assignment_id)}")
 
 
 if __name__ == "__main__":

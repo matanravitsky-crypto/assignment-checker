@@ -358,7 +358,7 @@ def test_prepare_fills_a_worksheet_downloaded_by_hand_by_participant_and_keeps_n
     assert "משתתף 100" in kept and "נועה" not in kept and "n@x" not in kept
     assert sheet.exists()  # the person's download is not deleted by the code
     steps = (assignment / paths.UPLOAD / INSTRUCTIONS_FILE).read_text(encoding="utf-8-sig")
-    assert "2 ציונים" in steps and "העלאת גיליון ציונים" in steps
+    assert "2 ציונים" in steps and GRADES_FOR_MOODLE in steps and "uploadgrades" in steps
 
 
 def test_prepare_without_a_worksheet_says_how_to_get_one(assignment):

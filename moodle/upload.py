@@ -239,6 +239,9 @@ def write_instructions(out: Path, report: dict, max_bytes: int) -> None:
     """Plain Hebrew steps for whoever uploads, with this run's numbers."""
     zips = report["feedback_zips"]
     limit_mb = max_bytes // 1_000_000
+    mid = report.get("assignment_id")
+    zip_page = paths.MOODLE_UPLOAD_ZIP_PAGE.format(id=mid) if mid else None
+    grades_page = paths.MOODLE_UPLOAD_GRADES_PAGE.format(id=mid) if mid else None
     lines = [
         "העלאת הבדיקות למודל",
         "=" * 20,
@@ -246,10 +249,16 @@ def write_instructions(out: Path, report: dict, max_bytes: int) -> None:
         f"הגשות: {report['submissions']}. ציונים: {report['results']}. קבצי ZIP של עבודות בדוקות: {len(zips)}.",
         "",
         "שלב 1: עבודות בדוקות עם הערות",
-        "במודל, במטלה: הגשות ← פעולות ← \"העלאת מספר קובצי משוב כקובץ 7Zip אחד\".",
-        f"מעלים כל קובץ בנפרד, לפי הסדר (מודל מקבל עד {limit_mb} MB בכל העלאה; הגבול כתוב בדף עצמו, \"הגודל המירבי לקבצים חדשים\", "
-        f"ואם הוא קטן יותר מכינים שוב עם --max-mb):",
     ]
+    if zip_page:
+        lines += [f"דף ההעלאה במודל (קישור ישיר, או לחיצה כפולה על \"{paths.UPLOAD_SHORTCUT}\" שליד ה-ZIP-ים):",
+                  f"  {zip_page}",
+                  "(אותו דף דרך התפריט: הגשות ← פעולות ← \"העלאת מספר קובצי משוב כקובץ 7Zip אחד\".)"]
+    else:
+        lines.append("במודל, במטלה: הגשות ← פעולות ← \"העלאת מספר קובצי משוב כקובץ 7Zip אחד\".")
+    lines.append(
+        f"גוררים כל קובץ בנפרד לתוך תיבת הקובץ שבדף, לפי הסדר, ולוחצים \"יבוא קבצי משוב\" (מודל מקבל עד {limit_mb} MB בכל העלאה; "
+        f"הגבול כתוב בדף עצמו, \"הגודל המירבי לקבצים חדשים\", ואם הוא קטן יותר מכינים שוב עם --max-mb):")
     if report.get("zip_folder"):
         lines.append(f"קובצי ה-ZIP נמצאים בתיקייה \"{report['zip_folder']}\" שבתוך \"{paths.UPLOAD}\".")
     lines += [f"  [ ] {z.name}  ({z.stat().st_size / 1_000_000:.1f} MB)" for z in zips]
@@ -281,13 +290,28 @@ def write_instructions(out: Path, report: dict, max_bytes: int) -> None:
     else:
         lines += [
             f"\"{GRADES_FOR_MOODLE}\" מוכן ({report['grades_filled']} ציונים). כל ציון לפי מזהה המשתתף של הסטודנט, לא לפי סדר השורות.",
-            f"במודל: הגשות ← פעולות ← \"העלאת גיליון ציונים\" ← בוחרים \"{GRADES_FOR_MOODLE}\" ← מודל מציג רשימה של השינויים ←",
+        ]
+        if grades_page:
+            lines += [f"דף העלאת הציונים (קישור ישיר, או לחיצה כפולה על \"{paths.GRADES_SHORTCUT}\"):", f"  {grades_page}"]
+        lines += [
+            f"גוררים לשם את \"{GRADES_FOR_MOODLE}\" (מהתיקייה \"{paths.UPLOAD}\") ← מודל מציג רשימה של השינויים ←",
             f"מאשרים רק אם מספר הציונים ברשימה הוא {report['grades_filled']} (או פחות, אם חלק כבר היו במודל כפי שהם). אחרת מבטלים.",
             "הגיליון שהורד ממודל (ב-Downloads) מכיל שמות ומיילים: מוחקים אותו אחרי ההעלאה. העותק בתיקיית המטלה נשמר בלי שמות.",
         ]
     if report["missing_results"]:
         lines += ["", f"שימו לב: {len(report['missing_results'])} הגשות עוד בלי ציון: {', '.join(report['missing_results'][:30])}"]
     out.write_text("\n".join(lines) + "\n", encoding="utf-8-sig")
+    # A double-click opens the right Moodle page: one shortcut next to the ZIPs, one next to the worksheet
+    if zip_page and report.get("zip_folder"):
+        write_shortcut(out.parent / report["zip_folder"] / paths.UPLOAD_SHORTCUT, zip_page)
+    if grades_page:
+        write_shortcut(out.parent / paths.GRADES_SHORTCUT, grades_page)
+
+
+def write_shortcut(path: Path, url: str) -> None:
+    """A Windows ".url" file: a double-click opens `url` in the default browser (the person's own, logged in to Moodle)."""
+    if path.parent.is_dir():
+        path.write_text(f"[InternetShortcut]\r\nURL={url}\r\n", encoding="ascii")
 
 
 def prepare_upload(assignment_dir: Path, worksheet: Path | None = None, max_bytes: int = MAX_ZIP_BYTES) -> dict:

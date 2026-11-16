@@ -103,6 +103,15 @@ PULL_REPORT = "Pull report.txt"      # the same, in Hebrew for a person: how man
 # grade (return_check.py), and the same in Hebrew
 RETURN_CHECK = "Return check.json"
 RETURN_REPORT = "Return check.txt"
+# Moodle's pages for one assignment (its cmid, the "id=" of the assignment's address), for the steps a person follows.
+# The upload page for feedback ZIPs takes a dragged file; the grades page needs "Offline grading worksheet" on
+MOODLE_ASSIGN = "https://moodle.bgu.ac.il/moodle/mod/assign/view.php?id={id}"
+MOODLE_GRADING_PAGE = MOODLE_ASSIGN + "&action=grading"
+MOODLE_UPLOAD_ZIP_PAGE = MOODLE_ASSIGN + "&plugin=file&pluginsubtype=assignfeedback&action=viewpluginpage&pluginaction=uploadzip"
+MOODLE_UPLOAD_GRADES_PAGE = MOODLE_ASSIGN + "&plugin=offline&pluginsubtype=assignfeedback&action=viewpluginpage&pluginaction=uploadgrades"
+MOODLE_DOWNLOAD_GRADES_PAGE = MOODLE_ASSIGN + "&plugin=offline&pluginsubtype=assignfeedback&action=viewpluginpage&pluginaction=downloadgrades"
+UPLOAD_SHORTCUT = "Open the upload page in Moodle.url"      # a double-click opens the feedback ZIP page (in the batch folder)
+GRADES_SHORTCUT = "Open the grades upload page in Moodle.url"
 # In "3 - Ready to upload to Moodle" (upload.py, upload_log.py, send.py, send_grades.py)
 UPLOAD_STEPS = "Upload steps.txt"                        # the steps and a checklist for an upload by hand
 UPLOAD_LOG = "Upload log.csv"                            # what went up, per number (numbers only)

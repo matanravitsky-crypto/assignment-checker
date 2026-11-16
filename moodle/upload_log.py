@@ -116,7 +116,7 @@ def remove_old_batch_folders(assignment_dir: Path, keep: str) -> None:
         if not old.is_dir() or old.name == keep or not BATCH_DIR_NAME.fullmatch(old.name):
             continue
         for item in old.iterdir():
-            if upload.is_zip_we_wrote(item):
+            if upload.is_zip_we_wrote(item) or item.name == paths.UPLOAD_SHORTCUT:  # ours: the ZIPs and the shortcut
                 item.unlink()
         try:
             old.rmdir()

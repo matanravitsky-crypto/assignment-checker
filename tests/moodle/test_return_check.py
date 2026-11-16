@@ -132,3 +132,17 @@ def test_a_failed_check_leaves_nothing_ready(assignment, monkeypatch):
     assert not (upload / BATCH_FILE).exists()
     assert not list(upload.rglob("*.zip"))
     assert not (assignment / paths.RETURN_CHECK).exists()
+
+
+def test_the_steps_give_the_moodle_pages_and_a_shortcut_next_to_the_zips(assignment, tmp_path):
+    sheet = tmp_path / "ציונים-c-הגשה 1-555.csv"
+    worksheet(sheet, {"100": "", "200": "", "300": ""})
+    prepare_batch(assignment, max_bytes=10_000_000, worksheet=sheet)
+    steps = (assignment / paths.UPLOAD / INSTRUCTIONS_FILE).read_text(encoding="utf-8-sig")
+    assert paths.MOODLE_UPLOAD_ZIP_PAGE.format(id="555") in steps
+    assert paths.MOODLE_UPLOAD_GRADES_PAGE.format(id="555") in steps
+    assert "גוררים" in steps
+    folder = batch_folder(assignment, read_batch(assignment))
+    shortcut = (folder / paths.UPLOAD_SHORTCUT).read_text(encoding="ascii")
+    assert shortcut.startswith("[InternetShortcut]") and "pluginaction=uploadzip" in shortcut and "id=555" in shortcut
+    assert "pluginaction=uploadgrades" in (assignment / paths.UPLOAD / paths.GRADES_SHORTCUT).read_text(encoding="ascii")
