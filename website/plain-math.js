@@ -3,7 +3,8 @@
 // הערה שנחתכה באמצע נוסחה ($ שנפתח ולא נסגר) מסתיימת ב"…" לפני הנוסחה השבורה, ולא מציגה קוד.
 // הרכיב עצמאי: מקבל טקסט (ופונקציית הימלטות) ומחזיר HTML. לא קורא נתונים בעצמו, ו-app.js רק קורא לו.
 (function (root) {
-  // סוג הטעות נחתך ל-80 תווים בשמירה (grading/grade.py, _mistakes). טקסט באורך הזה או יותר נחתך כנראה באמצע
+  // עד 2026-11-16 סוג הטעות נחתך בשמירה בדיוק ב-80 תווים, באמצע מילה, בלי סימן (טקסט ישן, מבדיקות שכבר נשמרו).
+  // מאז הוא נחתך ב-200 בסוף מילה ומסתיים ב-"…" בעצמו (grading/grade.py, _clip_mistake), ולכן כאן מזהים רק את הישן
   const CUT_AT = 80;
 
   const SYMBOLS = {
@@ -56,7 +57,7 @@
     const dangling = rest.indexOf("$");
     if (dangling !== -1) { rest = rest.slice(0, dangling); cut = true; }
     if (rest) out.push({ math: false, text: rest });
-    if (!cut && text.length >= CUT_AT && !/[.!?…)]$/.test(text.trim())) cut = true;
+    if (!cut && text.length === CUT_AT && !/[.!?…)]$/.test(text.trim())) cut = true;
     return { parts: out, cut };
   }
 

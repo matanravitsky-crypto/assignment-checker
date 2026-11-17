@@ -59,6 +59,13 @@ def test_a_text_cut_at_80_characters_says_so_and_a_whole_one_does_not():
     assert plain(whole) == [whole]
 
 
+def test_a_long_text_from_the_new_limit_is_shown_as_it_is():
+    longer = "כתב במילים במקום הקבוצה, כמו " + "ל" * 90  # 119 characters: saved whole since the limit became 200
+    assert plain(longer) == [longer]
+    clipped = "מילה " * 30 + "אחרונה…"  # a text the new code cut at a word already ends with its own dots
+    assert plain(clipped) == [clipped]
+
+
 def test_html_isolates_each_formula_left_to_right_and_uses_the_sites_escape():
     code = ("const P = require(process.argv[1]); const esc = (s) => String(s).replace(/</g, '&lt;');"
             "process.stdout.write(P.html('כתב $a<b$ ו-<i>', esc));")

@@ -689,11 +689,27 @@ def _box(a: dict, pages: int, text: str) -> Mark | None:
     return Mark(page, x0, y0, x1, y1, text)
 
 
+MISTAKE_MAX = 200  # תווים לסוג טעות. עד 2026-11-16 היה 80, והטעויות הארוכות נחתכו באמצע מילה (ובאמצע נוסחה)
+
+
+def _clip_mistake(text: str, limit: int = MISTAKE_MAX) -> str:
+    """סוג טעות עד `limit` תווים. ארוך מזה נחתך בסוף מילה (לא באמצע מילה ולא באמצע נוסחה $...$) ומסתיים ב-"…"."""
+    if len(text) <= limit:
+        return text
+    head = text[:limit - 1]  # מקום אחד ל-"…"
+    if text[limit - 1] != " " and " " in head:  # נחתכנו באמצע מילה: חוזרים לסוף המילה הקודמת
+        head = head.rsplit(" ", 1)[0]
+    if head.count("$") % 2:  # $ שנפתח ולא נסגר: חוזרים לפניו
+        head = head[:head.rindex("$")]
+    return head.rstrip(" .,;:-$") + "…"
+
+
 def _mistakes(raw) -> list[str]:
-    """סוגי הטעויות בשאלה: בלי כפילויות ובלי סימני פיסוק בסוף, כדי שאותה טעות תיספר יחד בכל העבודות."""
+    """סוגי הטעויות בשאלה: בלי כפילויות ובלי סימני פיסוק בסוף, כדי שאותה טעות תיספר יחד בכל העבודות.
+    ארוך מ-`MISTAKE_MAX` נחתך בסוף מילה ומסתיים ב-"…" (`_clip_mistake`)."""
     out: list[str] = []
     for m in raw if isinstance(raw, list) else []:
-        text = " ".join(str(m).split()).strip(" .,;:")[:80]
+        text = _clip_mistake(" ".join(str(m).split()).strip(" .,;:"))
         if text and text not in out:
             out.append(text)
     return out

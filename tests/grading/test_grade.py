@@ -567,6 +567,24 @@ def test_answer_keeps_mistakes_unsure_and_the_kind_of_problem(root):
     assert grading.parse_answer(answer(), ctx, 1).mistakes == [[]] * 5  # תשובה בלי השדות החדשים עדיין נקראת
 
 
+def _mod():
+    import importlib
+    return importlib.import_module("grading.grade")
+
+
+def test_a_long_mistake_type_is_kept_whole_and_a_huge_one_is_cut_at_a_word():
+    long = "כתב במילים במקום הקבוצה, כמו \"קבוצה אינסופית\", \"אינסוף פתרונות\", \"ישר\" או \"כל המספרים\" במקום לכתוב את הקבוצה עצמה"
+    assert 80 < len(long) < _mod().MISTAKE_MAX
+    assert _mod()._mistakes([long + " ."]) == [long]  # לא נחתך, ופיסוק בסוף יורד כמו קודם
+    huge = " ".join(["מילה"] * 80)
+    (cut,) = _mod()._mistakes([huge])
+    assert len(cut) <= _mod().MISTAKE_MAX and cut.endswith("מילה…") and "מיל…" not in cut  # בסוף מילה, לא באמצעה
+    in_formula = "טעות " * 38 + "בנוסחה $" + "x" * 30 + "$ בסוף"
+    (cut,) = _mod()._mistakes([in_formula])
+    assert cut.endswith("…") and cut.count("$") % 2 == 0  # לא באמצע נוסחה
+    assert _mod()._mistakes(["א", "א.", " א "]) == ["א"]
+
+
 def test_save_review_of_work_graded_before_notes_keeps_its_marks(root):
     """עבודה שנבדקה לפני שהיו Grading notes: מחליפים רק את עמוד הסיכום, והסימונים שב-PDF נשארים."""
     a = asg(root)
