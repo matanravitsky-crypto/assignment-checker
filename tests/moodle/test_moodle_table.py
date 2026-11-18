@@ -120,3 +120,34 @@ def test_a_file_that_is_not_a_worksheet_is_refused(tmp_path):
     with pytest.raises(ValueError):
         moodle_table.save_worksheet(tmp_path, bad)
     assert not moodle_table.worksheet_path(tmp_path).exists()
+
+
+def test_an_assignment_graded_on_submission_sends_the_course_grade_and_keeps_the_rubrics_in_the_files(tmp_path):
+    # The assignment's policy ("מדיניות ציון - PDF ומודל", Matan 2026-11-18): Moodle gets the grade by the parts handed
+    # in (course_grade, written by grading), 0 for a work identical to another's; the student sees the rubric's grade
+    # in the PDF. On 2026-11-18 main still sent the rubric's grade (LA Assignment 0: 566 of 619 grades differ)
+    import json
+    from moodle import grades
+    from moodle.upload import read_results
+    write_csv(tmp_path / paths.KEY, KEY)
+    (tmp_path / paths.INFO).write_text('{"max_grade": 100, "moodle_grade": {"basis": "submission"}}', encoding="utf-8")
+    write_csv(tmp_path / paths.GRADES, [["number", "grade", "feedback", "course_grade"], ["0001", "81", "טוב", "80"],
+                                        ["0002", "40", "", "100"], ["0003", ""], ["0004", "90", "", ""]])
+    moodle_table.build(tmp_path)
+    t = table(tmp_path)
+    assert (t["0001"]["grade"], t["0002"]["grade"]) == ("80", "100") and "0003" not in t  # 0003: not graded yet
+    assert "0004" not in t  # graded before the policy, no course grade: left out, never the rubric's 90 instead
+    sent = read_results(tmp_path)
+    assert sent["0001"]["grade"] == "80" and sent["0001"]["feedback"] == "טוב" and not sent["0003"]["grade"]
+    assert not sent["0004"]["grade"]
+    assert grades.read(tmp_path)["0001"]["grade"] == "81"  # the grades files keep the rubric's grade
+    # the copying check found 0001 and 0002 identical (the same pages): both get 0
+    (tmp_path / paths.COPYING).write_text(json.dumps({"pairs": [
+        {"a": "0001", "b": "0002", "level": "strong", "reasons": [{"kind": "page", "pages": [[1, 1, 0]]}]},
+        {"a": "0001", "b": "0004", "level": "weak", "reasons": [{"kind": "author"}]}]}), encoding="utf-8")
+    moodle_table.build(tmp_path)
+    assert (table(tmp_path)["0001"]["grade"], table(tmp_path)["0002"]["grade"]) == ("0", "0")
+    assert read_results(tmp_path)["0002"]["grade"] == "0" and grades.identical(tmp_path) == {"0001": ["0002"], "0002": ["0001"]}
+    (tmp_path / paths.INFO).write_text('{"max_grade": 100}', encoding="utf-8")  # without the policy: the rubric's grade
+    moodle_table.build(tmp_path)
+    assert table(tmp_path)["0001"]["grade"] == "81" and read_results(tmp_path)["0001"]["grade"] == "81"

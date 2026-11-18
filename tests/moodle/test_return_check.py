@@ -156,3 +156,20 @@ def test_a_worksheet_without_a_feedback_column_gets_grades_only(assignment, tmp_
     assert s.grades_filled == 3 and s.verified["grades_matched"] == 3
     rows = {r[0]: r for r in csv.reader((assignment / paths.UPLOAD / GRADES_FOR_MOODLE).read_text(encoding="utf-8-sig").splitlines())}
     assert rows["משתתף 200"][2] == "80"
+
+
+def test_under_the_submission_policy_the_worksheet_carries_the_course_grade_and_the_check_passes(assignment, tmp_path):
+    # LA Assignment 0 (2026-11-18): Moodle gets course_grade, not the rubric's grade. The check reads the worksheet
+    # against the grade that goes to Moodle; against the rubric's grade it would refuse every such batch
+    info = json.loads((assignment / paths.INFO).read_text(encoding="utf-8"))
+    (assignment / paths.INFO).write_text(json.dumps({**info, "moodle_grade": {"basis": "submission"}}, ensure_ascii=False),
+                                         encoding="utf-8")
+    write_csv(assignment / paths.GRADES, ["number", "grade", "feedback", "approved", "course_grade"],
+              [("0001", "90", "", "yes", "100"), ("0002", "80", "", "yes", "95"), ("0003", "70", "", "yes", "60")])
+    sheet = tmp_path / "ציונים-c-הגשה 1-555.csv"
+    worksheet(sheet, {"100": "", "200": "", "300": ""})
+    s = prepare_batch(assignment, max_bytes=10_000_000, worksheet=sheet)
+    assert s.verified["ok"] and s.verified["grades_matched"] == 3
+    with open(assignment / paths.UPLOAD / GRADES_FOR_MOODLE, encoding="utf-8-sig", newline="") as f:
+        filled = {row[0]: row[2] for row in list(csv.reader(f))[1:]}
+    assert filled == {"משתתף 100": "100", "משתתף 200": "95", "משתתף 300": "60"}

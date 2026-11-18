@@ -50,10 +50,12 @@ def find_worksheet(assignment_id: str, downloads: Path | None = None) -> Path | 
 
 
 def read_results(assignment_dir: Path) -> dict[str, dict]:
-    """The grades, merged from Grades.csv and every grader's own file (grades.py). No grades file at all raises."""
+    """The grades that go to Moodle, merged from Grades.csv and every grader's own file (grades.py). No grades file at all
+    raises. Under the assignment's course policy (grades.course_policy) each graded row's "grade" is its course_grade
+    (0 for a work identical to another's, empty without one, so it is not sent); the files keep the rubric's grade."""
     if not grades.files(assignment_dir):
         raise FileNotFoundError(assignment_dir / paths.GRADES)
-    return grades.read(assignment_dir)
+    return grades.to_moodle(assignment_dir, grades.read(assignment_dir))
 
 
 def participant_from_identifier(identifier: str) -> str:

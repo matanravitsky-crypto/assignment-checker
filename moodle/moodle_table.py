@@ -63,6 +63,7 @@ def compute(assignment_dir: Path) -> tuple[list[dict], dict[str, list[str]]]:
     a = Path(assignment_dir)
     top = max_grade(a)
     results = grades.read(a)
+    sent = grades.to_moodle(a, results)  # under the assignment's course policy, Moodle gets course_grade, not the rubric's
     has_key = (a / paths.KEY).is_file()
     mapping = anonymize.read_mapping(a) if has_key else {}
     bad_key = {n for found in (anonymize.key_problems(a) if has_key else {}).values() for n in found}
@@ -72,8 +73,8 @@ def compute(assignment_dir: Path) -> tuple[list[dict], dict[str, list[str]]]:
         r = results[n]
         if not (r.get("grade") or "").strip():
             continue  # no grade yet (a failed grading): nothing to give
-        g = schema.valid_grade(r, top)
-        if g is None:
+        g = schema.valid_grade(sent[n], top)
+        if g is None:  # also a row graded before the policy, with no course_grade: never the rubric's grade instead
             left["invalid_grade"].append(n)
             continue
         if n in bad_key:
