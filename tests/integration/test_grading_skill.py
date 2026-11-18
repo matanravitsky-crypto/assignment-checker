@@ -32,6 +32,9 @@ MARKS = [{"page": 1, "x0": 300, "y0": 400, "x1": 700, "y1": 460, "text": "חסר
 def run_skill(skill, *args, cwd):
     env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "ASSIGNMENT_CHECKER_ROOT", "ASSIGNMENT_DATA")}
     env["PYTHONIOENCODING"] = "utf-8"
+    # no zoom pass: `mark` would call the Claude Code signed in on this computer (tokens, and boxes moved by Sonnet),
+    # while the system's run in the same test has none; on CI there is no sign-in, so it was off there anyway
+    env["LOCATE"] = "off"
     # -I: no PYTHONPATH, no user site, no current folder: only the skill's own scripts/ (run.py puts it on the path)
     return subprocess.run([sys.executable, "-I", str(skill / "scripts" / "run.py"), *map(str, args)], cwd=cwd, env=env,
                           capture_output=True, text=True, encoding="utf-8", timeout=600)

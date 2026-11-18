@@ -47,7 +47,8 @@ def test_a_pdf_key_is_sent_first_and_wins_over_the_rubric(root):
     assert [q.points for q in ctx.questions] == [30, 10, 20, 20, 20] and not ctx.no_rubric
     content = grading.build_request(ctx, [])["messages"][0]["content"]
     assert content[0]["type"] == "document" and "המכוון הרשמי" in content[0]["title"]
-    text = next(b["text"] for b in content if b["type"] == "text" and b["text"].startswith("מטלה:"))
+    system = grading.build_request(ctx, [])["system"]
+    text = next(b["text"] for b in system if b["text"].startswith("מטלה:"))  # הטקסט המשותף ב-system
     assert "המכוון הרשמי של המרצה:" in text and grading.KEY_RULE in text
     assert "על חוסר נימוק מורידים 3" in text and "1. דף קבוצות 11 (30 נקודות)" in text
     assert "המכוון הרשמי" in grading.SYSTEM

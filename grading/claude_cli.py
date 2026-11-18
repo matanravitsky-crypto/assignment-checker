@@ -30,11 +30,16 @@ BUDGET_USD = 5.0
 TIMEOUT_S = 900
 EXT = {"image/png": ".png", "image/jpeg": ".jpg", "image/gif": ".gif", "image/webp": ".webp", "application/pdf": ".pdf"}
 
-READ_ALL = ("לפני שאתה עונה, קרא עם הכלי Read את כל הקבצים שברשימה, לפי הסדר: הם העמודים של ההגשה "
-            "(והמכוון והפתרון הרשמי, אם הם ברשימה). אל תקרא שום קובץ אחר. מספר העמוד הוא המספר שבשם הקובץ "
-            "(page-03 = עמוד 3), לא מקום הקובץ ברשימה. בסוף החזר רק את התוצאה המובנית.")
+# כל העמודים בהודעה אחת (Ori #106, Noa #114): כל סבב נוסף קורא שוב את כל ההקשר מהמטמון ומוסיף זמן.
+# קובץ אחרי קובץ היו כ-13 סבבים לעבודה; בבת אחת 2 עד 3
+AT_ONCE = "קרא את כולם בבת אחת: בהודעה אחת, קריאת Read לכל קובץ, ולא קובץ אחרי קובץ."
+
+READ_ALL = ("לפני שאתה עונה, קרא עם הכלי Read את כל הקבצים שברשימה: הם העמודים של ההגשה "
+            "(והמכוון והפתרון הרשמי, אם הם ברשימה). " + AT_ONCE + " אל תקרא שום קובץ אחר. מספר העמוד הוא המספר "
+            "שבשם הקובץ (page-03 = עמוד 3), לא מקום הקובץ ברשימה. בסוף החזר רק את התוצאה המובנית.")
 
 
+# החיתוכים של מעבר הזום נקראים כמו קודם, לפי הסדר: הוא עולה כמה סנטים לעבודה, ואין סיבה לשנות בו משהו
 READ_CROPS = ("לפני שאתה עונה, קרא עם הכלי Read את כל הקבצים שברשימה, לפי הסדר: הם החיתוכים (crop-01 = חיתוך 1). "
               "אל תקרא שום קובץ אחר. בסוף החזר רק את התוצאה המובנית.")
 
@@ -50,7 +55,9 @@ def log_usage(stdout: str, model: str, purpose: str = "grade") -> None:
                "input": usage.get("input_tokens"), "output": usage.get("output_tokens"),
                "cache_read": usage.get("cache_read_input_tokens"),
                "cache_write": usage.get("cache_creation_input_tokens"),
-               "turns": data.get("num_turns"), "cost_usd": data.get("total_cost_usd")}
+               "turns": data.get("num_turns"), "cost_usd": data.get("total_cost_usd"),
+               # זמן הריצה, כדי למדוד גם זמן ולא רק עלות לכל עבודה (docs/Token reduction plan.md, שלב ה)
+               "seconds": round(data["duration_ms"] / 1000, 1) if isinstance(data.get("duration_ms"), (int, float)) else None}
         with (paths.data_dir() / USAGE_LOG).open("a", encoding="utf-8") as f:
             f.write(json.dumps(row) + "\n")
     except Exception:
@@ -62,8 +69,19 @@ def available() -> bool:
     return claude_code.find_claude() is not None and claude_code.auth_status()["logged_in"] is True
 
 
+def system_text(req: dict) -> str:
+    """ה-system של הבקשה כטקסט אחד: הוראות הבדיקה, ואחריהן הטקסט המשותף של המטלה (build_request של grade.py).
+    הוא זהה בכל ההגשות של המטלה, ולכן Claude Code כותב אותו למטמון פעם אחת וקורא ממנו בכל ריצה שאחריה
+    (--system-prompt-file; המטמון חי כשעה מהקריאה האחרונה)."""
+    system = req.get("system") or ""
+    if isinstance(system, str):
+        return system
+    return "\n\n".join(b.get("text", "") for b in system if b.get("type") == "text")
+
+
 def write_request(req: dict, folder: Path) -> str:
-    """כותב לתיקייה את התמונות ואת הפתרון שבבקשה, ומחזיר את הטקסט שנשלח ל-Claude Code במקומם."""
+    """כותב לתיקייה את התמונות ואת הפתרון שבבקשה, ומחזיר את הטקסט שנשלח ל-Claude Code במקומם (ההודעה).
+    רק מה שמשתנה מהגשה להגשה נמצא כאן: שמות הקבצים (התיקייה הזמנית שונה בכל ריצה) ומספרי העמודים."""
     lines: list[str] = []
     pages = docs = 0
     crops = req.get("file_prefix") == "crop"  # מעבר הזום (locate.py): חיתוכים ולא עמודים
@@ -127,7 +145,8 @@ def cli_ask(claude: str, schema: dict, effort: str | None = None, run=subprocess
         try:
             prompt = write_request(req, folder)
             system_file = folder / "system.txt"
-            system_file.write_text(req.get("system") or "", encoding="utf-8")
+            # אותם בייטים בכל מערכת (בלי CRLF): הקובץ הזה הוא מפתח המטמון
+            system_file.write_text(system_text(req), encoding="utf-8", newline="\n")
             cmd = build_command(claude, folder, system_file, schema, req["model"], effort)
             try:
                 proc = run(cmd, input=prompt, capture_output=True, text=True, encoding="utf-8",

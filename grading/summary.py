@@ -1,5 +1,5 @@
 """עמוד הסיכום של עבודה בדוקה, בכיוון "תעודה": למעלה הציון בטבעת, שם המטלה ומשפט אחד; באמצע מפה של
-השאלות (כל סעיף משבצת: ירוק ✓ ניקוד מלא, כתום ✗ ירדו נקודות, אדום ✗ אפס); למטה רק מה שירד, עם ההערה.
+השאלות (כל סעיף משבצת: ירוק ✓ ניקוד מלא; כתום או אדום, כמה ירד והניקוד, "-1  2/3"); למטה רק מה שירד, עם ההערה.
 תחליף ל-grade._summary_page: אותה חתימה. הצורות מצוירות ב-PyMuPDF, והטקסט העברי ב-grading/rtl.py: כל שורה
 מסודרת כאן וכל קטע (עברית / ביטוי מתמטי) נכתב במקומו. עד 2026-11-14 הטקסט נכתב ב-insert_htmlbox, וה-bidi של MuPDF
 (שמתעלם מכל סימן כיוון) הפך "-4" ל-"4-" ו-"1+8=-7" ל-"7-=1+8"."""
@@ -10,7 +10,7 @@ import re
 import pymupdf
 
 from . import rtl
-from .grade import (Context, Graded, _FONT, _pts, assigned, shown_labels)
+from .grade import (Context, Graded, _FONT, _pts, assigned, part_name, shown_labels)
 
 # ---------- הפלטה של "בודק חכם" (website/styles.css) ----------
 def _rgb(h: str) -> tuple[float, float, float]:
@@ -105,6 +105,13 @@ def _stack(page: pymupdf.Page, rect: pymupdf.Rect, items: list[dict], lh: float)
         lay = rtl.layout(it["text"], rect.width / size, it.get("bold", False))
         rtl.write(page, pymupdf.Rect(rect.x0, y, rect.x1, y + 1), lay, size, it["color"], bold=it.get("bold", False), lh=lh)
         y += len(lay.lines) * size * lh
+
+
+def _lost(it: dict) -> str:
+    """"-2": כמה נקודות ירדו בסעיף שלא קיבל ניקוד מלא; ריק לסעיף מלא או לסעיף שלא נשאל."""
+    if it["kind"] not in ("part", "zero"):
+        return ""
+    return f"-{_pts(it['full'] - it['p'])}"
 
 
 def _icon(page: pymupdf.Page, x: float, y: float, s: float, kind: str, color: str) -> None:
@@ -235,8 +242,12 @@ def _tile(page: pymupdf.Page, pen: _Pen, r: pymupdf.Rect, it: dict) -> None:
     page.draw_rect(pymupdf.Rect(r.x1 - 3.2, r.y0 + 6, r.x1 - 1.3, r.y1 - 6), color=None, fill=_rgb(color), radius=0.5)
     pad = 8.0
     s = 12.0
-    if it["kind"] != "none":
-        _icon(page, r.x0 + pad, r.y0 + pad - 1, s, "full" if it["kind"] == "full" else "x", color)
+    lost = _lost(it)
+    if it["kind"] == "full":
+        _icon(page, r.x0 + pad, r.y0 + pad - 1, s, "full", color)
+    elif lost:  # כמה ירד, לא ✗ (נדב, 2026-11-15: "VX זה כתיב מוזר")
+        pen.text(r.x0 + pad, r.y0 + pad + s * .8, lost, s * .95, color, bold=True)
+        s = pen.width(lost, s * .95, bold=True)
     pen.para(pymupdf.Rect(r.x0 + pad + s + 4, r.y0 + pad - 2.5, r.x1 - pad - 2, r.y0 + pad + 14), it["sec"],
              10.5, INK, bold=True)
     got, full = _pts(it["p"]), _pts(it["full"])
@@ -258,8 +269,12 @@ def _cell(page: pymupdf.Page, pen: _Pen, r: pymupdf.Rect, it: dict) -> None:
     size = min(11.0, r.height * .42)
     base = (r.y0 + r.y1) / 2 + size * .36
     s = size * .95
-    if it["kind"] != "none":
-        _icon(page, r.x0 + pad, (r.y0 + r.y1) / 2 - s / 2, s, "full" if it["kind"] == "full" else "x", color)
+    lost = _lost(it)
+    if it["kind"] == "full":
+        _icon(page, r.x0 + pad, (r.y0 + r.y1) / 2 - s / 2, s, "full", color)
+    elif lost:  # כמה ירד בסעיף, לא ✗ (נדב, 2026-11-15: "VX זה כתיב מוזר")
+        pen.text(r.x0 + pad, base, lost, size * .9, color, bold=True)
+        s = pen.width(lost, size * .9, bold=True)
     sec = it["sec"]
     sec_w = 0.0
     if sec and (len(sec) == 1 or not re.search(r"[֐-׿]", sec)):
@@ -281,19 +296,19 @@ def _cell(page: pymupdf.Page, pen: _Pen, r: pymupdf.Rect, it: dict) -> None:
     pen.text(x0 + w_got, base, f"/{full}", size * .8, INK2)
 
 
-def _legend(page: pymupdf.Page, pen: _Pen, y: float, kinds: set[str]) -> None:
-    """מקרא קטן בצד שמאל של כותרת המפה. נקרא מימין לשמאל: סימן ואז מילה."""
-    x = M
-    for kind, word in (("zero", "אפס"), ("part", "ירדו נקודות"), ("full", "ניקוד מלא")):  # משמאל לימין
-        if kind not in kinds:
-            continue
-        color, soft = _COLORS[kind]
-        w = pen.width(word, 8.5) + 4
-        pen.para(pymupdf.Rect(x, y - 10.2, x + w, y + 4), word, 8.5, INK2)
-        bx = x + w + 3
-        page.draw_rect(pymupdf.Rect(bx, y - 9, bx + 11, y + 2), color=_rgb(color), fill=_rgb(soft), width=0.6, radius=0.25)
-        _icon(page, bx + 2, y - 7, 7, "full" if kind == "full" else "x", color)
-        x = bx + 11 + 14
+def course_text(g: Graded, ctx: Context) -> str:
+    """The line under the grade that says what goes into the course grade and why."""
+    got, course = _pts(g.grade), _pts(g.course)
+    exam = f"הציון בעיגול ({got}) הוא לפי המחוון, כדי שתראו איך הייתם נבדקים במבחן."
+    if g.course_why:
+        return f"{exam} בציון הקורס נספר 0: {g.course_why}."
+    labels = [q.label for q in ctx.questions]
+    done = list(g.submitted) + [False] * (len(labels) - len(g.submitted))
+    missing = [part_name(label) for label, d in zip(labels, done) if not d]
+    if not missing:
+        return f"{exam} בציון הקורס נספר {course}: הוגשו כל {len(labels)} הסעיפים."
+    shown = ", ".join(missing[:8]) + (" ועוד" if len(missing) > 8 else "")
+    return f"{exam} בציון הקורס נספר {course}: הוגשו {len(labels) - len(missing)} מתוך {len(labels)} סעיפים (חסרים: {shown})."
 
 
 def summary_page(doc: pymupdf.Document, g: Graded, ctx: Context, archive, extra: list[str] | None = None) -> None:
@@ -306,7 +321,7 @@ def summary_page(doc: pymupdf.Document, g: Graded, ctx: Context, archive, extra:
     notes = [(it, g.mistakes[it["i"]]) for it in items
              if it["kind"] == "full" and it["i"] < len(g.mistakes) and g.mistakes[it["i"]] and it["comment"]]
     frac = g.grade / ctx.max_grade if ctx.max_grade else 0
-    color, verdict = _band(frac)
+    color, _ = _band(frac)  # רק הצבע של הטבעת; בלי מילת הערכה
 
     # ---------- הכותרת: כרטיס עם הטבעת משמאל ----------
     head = pymupdf.Rect(M, M, W - M, M + 112)
@@ -330,13 +345,24 @@ def summary_page(doc: pymupdf.Document, g: Graded, ctx: Context, archive, extra:
     _stack(page, pymupdf.Rect(head.x0 + 2 * r + 46, head.y0 + 14, head.x1 - 18, head.y1 - 10), [
         {"text": ctx.course, "size": 9.5, "color": INK3},
         {"text": ctx.title, "size": 16, "color": INK, "bold": True, "mt": 2},
-        {"text": verdict, "size": 19, "color": color, "bold": True, "mt": 7},
-        {"text": line, "size": 10.5, "color": INK2, "mt": 3}], lh=1.3)
+        # בלי מילת הערכה ("כמעט מושלם"): רק המספר, וכל אחד מפרש אותו (מתן, 2026-11-16). כשציון הקורס אחר, הוא כתוב
+        # כאן במפורש, כדי שאף אחד לא ייבהל מהציון שבעיגול
+        *([{"text": f"ציון לשקלול בציון הקורס: {_pts(g.course)}", "size": 15, "color": OK if g.course else BAD,
+            "bold": True, "mt": 7}] if g.course is not None else []),
+        {"text": line, "size": 10.5, "color": INK2, "mt": 3 if g.course is not None else 8}], lh=1.3)
+
+    # ---------- מה נכנס לציון הקורס (מתן, 2026-11-18: לפי הסעיפים שהוגשו; 0 למוקלדת או לזהה לעבודה אחרת) ----------
+    y = head.y1 + 22
+    if g.course is not None:
+        text = course_text(g, ctx)
+        band = pymupdf.Rect(M, head.y1 + 10, W - M, head.y1 + 36)
+        page.draw_rect(band, color=None, fill=_rgb(OK_SOFT), radius=0.3)
+        page.draw_rect(pymupdf.Rect(band.x1 - 4, band.y0 + 5, band.x1 - 1.5, band.y1 - 5), color=None, fill=_rgb(OK), radius=0.5)
+        pen.para(pymupdf.Rect(band.x0 + 10, band.y0 + 7, band.x1 - 12, band.y1), text, 10.5, INK, bold=True)
+        y = band.y1 + 24
 
     # ---------- המפה ----------
-    y = head.y1 + 22
     pen.para(pymupdf.Rect(W / 2, y - 12, W - M, y + 4), "הניקוד בכל שאלה", 12, INK, bold=True)
-    _legend(page, pen, y, {it["kind"] for it in items})
     y += 7
     page.draw_line((M, y), (W - M, y), color=_rgb(RULE), width=0.6)
     y = _grid(page, pen, groups, y, budget=0.36 * H)
@@ -356,9 +382,7 @@ def summary_page(doc: pymupdf.Document, g: Graded, ctx: Context, archive, extra:
         blocks.append(("title", "שימו לב (בלי הורדת נקודות)", NOTE, 12, 5))
         blocks.append(("table", [(it["label"], "✓", NOTE, NOTE_SOFT, False, it["comment"]) for it, _ in notes]))
     if g.feedback:
-        # שורה לכל נושא (המשוב כתוב בשורות: מה טוב, "מה לתקן:", ואז שאלה בכל שורה), עם רווח קטן ביניהן
-        lines = [l.strip() for l in str(g.feedback).splitlines() if l.strip()]
-        blocks += [("title", "משוב", INK, 12, 3)] + [("p", l, 3 if i else 0) for i, l in enumerate(lines)]
+        blocks += [("title", "משוב", INK, 12, 4)] + feedback_blocks(g.feedback)
     if extra:
         blocks.append(("title", "הערות נוספות", INK, 12, 3))
         blocks += [("p", t, 3) for t in extra]
@@ -367,6 +391,30 @@ def summary_page(doc: pymupdf.Document, g: Graded, ctx: Context, archive, extra:
 
 
 LH = 1.35   # גובה שורה בחלק התחתון
+
+_BULLET = re.compile(r"^\s*[-•*–]\s*")
+_SENTENCE = re.compile(r"(?<=[.!?])\s+(?=[^\s\d])")
+
+
+def feedback_blocks(feedback: str) -> list[tuple]:
+    """המשוב בסדר שנוח לקרוא (מתן, 2026-11-15: "לא זרוק, תרד שורות, בולט פוינטס"): שורת פתיחה, כותרת קטנה
+    ("מה לתקן:"), ונקודה לכל תיקון. Claude כותב אותו בשורות (grade.SYSTEM); משוב שהגיע בכל זאת כפסקה אחת ארוכה
+    מתפרק למשפטים: הראשון פתיחה, וכל אחד מהבאים נקודה."""
+    lines = [l.strip() for l in str(feedback).splitlines() if l.strip()]
+    if len(lines) == 1 and len(lines[0]) > 160:
+        parts = [s.strip() for s in _SENTENCE.split(lines[0]) if s.strip()]
+        lines = parts[:1] + ["- " + s for s in parts[1:]]
+    out: list[tuple] = []
+    listing = False  # אחרי כותרת כמו "מה לתקן:" כל שורה היא נקודה, גם בלי "- "
+    for line in lines:
+        if line.endswith(":") and len(line) < 40:
+            out.append(("sub", line, 2))
+            listing = True
+        elif _BULLET.match(line) or listing:
+            out.append(("bullet", _BULLET.sub("", line), 2.5))
+        else:
+            out.append(("p", line, 4))
+    return out
 
 
 def _lines(page, x0: float, x1: float, y: float, text: str, size: float, color: str, bold: bool, draw: bool,
@@ -411,6 +459,13 @@ def _body(page: pymupdf.Page, rect: pymupdf.Rect, blocks: list[tuple]) -> None:
                 y += _lines(page, rect.x0, rect.x1, y, text, 12 * s, color, True, draw) + mb * s
             elif b[0] == "p":
                 y += _lines(page, rect.x0, rect.x1, y, b[1], 10 * s, INK2, False, draw) + b[2] * s
+            elif b[0] == "sub":  # "מה לתקן:"
+                y += 2 * s + _lines(page, rect.x0, rect.x1, y + 2 * s, b[1], 10 * s, INK, True, draw) + b[2] * s
+            elif b[0] == "bullet":  # נקודה עגולה בצד ימין, והטקסט מוזח ממנה
+                ind = 13 * s
+                if draw:
+                    page.draw_circle((rect.x1 - 4.5 * s, y + 10 * s * LH * 0.5), 1.7 * s, color=None, fill=_rgb(INK3))
+                y += _lines(page, rect.x0, rect.x1 - ind, y, b[1], 10 * s, INK2, False, draw) + b[2] * s
             else:
                 y += _table(page, rect, y, b[1], s, draw)
         return y - rect.y0

@@ -23,8 +23,9 @@ from pathlib import Path
 
 import pymupdf
 
-# אותו ביטוי כמו grade._MATH (tests/grading/test_rtl.py בודקת שהם זהים)
-MATH = re.compile(r"[^\u0590-\u05FF\s,;:]*[A-Za-z0-9∅][^\u0590-\u05FF]*")
+# אותו ביטוי כמו grade._MATH (tests/grading/test_rtl.py בודקת שהם זהים). "| t∈ℂ" בתחילת ביטוי שייך לו:
+# בלי זה ה-"|" נשאר בצד העברי, ו-"נשמט התחום \"| t∈ℂ\"" הוצג כ-t∈ℂ" |" (2026-11-16, 0093)
+MATH = re.compile(r"(?:[\"'«]?\| ?)?[^\u0590-\u05FF\s,;:]*[A-Za-z0-9∅][^\u0590-\u05FF]*")
 _HEB = re.compile(r"[\u0590-\u05FF]")
 _MIRROR = str.maketrans("()[]{}<>", ")(][}{><")
 _OPEN, _CLOSE = "([{", ")]}"
