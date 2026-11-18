@@ -109,11 +109,11 @@ def test_grading_writes_notes_and_a_failure_reaches_the_review_queue(root):
     (bad,) = rep.failed
     good = rep.graded[0]
     note = grading.read_notes(a.dir, good)
-    assert note["mistakes"][1] == ["חסר נימוק"] and note["unsure"][4] and note["review_kind"] == "missing"
+    assert note["mistakes"][1] == ["חסר נימוק"] and note["unsure"][4] and note["review_kind"] == "uncertain"
     assert note["marks"][0]["text"] == "חסר נימוק" and note["points"] == [20, 15, 20, 20, 10]
     assert grading.read_notes(a.dir, bad)["error"] == "Claude עמוס כרגע"
     subs = {s["id"]: s for s in actions.state(root)["assignments"][0]["subs"]}
-    assert subs[good]["reviewKind"] == "missing" and subs[good]["unsure"][4] and subs[good]["mistakes"][4] == ["תחום לא נכון"]
+    assert subs[good]["reviewKind"] == "uncertain" and subs[good]["unsure"][4] and subs[good]["mistakes"][4] == ["תחום לא נכון"]
     assert subs[bad]["reviewKind"] == "failed" and subs[bad]["failed"] == "Claude עמוס כרגע" and subs[bad]["status"] == "pulled"
     # בדיקה חוזרת שהצליחה מוחקת את הכישלון
     grading.grade_assignment(a.dir, [bad], ask=lambda req: detailed())

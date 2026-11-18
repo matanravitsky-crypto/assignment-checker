@@ -35,13 +35,19 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--ids", nargs="*", help="מספרי הגשות לבדיקה (ברירת מחדל: כל מה שעוד לא נבדק)")
     p.add_argument("--model", default=None, help="ברירת מחדל: GRADING_MODEL ב-.env, ובלעדיו " + grade.DEFAULT_MODEL)
     p.add_argument("--parallel", type=int, default=grade.DEFAULT_PARALLEL, help="כמה עבודות במקביל")
+    p.add_argument("--review", action="store_true",
+                   help="לבדוק שוב את כל תור הבדיקה הידנית (גם עבודות שבודקים אחרים לקחו; הן נשארות רשומות עליהם)")
     args = p.parse_args(argv)
 
     labels = {"graded": "נבדקה", "failed": "נכשלה", "skipped": "כבר אושרה", "taken": "שמורה לבודק אחר"}
     try:
         folder = paths.assignment_dir(args.assignment_id)
-        rep = grade.grade_assignment(folder, args.ids or None, model=args.model or grade.default_model(), parallel=args.parallel,
-                                     on_progress=lambda n, what: print(f"  {n}: {labels[what]}"))
+        ids = args.ids or None
+        if args.review:
+            ids = sorted(set(ids or []) | set(grade.review_queue(folder)))
+            print(f"תור הבדיקה הידנית: {len(ids)} עבודות")
+        rep = grade.grade_assignment(folder, ids, model=args.model or grade.default_model(), parallel=args.parallel,
+                                     on_progress=lambda n, what: print(f"  {n}: {labels[what]}"), others=args.review)
     except (FileNotFoundError, grade.NoApiKey, grade.NoRubric, grade.ClaudeLimit) as e:
         print(e)
         return 2

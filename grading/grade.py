@@ -142,6 +142,19 @@ class OfficialKey:
     points: dict[str, float] = field(default_factory=dict)
 
 
+MANUAL_RANGE = 3.0  # נקודות ספק בכל ההגשה; מעל זה בדיקה ידנית (הצוות הפדגוגי, 2026-11-18)
+
+
+def manual_range(details: dict | None) -> float:
+    """The doubt, in points over the whole submission, above which a work goes to manual review: `manual_range` in
+    Assignment details.json, or MANUAL_RANGE."""
+    v = details.get("manual_range") if isinstance(details, dict) else None
+    try:
+        return float(v) if v is not None and float(v) >= 0 else MANUAL_RANGE
+    except (TypeError, ValueError):
+        return MANUAL_RANGE
+
+
 @dataclass
 class Context:
     """כל מה שמשותף לכל ההגשות במטלה: נשלח ל-Claude לפני העמודים של כל הגשה."""
@@ -156,6 +169,7 @@ class Context:
     official_key: OfficialKey | None = None  # המכוון של המרצה. כשיש, הוא קובע לפני כל מחוון אחר
     no_rubric: str = ""  # למה אי אפשר לתת ציונים (אין מחוון עם ניקוד לכל שאלה). ריק = יש מחוון
     policy: dict | None = None  # ציון הקורס לפי מה שהוגש ולא לפי המחוון (grades.course_policy); None = ציון המחוון
+    manual_range: float = MANUAL_RANGE  # מעל כמה נקודות ספק בכל ההגשה עבודה עוברת לבדיקה ידנית (manual_range בפרטי המטלה)
 
 
 def require_rubric(ctx: Context) -> None:
@@ -398,7 +412,7 @@ def load_context(assignment_dir: Path, instructions: str = "", send_solution: bo
         rules=[str(r) for r in d.get("submission_rules") or []], rubric_text=rubric_text,
         instructions="\n".join(t.strip() for t in (str(d.get("grading_instructions") or ""), instructions) if t and t.strip()),
         solution=solution.read_bytes() if send_solution and solution.is_file() else None, official_key=key,
-        no_rubric=no_rubric, policy=grades.course_policy(d),
+        no_rubric=no_rubric, policy=grades.course_policy(d), manual_range=manual_range(d),
     )
 
 
@@ -409,7 +423,7 @@ SYSTEM = """אתה מתרגל שבודק תרגילי בית במתמטיקה (�
 
 איך בודקים:
 - בודקים רק לפי המחוון, חומר הבדיקה של המטלה (הפתרונות, דרכי הפתרון, כללי הבדיקה הידנית) וההוראות האלה. לא מחליטים לבד: לא מוסיפים דרישה, ניכוי, הערה או העדפה משלכם (דרך "עדיפה", סגנון כתיבה, נושא שלא נלמד), ולא מקלים מעבר למה שכתוב.
-- מקרה שהמחוון והכללים לא מכריעים בו: לא ממציאים כלל. נותנים בשאלה את מה שהמחוון כן קובע, בלי ניכוי שלא כתוב בו, מסמנים בה unsure, ומבקשים בדיקה ידנית (needs_review=true, review_kind "uncertain") עם review_reason שאומר מה בדיוק המחוון לא מכריע. מתרגל מחליט, לא אתם.
+- מקרה שהמחוון והכללים לא מכריעים בו, או טעות שהמחוון לא מכסה: לא ממציאים כלל. נותנים בשאלה את הניקוד הסביר ביותר, בלי ניכוי שלא כתוב במחוון, ורושמים בה את הטווח: points_low ו-points_high, הניקוד הנמוך והגבוה שאפשר לתת. אם אין ספק, שניהם שווים ל-points. העבודה עוברת לבדיקה ידנית רק לפי הכלל של 3 הנקודות (ראו "בדיקה ידנית").
 - אם מצורף המכוון הרשמי של המרצה, בודקים לפיו: הוא קובע את הניקוד, מה נחשב תשובה מלאה ובכמה מורידים על כל טעות, והוא גובר על כל מחוון או פתרון אחר.
 - הניקוד ניתן אך ורק לפי המחוון. הניקוד של כל שאלה הוא מה שכתוב לה במחוון, ולא מחלקים את הציון בין השאלות בדרך אחרת.
 - כתיבה פורמלית בכל שורה, לא רק בתשובה הסופית (נדב, 2026-11-16). לפני שנותנים ניקוד לסעיף, עוברים על כל שורה שיש בה "=", "∈" או "⊆" ובודקים ששני הצדדים מאותו סוג: קבוצה שווה רק לקבוצה, בסוגריים מסולסלים (A=(a,b,2a+b) שגוי, צריך A={(a,b,2a+b) | a,b∈ℝ}); זוג או שלשה בסוגריים עגולים; איבר שייך לקבוצה ב-"∈" ולא ב-"="; מספר שווה למספר. שורה כזו היא טעות גם כשהתשובה הסופית נכונה: מסמנים אותה במקום שבו נכתבה, ומנקדים לפי השורה במחוון או הכלל שמכסה אותה (סימון שגוי, שורת ביניים שגויה, קבוצה פגומה). אם המחוון לא מכסה אותה, לפי הכלל של מקרה שהמחוון לא מכריע.
@@ -418,21 +432,25 @@ SYSTEM = """אתה מתרגל שבודק תרגילי בית במתמטיקה (�
 - כל שאלה בנפרד, לפי המחוון. פתרון נכון בדרך אחרת מקבל ניקוד מלא (לפי דרכי הפתרון של המטלה ולפי מה שהמחוון אומר על דרכים אחרות).
 - ניקוד לכל שאלה בין 0 לניקוד שלה במחוון, אף פעם לא יותר, בקפיצות של חצי נקודה לכל היותר.
 - שאלה שלא נמצאה בהגשה מקבלת 0, וכותבים בהערה שלה שהיא לא נמצאה.
-- אם כתב היד לא קריא, חסרים עמודים, או שהניקוד לא ודאי, מסמנים needs_review=true ומסבירים ב-review_reason (ראו "בדיקה ידנית" למטה). אחרת review_reason ריק.
+- כתב יד או סריקה לא קריאים, שורות חתוכות, או סריקה הפוכה שאי אפשר לקרוא: קודם מגדילים את האזור (קוראים שוב את התמונה ואת השורות שלפני ואחרי). אם גם אז הוא לא קריא: 0 בסעיף, submitted=true, ובהערה לסטודנט כותבים בדיוק מה לא ברור ואיפה (למשל "הספרה בשורה השנייה לא ברורה, 3 או 8, ולכן לא ניתן לבדוק את הסעיף"). מקום אחד לא ברור: אם המשך הסעיף תלוי בו, הסעיף מקבל 0 כמו קודם; אם לא, בודקים את הסעיף כרגיל. לא מבקשים בדיקה ידנית.
+- סריקה הפוכה או עקומה שאפשר לקרוא: בודקים כרגיל, ומוסיפים את ההערה "הערה: להבא סריקה ישרה בלבד!" עם deduct 0.
+- סעיף שלא נמצא: קודם עוברים על כל העמודים ומשייכים תשובות לפי התוכן. אם הסעיף לא נמצא בשום מקום: 0, submitted=false, ובהערה "לא נמצא בהגשה". לא מבקשים בדיקה ידנית.
+- הגשה לא לפי כללי ההגשה (קובץ חתוך, עבודה אחרת, תשובות לשאלות אחרות): כל סעיף שלא נמצא, או שהתשובה בו לשאלה אחרת, מקבל 0 ו-submitted=false. סעיף שנמצא ונקרא נבדק כרגיל. לא מבקשים בדיקה ידנית.
 
 questions: אחד לכל שאלה במטלה, באותו סדר ועם אותה תווית (label) בדיוק כמו ברשימת השאלות. חייבים להחזיר את כולן: תשובה חלקית נפסלת כולה.
 - comment: לסטודנט, עד 25 מילים. כשכללי המחוון קובעים אורך ("משפט אחד קצר"), זה משפט אחד של עד 15 מילים: מה שגוי ולמה, והפירוט עובר להערה על העבודה ולמשוב. תשובה נכונה: מה בדיוק נעשה נכון (הצעד המכריע או השיטה), לא רק "נכון". טעות: מה שגוי ולמה (העיקרון שנפגע), ורמז איך למצוא או לבדוק את זה לבד (הצבה, דוגמה נגדית). את הפתרון הנכון כותבים רק כשהמחוון מתיר, למשל טעות חישוב בסוף הדרך.
 - page, x0, y0, x1, y1: איפה התשובה לשאלה מתחילה: המלבן סביב השורה הראשונה של התשובה, עם מספר הסעיף אם הסטודנט כתב אותו שם (באותן אלפיות כמו annotations). לידו יצויר הניקוד של הסעיף. שאלה שלא נמצאה: page 0 וכל השאר 0.
 - first: מה שכתוב בשורה הזאת, כמו שהוא כתוב (למשל "ג. (1+i)x+2y=2+2i"), כדי שהקוד ימצא אותה שוב בתמונה מוגדלת. שאלה שלא נמצאה: "".
-- mistakes: סוגי הטעויות בתשובה, ריק אם היא נכונה. כל טעות בניסוח קצר וכללי, 2 עד 6 מילים, שלא תלוי בעבודה הזו, כך שאותה טעות אצל סטודנטים שונים תקבל בדיוק אותו ניסוח (למשל "חסר נימוק להכלה ההפוכה"). אם במחוון יש לשאלה טעויות מוכרות, משתמשים בניסוח שלהן מילה במילה ומורידים כמו שכתוב שם. תגית רק משורה של הסעיף הזה (או לפי "כללים לכל מחוון" כשיש ניכוי), ולא שורה שהתנאי שלה לא מתקיים. הערה בלי ניכוי רק כשהמחוון או הכללים אומרים להעיר עליה (שורת "הערה"); טעות שהמחוון לא מכסה: unsure ובדיקה ידנית, לא הערה מדעתכם.
-- unsure: true אם הניקוד בשאלה הזו לא ודאי (לא קריא, תשובה חלקית שקשה להעריך, דרך שלא בטוח שהיא נכונה).
+- mistakes: סוגי הטעויות בתשובה, ריק אם היא נכונה. כל טעות בניסוח קצר וכללי, 2 עד 6 מילים, שלא תלוי בעבודה הזו, כך שאותה טעות אצל סטודנטים שונים תקבל בדיוק אותו ניסוח (למשל "חסר נימוק להכלה ההפוכה"). אם במחוון יש לשאלה טעויות מוכרות, משתמשים בניסוח שלהן מילה במילה ומורידים כמו שכתוב שם. תגית רק משורה של הסעיף הזה (או לפי "כללים לכל מחוון" כשיש ניכוי), ולא שורה שהתנאי שלה לא מתקיים. הערה בלי ניכוי רק כשהמחוון או הכללים אומרים להעיר עליה (שורת "הערה"); טעות שהמחוון לא מכסה: נותנים את הניקוד הסביר ביותר ורושמים טווח (points_low, points_high). לא כותבים הערה מדעתכם.
+- points_low, points_high: הניקוד הנמוך והגבוה שאפשר לתת לשאלה, כשהמחוון לא מכריע או שיש ספק בקריאה של מקום שלא משנה את המשך הסעיף. בלי ספק: שניהם שווים ל-points.
+- unsure: true כשיש ספק בניקוד, כלומר points_high גדול מ-points_low.
 - submitted: true כשיש בהגשה ניסיון אמיתי לפתור את הסעיף, גם שגוי או לא גמור. false כשהסעיף ריק, כשיש בו רק העתקה של השאלה או של הנתונים, או כשהתוכן לא קשור לסעיף (למשל שאלה אחרת מהחוברת). משייכים לפי התוכן ולא לפי הכותרת, ועוברים על כל העמודים לפני שקובעים false. זה לא הניקוד: סעיף שהוגש ושגוי לגמרי הוא submitted=true עם 0 נקודות.
 
 typed: true כשתשובה של הסטודנט, ולו בסעיף אחד, מוקלדת (Word, LaTeX, טקסט מוקלד) ולא כתובה ביד. נוסח שאלה מודפס או דף שאלות שצורף לא נחשבים, וכתב יד על טאבלט הוא כתב יד. עבודה מוקלדת נבדקת לפי המחוון כרגיל; את ציון הקורס קובע הקוד.
 
-בדיקה ידנית: עבודה עם needs_review=true עוברת לתור "בדיקה ידנית" באתר. שם מתרגל רואה את review_reason, את השאלות שסומנו unsure ואת הסימונים, ומחליט בכמה לחיצות. לכן:
-- review_reason אומר בדיוק מה הבעיה ואיפה: איזו שאלה, איזה עמוד, ומה לא ברור. למשל: "שאלה 12, עמוד 3: השורה האחרונה לא קריאה, נתתי 10 מתוך 20 בלי לראות אותה".
-- review_kind: unreadable (כתב יד או סריקה לא קריאים), missing (חסרים עמודים או שאלות), uncertain (הניקוד לא ודאי), format (ההגשה לא לפי כללי ההגשה), other. מחרוזת ריקה כשלא צריך בדיקה ידנית.
+בדיקה ידנית: מבקשים אותה (needs_review=true, review_kind "uncertain") רק כשסכום הטווחים בכל ההגשה, כלומר סכום ההפרשים points_high פחות points_low בכל הסעיפים, גדול מ-3 נקודות. בכל מקרה אחר needs_review=false: כתב לא קריא, סעיף חסר, הגשה לא לפי הכללים וספק של עד 3 נקודות מטופלים לפי הכללים למעלה. מחליטים לבד, כמו מתרגל: את הניקוד הסביר ביותר. (הקוד מחשב את הסכום מהטווחים בעצמו, ובקשה לבדיקה ידנית בלי טווח כזה לא נכנסת לתור.)
+- review_reason אומר בדיוק מה הבעיה ואיפה: איזה סעיף, איזה עמוד, ומה הטווח. למשל: "12ו, עמוד 3: 1 עד 3 מתוך 4, לפי איזו שורה במחוון חלה; 8ד, עמוד 5: 2 עד 4 מתוך 6".
+- review_kind: "uncertain" כשמבקשים, ומחרוזת ריקה כשלא.
 - גם כשמבקשים בדיקה ידנית נותנים את הניקוד הסביר ביותר ואת הסימונים, כדי שלמתרגל יהיה ממה להתחיל.
 
 annotations, סימונים על גבי העבודה:
@@ -474,9 +492,10 @@ SCHEMA = {
                            "mistakes": {"type": "array", "items": {"type": "string"}}, "unsure": {"type": "boolean"},
                            "page": {"type": "integer"}, "x0": {"type": "number"}, "y0": {"type": "number"},
                            "x1": {"type": "number"}, "y1": {"type": "number"}, "first": {"type": "string"},
-                           "submitted": {"type": "boolean"}},
+                           "submitted": {"type": "boolean"}, "points_low": {"type": "number"},
+                           "points_high": {"type": "number"}},
             "required": ["label", "points", "comment", "mistakes", "unsure", "page", "x0", "y0", "x1", "y1", "first",
-                         "submitted"],
+                         "submitted", "points_low", "points_high"],
             "additionalProperties": False,
         }},
         "feedback": {"type": "string"},
@@ -681,6 +700,19 @@ def compute_grade(points: list[float], ctx: Context) -> float:
     return math.floor(raw + 0.5)
 
 
+def spread(answers: list[dict], ctx: Context) -> float:
+    """The doubt over the whole submission: for every question, its highest possible points minus its lowest (within 0
+    and the rubric's points), added up. A question without a range (an older answer) adds nothing."""
+    total = 0.0
+    for q, a in zip(ctx.questions, answers):
+        if a.get("points_low") is None or a.get("points_high") is None:
+            continue
+        hi = min(_num(a.get("points_high")), q.points)
+        lo = max(_num(a.get("points_low")), 0.0)
+        total += max(0.0, hi - lo)
+    return round(total, 2)
+
+
 def parse_answer(text: str, ctx: Context, pages: int) -> Graded:
     try:
         data = json.loads(text)
@@ -706,6 +738,15 @@ def parse_answer(text: str, ctx: Context, pages: int) -> Graded:
         # בלי השדה (תשובה ישנה): הוגש = נמצא מקום בעבודה
         submitted.append(answer["submitted"] is True if isinstance(answer.get("submitted"), bool)
                          else int(_num(answer.get("page"))) >= 1)
+    # בדיקה ידנית בגלל ספק בניקוד: רק כשסכום הטווחים בכל ההגשה גדול מ-manual_range (הצוות הפדגוגי, 2026-11-18:
+    # ברבע מהעבודות של הגשה 0 Claude ביקש אדם על ספק של 1-3 נקודות). כל בקשה אחרת של Claude לא נכנסת לתור; מה שהקוד
+    # עצמו שולח (יותר מהמחוון, קבצים שלא נבדקו, בדיקה שנכשלה) נשאר
+    gap = spread(got, ctx)
+    if gap > ctx.manual_range:
+        review = review or f"ספק בניקוד של {_pts(gap)} נקודות בהגשה (מעל {_pts(ctx.manual_range)})."
+        kind = "uncertain"
+    else:
+        review, kind = "", ""
     if over:
         review = (review + " " if review else "") + f"Claude נתן יותר מהמחוון ({'; '.join(over)}), והניקוד נחתך למחוון."
         kind = kind or "uncertain"
@@ -1781,11 +1822,28 @@ class TakenByOther(Exception):
     """בודק אחר לקח את ההגשה לפניי (הסימון שלו הגיע דרך OneDrive אחרי שהבדיקה התחילה), אז היא שלו."""
 
 
+def review_queue(assignment_dir: Path) -> list[str]:
+    """The numbers in the site's manual review queue: graded with a reason for a person, or failed, and not approved."""
+    rows = read_grades(assignment_dir)
+    out = []
+    for n in submission_numbers(assignment_dir):
+        if is_approved(rows.get(n)):
+            continue
+        note = read_notes(assignment_dir, n)
+        graded = bool((rows.get(n) or {}).get("grade", "").strip())
+        if (graded and (note.get("review") or "").strip()) or (note.get("error") and not graded):
+            out.append(n)
+    return out
+
+
 def grade_assignment(assignment_dir: Path, numbers: list[str] | None = None, *, ask: Ask | None = None,
                      model: str | None = None, parallel: int = DEFAULT_PARALLEL, instructions: str = "",
                      send_solution: bool | None = None, on_progress: Callable[[str, str], None] | None = None,
-                     stop: threading.Event | None = None, who: str | None = None) -> GradeReport:
+                     stop: threading.Event | None = None, who: str | None = None,
+                     others: bool = False) -> GradeReport:
     """בודק הגשות של מטלה. numbers=None: כל מה שעוד לא נבדק.
+    others: לבדוק גם הגשות שבודק אחר לקח (בדיקה חוזרת של תור הבדיקה הידנית, review_queue). הן נשארות רשומות עליו;
+    הציון החדש נכתב בקובץ שלי, ובמיזוג הוא גובר כי הוא האחרון.
     on_progress(number, "graded"/"failed"/"skipped"/"taken"), כש-"taken" = בודק אחר לקח אותה.
 
     stop: כשהוא מסומן, הגשות שעוד לא נשלחו ל-Claude לא נשלחות (rep.stopped), ואלה שבאמצע מסתיימות ונשמרות.
@@ -1811,6 +1869,8 @@ def grade_assignment(assignment_dir: Path, numbers: list[str] | None = None, *, 
     # מה שבודק אחר לקח נשאר שלו. את השאר רושמים עליי, כדי שהצוות יראה מיד מי בודק אותן
     split = claims.take(assignment_dir, todo, who) if todo else {"taken": [], "others": {}}
     todo, theirs = split["taken"], sorted(split["others"])
+    if others:
+        todo, theirs = sorted(set(todo) | set(theirs)), []
     if theirs:
         rep.notes.append(f"{len(theirs)} עבודות שמורות לבודקים אחרים ולא נבדקו כאן: {', '.join(theirs[:20])}"
                          + (" ועוד" if len(theirs) > 20 else ""))
@@ -1842,7 +1902,7 @@ def grade_assignment(assignment_dir: Path, numbers: list[str] | None = None, *, 
         # שני בודקים שלקחו את אותה הגשה לפני ש-OneDrive סנכרן: מי שלקח ראשון שומר אותה (claims.read_all).
         # בודקים שוב רגע לפני השליחה ל-Claude, כדי שהשני יוותר ברגע שהסימון הגיע, ולא רק בתחילת הבדיקה
         holder = claims.read_all(assignment_dir).get(n)
-        if holder and holder["who"] != who:
+        if holder and holder["who"] != who and not others:
             raise TakenByOther(holder["who"])
         pdf, skipped = submission_pdf(files[n])
         if not pdf:
