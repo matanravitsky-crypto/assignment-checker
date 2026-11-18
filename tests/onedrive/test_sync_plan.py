@@ -104,8 +104,8 @@ def test_a_file_only_in_onedrive_is_downloaded_but_not_the_keys_history_nor_a_lo
     p = plan([], remote)
     assert [d["path"] for d in p["download"]] == [f"{A}/Grades by נועה.csv"] and p["download"][0]["why"] == "new"
     assert p["download"][0]["expect"] is None and p["upload"] == [] and p["remove"] == []
-    assert sorted(p["skipped"]) == [f"{A}/Pull in progress.txt", f"{A}/Removed from OneDrive/x/y.txt"]
-    assert f"{A}/Key history/2026.csv" in p["skipped"] or f"{A}/Key history/2026.csv" not in [d["path"] for d in p["download"]]
+    # the lock and the archive are never synced; the key's history is never written on the computer
+    assert sorted(p["skipped"]) == [f"{A}/Key history/2026.csv", f"{A}/Pull in progress.txt", f"{A}/Removed from OneDrive/x/y.txt"]
 
 
 def test_a_file_the_cloud_had_last_time_and_lost_is_moved_aside_not_uploaded():

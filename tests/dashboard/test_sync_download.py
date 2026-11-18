@@ -160,7 +160,7 @@ def test_snapshot_is_kept_outside_the_data_folder_and_live_status_expires(cloud,
     assert not sync.live_status()["alive"] and sync.live_status()["report"]["running"] is True
 
 
-def test_server_takes_the_cloud_files_from_the_lecturers_onedrive_only(cloud, state_dir, server):
+def test_server_takes_the_cloud_files_from_the_lecturers_onedrive_only(cloud, state_dir, server, monkeypatch):
     course, rel = COURSE.replace(" ", "%20"), f"{HW}/{paths.NOTES}/0007.json".replace(" ", "%20")
     status, headers, body = post(server, f"/api/sync/put?course={course}&path={rel}&mtime={CLOUD_MS}", b'{"n": 7}', raw=True)
     assert status == 200 and body["size"] == 8 and headers.get("Access-Control-Allow-Origin") == SHAREPOINT
@@ -205,7 +205,7 @@ def test_server_takes_the_cloud_files_from_the_lecturers_onedrive_only(cloud, st
     old = time.time() - 31 * 60
     os.utime(cloud / COURSE / HW / paths.PULL_LOCK, (old, old))
     assert json.loads(get(server, f"/api/sync/list?course={course}", SHAREPOINT)[2])["busy"] == []
-    actions._job = actions.GradeJob(COURSE, HW, ["0001"], running=True)
+    monkeypatch.setattr(actions, "_job", actions.GradeJob(COURSE, HW, ["0001"], running=True))  # restored after the test
     assert json.loads(get(server, f"/api/sync/list?course={course}", SHAREPOINT)[2])["busy"] == [HW]
     status, _, body = post(server, f"/api/sync/put?course={course}&path={rel}&mtime={CLOUD_MS}", b"x", raw=True)
     assert status == 423 and body["busy"]
