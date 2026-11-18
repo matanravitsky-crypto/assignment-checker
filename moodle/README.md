@@ -55,7 +55,7 @@ python -m moodle ingest <מזהה מטלה> [--expected N] [--zip PATH ...]
 ```bash
 python -m moodle upload <מזהה מטלה> [--worksheet PATH] [--max-mb N]
 ```
-הכנת ההחזרה ביד: אצווה של העבודות הבדוקות החדשות או ששונו (`Upload batch <id>/`, ZIP-ים של עד 730 MB, רשימת אצווה כך
+הכנת ההחזרה ביד: אצווה של העבודות הבדוקות החדשות או ששונו (`Upload batch <id>/`, ZIP-ים של עד 100 עבודות ואף אחד לא מעל 730 MB, רשימת אצווה כך
 ש-`record` עובד), גיליון הציונים של מודל ממולא כשאחד הורד ל-Downloads, האימות של `return_check`, ו-`Upload steps.txt`.
 
 ```bash
