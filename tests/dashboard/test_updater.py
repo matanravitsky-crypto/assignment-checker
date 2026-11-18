@@ -101,6 +101,7 @@ def _run_loop(monkeypatch, tick, lock):
     monkeypatch.setattr(updater, "tick", tick)
     monkeypatch.setattr(updater, "remember_try", lambda target: None)
     monkeypatch.setattr(updater, "_version", "test")
+    monkeypatch.setattr(updater, "_hooks", None)  # start() sets it; put back after the test, so no later test fetches
     stopped = threading.Event()
     t = updater.start(updater.WATCHED_PORT, stopped.set, lock, list)
     return t, stopped
@@ -159,3 +160,52 @@ def test_the_site_gets_the_version_with_every_change_check(server, monkeypatch):
     st, body = call(server, "GET", "/api/changes")
     assert st == 200 and body["version"] == "abc1234" and body["sig"]
     assert call(server, "GET", "/api/health")[1]["version"] == "abc1234"
+
+
+# ---------- "בדוק" updates first (2026-11-18: a server still on old code failed gradings after Claude had graded) ----------
+
+def _hooks(monkeypatch, tick, busy=list):
+    stopped, lock = threading.Event(), threading.Lock()
+    monkeypatch.setattr(updater, "_hooks", (stopped.set, lock, busy))
+    monkeypatch.setattr(updater, "tick", tick)
+    monkeypatch.setattr(updater, "remember_try", lambda target: None)
+    monkeypatch.setattr(updater, "STOP_DELAY_S", 0.01)
+    return stopped, lock
+
+
+def test_grade_updates_first_when_main_moved(monkeypatch):
+    stopped, lock = _hooks(monkeypatch, lambda busy: (NEW, 0))
+    assert updater.update_now() == NEW
+    assert stopped.wait(5) and lock.locked()  # stopped, and no button starts until the process ends
+
+
+@pytest.mark.parametrize("tick", [lambda busy: (None, 60), lambda busy: (_ for _ in ()).throw(RuntimeError("no network"))])
+def test_grade_runs_on_this_version_when_there_is_nothing_to_move_to(monkeypatch, tick):
+    """Nothing new, busy, no watchdog, a try that already failed (all of them: tick returns None) or no network."""
+    stopped, lock = _hooks(monkeypatch, tick)
+    assert updater.update_now() is None
+    time.sleep(0.05)
+    assert not stopped.is_set() and not lock.locked()
+
+
+def test_grade_never_updates_in_the_middle_of_a_button(monkeypatch):
+    stopped, lock = _hooks(monkeypatch, lambda busy: (NEW, 0))
+    lock.acquire()  # a pull runs
+    assert updater.update_now() is None and not stopped.is_set()
+    lock.release()
+
+
+def test_grade_without_the_self_update_grades_as_is(monkeypatch):
+    monkeypatch.setattr(updater, "_hooks", None)  # AUTO_UPDATE=off, another port, a test server
+    assert updater.update_now() is None
+
+
+def test_the_grade_button_answers_updating_and_starts_nothing(server, monkeypatch):
+    started = []
+    monkeypatch.setattr(updater, "update_now", lambda: NEW)
+    monkeypatch.setattr(updater, "_version", "abc1234")
+    monkeypatch.setattr(actions, "start_grading", lambda *a, **k: started.append(1))
+    st, body = call(server, "POST", "/api/grade", {"course": "Linear Algebra", "assignment": "Assignment 0"},
+                    {"X-Assignment-Checker": "1"})
+    assert st == 503 and body["updating"] is True and body["version"] == "abc1234" and body["to"] == NEW[:7]
+    assert not started  # the site sends it again once the server is back on the new version
