@@ -135,8 +135,10 @@ def test_request_has_only_the_pages_no_names_and_no_key(root):
     with pymupdf.open(asg(root).submissions / "0001.pdf") as doc:
         assert sum(b["type"] == "image" for b in content) == doc.page_count
     assert not any(b["type"] == "document" for b in content)  # אין פתרון רשמי בתיקייה
-    # מה שמשותף לכל ההגשות נשמר במטמון, והשאלות כתובות בו לפי הסדר עם הניקוד
-    shared = next(b for b in content if b.get("cache_control"))
+    # מה שמשותף לכל ההגשות יושב ב-system אחרי ההוראות ונשמר במטמון, והשאלות כתובות בו לפי הסדר עם הניקוד
+    assert req["system"][0]["text"] == grading.SYSTEM
+    shared = req["system"][1]
+    assert shared.get("cache_control") and not any(b.get("cache_control") for b in content)
     assert "1. דף קבוצות 11 (20 נקודות)" in shared["text"] and "כתב יד, קובץ PDF אחד" in shared["text"]
     assert req["model"] == grading.DEFAULT_MODEL and req["output_config"]["effort"] == "high"
     assert req["output_config"]["format"]["type"] == "json_schema" and req["fallbacks"] == "default"
@@ -155,7 +157,7 @@ def test_rubric_and_solution_are_sent(root):
     req = grading.build_request(ctx, [], "claude-haiku-5-5")
     content = req["messages"][0]["content"]
     assert content[0]["type"] == "document" and content[0]["source"]["media_type"] == "application/pdf"
-    text = content[1]["text"]
+    text = req["system"][1]["text"]  # הטקסט המשותף ב-system, אחרי ההוראות
     assert "1. קבוצות (40 נקודות): הכלה דו-כיוונית" in text and "2. מרוכבים (60 נקודות)" in text
     assert "לא מורידים על חישוב" in text and "להקפיד על נימוקים" in text and "הנחיה מהאתר" in text
     assert "fallbacks" not in req  # ל-Haiku אין fallback
@@ -270,17 +272,20 @@ def test_check_cross_or_half_is_drawn_where_each_answer_starts():
     with pymupdf.open(stream=grading.mark_pdf(doc.tobytes(), g, ctx), filetype="pdf") as out:
         page = out[1]
         green, red, orange = (_strokes(page, c) for c in (grading.GREEN, grading.RED, grading.ORANGE))
+        words = {w[4] for w in page.get_text("words")}
     lines = [d for d in red if d["rect"].width > 150 and d["rect"].height < 2]  # הקווים בין התרגילים (שלוש שאלות בעמוד)
     red = [d for d in red if d not in lines]
     assert len(lines) == 2
-    # כל סימן בעיגול לבן עם מסגרת בצבע שלו: ✓ = עיגול + קו · ✗ = עיגול + שני קווים · ✓✗ = אליפסה + קו + שני קווים
-    assert len(green) == 2 and len(red) == 3 and len(orange) == 4
+    # ניקוד מלא: ✓ בעיגול ירוק (עיגול + קו). חלקי או אפס: הניקוד של הסעיף באליפסה, כתומה לחלקי ואדומה לאפס
+    # (נדב, 2026-11-15: "VX זה כתיב מוזר")
+    assert len(green) == 2 and len(red) == 1 and len(orange) == 1
     circles = [d for d in green + red + orange if d.get("fill") == (1.0, 1.0, 1.0)]
     assert len(circles) == 3
+    assert {"0/10", "6.5/10"} <= words
     # העיגול של שאלה 1 מימין למלבן שלה, בגובה שלו, וגדול מספיק כדי לבלוט
     r = next(d["rect"] for d in green if d.get("fill"))
     assert r.x0 >= 760 / 1000 * 595 and abs((r.y0 + r.y1) / 2 - 115 / 1000 * 842) < 20 and r.height >= 20
-    # ✓✗ רחב יותר מ-✓
+    # אליפסת הניקוד רחבה יותר מעיגול ה-✓
     assert next(d["rect"] for d in orange if d.get("fill")).width > r.width * 1.5
     assert grading.check_kind(10, 10) == "check" and grading.check_kind(0, 10) == "cross" and grading.check_kind(3, 10) == "half"
 
@@ -306,8 +311,10 @@ def test_badges_do_not_pile_up_and_notes_go_around_them():
     a, b = taken[1]
     assert not a.intersects(b)
     grading._place_marks(doc, g, grading._archive(), taken)
-    note = next(b for b in page.get_text("blocks") if "הערה" in b[4])
-    assert not pymupdf.Rect(note[:4]).intersects(a) and not pymupdf.Rect(note[:4]).intersects(b)
+    # the note's own span: a badge now carries text ("0/10"), which can share a text block with the note
+    note = next(pymupdf.Rect(s["bbox"]) for bl in page.get_text("dict")["blocks"] for ln in bl.get("lines", [])
+                for s in ln["spans"] if "הערה" in s["text"])
+    assert not note.intersects(a) and not note.intersects(b)
 
 
 def test_math_in_a_note_reads_left_to_right():

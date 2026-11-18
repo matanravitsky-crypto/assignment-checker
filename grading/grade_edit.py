@@ -39,6 +39,10 @@ ACTION_FAILED = "grade_edit_failed"
 MAX_REASON = 1000
 
 
+_BOX_KEYS = {"page", "x0", "y0", "x1", "y1", "text"}
+_MARK_KEYS = _BOX_KEYS | {"part", "deduct"}  # since 2026-11-15 a mark also says its part and the points it took
+
+
 class ReasonRequired(g_.GradingError):
     """שינוי של ציון קיים בלי סיבה."""
 
@@ -299,11 +303,15 @@ def edit_grade(assignment_dir: Path, number: str, points: list, comments: list, 
             raise ReasonRequired(f"לעבודה {n} כבר יש ציון ({old.get('grade')}). כדי לשנות אותו צריך לכתוב סיבה.")
         note = g_.read_notes(assignment_dir, n)
         graded = g_.Graded(pts, texts, g_.compute_grade(pts, ctx), str(feedback or "").strip()[:3000],
-                           [g_.Mark(**m) for m in note.get("marks") or []
-                            if isinstance(m, dict) and set(m) == {"page", "x0", "y0", "x1", "y1", "text"}],
+                           [g_.Mark(**{k: m[k] for k in m if k in _MARK_KEYS}) for m in note.get("marks") or []
+                            if isinstance(m, dict) and _BOX_KEYS <= set(m)],
                            mistakes=picked or note.get("mistakes") or [],
                            places=[g_.Mark(**m) for m in note.get("places") or []
-                                   if isinstance(m, dict) and set(m) == {"page", "x0", "y0", "x1", "y1", "text"}])
+                                   if isinstance(m, dict) and set(m) == {"page", "x0", "y0", "x1", "y1", "text"}],
+                           submitted=[x is True for x in note.get("submitted") or []], typed=note.get("typed") is True)
+        # ציון הקורס לא תלוי בניקוד (מה שהוגש, מוקלדת, העתקה): העמוד הראשון שמצויר מחדש אומר את אותו ציון קורס
+        graded.course = note.get("course_grade") if isinstance(note.get("course_grade"), (int, float)) else None
+        graded.course_why = str(note.get("course_why") or "")
         g_.scrub_graded(graded, names)
         # graded_at עד המיקרו-שנייה: שתי עריכות באותה שנייה (שני אנשים, או אחד שתיקן מיד) - האחרונה גוברת במיזוג
         at = datetime.now().isoformat(timespec="microseconds")

@@ -64,7 +64,9 @@ def test_the_official_key_points_win_in_a_folder_and_in_a_details_file_alone(roo
     (a.dir / grade.SOLUTION).write_bytes(b"%PDF-1.7")
     folder = one.context(a.dir)
     assert points(folder) == [30, 20, 20, 20, 10] and folder.official_key.text == "המכוון: 30 לשאלה 11"
-    assert one.rubric(a.dir)["read_first"] == [str((a.dir / n).resolve()) for n in (paths.OFFICIAL_KEY_TEXT, grade.SOLUTION)]
+    # the key's text is already inside `context`, so Claude reads only what is not there (2026-11-18)
+    r = one.rubric(a.dir)
+    assert r["read_first"] == [str((a.dir / grade.SOLUTION).resolve())] and "המכוון: 30 לשאלה 11" in r["context"]
     alone = one.context(a.dir / paths.INFO)  # the key's points were saved only because a key was uploaded
     assert points(alone) == [30, 20, 20, 20, 10] and alone.official_key is not None
     assert one.rubric(a.dir / paths.INFO)["official_key"] is True
