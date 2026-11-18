@@ -99,15 +99,17 @@ read for sure goes in that table with "?" and you ask about it.
 ## 3. The pages
 
 `prepare` writes `submission.pdf`, `page_001.png`... (cropped to the handwriting, with the grid: exactly the images the
-system sends) and `pages.json`. Files it can't read (e.g. .docx) are listed in `skipped`: grade the rest and set
-needs_review with review_kind `format`.
+system sends) and `pages.json`. Files it can't read (e.g. .docx) are listed in `skipped`: grade the rest, and tell
+the user which files were not graded.
 
 ## 4. Grade
 
 `rules` prints the system's grading instructions and the answer's JSON schema, word for word. Grade by them; where
 they speak of "the site's manual review queue", that is the user here. **Only the rubric, the assignment's grading
-material and these rules decide.** Add no deduction, note or preference of your own; a case they don't decide is
-`unsure` with `needs_review`, and you tell the user what the rubric leaves open, so a person decides.
+material and these rules decide.** Add no deduction, note or preference of your own. A case they don't decide gets the
+most likely points and its range (`points_low`, `points_high`); only a doubt of more than 3 points over the whole
+work goes to a person (`needs_review`), and the code checks that sum itself. An unreadable spot, a missing part or a
+submission off the rules is decided by the rules, never sent to a person.
 
 Read, **in one message, one Read call per file side by side**: the files of `read_first` (if any), then **every** page
 image from `pages.json`. Nothing else. The page number is the number in the file name (page_003 = page 3). The pages
@@ -118,7 +120,7 @@ Write the answer to `<work folder>\answer.json`, exactly the schema `rules` prin
 ```json
 {"questions": [{"label": "...", "points": 0, "comment": "...", "mistakes": ["..."], "unsure": false,
                 "page": 1, "x0": 0, "y0": 0, "x1": 0, "y1": 0, "first": "<the part's first line, as written>",
-                "submitted": true}],
+                "submitted": true, "points_low": 0, "points_high": 0}],
  "feedback": "...",
  "annotations": [{"page": 1, "x0": 0, "y0": 0, "x1": 0, "y1": 0, "text": "...", "part": "<the part's label>", "deduct": 1}],
  "typed": false, "needs_review": false, "review_reason": "", "review_kind": ""}
@@ -168,6 +170,9 @@ of the skill starts without it, so each teammate hears about each update once.
 
 ## What's new
 
+- **2026-11-18 (ערב):** כמעט בלי בדיקה ידנית (הצוות הפדגוגי): לכל סעיף טווח ניקוד, הנמוך והגבוה שאפשר לתת, ועבודה
+  עוברת לאדם רק כשסכום הספק בכל ההגשה גדול מ-3 נקודות. כתב לא קריא גם אחרי הגדלה: 0 בסעיף, עם הערה מה לא ברור
+  ואיפה. סעיף שלא נמצא או הגשה לא לפי הכללים: 0, בלי אדם. סריקה הפוכה שאפשר לקרוא: בודקים, והערה "להבא סריקה ישרה".
 - **2026-11-18:** בעמוד הראשון שני ציונים: הציון לפי המחוון (בעיגול), ו"ציון לשקלול בציון הקורס", שהולך למודל: כל
   שאלה שווה אותו דבר, ושאלה נספרת לפי חלק הסעיפים שהוגשו בה (כל הסעיפים = 100). עבודה מוקלדת, ולו בסעיף אחד, או
   עבודה זהה לעבודה של סטודנט אחר (בדיקת ההעתקות של המערכת, בלי טוקנים): 0 בציון הקורס, עם הסיבה. טעות שחוזרת בכמה

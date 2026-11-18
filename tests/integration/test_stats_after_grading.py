@@ -37,7 +37,7 @@ def test_grading_writes_the_statistics_and_approval_updates_them(root):
     assert f.is_file()
     s = json.loads(f.read_text(encoding="utf-8"))
     assert s["counts"]["graded"] == len(rep.graded) and s["counts"]["needs_review"] == len(rep.graded)
-    assert s["counts"]["review_kinds"] == {"missing": len(rep.graded)} and s["counts"]["approved"] == 0
+    assert s["counts"]["review_kinds"] == {"uncertain": len(rep.graded)} and s["counts"]["approved"] == 0
     assert s["per_question"][1]["mistakes"][0]["text"] == "חסר נימוק"
     assert stats.is_fresh(a.dir, s)
     n = rep.graded[0]

@@ -89,8 +89,11 @@ def save_details(a: Assignment, d: dict) -> None:
 
 
 def answer(points=(20, 15, 20, 20, 10), feedback="עבודה טובה. בשאלה 12 חסר נימוק.", marks=None, review=""):
+    # a work that goes to a person: the doubt over the whole submission is over 3 points (grade.spread)
+    doubt = lambda i, p: {"points_low": max(p - 4, 0), "points_high": p} if review and i == 0 else {}  # noqa: E731
     return json.dumps({
-        "questions": [{"label": l, "points": p, "comment": "חסר נימוק" if p < 20 else "נכון"} for l, p in zip(LABELS, points)],
+        "questions": [{"label": l, "points": p, "comment": "חסר נימוק" if p < 20 else "נכון", **doubt(i, p)}
+                      for i, (l, p) in enumerate(zip(LABELS, points))],
         "feedback": feedback,
         "annotations": marks if marks is not None else [{"page": 1, "x0": 100, "y0": 100, "x1": 900, "y1": 160, "text": "חסר נימוק"}],
         "needs_review": bool(review), "review_reason": review,
@@ -546,7 +549,8 @@ def detailed(points=(20, 15, 20, 20, 10), review="", kind="", unsure=(), mistake
     """תשובה של Claude עם סוגי הטעויות, שאלות לא ודאיות וסוג הבעיה."""
     mistakes = mistakes or {1: ["חסר נימוק", "חסר נימוק."], 4: ["תחום לא נכון"]}
     return json.dumps({
-        "questions": [{"label": l, "points": p, "comment": "", "mistakes": mistakes.get(i, []), "unsure": i in unsure}
+        "questions": [{"label": l, "points": p, "comment": "", "mistakes": mistakes.get(i, []), "unsure": i in unsure,
+                       **({"points_low": max(p - 4, 0), "points_high": p} if review and i == 0 else {})}
                       for i, (l, p) in enumerate(zip(LABELS, points))],
         "feedback": "יפה", "annotations": [{"page": 1, "x0": 100, "y0": 100, "x1": 900, "y1": 160, "text": "חסר נימוק"}],
         "needs_review": bool(review), "review_reason": review, "review_kind": kind,
@@ -568,8 +572,9 @@ def test_answer_keeps_mistakes_unsure_and_the_kind_of_problem(root):
     ctx = grading.load_context(asg(root).dir)
     g = grading.parse_answer(detailed(review="שאלה 12, עמוד 1: לא קריא", kind="unreadable", unsure=(1,)), ctx, 1)
     assert g.mistakes[1] == ["חסר נימוק"] and g.mistakes[4] == ["תחום לא נכון"] and g.mistakes[0] == []
-    assert g.unsure == [False, True, False, False, False] and g.review_kind == "unreadable"
-    assert grading.parse_answer(detailed(review="משהו", kind="weird"), ctx, 1).review_kind == "other"
+    # a doubt of over 3 points goes to a person, always as "uncertain" (the pedagogical team, 2026-11-18)
+    assert g.unsure == [False, True, False, False, False] and g.review_kind == "uncertain" and "לא קריא" in g.review
+    assert grading.parse_answer(detailed(review="משהו", kind="weird"), ctx, 1).review_kind == "uncertain"
     assert grading.parse_answer(detailed(kind="unreadable"), ctx, 1).review_kind == ""  # בלי סיבה אין בדיקה ידנית
     assert grading.parse_answer(answer(), ctx, 1).mistakes == [[]] * 5  # תשובה בלי השדות החדשים עדיין נקראת
 
@@ -906,3 +911,54 @@ def test_an_opening_bracket_after_a_number_stays_with_the_hebrew_that_follows():
 
 def test_a_dash_after_a_number_is_punctuation_not_a_minus():
     assert grading._ltr("הגשה 0 - קבוצות") == "הגשה \u202a0\u202c - קבוצות"
+
+
+def test_a_person_gets_a_work_only_when_the_doubt_over_the_whole_work_is_over_3_points(root):
+    # the pedagogical team, 2026-11-18: almost a quarter of assignment 0 went to manual review over doubts of 1-3 points
+    ctx = grading.load_context(asg(root).dir)
+
+    def reply(ranges, review="12ו לא מוכרע", kind="uncertain", points=(20, 15, 20, 20, 10)):
+        return json.dumps({"questions": [{"label": l, "points": p, "comment": "x", **ranges.get(i, {})}
+                                         for i, (l, p) in enumerate(zip(LABELS, points))],
+                           "feedback": "", "annotations": [], "typed": False,
+                           "needs_review": bool(review), "review_reason": review, "review_kind": kind}, ensure_ascii=False)
+    small = {1: {"points_low": 14, "points_high": 16}, 3: {"points_low": 19, "points_high": 20}}  # 2 + 1 = 3
+    g = grading.parse_answer(reply(small), ctx, 1)
+    assert (g.review, g.review_kind) == ("", "")  # Claude asked, but 3 points is Claude's to decide
+    big = {1: {"points_low": 13, "points_high": 16}, 3: {"points_low": 19, "points_high": 20}}  # 3 + 1 = 4
+    g = grading.parse_answer(reply(big), ctx, 1)
+    assert g.review == "12ו לא מוכרע" and g.review_kind == "uncertain"
+    g = grading.parse_answer(reply(big, review="", kind=""), ctx, 1)  # Claude didn't ask: the code does
+    assert g.review_kind == "uncertain" and "ספק בניקוד של 4 נקודות" in g.review
+    g = grading.parse_answer(reply({}, review="שאלה 8 לא קריאה", kind="unreadable"), ctx, 1)
+    assert g.review == ""  # unreadable, missing, off the rules: decided by the rules, no person
+    over = grading.parse_answer(reply({}, review="", points=(25, 15, 20, 20, 10)), ctx, 1)
+    assert over.review_kind == "uncertain" and "יותר מהמחוון" in over.review  # what the code sends stays
+    wild = {0: {"points_low": -5, "points_high": 99}}  # outside 0..20: counted within the rubric's points
+    assert grading.spread(json.loads(reply(wild))["questions"], ctx) == 20
+    assert grading.manual_range({"manual_range": 5}) == 5 and grading.manual_range({}) == 3
+    assert grading.manual_range({"manual_range": "x"}) == 3
+
+
+def test_the_rules_send_no_unreadable_or_missing_part_to_a_person():
+    s = grading.SYSTEM
+    assert "רק כשסכום הטווחים בכל ההגשה" in s and "points_low" in s and "points_high" in s
+    assert "לא מבקשים בדיקה ידנית" in s and "להבא סריקה ישרה בלבד!" in s and "לא נמצא בהגשה" in s
+    assert "ומבקשים בדיקה ידנית (needs_review=true" not in s  # the rule of 2026-11-15 that filled the queue
+    req = grading.SCHEMA["properties"]["questions"]["items"]["required"]
+    assert "points_low" in req and "points_high" in req
+
+
+def test_the_review_queue_is_graded_again_also_where_another_grader_took_it(root):
+    from moodle import claims, grades as moodle_grades
+    a = asg(root)
+    first = FakeClaude(lambda req: answer(review="ספק"))
+    grading.grade_assignment(a.dir, ["0001", "0002"], ask=first, parallel=1, who="נועה")
+    assert grading.review_queue(a.dir) == ["0001", "0002"]
+    rep = grading.grade_assignment(a.dir, ["0001"], ask=FakeClaude(), parallel=1, who="מתן")
+    assert rep.graded == [] and "שמורות לבודקים אחרים" in rep.notes[0]  # as before: someone else's work is theirs
+    rep = grading.grade_assignment(a.dir, grading.review_queue(a.dir), ask=FakeClaude(), parallel=1, who="מתן",
+                                   others=True)
+    assert sorted(rep.graded) == ["0001", "0002"] and rep.review == [] and grading.review_queue(a.dir) == []
+    assert claims.read_all(a.dir)["0001"]["who"] == "נועה"  # the claim stays hers
+    assert moodle_grades.read(a.dir)["0001"]["graded_by"] == "מתן"  # the new grade is the one that counts
