@@ -108,7 +108,10 @@ Exercise Checking System/                  the data folder (the synced one, foun
                                   grading and grade edit in the dashboard (connected at start; `python -m grading`
                                   leaves it) and on every upload; `python -m moodle table <id>`. The upload
                                   fills Moodle's own worksheet from it by participant id. A grade that can't be tied to
-                                  exactly one participant (key problem, no id, invalid grade) stays out and is reported
+                                  exactly one participant (key problem, no id, invalid grade) stays out and is reported.
+                                  When the details have `moodle_grade.basis = "submission"` (LA Assignment 0) its grade is
+                                  the row's `course_grade`, not the rubric's (`grades.to_moodle`; every path to Moodle
+                                  reads through it). A row without `course_grade` stays out
       Copying check.json          suspected copying: pairs of numbers and why, per-file hashes (`python -m copying`)
       Upload in progress.txt      exists only while an upload runs ("<user> (<PC>) pid=<pid>", since when; 30 minutes without an update = stuck)
       Pull in progress.txt        the same while a pull runs

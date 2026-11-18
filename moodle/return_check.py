@@ -78,7 +78,7 @@ def check(assignment_dir: Path, batch: dict, max_bytes: int) -> dict:
     if folder is None or not folder.is_dir():
         raise ReturnCheckFailed("the batch's folder is missing")
     number_pid, pid_numbers, key_folders = _key(assignment_dir)
-    merged = grades.read(assignment_dir)
+    merged = grades.to_moodle(assignment_dir, grades.read(assignment_dir))  # the grade Moodle gets (course policy)
     worksheet = _worksheet_grades(assignment_dir / paths.UPLOAD / paths.GRADES_WORKSHEET)
     marked_dir = assignment_dir / paths.MARKED
 

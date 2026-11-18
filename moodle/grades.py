@@ -168,6 +168,19 @@ def for_moodle(row: dict, policy: dict | None, copies: dict[str, list[str]]) -> 
     return (row.get("course_grade") or "").strip()
 
 
+def to_moodle(assignment_dir: Path, rows: dict[str, dict]) -> dict[str, dict]:
+    """`rows` (number -> row, as read() gives them) with each graded row's "grade" replaced by the one that goes to
+    Moodle (for_moodle) when the assignment has a course_policy; unchanged without one. Every path to Moodle reads
+    grades through this (the table, the worksheet, the automatic upload, the return check), so none sends the rubric's
+    grade under the policy (until 2026-11-18 none of them called for_moodle). The grades files keep the rubric's grade."""
+    policy = course_policy(details(assignment_dir))
+    if policy is None:
+        return rows
+    copies = identical(assignment_dir)
+    return {n: ({**r, "grade": for_moodle({**r, "number": n}, policy, copies)} if (r.get("grade") or "").strip() else r)
+            for n, r in rows.items()}
+
+
 def details(assignment_dir: Path) -> dict:
     """Assignment details.json, or {} when it is missing or broken."""
     try:
