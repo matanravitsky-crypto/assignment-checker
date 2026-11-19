@@ -1338,6 +1338,13 @@ def _drop_status_cache() -> None:
     _moodle_cache = None
 
 
+def grading_now() -> tuple[str, str] | None:
+    """(קורס, מטלה) שהבדיקה רצה בהם עכשיו במחשב הזה, או None. הסנכרון עם הוואן דרייב לא נוגע במטלה כזו
+    (dashboard/sync.py): קובצי הציונים וההערות שלה נכתבים ברגע זה."""
+    with _job_lock:
+        return (_job.course, _job.assignment) if _job.running else None
+
+
 def running_jobs() -> list[str]:
     """מה רץ עכשיו במחשב הזה. dashboard/updater.py לא מעדכן (ומפעיל מחדש) באמצע אף אחד מהם."""
     jobs = []
