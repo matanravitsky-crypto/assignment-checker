@@ -25,6 +25,7 @@ import os
 import random
 import re
 import subprocess
+import sys
 import threading
 import time
 from collections import OrderedDict
@@ -83,6 +84,9 @@ def _hebrew_error(e: Exception, mid: str) -> str:
         return ("ה-ZIP שהגיע ממודל לא שלם: מודל עצר את ההורדה באמצע. שום הגשה ושום מספר לא השתנו. "
                 "לוחצים שוב \"משוך הגשות\" כדי להוריד מחדש.")
     if "7-Zip" in text:
+        if sys.platform == "darwin":
+            return ("7-Zip לא מותקן במחשב הזה. מריצים שוב ב-Terminal את פקודת החיבור של Mac (היא מתקינה אותו), "
+                    "או brew install sevenzip, ומנסים שוב.")
         return "7-Zip לא מותקן במחשב הזה. מתקינים פעם אחת: winget install 7zip.7zip, ומנסים שוב."
     if isinstance(e, paths.TwoFolders):
         return (f"מזהה המודל {mid} שמור בשתי תיקיות מטלה, ולכן לא משכתי: לא ברור לאיזו מהן ההגשות שייכות. "
@@ -876,6 +880,13 @@ def changes(root: Path) -> str:
 # ---------- "סנכרון": קוראים מחדש מ-OneDrive ----------
 UNREADABLE = ("תיקיית OneDrive לא נקראת עכשיו ({error}). בדרך כלל זה אומר ש-OneDrive צריך להתחבר מחדש לאוניברסיטה: "
               "מפעילים את הקיצור \"חיבור OneDrive BGU\" בשולחן העבודה, מתחברים ומאשרים בטלפון, ולוחצים שוב על סנכרון.")
+UNREADABLE_MAC = ("תיקיית OneDrive לא נקראת עכשיו ({error}). פותחים את OneDrive מסרגל התפריטים למעלה, מתחברים עם חשבון "
+                  "האוניברסיטה אם הוא מבקש, ולוחצים שוב על סנכרון. אם כתוב Operation not permitted, ה-Mac לא נותן "
+                  "למערכת לקרוא את התיקייה: הגדרות המערכת → פרטיות ואבטחה, ומאשרים שם.")
+
+
+def _unreadable(e: OSError) -> str:
+    return (UNREADABLE_MAC if sys.platform == "darwin" else UNREADABLE).format(error=e.strerror or e)
 
 
 def refresh(root: Path) -> dict:
@@ -886,12 +897,12 @@ def refresh(root: Path) -> dict:
     try:
         dirs = _watched_dirs(root)
     except OSError as e:
-        raise UserError(UNREADABLE.format(error=e.strerror or e)) from e
+        raise UserError(_unreadable(e)) from e
     od = onedrive_check.status(root, dirs)
     try:
         st = state(root)
     except OSError as e:
-        raise UserError(UNREADABLE.format(error=e.strerror or e)) from e
+        raise UserError(_unreadable(e)) from e
     return {"state": st, "sig": changes(root), "onedrive": od, "at": datetime.now().isoformat(timespec="seconds")}
 
 def _fresh_lock_holder(lock: Path) -> str | None:
@@ -1204,7 +1215,14 @@ READY_MINUTES = 30  # כמה זמן תוצאה של בדיקת הכרום נחש
 LOGIN_MINUTES = 10  # התחברות שלא נגמרה אחרי זמן הזה נהרגת
 INSTALL_MINUTES = 20  # וכך גם התקנה (היא מורידה קובץ, ויכולה לקחת יותר)
 LOGIN_STARTED = "נפתח דף התחברות בדפדפן. אחרי ההתחברות המערכת תזהה לבד שזה הסתיים."
-INSTALL_COMMAND = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "irm https://claude.ai/install.ps1 | iex"]
+def install_command(platform: str = sys.platform) -> list[str]:
+    """Anthropic's own Claude Code installer for this computer (the same one connect.ps1 / connect.sh run)."""
+    if platform == "win32":
+        return ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "irm https://claude.ai/install.ps1 | iex"]
+    return ["/bin/bash", "-c", "curl -fsSL https://claude.ai/install.sh | bash"]
+
+
+
 _moodle_cache: tuple[float, dict] | None = None
 _ready_cache: dict[tuple[str, str], tuple[float, dict, str]] = {}  # (קורס, מטלה) → (מתי, התשובה של check, מתי בשעון)
 _checking = False  # בדיקת כרום רצה עכשיו (תחת _send_lock): היא והעלאה היו מפעילות את אותו כרום
@@ -1459,7 +1477,7 @@ def start_claude_install() -> dict:
     if claude_driver.find_claude():
         return {"started": False, "running": False, "message": "Claude Code כבר מותקן."}
     try:
-        started = _install.start(INSTALL_COMMAND)
+        started = _install.start(install_command())
     except OSError as e:
         return {"started": False, "running": False, "message": f"ההתקנה לא התחילה: {e}"}
     _moodle_cache = None

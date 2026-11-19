@@ -9,8 +9,16 @@
   // אותו אתר, ישירות מהמערכת: עובד בלי הרשאת "גישה למכשיר" של כרום
   const LOCAL_SITE = "http://localhost:8765/";
   const REPO_URL = "https://github.com/matanravitsky-crypto/assignment-checker";
-  // מחבר מחשב של מישהו מהצוות בפקודה אחת (website/connect.ps1, מתפרסם עם האתר)
-  const CONNECT_COMMAND = "irm https://bodek-hacham.vercel.app/connect.ps1 | iex";
+  // מחבר מחשב של מישהו מהצוות בפקודה אחת (website/connect.ps1, וב-Mac website/connect.sh; מתפרסמים עם האתר).
+  // עד 2026-11-19 היה רק ל-Windows, ואף אחד עם Mac לא הצליח להתחבר
+  const IS_MAC = /mac/i.test(navigator.userAgentData?.platform || navigator.platform || navigator.userAgent);
+  const CONNECT_COMMANDS = {
+    win: "irm https://bodek-hacham.vercel.app/connect.ps1 | iex",
+    mac: "curl -fsSL https://bodek-hacham.vercel.app/connect.sh | bash",
+  };
+  const CONNECT_COMMAND = IS_MAC ? CONNECT_COMMANDS.mac : CONNECT_COMMANDS.win;
+  const START_FILE = IS_MAC ? "start.sh" : "start.bat";  // מפעיל את המערכת ביד
+  const AUTOSTART_FILE = IS_MAC ? "install-autostart.sh" : "install-autostart.bat";
   const DEFAULT_GRADE_INSTR = [
     "לבדוק כל שאלה בנפרד, לפי המחוון ולפי הפתרון הרשמי.",
     "פתרון נכון בדרך אחרת מקבל ניקוד מלא.",
@@ -29,7 +37,7 @@
     polling: false, starting: false, stopping: false,
     rd: null,          // מוכנות המחשב להעלאה (Claude Code, התחברות, כרום ומודל), למטלה הנוכחית
     probing: false,    // מנסים עכשיו להתחבר למערכת במחשב
-    me: null,          // השם שלי בצוות: {name, set}. set=false עד שבחרו שם באתר (אז זה שם המשתמש של Windows)
+    me: null,          // השם שלי בצוות: {name, set}. set=false עד שבחרו שם באתר (אז זה שם המשתמש במחשב)
     syncing: false, syncedAt: null,  // הכפתור "סנכרון": רץ עכשיו, ומתי סונכרן לאחרונה
     access: null,      // באתר הציבורי: מה כרום אומר על הגישה למערכת שבמחשב ("granted" / "prompt" / "denied")
   };
@@ -106,7 +114,7 @@
   // "https://moodle.bgu.ac.il/moodle/mod/assign/view.php?id=3438636&action=grading" או "3438636" → "3438636"
   const parseMoodleId = (text) => ((text || "").match(/[?&]id=(\d+)/) || (text || "").trim().match(/^(\d+)$/) || [])[1] || null;
 
-  const NO_KEY = "אין חיבור ל-Claude, ולכן אי אפשר לבדוק. הדרך הפשוטה: מחברים את Claude Code במחשב (כמו להעלאה למודל, ברשימת המוכנות של שלב 3, או claude auth login). אפשר גם מפתח API: שורה ANTHROPIC_API_KEY=... בקובץ .env שבתיקיית הריפו, ומפעילים מחדש את start.bat.";
+  const NO_KEY = "אין חיבור ל-Claude, ולכן אי אפשר לבדוק. הדרך הפשוטה: מחברים את Claude Code במחשב (כמו להעלאה למודל, ברשימת המוכנות של שלב 3, או claude auth login). אפשר גם מפתח API: שורה ANTHROPIC_API_KEY=... בקובץ .env שבתיקיית הריפו, ומפעילים מחדש את " + START_FILE + ".";
   const STATUS = { pulled: "ממתינה לבדיקה", grading: "בבדיקה", graded: "נבדקה", returned: "הוחזרה", error: "דורשת טיפול" };
 
   const ICON = {
@@ -1908,7 +1916,7 @@
         <div class="panel-head"><h2>איך מתחברים</h2><span class="end tag warn">${LOCAL.probing ? (LOCAL.access === "prompt" ? "מחכה לאישור בכרום…" : "מנסה להתחבר…") : "לא מחובר"}</span></div>
         <div class="panel-body">
           <ol class="todo">
-            <li>המערכת צריכה לרוץ במחשב הזה. <b>פעם ראשונה במחשב הזה?</b> הפקודה שבחלק הבא מתקינה אותה, כך שהיא עולה לבד, בלי חלון, בכל הדלקה. מחשב שכבר מותקן: היא עולה לבד, או בלחיצה כפולה על <code dir="ltr">start.bat</code>.</li>
+            <li>המערכת צריכה לרוץ במחשב הזה. <b>פעם ראשונה במחשב הזה?</b> הפקודה שבחלק הבא מתקינה אותה, כך שהיא עולה לבד, בלי חלון, בכל הדלקה. מחשב שכבר מותקן: היא עולה לבד, או ${IS_MAC ? `ב-Terminal: <code dir="ltr">bash start.sh</code> בתיקייה שלה` : `בלחיצה כפולה על <code dir="ltr">start.bat</code>`}.</li>
             <li>${accessStep()}</li>
           </ol>
           <div class="row-start">
@@ -1923,23 +1931,26 @@
         <div class="panel-body">
           <p class="lead">כל אחד בצוות מושך, בודק ומעלה דרך ה-Claude שלו, במחשב שלו. כדי שהכפתורים כאן יפעילו אותו, מחברים את המחשב פעם אחת:</p>
           <ol class="todo">
-            <li><b>פותחים PowerShell:</b> לוחצים על מקש Windows, כותבים PowerShell ולוחצים Enter.</li>
+            <li>${IS_MAC ? "<b>פותחים Terminal:</b> לוחצים Cmd+רווח, כותבים Terminal ולוחצים Enter." : "<b>פותחים PowerShell:</b> לוחצים על מקש Windows, כותבים PowerShell ולוחצים Enter."}</li>
             <li><b>מדביקים את השורה הזו ולוחצים Enter:</b>
               <div class="row-start" style="margin-top:8px"><pre class="prompt" dir="ltr" style="flex:1">${esc(CONNECT_COMMAND)}</pre>
-              <button class="btn primary small" data-act="copy-connect">${ICON.check}העתק</button></div></li>
-            <li><b>זהו.</b> הפקודה מתקינה מה שחסר (Git, Python, 7-Zip ו-Claude Code), מורידה את המערכת, מפעילה אותה כך שתעלה לבד, בלי חלון, בכל הדלקה של המחשב, ופותחת את האתר מחובר. מהפעם הבאה הקישור הזה מעביר לשם לבד.</li>
+              <button class="btn primary small" data-act="copy-connect">${ICON.check}העתק</button></div>
+              <p class="hint">${IS_MAC ? "במחשב Windows, ב-PowerShell" : "ב-Mac, ב-Terminal"}: <code dir="ltr">${esc(IS_MAC ? CONNECT_COMMANDS.win : CONNECT_COMMANDS.mac)}</code></p></li>
+            <li><b>זהו.</b> הפקודה מתקינה מה שחסר (Git, Python, 7-Zip ו-Claude Code${IS_MAC ? ", בלי סיסמה" : ""}), מורידה את המערכת, מפעילה אותה כך שתעלה לבד, בלי חלון, בכל הדלקה של המחשב, ופותחת את האתר מחובר. מהפעם הבאה הקישור הזה מעביר לשם לבד.</li>
             <li><b>בלחיצה הראשונה על "משוך הגשות"</b> האתר מחבר את Claude Code לחשבון Claude שלך (נפתח דף התחברות) ובודק שהתוסף Claude in Chrome מחובר בכרום שלך ושכרום מחובר למודל. מאז כל משיכה רצה דרך ה-Claude שלך, וההגשות נשמרות ממוספרות בתיקיית OneDrive של הקורס.</li>
             <li><b>גישה לתיקייה:</b> מבקשים מהמרצה גישה לתיקייה YallaLinearit. בדפדפן, על התיקייה: Add shortcut to My files. באפליקציית OneDrive במחשב מתחברים עם חשבון האוניברסיטה.</li>
           </ol>
           <details style="margin-top:12px"><summary>בלי הפקודה: אותו דבר ביד</summary>
             <ol class="todo" style="margin-top:8px">
-              <li><b>התוכנות</b>, בחלון PowerShell: <code dir="ltr">winget install Python.Python.3.12</code>, <code dir="ltr">winget install 7zip.7zip</code>, <code dir="ltr">winget install Git.Git</code></li>
+              <li><b>התוכנות</b>, ${IS_MAC
+                ? `ב-Terminal: <code dir="ltr">xcode-select --install</code> (Git), Python 3.12 מ-python.org, <code dir="ltr">brew install sevenzip</code>`
+                : `בחלון PowerShell: <code dir="ltr">winget install Python.Python.3.12</code>, <code dir="ltr">winget install 7zip.7zip</code>, <code dir="ltr">winget install Git.Git</code>`}</li>
               <li><b>המערכת:</b> בחלון חדש, בתיקייה שבה רוצים לשמור אותה: <code dir="ltr">git clone ${REPO_URL}</code></li>
-              <li><b>מפעילים, פעם אחת:</b> לחיצה כפולה על <code dir="ltr">install-autostart.bat</code> בתיקייה assignment-checker. מעכשיו המערכת עולה לבד, בלי חלון, בכל פעם שהמחשב נדלק. בכל הפעלה היא מתעדכנת מ-GitHub, כך שכולם עובדים על אותה גרסה. (בלי הפעלה אוטומטית: לחיצה כפולה על <code dir="ltr">start.bat</code>, והחלון השחור נשאר פתוח.)</li>
+              <li><b>מפעילים, פעם אחת:</b> ${IS_MAC ? `ב-Terminal, בתיקייה assignment-checker: <code dir="ltr">bash install-autostart.sh</code>.` : `לחיצה כפולה על <code dir="ltr">install-autostart.bat</code> בתיקייה assignment-checker.`} מעכשיו המערכת עולה לבד, בלי חלון, בכל פעם שהמחשב נדלק. בכל הפעלה היא מתעדכנת מ-GitHub, כך שכולם עובדים על אותה גרסה. (בלי הפעלה אוטומטית: ${IS_MAC ? `<code dir="ltr">bash start.sh</code>, והחלון של Terminal נשאר פתוח` : `לחיצה כפולה על <code dir="ltr">start.bat</code>, והחלון השחור נשאר פתוח`}.)</li>
             </ol>
           </details>
           <div class="row-start" style="margin-top:12px"><a class="btn secondary small" href="${REPO_URL}#readme" target="_blank" rel="noopener">ההסבר המלא ב-GitHub</a>
-            <a class="btn secondary small" href="connect.ps1" target="_blank" rel="noopener">מה הפקודה עושה</a></div>
+            <a class="btn secondary small" href="${IS_MAC ? "connect.sh" : "connect.ps1"}" target="_blank" rel="noopener">מה הפקודה עושה</a></div>
         </div>
       </section>
       ${how}`;
@@ -2011,7 +2022,7 @@
         <p class="lead">האתר קורא את תיקיית OneDrive של הקורס דרך המערכת שרצה במחשב שמסנכרן אותה:</p>
         <ol class="todo">
           <li>באפליקציית OneDrive מחברים את חשבון האוניברסיטה. בדפדפן, על התיקייה YallaLinearit, לוחצים Add shortcut to My files.</li>
-          <li>מורידים את הריפו מ-GitHub ולוחצים פעם אחת על <code dir="ltr">install-autostart.bat</code> (או בכל פעם על <code dir="ltr">start.bat</code>).</li>
+          <li>מורידים את הריפו מ-GitHub ולוחצים פעם אחת על <code dir="ltr">${AUTOSTART_FILE}</code> (או בכל פעם על <code dir="ltr">${START_FILE}</code>).</li>
           <li>עובדים בכתובת <code dir="ltr">http://localhost:8765</code>. מי שפתח אותה פעם אחת מהאתר הציבורי מועבר אליה לבד.</li>
         </ol>
       </div>
@@ -2548,7 +2559,7 @@
               <div class="arch-row">
                 ${node("מודל", "דרך Claude in Chrome, בכרום ובחשבון שלך", ...(LOCAL.health?.moodle ? ["מחובר", "ok"] : LOCAL.on ? ["צריך להתחבר ל-Claude", "warn"] : ["לא ידוע", "warn"]))}
                 <span class="arch-link" aria-hidden="true">⇄</span>
-                ${node("המערכת", "פייתון במחשב שמסנכרן את התיקייה (start.bat)", ...(LOCAL.on ? ["פועלת", "ok"] : ["לא מחוברת", "warn"]))}
+                ${node("המערכת", `פייתון במחשב שמסנכרן את התיקייה (${START_FILE})`, ...(LOCAL.on ? ["פועלת", "ok"] : ["לא מחוברת", "warn"]))}
                 <span class="arch-link" aria-hidden="true">⇄</span>
                 ${node("Claude", "בדיקה, סימון וציון", ...(LOCAL.health?.claude ? ["מחובר", "ok"] : ["עוד לא מחובר", "warn"]))}
               </div>
@@ -2774,8 +2785,8 @@
             t.remove();
             if (!copied) throw new Error("copy");
           })
-          .then(() => toast("הפקודה הועתקה. מדביקים אותה ב-PowerShell ולוחצים Enter.", ICON.check))
-          .catch(() => toast("לא הצלחתי להעתיק. מסמנים את השורה ומעתיקים ביד (Ctrl+C).", ICON.warn));
+          .then(() => toast(`הפקודה הועתקה. מדביקים אותה ב-${IS_MAC ? "Terminal" : "PowerShell"} ולוחצים Enter.`, ICON.check))
+          .catch(() => toast(`לא הצלחתי להעתיק. מסמנים את השורה ומעתיקים ביד (${IS_MAC ? "Cmd+C" : "Ctrl+C"}).`, ICON.warn));
       }
       if (a === "send-confirm" && LOCAL.batch?.assignmentId === cur().id) startLocalSend(LOCAL.batch.id);
       if (a === "send-cancel") { LOCAL.batch = null; render(); }
@@ -2990,7 +3001,7 @@
         const data = await r.json().catch(() => ({}));
         if (!r.ok) throw Object.assign(new Error(data.error || `המערכת במחשב החזירה שגיאה ${r.status}`), { status: r.status });
         return data;
-      }, () => { throw new Error("אין חיבור למערכת במחשב. אם המחשב נדלק עכשיו, מחכים דקה; אחרת מפעילים את start.bat."); });
+      }, () => { throw new Error("אין חיבור למערכת במחשב. אם המחשב נדלק עכשיו, מחכים דקה; אחרת מפעילים את " + START_FILE + "."); });
   }
 
   // מה כרום אומר על הגישה של האתר הציבורי למערכת שבמחשב (Local Network Access): "granted", "prompt", "denied",
@@ -3439,7 +3450,7 @@
 
   // מערכת מלפני הכפתור (2026-11-03) עונה 404 על api/refresh. היא גם מלפני העדכון העצמי, אז היא לא תתעדכן בלי לעלות מחדש
   const OLD_SYSTEM = "המערכת שרצה במחשב הזה ישנה: היא מלפני כפתור הסנכרון, והיא לא מתעדכנת לבד. היא מתעדכנת מ-GitHub כשהיא עולה, "
-    + "אז מפעילים מחדש את המחשב (או סוגרים את start.bat ומפעילים אותו שוב). מאז היא מתעדכנת לבד, והכפתור יעבוד.";
+    + "אז מפעילים מחדש את המחשב (או סוגרים את " + START_FILE + " ומפעילים אותו שוב). מאז היא מתעדכנת לבד, והכפתור יעבוד.";
 
   async function syncNow() {
     if (LOCAL.syncing) return;
@@ -3487,7 +3498,7 @@
     const badge = $("#mode-badge");
     badge.textContent = live ? "מחובר ל-OneDrive" : LOCAL.on ? "OneDrive לא נמצא" : LOCAL.probing ? "מתחבר…" : "המערכת לא מחוברת";
     badge.className = `demo-badge ${live ? "ok" : ""}`;
-    badge.title = live ? LOCAL.health.root : "הנתונים מגיעים מהמערכת שרצה במחשב (start.bat)";
+    badge.title = live ? LOCAL.health.root : "הנתונים מגיעים מהמערכת שרצה במחשב (" + START_FILE + ")";
     const set = (id, ok, text) => {
       const el = $(id);
       el.classList.toggle("ok", ok);
@@ -3500,7 +3511,7 @@
     renderSyncBtn();
     $("#proto-note").textContent = live
       ? (LOCAL.health?.claude ? "כל המספרים במסך נקראים מתיקיית OneDrive של הקורס." : "כל המספרים במסך נקראים מתיקיית OneDrive של הקורס. הבדיקה עם Claude עוד לא מחוברת (מחברים את Claude Code במחשב, או ANTHROPIC_API_KEY ב-.env).")
-      : "האתר מציג רק נתונים אמיתיים, מהמערכת שרצה במחשב (start.bat). כרגע היא לא מחוברת.";
+      : "האתר מציג רק נתונים אמיתיים, מהמערכת שרצה במחשב (" + START_FILE + "). כרגע היא לא מחוברת.";
   }
 
   // מתחברים למערכת. באתר הציבורי מנסים שוב כל כמה שניות, עד שמפעילים את start.bat

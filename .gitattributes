@@ -1,1 +1,3 @@
 *.bat text eol=crlf
+# Shell scripts run on a Mac: a CRLF line ending breaks bash ("$'\r': command not found")
+*.sh text eol=lf

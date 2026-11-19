@@ -19,7 +19,7 @@ assignment-checker/
 ├── website/      האתר עצמו (HTML/JS). מתפרסם ב-Vercel
 ├── tests/        כל הבדיקות, תיקייה לכל חלק
 ├── .github/      אוטומציות: פרסום האתר והרצת הבדיקות בכל PR
-├── start.bat     הפעלת האתר המחובר בלחיצה כפולה
+├── start.bat     הפעלת האתר המחובר בלחיצה כפולה (ב-Mac: start.sh)
 ├── CLAUDE.md     ההסבר המלא לכל מי שעובד על הפרויקט עם Claude
 └── requirements.txt
 ```
@@ -51,6 +51,13 @@ irm https://bodek-hacham.vercel.app/connect.ps1 | iex
    ```
 
 4. **הפעלה אוטומטית:** לוחצים פעמיים על **`install-autostart.bat`** בתיקייה `assignment-checker`. מעכשיו המערכת עולה לבד, בלי חלון, בכל פעם שהמחשב נדלק.
+
+**ב-Mac** (מ-2026-11-19; עד אז המערכת עבדה רק ב-Windows): פותחים Terminal (Cmd+רווח, כותבים Terminal, Enter), מדביקים ולוחצים Enter:
+```bash
+curl -fsSL https://bodek-hacham.vercel.app/connect.sh | bash
+```
+אותו דבר כמו ב-Windows, בלי סיסמה ([`website/connect.sh`](website/connect.sh)): Git (חלון של Apple מבקש להתקין את כלי שורת הפקודה, ואז מריצים את הפקודה שוב), Python 3.12 דרך uv, 7-Zip ו-Claude Code לתוך `~/.local/bin`, המערכת ב-`~/Bodek Hacham/assignment-checker`, והפעלה אוטומטית בכל כניסה ל-Mac דרך LaunchAgent (`install-autostart.sh`, מריץ את `start.sh background`; ה-Mac מודיע ש-"bash" נוסף לפריטי ההתחברות). מה שהמערכת כותבת נשמר ב-`~/Library/Logs/bodek-hacham.log`. ביד: `bash start.sh` בתיקייה. המערכת מוצאת את התיקייה ש-OneDrive מסנכרן ב-Mac (`~/Library/CloudStorage`).
+**סנכרון התיקייה ב-Mac עוד לא נבדק.** חשבון post.bgu.ac.il הוא אורח בארגון של המרצה, ולפי Microsoft אפליקציית הסנכרון לא מציגה לאורחים חלון התחברות, אז דרישת האימות הדו-שלבי של האוניברסיטה עלולה לחסום אותה (ב-Windows עוקפים את זה בקיצור "חיבור OneDrive BGU", שאין לו מקביל ב-Mac). אם OneDrive ב-Mac לא מצליח להוסיף את התיקייה, מספרים לצוות.
 
 **בכל פעם:** פשוט פותחים את https://bodek-hacham.vercel.app (או `http://localhost:8765`), והכל עובד. מי שלא התקין הפעלה אוטומטית לוחץ פעמיים על **`start.bat`** ומשאיר את החלון השחור פתוח. מה שהמערכת כותבת כשהיא רצה בלי חלון נשמר ב-`%TEMP%odek-hacham.log`.
 - **המערכת מתעדכנת לבד מ-GitHub**, כך שכל הצוות רץ על אותה גרסה בלי לעשות כלום: `start.bat` (גם בהפעלה האוטומטית) מושך את `main` בכל הפעלה, ומערכת שכבר רצה בודקת פעם בשעה אם יש גרסה חדשה. כשיש, ושום דבר לא רץ (משיכה, בדיקה, העלאה, משיכת לילה), היא עולה מחדש מעודכנת תוך 1-3 דקות, והאתר נטען מחדש לבד ([`dashboard/updater.py`](dashboard/updater.py)). תיקייה שמפתחים בה (ענף אחר או קבצים ששונו) לא מתעדכנת לבד. `AUTO_UPDATE=off` ב-`.env` מכבה את זה. בהפעלה הראשונה ההתקנה לוקחת כדקה.
