@@ -2,8 +2,12 @@
 from __future__ import annotations
 
 import base64
+import inspect
 import json
 import subprocess
+import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -89,6 +93,68 @@ def test_failures_become_grading_errors():
         ask(FakeRun("not json"))(request())
     with pytest.raises(grading.NoApiKey):
         ask(FakeRun(json.dumps({"type": "result", "is_error": True, "result": "Not logged in · Please run /login"})))(request())
+
+
+# ריצה שמשאירה אחריה תהליך שמחזיק את הפלט שלה פתוח, וכותב לקובץ כל עשירית שנייה כל עוד הוא חי
+LEAVES_A_CHILD = r'''
+import subprocess, sys, time
+sys.stdin.read()
+subprocess.Popen([sys.executable, "-c",
+    "import sys, time\nwhile True:\n    open(sys.argv[1], 'a').write('.')\n    time.sleep(0.1)", sys.argv[1]])
+time.sleep(60)
+'''
+
+
+def within(seconds: float, call) -> dict:
+    """Runs `call` in a thread and waits for it at most `seconds`: a test of a hang must not hang the tests."""
+    done: dict = {}
+
+    def go():
+        t = time.monotonic()
+        try:
+            call()
+            done["result"] = "returned"
+        except subprocess.TimeoutExpired:
+            done["result"] = "TimeoutExpired"
+        done["seconds"] = time.monotonic() - t
+
+    th = threading.Thread(target=go, daemon=True)
+    th.start()
+    th.join(seconds)
+    return done
+
+
+def test_a_run_past_its_time_is_stopped_with_everything_it_started(tmp_path):
+    """2026-11-18: grading calls hung for an hour although the limit is 15 minutes. subprocess.run kills only the run
+    itself, and on Windows then waits with no limit until its output closes; a process it started holds it open."""
+    beat = tmp_path / "alive.txt"
+    done = within(30, lambda: claude_cli.run_bounded([sys.executable, "-c", LEAVES_A_CHILD, str(beat)], input="x",
+                                                     capture_output=True, text=True, encoding="utf-8", timeout=2))
+    assert done.get("result") == "TimeoutExpired" and done["seconds"] < 15
+    time.sleep(0.5)
+    size = beat.stat().st_size
+    time.sleep(1)
+    assert beat.stat().st_size == size  # what the run started is dead too
+
+
+def test_a_run_that_will_not_die_is_given_up_after_the_limit(monkeypatch):
+    """If killing does not end it, the grading moves on to the next work instead of waiting for it forever."""
+    monkeypatch.setattr(claude_cli, "_kill_tree", lambda proc: None)
+    monkeypatch.setattr(claude_cli, "KILL_WAIT_S", 1)
+    done = within(20, lambda: claude_cli.run_bounded([sys.executable, "-c", "import sys, time; sys.stdin.read(); "
+                                                      "time.sleep(8)"], input="x", capture_output=True, text=True,
+                                                     encoding="utf-8", timeout=1))
+    assert done.get("result") == "TimeoutExpired" and done["seconds"] < 6
+
+
+def test_a_run_in_time_returns_its_output():
+    out = claude_cli.run_bounded([sys.executable, "-c", "import sys; print(sys.stdin.read().upper())"], input="שלום ok",
+                                 capture_output=True, text=True, encoding="utf-8", timeout=30)
+    assert out.returncode == 0 and out.stdout.strip() == "שלום OK"
+
+
+def test_grading_runs_claude_with_the_limit_that_holds():
+    assert inspect.signature(claude_cli.cli_ask).parameters["run"].default is claude_cli.run_bounded
 
 
 def test_without_a_key_claude_ask_uses_claude_code(monkeypatch):
