@@ -165,7 +165,8 @@ def main() -> None:
     upload_cmd.add_argument("--worksheet", type=Path, help="default: newest matching CSV in Downloads")
     upload_cmd.add_argument("--max-mb", type=int, default=upload.MAX_ZIP_BYTES // 1_000_000,
                             help="largest ZIP Moodle takes, as its upload page says (default: %(default)s)")
-    upload_cmd.add_argument("--per-zip", type=int, help="at most this many students in a ZIP (e.g. 100): lighter imports")
+    upload_cmd.add_argument("--per-zip", type=int, default=upload.PER_ZIP,
+                            help=f"at most this many students in a ZIP (default {upload.PER_ZIP}; 0 = no limit): lighter imports")
 
     send_cmd = commands.add_parser("send", help="upload the marked files to Moodle with Claude in Chrome")
     send_cmd.add_argument("assignment_id")
