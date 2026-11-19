@@ -18,8 +18,11 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import shutil
+import signal
 import subprocess
+import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -28,6 +31,7 @@ from moodle import claude_code, paths
 
 BUDGET_USD = 5.0
 TIMEOUT_S = 900
+KILL_WAIT_S = 30  # אחרי שהזמן עבר והריצה נהרגה: כמה מחכים לסוף שלה לפני שמוותרים עליה
 EXT = {"image/png": ".png", "image/jpeg": ".jpg", "image/gif": ".gif", "image/webp": ".webp", "application/pdf": ".pdf"}
 
 # כל העמודים בהודעה אחת (Ori #106, Noa #114): כל סבב נוסף קורא שוב את כל ההקשר מהמטמון ומוסיף זמן.
@@ -136,7 +140,47 @@ def build_command(claude: str, folder: Path, system_file: Path, schema: dict, mo
     return cmd
 
 
-def cli_ask(claude: str, schema: dict, effort: str | None = None, run=subprocess.run,
+def _kill_tree(proc: subprocess.Popen) -> None:
+    """הורג את הריצה ואת כל מה שהיא הפעילה (ב-Windows לפי עץ התהליכים, אחרת לפי קבוצת התהליכים שלה)."""
+    try:
+        if sys.platform == "win32":
+            subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, timeout=KILL_WAIT_S)
+        else:
+            os.killpg(proc.pid, signal.SIGKILL)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    try:
+        proc.kill()
+    except OSError:
+        pass
+
+
+def run_bounded(cmd: list[str], *, input: str | None = None, capture_output: bool = False, timeout: float | None = None,
+                **kwargs) -> subprocess.CompletedProcess:
+    """subprocess.run עם מגבלת זמן שמחזיקה. כשהזמן עבר, נהרגים הריצה וכל מה שהיא הפעילה, ואחרי זה מחכים לה עוד
+    KILL_WAIT_S לכל היותר; אחר כך TimeoutExpired, כמו ב-subprocess.run.
+
+    subprocess.run הורג רק את הריצה עצמה, וב-Windows מחכה אחרי זה בלי הגבלה עד שהפלט שלה נסגר. תהליך שהיא הפעילה
+    ומחזיק אותו פתוח, או ריצה שלא מתה, עצרו כך את כל הבדיקה (2026-11-18: קריאות נתקעו יותר משעה, עם מגבלה של 15 דקות)."""
+    pipes = {"stdout": subprocess.PIPE, "stderr": subprocess.PIPE} if capture_output else {}
+    group = {} if sys.platform == "win32" else {"start_new_session": True}
+    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE if input is not None else None, **pipes, **group, **kwargs)
+    try:
+        out, err = proc.communicate(input, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _kill_tree(proc)
+        try:
+            proc.communicate(timeout=KILL_WAIT_S)
+        except subprocess.TimeoutExpired:
+            pass  # משהו עוד מחזיק את הפלט או שהריצה לא מתה: מוותרים עליה ולא מחכים לנצח
+        raise subprocess.TimeoutExpired(cmd, timeout) from None
+    except BaseException:
+        _kill_tree(proc)
+        raise
+    return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
+
+
+def cli_ask(claude: str, schema: dict, effort: str | None = None, run=run_bounded,
             error: type[Exception] = RuntimeError, not_logged_in: type[Exception] = RuntimeError):
     """Ask (ראו grade.py) שרץ דרך Claude Code. `error` ו-`not_logged_in` הם סוגי השגיאות של grade.py."""
 
