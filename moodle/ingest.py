@@ -12,6 +12,7 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 import time
 import zipfile
 from datetime import datetime
@@ -20,7 +21,10 @@ from pathlib import Path
 from moodle import anonymize, guide, lock, paths, pull_check
 from . import atomic
 
-SEVEN_ZIP_PATHS = [r"C:\Program Files\7-Zip\7z.exe", r"C:\Program Files (x86)\7-Zip\7z.exe"]
+SEVEN_ZIP_PATHS = [r"C:\Program Files\7-Zip\7z.exe", r"C:\Program Files (x86)\7-Zip\7z.exe",
+                   "/opt/homebrew/bin/7zz", "/usr/local/bin/7zz"]  # Mac: Homebrew's sevenzip (a server's PATH may lack it)
+# On a Mac 7-Zip is "7zz" (Homebrew, and 7-zip.org's own build, which website/connect.sh puts in ~/.local/bin)
+SEVEN_ZIP_NAMES = ("7z", "7zz")
 
 
 # What Moodle gives: one ZIP of all submissions, or the list "<name>-<id>.json" that moodle/download_parts.js saves
@@ -120,10 +124,21 @@ def _size(p: Path) -> int:
         return 0
 
 
+def seven_zip_install() -> str:
+    """How to install 7-Zip on this computer, for the message when it is missing."""
+    if sys.platform == "darwin":
+        return "run the Mac connect command again (website/connect.sh), or: brew install sevenzip"
+    return "winget install 7zip.7zip"
+
+
 def seven_zip() -> str:
-    found = shutil.which("7z") or next((p for p in SEVEN_ZIP_PATHS if Path(p).exists()), None)
+    found = (next((w for w in map(shutil.which, SEVEN_ZIP_NAMES) if w), None)
+             or next((p for p in SEVEN_ZIP_PATHS if Path(p).exists()), None))
     if not found:
-        raise FileNotFoundError("7-Zip is not installed (winget install 7zip.7zip)")
+        local = Path.home() / ".local" / "bin" / "7zz"
+        found = str(local) if local.is_file() else None
+    if not found:
+        raise FileNotFoundError(f"7-Zip is not installed ({seven_zip_install()})")
     return found
 
 

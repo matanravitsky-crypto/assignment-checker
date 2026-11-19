@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import json
 import os
+import plistlib
 import subprocess
+import sys
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -31,6 +33,8 @@ BUSY_RETRY_S = 5 * 60  # משהו רץ: בודקים שוב בקרוב
 GIT_TIMEOUT_S = 60
 STATE_FILE = "Self update.json"  # בתיקיית העבודה המקומית: לאיזו גרסה כבר ניסינו לעבור
 NO_WINDOW = 0x08000000 if os.name == "nt" else 0  # CREATE_NO_WINDOW: שום חלון לא קופץ
+# ב-Mac ה-watchdog הוא LaunchAgent (install-autostart.sh): launchd מעלה שוב את start.sh בכל פעם שהשרת עוצר
+LAUNCH_AGENT = "com.bodek-hacham.server"
 
 _version: str | None = None
 
@@ -88,8 +92,26 @@ def waiting_update(git=git, running: str | None = None) -> str | None:
     return target
 
 
+def launch_agent_running(run=subprocess.run) -> bool:
+    """Mac: האם ה-LaunchAgent של המערכת מריץ את התיקייה הזו, והוא טעון ב-launchd? רק כך מישהו מעלה אותה שוב."""
+    agent = Path.home() / "Library" / "LaunchAgents" / f"{LAUNCH_AGENT}.plist"
+    try:
+        folder = plistlib.loads(agent.read_bytes()).get("WorkingDirectory")
+    except (OSError, ValueError, plistlib.InvalidFileException):
+        return False
+    if not folder or Path(folder).resolve() != REPO.resolve():
+        return False
+    try:
+        return run(["launchctl", "list", LAUNCH_AGENT], capture_output=True, timeout=GIT_TIMEOUT_S,
+                   stdin=subprocess.DEVNULL).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 def watchdog_running(run=subprocess.run) -> bool:
-    """האם autostart.vbs של התיקייה הזו רץ? רק הוא מעלה מחדש מערכת שעצרה."""
+    """האם autostart.vbs של התיקייה הזו רץ (ב-Mac: ה-LaunchAgent שלה)? רק הוא מעלה מחדש מערכת שעצרה."""
+    if sys.platform == "darwin":
+        return launch_agent_running(run)
     if os.name != "nt":
         return False
     script = ("[Console]::OutputEncoding = [Text.Encoding]::UTF8; "

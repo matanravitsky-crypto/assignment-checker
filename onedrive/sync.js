@@ -22,8 +22,8 @@
   const LOCAL = window.__ecsLocal || "http://127.0.0.1:8765/api/sync/";
   const PARALLEL = 3;
   // קבצים שלא מעלים אף פעם: קבצים זמניים של Windows ו-Office, קבצים חצי כתובים, מנעולים, ואף פעם לא ZIP
-  // (קובצי ה-ZIP של מודל נשארים במחשב שהוריד). כמו dashboard/sync.py
-  const SKIP = /(^|\/)(desktop\.ini|thumbs\.db|~\$[^/]*|[^/]*\.tmp|[^/]* in progress\.txt|[^/]*\.zip)$/i;
+  // (קובצי ה-ZIP של מודל נשארים במחשב שהוריד), וגם הקבצים של Finder ב-Mac (.DS_Store, ._<שם>). כמו dashboard/sync.py
+  const SKIP = /(^|\/)(desktop\.ini|thumbs\.db|\.DS_Store|\._[^/]*|~\$[^/]*|[^/]*\.tmp|[^/]* in progress\.txt|[^/]*\.zip)$/i;
   // שעון המחשב ושעון השרת לא מסונכרנים בדיוק: הפרש קטן מזה לא נחשב "חדש יותר"
   const CLOCK_SLACK_MS = 2 * 60 * 1000;
   // בדיקות שהוצאו מהספירה עוברות בוואן דרייב ל-"<מטלה>/Old test grading/", עם README.txt שנכתב ברגע ההעברה

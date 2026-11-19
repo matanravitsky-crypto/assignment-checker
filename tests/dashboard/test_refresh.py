@@ -72,13 +72,15 @@ def test_refresh_needs_the_sites_header(root, server):
     assert call(server, "POST", "/api/refresh", {})[0] == 403
 
 
-def test_refresh_says_how_to_reconnect_when_the_folder_cannot_be_read(root, server, monkeypatch):
+@pytest.mark.parametrize("platform, how", [("win32", "חיבור OneDrive BGU"), ("darwin", "מסרגל התפריטים")])
+def test_refresh_says_how_to_reconnect_when_the_folder_cannot_be_read(root, server, monkeypatch, platform, how):
     def unreadable(_root):
         raise OSError(362, "The cloud file provider is not running")
     monkeypatch.setattr(folder_view, "courses", unreadable)
+    monkeypatch.setattr(actions.sys, "platform", platform)  # the Windows shortcut exists only on Windows
     st, rep = call(server, "POST", "/api/refresh", {}, HDR)
     assert st == 503
-    assert "The cloud file provider is not running" in rep["error"] and "חיבור OneDrive BGU" in rep["error"]
+    assert "The cloud file provider is not running" in rep["error"] and how in rep["error"]
 
 
 # ---------- onedrive_check.status ----------

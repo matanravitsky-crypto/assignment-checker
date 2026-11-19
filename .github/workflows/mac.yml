@@ -1,0 +1,55 @@
+# The system on a Mac (2026-11-19: until then it ran only on Windows, and nobody with a Mac could connect).
+# Nobody on the team who writes the code has a Mac, so a clean macOS runner checks it on every Pull Request:
+# the tests, and website/connect.sh for real, from this branch, as a teammate would run it.
+name: Mac
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  pytest:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - run: python -m pytest -q
+
+  connect:
+    runs-on: macos-latest
+    timeout-minutes: 25  # the default is 6 hours: a step that hangs would hold the PR that long
+    # A branch of this repository only: connect.sh downloads the branch from GitHub
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - uses: actions/checkout@v4
+      - name: Connect this Mac with website/connect.sh, from this branch
+        env:
+          BODEK_BRANCH: ${{ github.head_ref || github.ref_name }}
+        run: bash website/connect.sh
+      - name: The system answers, started by its LaunchAgent
+        run: |
+          curl -fsS http://127.0.0.1:8765/api/health
+          echo
+          launchctl list com.bodek-hacham.server
+          test -x "$HOME/Bodek Hacham/assignment-checker/.venv/bin/python"
+          git -C "$HOME/Bodek Hacham/assignment-checker" rev-parse --abbrev-ref HEAD
+          ls -l "$HOME/.local/bin"
+      - name: The LaunchAgent brings the system back after it stops (as after a self-update)
+        run: |
+          pkill -f "dashboard serve"
+          for i in $(seq 1 36); do
+            sleep 5
+            if curl -fsS -m 5 http://127.0.0.1:8765/api/health >/dev/null; then echo "back after $((i * 5)) s"; exit 0; fi
+          done
+          echo "the system did not come back within 3 minutes"
+          exit 1
+      - name: Running connect.sh again changes nothing and still works
+        run: bash website/connect.sh
+      - name: What the system printed
+        if: always()
+        run: cat "$HOME/Library/Logs/bodek-hacham.log" || true

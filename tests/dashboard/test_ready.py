@@ -253,8 +253,7 @@ def test_install_spawns_the_official_installer_once(monkeypatch, popen):
     monkeypatch.setattr(claude_driver, "find_claude", lambda: None)
     out = actions.start_claude_install()
     assert out["started"] is True and len(popen.made) == 1
-    assert popen.made[0].cmd == ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
-                                 "irm https://claude.ai/install.ps1 | iex"]
+    assert popen.made[0].cmd == actions.install_command()  # this computer's own installer (test_mac_server.py: both)
     again = actions.start_claude_install()
     assert again["started"] is False and again["running"] is True and len(popen.made) == 1
 

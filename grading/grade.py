@@ -92,7 +92,7 @@ NO_KEY = ("אין חיבור ל-Claude, ולכן אי אפשר לבדוק. אח�
           "1. Claude Code מחובר במחשב (כמו להעלאה למודל): מריצים פעם אחת claude auth login.\n"
           "2. מפתח API: מוסיפים לקובץ .env שבתיקיית הריפו שורה כזו:\n"
           "    ANTHROPIC_API_KEY=...\n"
-          "ומפעילים מחדש את start.bat.")
+          "ומפעילים מחדש את start.bat (ב-Mac: start.sh).")
 
 
 class NoApiKey(Exception):

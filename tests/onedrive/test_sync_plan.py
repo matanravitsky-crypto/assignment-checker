@@ -91,3 +91,11 @@ def test_a_file_still_in_its_place_in_onedrive_is_compared_as_usual():
 def test_files_inside_the_archive_upload_like_any_file():
     p = plan([f(f"{A}/Old test grading/Grading notes/0001.json")], ARCHIVED)
     assert uploaded(p) == [f"{A}/Old test grading/Grading notes/0001.json"] and p["archived"] == []
+
+
+def test_finder_files_from_a_mac_never_upload():
+    """A Mac's Finder writes .DS_Store in every folder it opened, and "._<name>" next to files on some disks (2026-11-19)."""
+    p = plan([f(f"{A}/.DS_Store"), f(".DS_Store"), f(f"{A}/2 - Graded with comments/._0001.pdf"),
+              f(f"{A}/2 - Graded with comments/0001.pdf")], {})
+    assert uploaded(p) == [f"{A}/2 - Graded with comments/0001.pdf"]
+    assert sorted(p["skipped"]) == sorted([f"{A}/.DS_Store", ".DS_Store", f"{A}/2 - Graded with comments/._0001.pdf"])

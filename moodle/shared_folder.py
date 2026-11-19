@@ -11,6 +11,9 @@
    או לתיקיית הקורס שהיא בתוכה.
 2. חיפוש במחשב: תיקייה בשם YallaLinearit (או "<בעלים> - YallaLinearit", כפי שהכפתור
    Sync קורא לה) בתוך OneDrive, או בתיקייה בשם הארגון (למשל C:\\Users\\<שם>\\BGU).
+   ב-Mac, OneDrive שומר הכול ב-~/Library/CloudStorage: "OneDrive-<ארגון>" ו-"OneDrive-SharedLibraries-<ארגון>"
+   (מה שסונכרן בכפתור Sync). עד 2026-11-19 החיפוש לא הגיע לשם, ואף מחשב Mac לא התחבר.
+   את ~/Library עצמה ואת תיקיות המדיה לא פותחים: macOS שואל את האדם אם לתת לקרוא בהן.
 3. אם אין תיקייה מסונכרנת: תיקיית הנתונים המקומית (ASSIGNMENT_DATA, ברירת מחדל ~/Exercise Checking System),
    אם יש בה מטלות. כך עובד מחשב שלא יכול לסנכרן את התיקייה של המרצה (חשבון אורח), ומעלה אליה
    מתוך הדפדפן (onedrive/sync.js).
@@ -38,6 +41,7 @@ def onedrive_roots() -> list[Path]:
         if value and Path(value).is_dir():
             roots.append(Path(value))
     roots += sorted(p for p in Path.home().glob("OneDrive*") if p.is_dir())
+    roots += sorted(p for p in (Path.home() / "Library" / "CloudStorage").glob("OneDrive*") if p.is_dir())  # Mac
     unique: list[Path] = []
     for p in roots:
         if p.resolve() not in [u.resolve() for u in unique]:
@@ -56,11 +60,16 @@ def _system_dir(folder: Path) -> Path | None:
     return None
 
 
+# תיקיות בבית שלא מחפשים בהן: נתוני אפליקציות (AppData, ~/Library), ותיקיות ש-macOS מבקש עליהן רשות מהאדם
+NOT_SEARCHED = ("AppData", "Downloads", "Desktop", "Documents", "Library", "Pictures", "Music", "Movies",
+                "Applications", "Public")
+
+
 def _course_folders() -> list[Path]:
     home = Path.home()
     bases = onedrive_roots() + sorted(
         p for p in home.iterdir()
-        if p.is_dir() and not p.name.startswith(".") and p.name not in ("AppData", "Downloads", "Desktop", "Documents")
+        if p.is_dir() and not p.name.startswith(".") and p.name not in NOT_SEARCHED
     )
     found = []
     for base in bases:
