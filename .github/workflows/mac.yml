@@ -11,6 +11,7 @@ on:
 jobs:
   pytest:
     runs-on: macos-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -21,6 +22,7 @@ jobs:
 
   connect:
     runs-on: macos-latest
+    timeout-minutes: 25  # the default is 6 hours: a step that hangs would hold the PR that long
     # A branch of this repository only: connect.sh downloads the branch from GitHub
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     steps:

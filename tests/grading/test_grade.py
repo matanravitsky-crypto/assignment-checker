@@ -9,6 +9,7 @@ import json
 import random
 import threading
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pymupdf
@@ -949,7 +950,7 @@ def test_the_rules_send_no_unreadable_or_missing_part_to_a_person():
     assert "points_low" in req and "points_high" in req
 
 
-def test_the_review_queue_is_graded_again_also_where_another_grader_took_it(root):
+def test_the_review_queue_is_graded_again_also_where_another_grader_took_it(root, monkeypatch):
     from moodle import claims, grades as moodle_grades
     a = asg(root)
     first = FakeClaude(lambda req: answer(review="ספק"))
@@ -957,6 +958,10 @@ def test_the_review_queue_is_graded_again_also_where_another_grader_took_it(root
     assert grading.review_queue(a.dir) == ["0001", "0002"]
     rep = grading.grade_assignment(a.dir, ["0001"], ask=FakeClaude(), parallel=1, who="מתן")
     assert rep.graded == [] and "שמורות לבודקים אחרים" in rep.notes[0]  # as before: someone else's work is theirs
+    # The regrade comes later, as it does for real. graded_at is to the second, and on a fast CI computer both gradings
+    # fell in one second, so the later one did not win (failed on main from 2026-11-18)
+    later = (datetime.now() + timedelta(minutes=1)).isoformat(timespec="seconds")
+    monkeypatch.setattr(grading, "_now", lambda: later)
     rep = grading.grade_assignment(a.dir, grading.review_queue(a.dir), ask=FakeClaude(), parallel=1, who="מתן",
                                    others=True)
     assert sorted(rep.graded) == ["0001", "0002"] and rep.review == [] and grading.review_queue(a.dir) == []

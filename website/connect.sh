@@ -152,7 +152,9 @@ main() {
   fi
 
   step "Opening the site"
-  open -a "Google Chrome" "$site" 2>/dev/null || open "$site"
+  # In the background: "open" can wait for Chrome to finish starting (it never returned on a fresh macOS runner,
+  # 2026-11-19), and nothing after it needs Chrome
+  ( open -a "Google Chrome" "$site" 2>/dev/null || open "$site" ) >/dev/null 2>&1 &
   say 'Chrome asks once whether the site may access apps and services on this device: click "Allow".'
   say 'macOS may also say that "bash" was added to the login items: that is the system, starting with the Mac.'
   say 'In the site press "pull". The first time, it signs Claude Code in to YOUR Claude account and checks'
