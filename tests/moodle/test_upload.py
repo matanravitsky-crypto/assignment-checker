@@ -47,7 +47,7 @@ def test_prepare_upload_matches_by_number_not_order():
         assert report["missing_results"] == []
         with open(upload / GRADES_FOR_MOODLE, encoding="utf-8-sig") as f:
             rows = list(csv.reader(f))
-        assert rows[1][2:5:2] == ["90", "טוב"]
+        assert rows[1][2:5:2] == ["90", ""]  # the grade only, never the feedback
         assert rows[2][2] == "70"
         assert rows[3][2] == ""
         assert [z.name for z in report["feedback_zips"]] == ["Graded - part 01.zip"]
@@ -188,3 +188,18 @@ def test_plan_parts_per_zip_limits_the_students_in_a_part():
         assert sum(len(p) for p in parts) == 30  # 25 files + 5 second files
         assert len(plan_parts(marked, mapping, 10_000_000)[0]) == 1  # without the cap: one part
         assert [len(p) for p in plan_parts(marked, mapping, 35, per_zip=10)[0]][:2] == [3, 3]  # the size cap still wins
+
+
+def test_missing_zip_holds_only_the_given_numbers(tmp_path):
+    from moodle.upload import missing_zip
+    write_csv(tmp_path / paths.KEY, MAPPING)
+    marked = tmp_path / paths.MARKED
+    marked.mkdir()
+    (marked / "0001.pdf").write_bytes(b"a")
+    (marked / "0002.pdf").write_bytes(b"b")
+    out, absent = missing_zip(tmp_path, ["2", "0003"])
+    assert out.name == "Graded - missing 01.zip" and absent == ["0003"]
+    with zipfile.ZipFile(out) as archive:
+        assert archive.namelist() == ["בת_200_assignsubmission_file/feedback.pdf"]
+    assert missing_zip(tmp_path, ["0001"])[0].name == "Graded - missing 02.zip"  # never over an earlier one
+    assert sorted(p.name for p in (tmp_path / paths.UPLOAD).glob("Graded - part*")) == []

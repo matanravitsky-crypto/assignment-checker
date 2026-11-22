@@ -27,11 +27,12 @@ from moodle import anonymize, grades, moodle_table, paths
 from . import schema
 
 # The worksheet's headers follow the Moodle language the user downloaded it in
-GRADE_HEADERS = {"Grade", "ציון"}
+GRADE_HEADERS = {"Grade", "ציון", "ציונים"}  # "ציונים": BGU's Hebrew worksheet of LA Assignment 0 (2026-11-16)
 FEEDBACK_HEADERS = {"Feedback comments", "הערות למשוב", "משוב"}
 
-# BGU Moodle's feedback ZIP page said "750 MB" on 2026-11-15 (it was 31 MB on 2026-10-22); leave some room
-MAX_ZIP_BYTES = 730_000_000
+# BGU Moodle's feedback ZIP page said "750 MB" on 2026-11-15 (it was 31 MB on 2026-10-22). ZIPs of at most 100 MB
+# (Ori, 2026-11-22): smaller files are easier to upload by hand and to retry one that failed
+MAX_ZIP_BYTES = 100_000_000
 # When Claude uploads through Claude in Chrome, each file can be at most 10 MB
 CLAUDE_MAX_ZIP_BYTES = 9_000_000
 
@@ -75,7 +76,9 @@ def find_column(header: list[str], names: set[str]) -> int:
 
 def fill_worksheet(worksheet: Path, out: Path, results: dict, mapping: dict, max_grade: float | None = None,
                    skipped: list | None = None, table: list[dict] | None = None) -> int:
-    """Write the worksheet with grades filled in. Returns how many rows were filled. A result whose grade is not a
+    """Write the worksheet with grades filled in, and nothing else: every other cell, the feedback column too, stays
+    exactly as Moodle gave it (the lecturer, 2026-11-22: the file must look like Moodle's; the feedback is in the
+    marked PDFs). Returns how many rows were filled. A result whose grade is not a
     valid number (or is out of 0..max_grade) is left empty and its number goes to `skipped`: never a bad grade in Moodle.
     With `table` (the rows of Grades for Moodle.csv, moodle_table.py) the grades come from it, by participant id."""
     if table is not None:
@@ -87,10 +90,6 @@ def fill_worksheet(worksheet: Path, out: Path, results: dict, mapping: dict, max
         rows = list(csv.reader(f))
     header, body = rows[0], rows[1:]
     grade_col = find_column(header, GRADE_HEADERS)
-    try:
-        feedback_col = find_column(header, FEEDBACK_HEADERS)
-    except ValueError:  # "feedback comments" is off in the assignment: grades only
-        feedback_col = None
 
     filled = 0
     for row in body:
@@ -102,8 +101,6 @@ def fill_worksheet(worksheet: Path, out: Path, results: dict, mapping: dict, max
                 skipped.append(str(result.get("number") or ""))
             continue
         row[grade_col] = result["grade"]
-        if feedback_col is not None:
-            row[feedback_col] = result.get("feedback", "")
         filled += 1
 
     with open(out, "w", encoding="utf-8-sig", newline="") as f:
@@ -231,6 +228,27 @@ def write_zips(upload_dir: Path, parts: list[list[tuple[Path, str]]]) -> list[Pa
                 archive.write(file, arcname)
         zips.append(out)
     return zips
+
+
+def missing_zip(assignment_dir: Path, numbers: list[str]) -> tuple[Path, list[str]]:
+    """One "Graded - missing NN.zip" with only these numbers' marked files, for students Moodle didn't import
+    (LA Assignment 0, 2026-11-22: two imports at once dropped files). Importing a file again only replaces it.
+    Returns the ZIP and the numbers that have no marked file."""
+    numbers = [n.zfill(4) for n in numbers]
+    parts, too_big = plan_parts(assignment_dir / paths.MARKED, anonymize.read_mapping(assignment_dir),
+                                10 ** 12, numbers=set(numbers))
+    upload = assignment_dir / paths.UPLOAD
+    upload.mkdir(parents=True, exist_ok=True)
+    index = 1
+    while (upload / f"Graded - missing {index:02d}.zip").exists():
+        index += 1
+    out = upload / f"Graded - missing {index:02d}.zip"
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as archive:
+        for part in parts:
+            for file, arcname in part:
+                archive.write(file, arcname)
+    have = {src.name.split("-")[0].split(".")[0] for part in parts for src, _ in part}
+    return out, [n for n in numbers if n not in have]
 
 
 def build_feedback_zips(

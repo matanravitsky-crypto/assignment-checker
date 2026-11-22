@@ -100,13 +100,15 @@
     },
     ret: {
       no: 3, route: "/return", name: "החזרה לאוניברסיטה",
-      desc: "העבודות המסומנות עולות למודל כקובצי משוב. המערכת אורזת רק מה שחדש או השתנה מאז ההעלאה הקודמת, בודקת שהמחשב מוכן, ואחרי אישור שלך Claude בכרום מעלה כל קובץ ZIP לעמוד \"העלאת מספר קובצי משוב\" במודל. אחרי כל קובץ המערכת בודקת שמודל קלט בדיוק את מספר העבודות שבו, ורושמת אותן ביומן ההעלאה.",
-      steps: ["הכנת קובצי ZIP", "העלאה למודל דרך Claude בכרום", "אימות מול מודל"],
+      desc: "הכפתור מכין את ההחזרה בדרייב, ולא מעלה כלום למודל: קובצי ZIP של המשוב בפורמט של מודל, הציונים בגיליון של מודל (אם הורדת אותו מ\"הורדת גיליון ציונים\") וקובץ הוראות, בתיקייה \"3 - Ready to upload to Moodle\". את הקבצים מעלה אדם בדפדפן שלו, בעמוד \"העלאת מספר קובצי משוב\" במודל, ואחרי כל קובץ רושמים שהועלה.",
+      steps: ["הכנת קובצי ZIP בדרייב", "העלאה למודל בידי אדם", "רישום מה שעלה"],
       tabs: [["list", "העבודות להעלאה"], ["instr", "מה עולה למודל"], ["conn", "חיבור למודל"]],
     },
   };
   const ROUTE_STAGE = { "/pull": "pull", "/grade": "grade", "/return": "ret" };
   const RET_LOCAL_STEPS = STAGES.ret.steps;
+  // כפתור ההחזרה רק מכין בדרייב, לא מעלה למודל (ראו prepareReturnToDrive)
+  const DRIVE_ONLY = true;
   const stepsOf = (stage) => STAGES[stage].steps;
   const moodleGradingUrl = (A) => `https://moodle.bgu.ac.il/moodle/mod/assign/view.php?id=${encodeURIComponent(A.moodleId || "")}&action=grading`;
   // הגשה שעוד לא נמשכה אין לה מזהה מודל, אז אין לאן לקשר
@@ -279,7 +281,31 @@
       return;
     }
     if (stage === "grade") { state.gradePick = state.gradePick === cur().id ? null : cur().id; render(); $("#grade-count")?.select(); }
-    if (stage === "ret") startSendFlow();
+    if (stage === "ret") prepareReturnToDrive();
+  }
+
+  // "הכן N להעלאה": רק מכין את ההחזרה בתיקייה המשותפת (moodle upload: קובצי ZIP של משוב, גיליון הציונים
+  // ו-"Upload steps.txt" ב-"3 - Ready to upload to Moodle"). שום דבר לא עולה למודל: אדם מעלה בעצמו בדפדפן
+  // (אורי, 2026-11-16: Claude לא נוגע במודל). ההעלאה דרך Claude בכרום נשארת בקוד ולא מופעלת מהכפתור
+  async function prepareReturnToDrive() {
+    const A = cur();
+    if (!A || state.run[A.id] || LOCAL.sending?.running) return;
+    state.run[A.id] = { stage: "ret", steps: RET_LOCAL_STEPS.map((_, i) => (i ? "pending" : "running")), progress: "מכין את הקבצים בדרייב…" };
+    render();
+    try {
+      const rep = await api("api/return", { method: "POST", body: JSON.stringify({ course: A.courseFolder, assignment: A.folder }) });
+      delete state.run[A.id];
+      // נשאר על המסך (בעמוד ההחזרה) עד הכנה הבאה: הריבועים לא משתנים, כי עבודה "הוחזרה" רק כשהיא נרשמה כמועלית למודל
+      LOCAL.prepared = { assignmentId: A.id, at: new Date(), summary: rep.summary, zips: (rep.report?.feedback_zips || []).length, notes: rep.notes || [] };
+      await loadLocal();
+      if (location.hash !== "#/return") location.hash = "#/return";
+      render();
+      toast(`הוכן בדרייב: ${rep.summary}. שום דבר לא עלה למודל.`, ICON.check);
+    } catch (e) {
+      delete state.run[A.id];
+      render();
+      toast(e.message, ICON.warn);
+    }
   }
 
   // החלונית שנפתחת מתחת ל"בדוק": כמה עבודות לבדוק עכשיו. קודם משלימים מהפנויות (באקראי, בשרת) ומסמנים אותן עליי,
@@ -329,7 +355,8 @@
   // "העלה ציונים": רק בלחיצה. מעלה את הציונים של עבודות שהקבצים שלהן כבר במודל (moodle/send_grades.py)
   function gradesButton({ big = false } = {}) {
     const A = cur();
-    if (!LOCAL.on || !A || A.empty) return "";
+    // הציונים נכנסים לגיליון של מודל בתוך "הכן להעלאה" (בדרייב), ולא עולים למודל מהאתר. הכפתור הזה מוסתר
+    if (DRIVE_ONLY || !LOCAL.on || !A || A.empty) return "";
     const I = info(A), n = I.gradesToSend, S = LOCAL.sending;
     const here = S?.running && sendingHere() && S.phase === "grades";
     const checking = LOCAL.rd?.flow && LOCAL.rd.then === "grades" && LOCAL.rd.assignmentId === A.id;
@@ -362,7 +389,7 @@
     }
     let text = mine ? (run.progress || "רץ עכשיו…") : label, spinning = mine;
     if (LOCAL.on && stage === "ret") {
-      if (!mine) text = I.toReturn.length ? `העלה ${I.toReturn.length} למודל` : I.gradesToSend ? `העלה ${I.gradesToSend} ציונים למודל` : I.done.ret ? "הכל הועלה" : "אין עבודות להעלאה";
+      if (!mine) text = I.toReturn.length ? `הכן ${I.toReturn.length} להעלאה (בדרייב)` : I.gradesToSend ? `הכן ${I.gradesToSend} ציונים להעלאה (בדרייב)` : I.done.ret ? "הכל הועלה" : "אין עבודות להעלאה";
       if (LOCAL.sending?.running || LOCAL.starting) disabled = true;  // העלאה אחת בכל פעם, גם אם היא של מטלה אחרת
       if (LOCAL.sending?.running && sendingHere()) { text = sendProgressText(); spinning = true; }
       if (LOCAL.rd?.flow && LOCAL.rd.then === "send" && LOCAL.rd.assignmentId === A.id && !mine) { text = "בודק שהמחשב מוכן…"; spinning = true; disabled = true; }
@@ -791,8 +818,24 @@
   // and prepares again, so nothing is imported twice by one click (tests/moodle/test_send_run.py checks this list)
   const RESUMABLE = ["needs_login", "user", "error"];
 
+  // מה ההכנה האחרונה בדרייב כתבה (prepareReturnToDrive)
+  function preparedPanelHTML() {
+    const P = LOCAL.prepared;
+    if (!P || P.assignmentId !== cur()?.id) return "";
+    const time = P.at.toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" });
+    return `<section class="panel report" aria-live="polite">
+      <div class="panel-head"><h3>ההחזרה מוכנה בדרייב</h3><span class="end tag">${esc(time)}</span></div>
+      <div class="panel-body">
+        <p>${esc(P.summary)}. ${P.zips} קובצי ZIP בתיקייה "3 - Ready to upload to Moodle" של המטלה. <strong>שום דבר לא עלה למודל.</strong></p>
+        <p>מעלים אותם בעצמך במודל, בעמוד "העלאת מספר קובצי משוב", קובץ אחר קובץ (ההוראות ב-"Upload steps.txt" שבאותה תיקייה). העבודות יסומנו "הוחזרה" רק אחרי שהן נרשמות כמועלות.</p>
+        ${P.notes.length ? `<ul>${P.notes.map((n) => `<li>${esc(n)}</li>`).join("")}</ul>` : ""}
+      </div></section>`;
+  }
+
   function sendPanelHTML() {
     if (!LOCAL.on) return "";
+    const prepared = preparedPanelHTML();
+    if (prepared && !LOCAL.sending?.running && !LOCAL.batch) return prepared;
     const A = cur(), S = LOCAL.sending, b = LOCAL.batch;
     if (S?.running) {
       if (!sendHere()) return `<div class="banner">${ICON.spin}<div>העלאה למודל רצה עכשיו במטלה אחרת. אפשר להכין העלאה חדשה כשהיא תסתיים.</div></div>`;

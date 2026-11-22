@@ -363,7 +363,7 @@ There is **no Moodle API**. Claude in Chrome works in the user's own logged-in C
   (`Graded - part 01.zip` ...), one at a time. **BGU Moodle imports at once**: clicking "יבוא קבצי משוב" imports
   immediately, with no confirmation list (file → student) before it. Moodle then lands on the grading page with a
   message saying how many files were imported; that count against the files in the ZIP is the only check.
-  `Upload steps.txt` there has the steps and a checklist. That page takes .zip only, up to **750 MB** ("הגודל המירבי לקבצים חדשים"; it was 31 MB when checked on assignment 3438636 on 2026-10-22, and 750 MB on 2026-11-15, read from the page), so ZIPs are split at 730 MB
+  `Upload steps.txt` there has the steps and a checklist. That page takes .zip only, up to **750 MB** ("הגודל המירבי לקבצים חדשים"; it was 31 MB when checked on assignment 3438636 on 2026-10-22, and 750 MB on 2026-11-15, read from the page), so ZIPs are split at 100 MB (Ori, 2026-11-22; 730 MB until then; `python -m moodle missing <id> <numbers>` re-packs only the students Moodle did not import)
   (`--max-mb` to change; `MAX_ZIP_BYTES` in `moodle/upload.py`, used by the site's "Prepare return" and by `python -m moodle upload`; the automatic upload keeps 9 MB, Claude in Chrome's limit). The course's max upload size is a course setting, capped by the site.
 - Grades upload needs **"Offline grading worksheet"** turned on in the assignment's feedback types (not on yet in
   assignment 3438636; the lecturer turns it on, we never change settings): it is the only page where Moodle takes
