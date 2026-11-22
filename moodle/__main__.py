@@ -28,6 +28,9 @@
         After uploading a ZIP of the current batch by hand (from its "Upload batch <id>" folder): writes its files to
         "Upload log.csv". Refused when the ZIP there is missing or changed since the batch was prepared.
 
+    python -m moodle missing <assignment id> <number> [<number> ...]
+        "Graded - missing NN.zip" with only those numbers' marked files, for students Moodle didn't import.
+
     python -m moodle guide
         Rewrites the README files (in Hebrew).
 """
@@ -35,6 +38,7 @@
 import argparse
 import re
 import sys
+import zipfile
 from pathlib import Path
 
 from moodle import guide, ingest, lock, paths, send, send_grades, status, upload, upload_log
@@ -180,6 +184,10 @@ def main() -> None:
     record_cmd.add_argument("assignment_id")
     record_cmd.add_argument("zip_name")
 
+    missing_cmd = commands.add_parser("missing", help="one ZIP with only these numbers, for students Moodle didn't import")
+    missing_cmd.add_argument("assignment_id")
+    missing_cmd.add_argument("numbers", nargs="+")
+
     table_cmd = commands.add_parser("table", help="build Grades for Moodle.csv: each grade next to its Moodle participant")
     table_cmd.add_argument("assignment_id")
 
@@ -227,6 +235,15 @@ def main() -> None:
             print(unknown)
             raise SystemExit(1)
         print(f"{rows} קבצים נרשמו ביומן")
+        return
+
+    if args.command == "missing":
+        out, absent = upload.missing_zip(target, args.numbers)
+        with zipfile.ZipFile(out) as archive:
+            files = len(archive.namelist())
+        print(f"{out.name}: {files} קבצים. מודל צריך לכתוב {files} קבצים יובאו")
+        if absent:
+            print(f"אין עבודה בדוקה ל: {', '.join(absent)}")
         return
 
     if args.command == "table":

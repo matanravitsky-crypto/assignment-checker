@@ -230,6 +230,27 @@ def write_zips(upload_dir: Path, parts: list[list[tuple[Path, str]]]) -> list[Pa
     return zips
 
 
+def missing_zip(assignment_dir: Path, numbers: list[str]) -> tuple[Path, list[str]]:
+    """One "Graded - missing NN.zip" with only these numbers' marked files, for students Moodle didn't import
+    (LA Assignment 0, 2026-11-22: two imports at once dropped files). Importing a file again only replaces it.
+    Returns the ZIP and the numbers that have no marked file."""
+    numbers = [n.zfill(4) for n in numbers]
+    parts, too_big = plan_parts(assignment_dir / paths.MARKED, anonymize.read_mapping(assignment_dir),
+                                10 ** 12, numbers=set(numbers))
+    upload = assignment_dir / paths.UPLOAD
+    upload.mkdir(parents=True, exist_ok=True)
+    index = 1
+    while (upload / f"Graded - missing {index:02d}.zip").exists():
+        index += 1
+    out = upload / f"Graded - missing {index:02d}.zip"
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as archive:
+        for part in parts:
+            for file, arcname in part:
+                archive.write(file, arcname)
+    have = {src.name.split("-")[0].split(".")[0] for part in parts for src, _ in part}
+    return out, [n for n in numbers if n not in have]
+
+
 def build_feedback_zips(
     marked: Path, upload: Path, mapping: dict, max_bytes: int = MAX_ZIP_BYTES
 ) -> tuple[list[Path], list[str]]:
