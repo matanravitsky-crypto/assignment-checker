@@ -81,7 +81,8 @@ def test_the_upload_fills_moodles_worksheet_from_the_table(tmp_path):
     assert rep["moodle_table"]["rows"] == 2 and rep["grades_filled"] == 2 and rep["grades_skipped_invalid"] == ["0003"]
     with open(tmp_path / paths.UPLOAD / GRADES_FOR_MOODLE, encoding="utf-8-sig") as f:
         rows = {r[0]: r for r in csv.reader(f)}
-    assert rows["משתתף 200"][2:5:2] == ["90", "ב"] and rows["משתתף 100"][2] == "70" and rows["משתתף 300"][2] == ""
+    # the grade only: the feedback cell stays as Moodle gave it (empty), like Moodle's own file
+    assert rows["משתתף 200"][2:5:2] == ["90", ""] and rows["משתתף 100"][2] == "70" and rows["משתתף 300"][2] == ""
     assert table(tmp_path)["0002"]["grade"] == "90"  # the table was built by the upload
 
 

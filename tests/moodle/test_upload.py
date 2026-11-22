@@ -47,7 +47,7 @@ def test_prepare_upload_matches_by_number_not_order():
         assert report["missing_results"] == []
         with open(upload / GRADES_FOR_MOODLE, encoding="utf-8-sig") as f:
             rows = list(csv.reader(f))
-        assert rows[1][2:5:2] == ["90", "טוב"]
+        assert rows[1][2:5:2] == ["90", ""]  # the grade only, never the feedback
         assert rows[2][2] == "70"
         assert rows[3][2] == ""
         assert [z.name for z in report["feedback_zips"]] == ["Graded - part 01.zip"]
