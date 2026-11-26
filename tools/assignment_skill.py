@@ -258,7 +258,7 @@ def skill_md(package: Path) -> str:
                    f"someone sends a work of this assignment and says {quoted}, or names this assignment. Not for other "
                    f"assignments: each has its own grade-<course>-<N> skill; exercise-grader grades with a rubric the "
                    f"user brings.")
-    head = (f"---\nname: {m['skill']}\ndescription: {description}\nmodel: {grade.DEFAULT_MODEL}\neffort: {grade.EFFORT}\n---\n\n"
+    head = (f"---\nname: {m['skill']}\ndescription: {json.dumps(description, ensure_ascii=False)}\nmodel: {grade.DEFAULT_MODEL}\neffort: {grade.EFFORT}\n---\n\n"
             f"> **The rubric of this skill:** {m['assignment']}, version {m['version']}, frozen {m['built_at'][:16].replace('T', ' ')} "
             f"by {m['built_by']} ({approved}). Total {rubric['total_points']:g} points, grade out of {rubric['max_grade']:g}.\n>\n"
             f"> | שאלה | נקודות |\n> |---|---|\n" + "\n".join("> " + r for r in rows.splitlines()) + "\n\n")

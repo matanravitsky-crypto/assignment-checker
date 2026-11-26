@@ -68,7 +68,7 @@ def test_the_skill_is_the_skeleton_with_the_rubric_dressed_on(data, tmp_path):
     md = (skill / "SKILL.md").read_text(encoding="utf-8")
     skeleton = S.skeleton_md()
     assert md.startswith("---\nname: grade-linear-1\n")
-    assert '"תבדוק עבודה של הגשה 1 באלגברה לינארית"' in md and '"דף וקטורים"' in md
+    assert "תבדוק עבודה של הגשה 1 באלגברה לינארית" in md and "דף וקטורים" in md
     assert "| דף וקטורים 8 | 50 |" in md and "נועה" in md
     assert "rubric-slot" not in md and "Never ask for a rubric" in md
     # every line of the skeleton outside its rubric slots is in the skill, word for word
@@ -149,3 +149,11 @@ def test_a_draft_stays_on_this_computer_until_published(data, tmp_path):
     assert not (data / COURSE / paths.GRADING_SKILLS).exists() and S.all_packages() == []
     published = S.build("3438638", install_to=tmp_path / "skills")
     assert S.all_packages() == [Path(published["package"])]
+
+
+def test_the_front_matter_is_valid_yaml(data, tmp_path):
+    yaml = pytest.importorskip("yaml")
+    S.build("3438638", install_to=tmp_path / "skills")
+    md = (tmp_path / "skills" / "grade-linear-1" / "SKILL.md").read_text(encoding="utf-8")
+    front = yaml.safe_load(md.split("---\n")[1])
+    assert front["name"] == "grade-linear-1" and "Not for other assignments: each" in front["description"]
