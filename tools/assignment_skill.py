@@ -1,27 +1,30 @@
-"""A grading skill for one assignment, built from its approved rubric: the weekly step of the rubric team
-(the skill .claude/skills/grading-skill-maker runs it; decided at the meeting of 2026-11-15: "a grading skill per assignment").
+"""A grading skill per rubric: the grading skeleton with one assignment's rubric dressed on it.
 
-    python tools/assignment_skill.py build <moodle id> [--name grade-linear-1] [--by <who>] [--triggers "..."]
-                                        builds <course>/Grading skills/<name>/ in the data folder and installs it here
-    python tools/assignment_skill.py check <moodle id>     is its skill there, and does it still match the rubric?
-    python tools/assignment_skill.py list                  every assignment's grading skill and whether it fell behind
-    python tools/assignment_skill.py install               copies every assignment's skill from the data folder into
-                                                           ~/.claude/skills (only new or changed ones; the dashboard
-                                                           does this at every start, dashboard/skills.py)
+    skeleton (grading/skill/SKILL.md + the grading engine, the same in every grading skill)
+  + rubric of assignment X (frozen when the TA approved it)
+  = grade-<course>-<N>: a self-contained skill that grades only X
 
-What a skill holds (and nothing else; never a submission, a grade or the key):
-  SKILL.md            the assignment's name, its questions and points, the phrases that start it, and the steps: grade
-                      with exercise-grader (the system's own grading code, on every teammate's computer) with this
-                      skill's copy of the grading material as the rubric
-  assignment/         a frozen copy of exactly what the system's grading reads from the assignment folder:
-                      Assignment details.json, the files of פדגוגי that grading sends (grade.pedagogy_files), the
-                      official key (Official key/, Official key.txt) and Official solution.pdf
-  MANIFEST.json       which assignment, who built it and when, and the sha256 of every copied file, so a skill whose
-                      rubric changed since is found (`check`, `list`)
+The skeleton is what tools/extract_skill.py builds for exercise-grader: the steps of SKILL.md and the system's own
+grading code (grading/ and the core it needs). Its SKILL.md marks the places that belong to the rubric with
+<!-- rubric-slot: <name> --> ... <!-- /rubric-slot -->; exercise-grader keeps what is there (the user brings a rubric in
+any format), a skill for rubric X gets SLOTS below (the rubric is built in). Everything else is the skeleton, word for
+word, so a lesson learned in grading reaches every rubric's skill.
 
-So the skill grades exactly like the system did on the day it was built, by anyone, without passing the rubric around;
-when the rubric changes, the skill is built again (the same name, a new version). The rubric is the one source: a
-grading instruction belongs in the rubric (rubric-builder), never only in the skill.
+Two halves, kept apart on purpose:
+  the rubric package   <course>/Grading skills/<name>/ in the shared folder: assignment/ (a frozen copy of exactly what
+                       grading reads from the assignment folder: Assignment details.json, the פדגוגי files grading sends,
+                       the official key, Official solution.pdf) and MANIFEST.json (name, version, who, when, triggers,
+                       sha256 per file). Written only by `build`, after the TA's "מאושר" (the grading-skill-maker skill)
+  the skill            ~/.claude/skills/<name>/ on each computer: assembled there from that computer's skeleton and the
+                       package (`install`, also by the dashboard at every start). A newer skeleton (a fix in marking, a
+                       new rule of the grader) reaches every rubric's skill by itself; the rubric changes only by `build`
+
+    python tools/assignment_skill.py build <moodle id> [--draft] [--name grade-linear-1] [--by <who>] [--triggers "..."]
+    python tools/assignment_skill.py check <moodle id>     the rubric changed since the package was built?
+    python tools/assignment_skill.py list                  every package, its version, up to date or behind
+    python tools/assignment_skill.py install               assemble every package into ~/.claude/skills (new or changed)
+
+Never in a package or a skill: a submission, a grade, a name or the key table.
 """
 from __future__ import annotations
 
@@ -31,6 +34,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -40,13 +44,34 @@ if __package__ in (None, ""):  # run as a script: python tools/assignment_skill.
 
 from grading import grade, one_submission  # noqa: E402
 from moodle import paths  # noqa: E402
+from tools import extract_skill  # noqa: E402
 
-KIND = "assignment-grading-skill"   # the MANIFEST mark: install and replace only skills that carry it
+KIND = "assignment-grading-skill"   # the MANIFEST mark: install and replace only what carries it
 MANIFEST = "MANIFEST.json"
-SNAPSHOT = "assignment"             # the copy of the grading material, inside the skill
-GRADER = "exercise-grader"          # the skill that grades (grading/skill/SKILL.md), installed by the dashboard
+SNAPSHOT = "assignment"             # the rubric, inside the package and inside the skill
+SKELETON = "grading"                # the part whose skill is the skeleton (exercise-grader)
 COURSE_SHORT = {"Linear Algebra": "linear", "Discrete Mathematics": "discrete"}
 COURSE_HE = {"Linear Algebra": "אלגברה לינארית", "Discrete Mathematics": "מתמטיקה בדידה"}
+_SLOT = re.compile(r"<!-- rubric-slot: ([a-z-]+) -->\n(.*?)\n<!-- /rubric-slot -->\n?", re.S)
+
+# What a rubric's skill says in each slot of the skeleton (grading/skill/SKILL.md). {id} is the Moodle id
+SLOTS = {
+    "install": "",
+    "ask": ("2. **The rubric is built into this skill:** `<skill>\\" + SNAPSHOT + "`, the assignment's approved rubric, "
+            "frozen when it was approved (with the official key and the solutions, if the assignment has them). Never "
+            "ask for a rubric. If the user attaches another one, say that this assignment has an approved rubric in "
+            "the skill and ask which to grade by; grade by another only on their word, then as exercise-grader does.\n"
+            "3. **The work is of this assignment.** If its pages plainly answer other questions, say so before grading."),
+    "rubric": ("The rubric is the folder `<skill>\\" + SNAPSHOT + "` (use its absolute path): an assignment folder with "
+               "`Assignment details.json` and `פדגוגי\\`, read exactly as the system reads the real one. Wherever a "
+               "command below takes the rubric (`rubric`, `mark`), pass that folder. Never write a `rubric.json` by hand."),
+    "current": ("## Keeping it current\n\n"
+                "This skill = the grading skeleton of this computer + the rubric package "
+                "`<course>\\" + paths.GRADING_SKILLS + "\\<name>` in the shared folder. The system assembles it again at "
+                "every start when either changed (`dashboard/skills.py`). A rubric that changed after approval is built "
+                "again by the rubric team (`grading-skill-maker`); in the repo, `python tools/assignment_skill.py check "
+                "{id}` says whether it fell behind."),
+}
 
 
 def _sha(p: Path) -> str:
@@ -87,7 +112,7 @@ def sources(folder: Path) -> dict[str, Path]:
     return out
 
 
-def skills_dir_of(folder: Path) -> Path:
+def packages_dir_of(folder: Path) -> Path:
     return Path(folder).parent / paths.GRADING_SKILLS
 
 
@@ -104,70 +129,32 @@ def _clean(text: str) -> str:
     return " ".join(str(text or "").split())
 
 
-def skill_md(name: str, folder: Path, rubric: dict, info: dict, triggers: list[str], built: dict) -> str:
-    course = folder.parent.name
-    course_he = COURSE_HE.get(course, course)
-    slot = _slot(folder)
-    title = _clean(info.get("hebrew_title") or info.get("title") or rubric.get("title") or folder.name)
-    phrases = [f"תבדוק עבודה של הגשה {slot} ב{course_he}", f"בדיקה של {title}",
-               f"תבדוק לפי המחוון של הגשה {slot}"] if slot is not None else [f"בדיקה של {title}"]
-    phrases += [t for t in triggers if t not in phrases]
-    quoted = ", ".join(f'"{p}"' for p in phrases)
-    description = (f"Grade a student's submission of {course_he}, {title} (Moodle id {info.get('id')}), with this "
-                   f"assignment's rubric already inside, and return the marked PDF like the system does. "
-                   f"Use when someone sends a work of this assignment and says {quoted}, or a work and names this "
-                   f"assignment. Needs the {GRADER} skill (every computer that runs the system has it). "
-                   f"Not for other assignments: each one has its own grade-<course>-<N> skill.")
-    rows = "\n".join(f"| {q['label']} | {q['points']:g} |" for q in rubric["questions"])
-    approved = {True: "מאושר", False: "לא כתוב מאושר ביומן המחוון", None: "אין יומן מחוון"}[built["approved"]]
-    return f"""---
-name: {name}
-description: {description}
-model: {grade.DEFAULT_MODEL}
-effort: {grade.EFFORT}
----
+def _manifest(folder: Path) -> dict | None:
+    try:
+        m = json.loads((Path(folder) / MANIFEST).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return m if isinstance(m, dict) and m.get("kind") == KIND else None
 
-# בדיקת {title} ({course_he})
 
-סקיל הבדיקה של המטלה הזאת בלבד. נבנה ב-{built['built_at'][:16].replace('T', ' ')} על ידי {built['built_by']} מהמחוון
-של המטלה ({approved}), עם `tools/assignment_skill.py` של בודק חכם. אף אחד לא כותב את הקובץ הזה ביד: מחוון שהשתנה
-= בונים את הסקיל שוב (הסקיל `grading-skill-maker`).
+def _rmtree(folder: Path) -> None:
+    """Removes a folder whose files may be read-only (OneDrive marks folders read-only)."""
+    def writable(func, path, _exc):
+        os.chmod(path, stat.S_IRWXU)
+        func(path)
+    shutil.rmtree(folder, onexc=writable) if sys.version_info >= (3, 12) else shutil.rmtree(folder, onerror=writable)
 
-`<skill>` למטה היא התיקייה של הסקיל הזה, `<skill>\\{SNAPSHOT}` היא המחוון: עותק קפוא של כל מה שהמערכת קוראת מתיקיית
-המטלה כשהיא בודקת (`Assignment details.json`, הקבצים של פדגוגי שנשלחים לבדיקה, המכוון והפתרון הרשמי). לכן לא מבקשים
-מהמשתמש מחוון, ולא מחפשים מחוון אחר.
 
-## השאלות והניקוד
-
-| שאלה | נקודות |
-|---|---|
-{rows}
-
-סה"כ {rubric['total_points']:g}, ציון מתוך {rubric['max_grade']:g}.
-
-## איך בודקים
-
-1. **מצא את סקיל הבדיקה של המערכת**: `<home>\\.claude\\skills\\{GRADER}\\SKILL.md` (`Path.home()`). אם הוא חסר, אמור
-   למשתמש שצריך את המערכת פועלת במחשב (`start.bat`, היא מתקינה אותו בכל הפעלה) או את `{GRADER}.zip` מהצוות, ועצור.
-2. **קרא את `{GRADER}\\SKILL.md` ועבוד לפיו, צעד אחרי צעד**, עם שני שינויים בלבד:
-   - **המחוון** בכל מקום שבו הוא מבקש מחוון (`rubric`, `mark`) הוא התיקייה `<skill>\\{SNAPSHOT}`, כנתיב מלא. לא שואלים
-     על מחוון, ולא כותבים `rubric.json` ביד. אם המשתמש צירף מחוון אחר, אמור שלמטלה הזאת יש מחוון מאושר בסקיל ושאל
-     באיזה לבדוק.
-   - **העבודה** היא של המטלה הזאת. אם ברור מהעמודים שזו מטלה אחרת (שאלות אחרות), אמור את זה לפני שבודקים.
-3. כל השאר בדיוק כמו ב-`{GRADER}`: עברית, בלי שמות ות"ז, הפלט בתיקייה `עבודות בדוקות` בשולחן העבודה.
-
-## הסקיל הזה עדכני?
-
-בכל מחשב שמריץ את המערכת, השרת מעתיק בכל הפעלה את הסקילים של כל המטלות מהתיקייה המשותפת
-(`<course>\\{paths.GRADING_SKILLS}\\`), ורק כשמשהו השתנה. בבדיקה ידנית, מתוך תיקיית הקוד:
-`python tools/assignment_skill.py check {info.get('id')}` אומר אם המחוון השתנה מאז שהסקיל נבנה.
-"""
+# ---------- the rubric package (shared folder) ----------
+DRAFTS = Path.home() / ".grading-skill-drafts"  # a draft's package: this computer only, never the shared folder
 
 
 def build(assignment_id: str, name: str | None = None, by: str | None = None, triggers: list[str] | None = None,
-          install_to: Path | None = None) -> dict:
-    """Builds the assignment's grading skill in <course>/Grading skills/<name>/ and installs it in `install_to`
-    (default ~/.claude/skills). Refuses an assignment whose rubric is missing points for a question."""
+          install_to: Path | None = None, draft: bool = False, drafts: Path | None = None) -> dict:
+    """Freezes the assignment's rubric into <course>/Grading skills/<name>/ and assembles the skill on this computer
+    (`install_to`, default ~/.claude/skills). Refuses a rubric without points for every question, and a copy that would
+    not grade exactly like the assignment folder. `draft`: the package goes to ~/.grading-skill-drafts/ (this computer
+    only), for the calibration round before the team gets it; the same build without it publishes."""
     folder = paths.assignment_dir(assignment_id)
     name = name or default_name(folder)
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,62}", name):
@@ -183,20 +170,25 @@ def build(assignment_id: str, name: str | None = None, by: str | None = None, tr
         raise SystemExit("no points for: " + (", ".join(missing) or "any question") + " (fix the rubric first)")
     info = paths.read_info(folder)
     files = sources(folder)
-    dest = skills_dir_of(folder) / name
+    dest = (Path(drafts) if drafts else DRAFTS) / name if draft else packages_dir_of(folder) / name
     old = _manifest(dest)
     if dest.exists() and any(dest.iterdir()) and old is None:
         raise SystemExit(f"{dest} exists and was not built by this tool: not touching it")
-    built = {"kind": KIND, "skill": name, "assignment_id": str(info.get("id")),
-             "assignment": f"{folder.parent.name}/{folder.name}",
-             "version": (old or {}).get("version", 0) + 1,
-             "built_at": datetime.now().isoformat(timespec="seconds"),
-             "built_by": by or os.environ.get("GRADER_NAME") or os.environ.get("USERNAME") or os.environ.get("USER") or "?",
-             "approved": _approved(folder), "total_points": rubric["total_points"],
-             "files": {rel: _sha(f) for rel, f in files.items()}}
+    slot = _slot(folder)
+    title = _clean(info.get("hebrew_title") or info.get("title") or folder.name)
+    course_he = COURSE_HE.get(folder.parent.name, folder.parent.name)
+    phrases = ([f"תבדוק עבודה של הגשה {slot} ב{course_he}", f"תבדוק לפי המחוון של הגשה {slot}"] if slot is not None
+               else []) + [f"בדיקה של {title}"]
+    phrases += [t for t in (triggers or []) if t and t not in phrases]
+    manifest = {"kind": KIND, "skill": name, "assignment_id": str(info.get("id")),
+                "assignment": f"{folder.parent.name}/{folder.name}", "title": title, "course": course_he,
+                "triggers": phrases, "version": (old or {}).get("version", 0) + 1,
+                "built_at": datetime.now().isoformat(timespec="seconds"),
+                "built_by": by or os.environ.get("GRADER_NAME") or os.environ.get("USERNAME") or os.environ.get("USER") or "?",
+                "approved": _approved(folder), "files": {rel: _sha(f) for rel, f in files.items()}}
     tmp = dest.with_name(dest.name + ".tmp")
     if tmp.exists():
-        shutil.rmtree(tmp)
+        _rmtree(tmp)
     for rel, f in files.items():
         target = tmp / SNAPSHOT / rel
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -208,94 +200,127 @@ def build(assignment_id: str, name: str | None = None, by: str | None = None, tr
     d["title"] = d.get("title") or folder.name
     d["course_title"] = d.get("course_title") or folder.parent.name
     snap_info.write_text(json.dumps(d, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
-    (tmp / "SKILL.md").write_text(skill_md(name, folder, rubric, info, triggers or [], built), encoding="utf-8")
-    (tmp / MANIFEST).write_text(json.dumps(built, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    (tmp / MANIFEST).write_text(json.dumps(manifest, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
     same = one_submission.rubric(tmp / SNAPSHOT)
     if same["context"] != rubric["context"] or same["questions"] != rubric["questions"]:
-        shutil.rmtree(tmp)
+        _rmtree(tmp)
         raise SystemExit("the copy does not grade like the assignment folder (context differs): nothing written")
     if dest.exists():
-        shutil.rmtree(dest)
+        _rmtree(dest)
     tmp.rename(dest)
-    out = {"skill": name, "path": str(dest), "version": built["version"], "files": len(files),
-           "questions": rubric["questions"], "total_points": rubric["total_points"], "approved": built["approved"]}
-    out["installed"] = install_one(dest, _skills_home(install_to))
-    return out
+    return {"skill": name, "package": str(dest), "version": manifest["version"], "files": len(files),
+            "questions": rubric["questions"], "total_points": rubric["total_points"],
+            "approved": manifest["approved"], "draft": draft, "installed": install_one(dest, install_to)}
 
 
-def _manifest(skill_dir: Path) -> dict | None:
-    try:
-        m = json.loads((Path(skill_dir) / MANIFEST).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    return m if isinstance(m, dict) and m.get("kind") == KIND else None
-
-
-def stale(skill_dir: Path) -> list[str]:
-    """What changed in the assignment folder since the skill was built: files whose bytes differ, are gone, or are new
-    (a new file in פדגוגי, a key uploaded since). Empty = the skill grades like the system does today."""
-    m = _manifest(skill_dir)
+def stale(package: Path) -> list[str]:
+    """What changed in the assignment folder since the package was built: files whose bytes differ, are gone, or are
+    new (a new file in פדגוגי, a key uploaded since). Empty = the package grades like the system does today."""
+    m = _manifest(package)
     if m is None:
-        raise SystemExit(f"{skill_dir} is not an assignment grading skill")
+        raise SystemExit(f"{package} is not a rubric package")
     folder = paths.assignment_dir(m["assignment_id"])
     now = {rel: _sha(f) for rel, f in sources(folder).items()}
     return sorted(rel for rel in set(now) | set(m["files"]) if now.get(rel) != m["files"].get(rel))
 
 
-def all_skills(data: Path | None = None) -> list[Path]:
+def all_packages(data: Path | None = None) -> list[Path]:
     root = Path(data) if data else paths.data_dir()
     return sorted(p.parent for p in root.glob(f"*/{paths.GRADING_SKILLS}/*/{MANIFEST}") if _manifest(p.parent))
 
 
-def _skills_home(skills: Path | None) -> Path:
-    return Path(skills) if skills else Path.home() / ".claude" / "skills"
+# ---------- the skill (this computer) = skeleton + package ----------
+def skeleton_md() -> str:
+    return (extract_skill.skill_source(SKELETON) / "SKILL.md").read_text(encoding="utf-8")
 
 
-def install_one(src: Path, skills: Path | None = None) -> str:
-    """Copies one built skill into the skills folder: "installed", "updated", "up_to_date", or "kept" when a skill of
+def slots(text: str) -> list[str]:
+    return [m.group(1) for m in _SLOT.finditer(text)]
+
+
+def skill_md(package: Path) -> str:
+    """The skill's SKILL.md: a header from the rubric, then the skeleton's own text with its rubric slots filled."""
+    m = _manifest(package)
+    body = skeleton_md()
+    names = slots(body)
+    if sorted(names) != sorted(SLOTS):
+        raise SystemExit(f"the skeleton's rubric slots are {names}, this tool fills {sorted(SLOTS)}: update SLOTS")
+    body = body.split("\n---\n", 1)[1] if body.startswith("---\n") else body  # the skeleton's own front matter goes
+    body = _SLOT.sub(lambda s: (SLOTS[s.group(1)].format(id=m["assignment_id"]) + "\n") if SLOTS[s.group(1)] else "", body)
+    body = re.sub(r"^# .*$", f"# בדיקת {m['title']} ({m['course']}): השלד של הבדיקה עם המחוון של המטלה", body, count=1,
+                  flags=re.M)
+    rubric = one_submission.rubric(Path(package) / SNAPSHOT)
+    rows = "\n".join(f"| {q['label']} | {q['points']:g} |" for q in rubric["questions"])
+    quoted = ", ".join(f'"{p}"' for p in m["triggers"])
+    approved = {True: "approved (מאושר)", False: "NOT marked מאושר in the rubric's changelog", None: "no changelog"}[m["approved"]]
+    description = (f"Grade a student's work of {m['course']}, {m['title']} (Moodle id {m['assignment_id']}), by this "
+                   f"assignment's own rubric, built in, and return the marked PDF exactly like the system does. Use when "
+                   f"someone sends a work of this assignment and says {quoted}, or names this assignment. Not for other "
+                   f"assignments: each has its own grade-<course>-<N> skill; exercise-grader grades with a rubric the "
+                   f"user brings.")
+    head = (f"---\nname: {m['skill']}\ndescription: {description}\nmodel: {grade.DEFAULT_MODEL}\neffort: {grade.EFFORT}\n---\n\n"
+            f"> **The rubric of this skill:** {m['assignment']}, version {m['version']}, frozen {m['built_at'][:16].replace('T', ' ')} "
+            f"by {m['built_by']} ({approved}). Total {rubric['total_points']:g} points, grade out of {rubric['max_grade']:g}.\n>\n"
+            f"> | שאלה | נקודות |\n> |---|---|\n" + "\n".join("> " + r for r in rows.splitlines()) + "\n\n")
+    return head + body.lstrip("\n")
+
+
+def _ours(dest: Path) -> bool:
+    return _manifest(dest) is not None
+
+
+def up_to_date(package: Path, dest: Path) -> bool:
+    """The skill holds this package's rubric and this computer's skeleton, as they are now."""
+    there, mine = _manifest(dest), _manifest(package)
+    if not there or not mine or {k: there.get(k) for k in ("version", "built_at", "files")} != \
+            {k: mine.get(k) for k in ("version", "built_at", "files")}:
+        return False
+    try:
+        if extract_skill.stale(dest) or (dest / "scripts" / "run.py").read_text(encoding="utf-8") != \
+                extract_skill.RUN.format(part=SKELETON):
+            return False
+        return (dest / "SKILL.md").read_text(encoding="utf-8") == skill_md(package)
+    except (OSError, ValueError, KeyError):
+        return False
+
+
+def install_one(package: Path, skills: Path | None = None) -> str:
+    """Assembles one package into the skills folder: "installed", "updated", "up_to_date", or "kept" when a skill of
     that name there was not built by this tool (never touched)."""
-    src, skills = Path(src), _skills_home(skills)
-    dest = skills / src.name
-    there = _manifest(dest)
-    if dest.exists() and any(dest.iterdir()) and there is None:
+    package = Path(package)
+    skills = Path(skills) if skills else Path.home() / ".claude" / "skills"
+    dest = skills / package.name
+    if dest.exists() and any(dest.iterdir()) and not _ours(dest):
         return "kept"
-    mine = _manifest(src)
-    if there and mine and there.get("built_at") == mine.get("built_at") and there.get("files") == mine.get("files") \
-            and (dest / "SKILL.md").is_file() and (dest / "SKILL.md").read_bytes() == (src / "SKILL.md").read_bytes():
+    if dest.exists() and up_to_date(package, dest):
         return "up_to_date"
     action = "updated" if dest.exists() else "installed"
-    tmp = skills / (src.name + ".tmp")
+    tmp = skills / (package.name + ".tmp")
     if tmp.exists():
-        shutil.rmtree(tmp)
-    shutil.copytree(src, tmp, copy_function=shutil.copyfile)  # no copystat: OneDrive marks folders read-only
+        _rmtree(tmp)
+    skills.mkdir(parents=True, exist_ok=True)
+    extract_skill.build(SKELETON, tmp)                     # the skeleton: SKILL.md's steps and the grading engine
+    shutil.copytree(package / SNAPSHOT, tmp / SNAPSHOT, copy_function=shutil.copyfile)   # the rubric, frozen
+    (tmp / MANIFEST).write_bytes((package / MANIFEST).read_bytes())
+    (tmp / "SKILL.md").write_text(skill_md(package), encoding="utf-8")
+    for extra in ("install.ps1",):                         # the skeleton's ZIP installer belongs to exercise-grader
+        if (tmp / "scripts" / extra).is_file():
+            (tmp / "scripts" / extra).unlink()
     if dest.exists():
-        _clear(dest)
-        dest.rmdir()
+        _rmtree(dest)
     tmp.rename(dest)
     return action
 
 
-def _clear(folder: Path) -> None:
-    import stat
-    for root, dirs, names in os.walk(folder, topdown=False):
-        for n in names:
-            p = os.path.join(root, n)
-            os.chmod(p, stat.S_IREAD | stat.S_IWRITE)
-            os.unlink(p)
-        for d in dirs:
-            p = os.path.join(root, d)
-            os.chmod(p, stat.S_IRWXU)
-            os.rmdir(p)
-
-
 def install_all(skills: Path | None = None, data: Path | None = None) -> list[dict]:
-    """Every assignment's grading skill from the data folder into ~/.claude/skills, only when new or changed."""
+    """Every rubric package of the data folder, assembled into ~/.claude/skills when new or changed."""
     out = []
-    for src in all_skills(data):
+    home = Path(skills) if skills else Path.home() / ".claude" / "skills"
+    for package in all_packages(data):
         try:
-            out.append({"skill": src.name, "action": install_one(src, skills), "path": str(_skills_home(skills) / src.name)})
-        except OSError as e:
-            out.append({"skill": src.name, "action": "error", "error": str(e)})
+            out.append({"skill": package.name, "action": install_one(package, skills), "path": str(home / package.name)})
+        except (OSError, SystemExit) as e:
+            out.append({"skill": package.name, "action": "error", "error": str(e)})
     return out
 
 
@@ -303,37 +328,37 @@ def main(argv: list[str] | None = None) -> int:
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8")
-    p = argparse.ArgumentParser(prog="python tools/assignment_skill.py", description="A grading skill per assignment")
+    p = argparse.ArgumentParser(prog="python tools/assignment_skill.py", description="A grading skill per rubric")
     sub = p.add_subparsers(dest="cmd", required=True)
     b = sub.add_parser("build")
     b.add_argument("id")
     b.add_argument("--name")
     b.add_argument("--by")
     b.add_argument("--triggers", action="append", default=[], help="another phrase that starts the skill")
+    b.add_argument("--draft", action="store_true", help="this computer only, for the calibration round")
     c = sub.add_parser("check")
     c.add_argument("id")
     sub.add_parser("list")
     sub.add_parser("install")
     a = p.parse_args(argv)
     if a.cmd == "build":
-        print(json.dumps(build(a.id, a.name, a.by, a.triggers), ensure_ascii=False, indent=1))
+        print(json.dumps(build(a.id, a.name, a.by, a.triggers, draft=a.draft), ensure_ascii=False, indent=1))
         return 0
     if a.cmd == "check":
-        folder = paths.assignment_dir(a.id)
-        found = [s for s in all_skills() if _manifest(s)["assignment_id"] == str(paths.read_info(folder).get("id"))]
+        want = str(paths.read_info(paths.assignment_dir(a.id)).get("id"))
+        found = [s for s in all_packages() if _manifest(s)["assignment_id"] == want]
         if not found:
             print("no grading skill for this assignment yet")
             return 1
         rc = 0
         for s in found:
-            behind = stale(s)
-            m = _manifest(s)
+            behind, m = stale(s), _manifest(s)
             print(f"{s.name}  v{m['version']}  built {m['built_at']} by {m['built_by']}: "
                   + ("up to date" if not behind else "the rubric changed since: " + ", ".join(behind)))
             rc = rc or (1 if behind else 0)
         return rc
     if a.cmd == "list":
-        for s in all_skills():
+        for s in all_packages():
             m = _manifest(s)
             try:
                 state = "up to date" if not stale(s) else "behind the rubric"

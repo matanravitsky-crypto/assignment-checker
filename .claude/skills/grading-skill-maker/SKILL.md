@@ -1,83 +1,97 @@
 ---
 name: grading-skill-maker
-description: Build the grading skill of one assignment from its approved rubric (מחוון), so the whole team can grade that assignment's works with one sentence and without passing the rubric around - the rubric team's weekly step, right after rubric-builder's "מאושר". Use when someone says "תכין סקיל בדיקה להגשה X", "סקיל בדיקה לדף X", "תבנה סקיל למטלה", "המחוון מאושר, תעשה ממנו סקיל", "תעדכן את סקיל הבדיקה", "המחוון השתנה", "איזה סקילי בדיקה יש", "grading skill for assignment N". Not for building the rubric itself (rubric-builder) or for grading (exercise-grader, or the assignment's own grade-<course>-<N> skill).
+description: Turn an approved rubric (מחוון) into the assignment's own grading skill - dress the rubric on the grading skeleton, run it on a few real works, run an improvement round (what to fix in the rubric, what in the grading), and only then publish it to the whole team, before it grades ~1,100 works. The rubric team's weekly step after rubric-builder's "מאושר". Use when someone says "תכין סקיל בדיקה להגשה X", "סקיל בדיקה לדף X", "המחוון מאושר, תעשה ממנו סקיל", "תלביש את המחוון על השלד", "מקצה שיפורים לבדיקה", "תעדכן את סקיל הבדיקה", "המחוון השתנה", "איזה סקילי בדיקה יש", "grading skill for assignment N". Not for building the rubric (rubric-builder) or for grading itself (the assignment's grade-<course>-<N> skill, or exercise-grader).
 ---
 
-# Grading-skill maker: one grading skill per assignment, every week
+# Grading-skill maker: skeleton + rubric = the skill that grades rubric X
 
-Decided at the team meeting of 2026-11-15: each assignment gets its own grading skill, built from its rubric. The
-rubric team builds the rubric with `rubric-builder`; once the TA says "מאושר", this skill turns it into
-`grade-<course>-<N>` (say `grade-linear-1`), which every teammate's Claude then uses when someone says
-"תבדוק עבודה של הגשה 1 בלינארית" and drops a work in.
+**The model (Ori, 2026-11-26):** one **skeleton** for every grading skill, a **rubric** dressed on it, and the result,
+`grade-<course>-<N>`, is a self-contained skill that grades only that rubric.
+- **The skeleton** = the system's grading, everything learned so far: the steps of `grading/skill/SKILL.md` (the same
+  file exercise-grader is built from) and the grading engine itself (`grading/` and the core it needs: page images
+  with the grid, the grading rules and the answer's schema, the zoom pass, the marked PDF, the summary page, the
+  manual-review threshold, privacy). Nothing in it belongs to one assignment.
+- **The rubric** = what the grading reads from the assignment folder (`Assignment details.json`, the files of
+  `פדגוגי` that grading sends, the official key, the official solution), frozen when it is built.
+- `SKILL.md` of the skeleton marks the places that belong to the rubric (`<!-- rubric-slot: ... -->`): "bring a
+  rubric" becomes "the rubric is built in". Every other line of the skeleton is in the skill word for word, and the
+  engine's files are byte-identical (`tests/skills/test_assignment_skill.py` checks both).
+- **The rubric is frozen; the skeleton is not.** The shared folder holds only the rubric package
+  (`<course>\Grading skills\<name>\`); every computer assembles the skill from its own skeleton at the system's start.
+  A fix in the grading (G items below) reaches every rubric's skill by itself; a rubric changes only through a new build.
 
-**Talk to the user in Hebrew.** Never open `Key - number to student.csv`, never print names or ID numbers.
+All of it is `tools/assignment_skill.py` in this repo. **Talk to the user in Hebrew.** Never open
+`Key - number to student.csv`, never print names or ID numbers. Run commands from the repo's root.
 
-## How it works (say it in two sentences if the user asks)
+## Why the round: 1,100 works
 
-`tools/assignment_skill.py` (in this repo) does all the building; you only check, ask and report:
-- The new skill holds a **frozen copy of exactly what the system's grading reads** from the assignment folder
-  (`Assignment details.json`, the files of `פדגוגי` that grading sends, the official key, `Official solution.pdf`),
-  plus a `SKILL.md` that says: grade with `exercise-grader` (the system's own grading code, on every computer that
-  runs the system), with this copy as the rubric. Before writing, the tool checks that the copy gives the grading the
-  same text and the same points as the folder itself, and refuses otherwise.
-- It is saved in the shared folder, `<course>\Grading skills\<name>\`, and installed on this computer. **Every
-  teammate's computer copies it by itself** at the next start of the system (`dashboard/skills.py`), or now with
-  `python tools/assignment_skill.py install`.
-- **The rubric is the one source.** A grading instruction for this assignment ("in 11ג accept also X") goes into the
-  rubric through `rubric-builder`, never only into the skill: otherwise the site's grading and the skill would grade
-  differently. After the rubric changes, build the skill again (same name, next version).
+One assignment of Linear Algebra is ~1,100 works, at $0.36-1.2 a work by earlier measurements (Opus grading + the zoom
+pass; the run's `usage.jsonl` gives this rubric's real number): what is wrong in
+the rubric or the grading is wrong 1,100 times, and the manual queue may hold only ~5-6% (55-65 works). So the skill
+goes to the team only after it graded a few real works and the round found nothing left to fix.
 
-## Step 1: which assignment
+## Step 1: which rubric, and is it ready (in one message, side by side)
 
-From the user's words ("הגשה 1 בלינארית", "דף תרגילים 3", a Moodle id): `python -m moodle list` shows every
-assignment with its id. "דף X" → the assignment whose `questions` in `Assignment details.json` name that sheet. Two
-match, or none → ask; never guess. Run every command from the repo's root (this checkout).
-
-## Step 2: is the rubric ready (in one message, side by side)
-
+From the user's words ("הגשה 1 בלינארית", "דף 3", a Moodle id); `python -m moodle list` shows every assignment and
+its id; "דף X" → the assignment whose `questions` name that sheet. Two or none → ask.
 - `python tools/assignment_skill.py check <id>`: is there a skill already, and is it behind the rubric?
 - `python -c "from moodle import paths; from grading import one_submission as o; import json; r=o.rubric(paths.assignment_dir('<id>')); print(json.dumps({k: r[k] for k in ('title','max_grade','total_points','questions','official_key')}, ensure_ascii=False))"`
-  (the questions and points exactly as the grading sees them; an error = no rubric with points)
-- read the last 15 lines of `<assignment>\פדגוגי\Working notes\Rubric PDF changelog.md`, if it exists.
+- the last 15 lines of `<assignment>\פדגוגי\Working notes\Rubric PDF changelog.md`, if it exists.
 
-Then:
-- **No rubric, or a question without points:** say which, and that the rubric comes first (`rubric-builder`). Stop.
-- **The changelog doesn't say "מאושר"** (or there is none): show the points table and ask "המחוון מאושר לבדיקה?".
-  Build only after a yes from the user in this chat.
-- **A skill already exists and is up to date:** say so (name, version, date, by whom) and stop, unless the user asks
-  to build again anyway.
-- Show the user one short table (שאלה | נקודות, and the total) before building.
+No rubric or a question without points → say which; the rubric comes first (`rubric-builder`). Stop.
+No "מאושר" in the changelog → show the points table and ask "המחוון מאושר לבדיקה?"; go on only after a yes.
+Show the user one short table (שאלה | נקודות, total).
 
-## Step 3: build
+## Step 2: dress the rubric on the skeleton (a draft, this computer only)
 
-`python tools/assignment_skill.py build <id> --by "<the user's GRADER_NAME, or their name>"`
-- The name is `grade-<course>-<N>` by itself (`linear`, `discrete`); `--name` only when the user asks for another.
-- `--triggers "<phrase>"` (repeatable) adds phrases that start the skill, beyond the defaults ("תבדוק עבודה של הגשה N
-  ב<course>", "בדיקה של <title>", "תבדוק לפי המחוון של הגשה N"): add the ones the user uses, e.g. the sheet's
-  name ("דף וקטורים").
-- It prints the skill's folder, its version, the questions and whether it was installed here.
+`python tools/assignment_skill.py build <id> --draft --by "<GRADER_NAME or the user's name>" [--triggers "<phrase>"]`
+- The package goes to `~/.grading-skill-drafts\<name>`, never the shared folder; the skill is assembled into this
+  computer's `~/.claude/skills\<name>`. The team sees nothing yet.
+- The build refuses a copy that would not grade exactly like the assignment folder (the same text and points reach
+  the grading), so the run below, on the assignment folder, is the run of this skill.
+- `--triggers` adds the phrases the user uses ("דף וקטורים"); the defaults are "תבדוק עבודה של הגשה N ב<course>",
+  "תבדוק לפי המחוון של הגשה N", "בדיקה של <title>".
 
-## Step 4: try it (only if the user wants, and on as many works as the user says)
+## Step 3: run it (the calibration run)
 
-Ask: "לנסות את הסקיל על עבודה אחת או שתיים לפני שמפרסמים לצוות? כמה?". The number is the user's call; never pick
-works or a sample on your own. Grade the works they name (a number in `1 - Submissions to grade`, or a file they
-drop in) **following the new skill's own `SKILL.md`** (at `<home>\.claude\skills\<name>\SKILL.md`), exactly as a
-teammate's Claude would. Report the grade and points per question next to what the site's grading gave the same
-work, if it has one (`python -c "from moodle import grades, paths; print(grades.read(paths.assignment_dir('<id>')).get('<number>'))"`:
-the merged grade row of that number only), and the path of the marked PDF. A difference that comes from the rubric → back to `rubric-builder`, then build again.
+Ask once: "על כמה עבודות להריץ את מקצה השיפורים?" (with the cost range above). **The number is the user's** (never pick a
+sample size yourself); 10-20 is what earlier rounds used. Then, saved nowhere in the shared folder:
+```
+python ".claude/skills/meta-evaluator/scripts/offline.py" <id> --round calibrate-<name>-v<version> --n <N>
+```
+It grades with the skeleton's engine and this rubric into `~/.meta-eval/<id>/<round>/` only, spread over submission
+sizes, and proves with a fingerprint that the shared folder did not change. Report: the grades, how many went to
+manual review (against 5-6%), cost and time per work (`usage.jsonl`), and the marked PDFs' folder.
 
-## Step 5: tell the team
+## Step 4: the improvement round (מקצה שיפורים)
 
-In Hebrew, short: the skill's name, the assignment, the version, the total points, where it is
-(`<course>\Grading skills\<name>`), and the sentence a teammate says to use it
-("תבדוק עבודה של הגשה N ב<course>" + the work). Teammates get it at the next start of the system; a teammate who
-doesn't run the system copies the folder `<course>\Grading skills\<name>` from the shared folder into
-`%USERPROFILE%\.claude\skills\` (it needs `exercise-grader` there too).
+Follow the `meta-evaluator` skill on that round, from its Step 1 (`mechanical`, `render`; skip `sample`) through its
+Step 5: auditors on ~5 works each, a verifier, `targets`, `tally`, then the findings across the works. Its two kinds
+of items map onto the two halves:
+- **R items → the rubric of this assignment** (a missing error row, a row that two readings fit, a deduction that
+  drifts between works, a fixed comment that confuses). They go through `rubric-builder`'s loop (its Step 6), and any
+  change of points only on the TA's word (⚠). Then build the draft again (Step 2): a new version.
+- **G items → the skeleton** (marks in the wrong place, a rule of the grader that misfires, the summary page, cost).
+  Code on a branch with tests and a PR, as meta-evaluator says. Once merged, every rubric's skill gets it.
+- A finding that is about the policy shared by all rubrics (half points, unreadable work, when a person checks) is
+  neither: list it under "החלטות לצוות הפדגוגי" in the report, never change it here.
+
+Then meta-evaluator's bounded loop (its Step 6, at most 3 iterations): re-grade offline only the works the items
+target (`offline.py --numbers ...`), `me.py compare`, keep or undo. A gain counts only above a work's run-to-run spread
+(1-4 points).
+
+## Step 5: the report, then publish
+
+In Hebrew, short: the grades of the run, manual review rate, cost per work and the estimate for the whole assignment
+(works pulled × cost), what the round changed (R and G, before/after), what waits for a word, and the decisions for
+the pedagogical team. Then ask "לפרסם את הסקיל לצוות?". On a yes:
+`python tools/assignment_skill.py build <id> --by "<name>"` (no `--draft`): the package goes to
+`<course>\Grading skills\<name>\` and every teammate's computer assembles it at its next start (or now:
+`python tools/assignment_skill.py install`). Tell the team the sentence that starts it: "תבדוק עבודה של הגשה N ב<course>" + the work.
 
 ## Other requests
-
-- **"איזה סקילי בדיקה יש"**: `python tools/assignment_skill.py list` (name, assignment, version, date, up to date or
-  behind the rubric).
-- **"המחוון השתנה" / "תעדכן את הסקיל"**: Step 2 (check shows which files changed), then Step 3 again.
-- **Delete a skill:** only on the user's explicit word, and only the folder in `<course>\Grading skills\` (each
-  computer keeps its copy until removed by hand from `.claude\skills`). Say that.
+- **"איזה סקילי בדיקה יש"**: `python tools/assignment_skill.py list`.
+- **"המחוון השתנה"**: Step 1 (`check` lists what changed), then Steps 2-5 again; the round may be short (only the works
+  the change touches).
+- **Delete a skill:** only on the user's explicit word, only the package folder in `<course>\Grading skills\`; each
+  computer's copy stays until removed from `.claude\skills` by hand. Say that.

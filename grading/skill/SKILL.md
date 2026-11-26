@@ -18,6 +18,7 @@ grade, pins every mark to the handwriting and draws the marked PDF. Nothing is w
 The model and effort in this file's header (`model`, `effort`) are the system's own (`grading/grade.py`:
 `DEFAULT_MODEL`, `EFFORT`), so every teammate grades with the same Claude, whatever their chat runs on.
 
+<!-- rubric-slot: install -->
 ## Install first, if this came as a ZIP
 
 A teammate may drag `exercise-grader.zip` into the chat together with the work and the rubric, and ask to install
@@ -30,6 +31,7 @@ To get at `install.ps1`, extract the ZIP to a new empty folder under `%TEMP%` fi
 `%USERPROFILE%\.claude\skill-backups\` (never deletes it), extracts the skill and prints the installed path. From then on `<skill>` is that path.
 Then go straight on to step 0 in this same conversation, following this file; don't ask the user to restart.
 Tell them once that in new conversations the skill is there by itself.
+<!-- /rubric-slot -->
 
 **Talk to the user in Hebrew.** Never print, and never write in the feedback or notes, a student's name, ID number
 (ת"ז), email or any other identifying detail, even if it appears in the submission or its file name. When you talk
@@ -38,6 +40,7 @@ about the work, call it "העבודה" or by its number. Never open `Key - numbe
 ## 0. What you need from the user
 
 1. **The submission:** one PDF, or several files of one student (PDF / JPG / PNG, in page order).
+<!-- rubric-slot: ask -->
 2. **The rubric with points for every question - required, in any format:** PDF (typed or scanned), image,
    Word (.docx), Markdown/text (`Rubric.md`), the system's `Assignment details.json`, the assignment's folder in the
    team's OneDrive, or typed in chat. The same for the lecturer's official key (מכוון). Read a PDF or image with the
@@ -47,6 +50,7 @@ about the work, call it "העבודה" or by its number. Never open `Key - numbe
 3. **Optional, and used when given, in any of those formats too:** the official solution, the questions, the
    submission rules, grading instructions from the lecturer, and solution methods (פדגוגי: Solutions.md,
    Solution methods.md...).
+<!-- /rubric-slot -->
 
 Ask only for what's missing, in one message.
 
@@ -63,7 +67,9 @@ tell the user; it can't be fixed from here.
 
 ## 2. The rubric
 
-Make a work folder outside OneDrive: `%TEMP%\exercise-grader\<random>`. The rubric is one of:
+Make a work folder outside OneDrive: `%TEMP%\exercise-grader\<random>`.
+<!-- rubric-slot: rubric -->
+The rubric is one of:
 - **The assignment's folder** (the one with `Assignment details.json`, maybe `פדגוגי\`, `Official key\`,
   `Official solution.pdf`): passed as it is, it is read exactly like the system reads it, and nothing is written there.
 - **The system's `Assignment details.json`**, passed as it is (it reads `rubric`, and `official_key_points` when the
@@ -78,6 +84,7 @@ Make a work folder outside OneDrive: `%TEMP%\exercise-grader\<random>`. The rubr
   Labels and order exactly as in the rubric. `max_grade` default 100. The grade = sum of points / sum of the rubric's
   points × max_grade, rounded (the code computes it, not you). The official key (מכוון) wins: its points per question
   replace the rubric's (or add `"official_key_points": {"<label>": points}`), and its rules win over any rubric or solution.
+<!-- /rubric-slot -->
 
 **Fewer steps = less time and fewer tokens:** every extra step reads the whole conversation again (the rubric alone
 is tens of thousands of tokens). So run independent commands side by side in one message, and read files the same way.
@@ -203,9 +210,11 @@ of the skill starts without it, so each teammate hears about each update once.
   את הפתרון, ובאורך שהמחוון קובע; כל סעיף שירדו בו נקודות מסומן על העבודה. "כללים לכל מחוון" חלים גם כאן, והבודק
   לא כותב לסטודנט ספקות שלו בקריאה.
 
+<!-- rubric-slot: current -->
 ## Keeping it current
 
 On a computer that runs the system, the dashboard builds this skill again from its own code at every start (and so
 after every update from GitHub), only when something changed (`dashboard/skills.py`, `INSTALL_SKILLS=off` turns it
 off). By hand, in the repo: `python tools/extract_skill.py --stale <skill>` says whether it fell behind,
 `python tools/extract_skill.py grading --install` builds it again.
+<!-- /rubric-slot -->
