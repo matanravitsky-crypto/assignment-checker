@@ -71,6 +71,10 @@ RUBRIC_MD = "Rubric.md"                       # the grading bot's rubric
 RUBRIC_PDF = "Rubric.pdf"                     # the same rubric for people
 RUBRIC_NOTES = "Working notes"                # the committee's folder: rubric.json, findings, the agents' reports
 RUBRIC_LOG = "Rubric PDF changelog.md"        # in RUBRIC_NOTES: every round of remarks, and the approval
+# One grading skill per assignment, built from its approved rubric (tools/assignment_skill.py), in the COURSE folder:
+# "<course>/Grading skills/<skill name>/". Not in the assignment folder and not at the top of the data folder, where
+# the site would take it for an assignment or a course
+GRADING_SKILLS = "Grading skills"
 OFFICIAL_KEY_TEXT = "Official key.txt"
 OFFICIAL_KEY_OLD = "Earlier official keys"
 # A pull never deletes or overwrites a submission: a file that a newer download replaces (a resubmission, or a

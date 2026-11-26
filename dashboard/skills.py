@@ -53,8 +53,19 @@ def refresh(skills: Path | None = None, backups: Path | None = None) -> list[dic
     return out
 
 
+def assignment_skills(skills: Path | None = None) -> list[dict]:
+    """סקילי הבדיקה של המטלות (סקיל לכל מטלה, tools/assignment_skill.py): מועתקים מהתיקייה המשותפת
+    (<קורס>/Grading skills/) לתיקיית הסקילים, רק סקיל חדש או שהשתנה. סקיל באותו שם שהכלי לא בנה לא נוגעים בו."""
+    from tools import assignment_skill
+
+    try:
+        return assignment_skill.install_all(skills)
+    except (Exception, SystemExit) as e:  # noqa: BLE001
+        return [_error("assignment skills", e)]
+
+
 def _run() -> None:
-    for r in refresh():
+    for r in refresh() + assignment_skills():
         if r["action"] == "error":
             print(f"הסקיל {r['skill']} לא עודכן: {r['error']}")
         elif r["action"] != "up_to_date":
