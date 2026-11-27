@@ -14,7 +14,7 @@ Two halves, kept apart on purpose:
   the rubric package   <course>/Grading skills/<name>/ in the shared folder: assignment/ (a frozen copy of exactly what
                        grading reads from the assignment folder: Assignment details.json, the פדגוגי files grading sends,
                        the official key, Official solution.pdf) and MANIFEST.json (name, version, who, when, triggers,
-                       sha256 per file). Written only by `build`, after the TA's "מאושר" (the grading-skill-maker skill)
+                       sha256 per file). Written only by `build`, after the TA's "מאושר" (the rubric-to-grader-factory skill)
   the skill            ~/.claude/skills/<name>/ on each computer: assembled there from that computer's skeleton and the
                        package (`install`, also by the dashboard at every start). A newer skeleton (a fix in marking, a
                        new rule of the grader) reaches every rubric's skill by itself; the rubric changes only by `build`
@@ -69,7 +69,7 @@ SLOTS = {
                 "This skill = the grading skeleton of this computer + the rubric package "
                 "`<course>\\" + paths.GRADING_SKILLS + "\\<name>` in the shared folder. The system assembles it again at "
                 "every start when either changed (`dashboard/skills.py`). A rubric that changed after approval is built "
-                "again by the rubric team (`grading-skill-maker`); in the repo, `python tools/assignment_skill.py check "
+                "again by the rubric team (`rubric-to-grader-factory`); in the repo, `python tools/assignment_skill.py check "
                 "{id}` says whether it fell behind."),
 }
 

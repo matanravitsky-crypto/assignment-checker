@@ -217,7 +217,7 @@ Each round of remarks, the committee convenes. How, by cost:
   changelog), never from scratch: nothing is re-sampled, no agent re-reads submissions, and `Rubric.md` and `Rubric.pdf`
   are rebuilt from the edited JSON.
 - "מאושר" ends the loop: write the line in `CHANGELOG.md`, delete `<work>\inputs\submissions`. Then ask once
-  "לבנות עכשיו את סקיל הבדיקה של המטלה?" and on a yes follow the `grading-skill-maker` skill (it builds
+  "לבנות עכשיו את סקיל הבדיקה של המטלה?" and on a yes follow the `rubric-to-grader-factory` skill (it builds
   `grade-<course>-<N>` from this rubric for the whole team). A later round that changes the rubric: say that the
   assignment's grading skill is now behind and offer to build it again.
 A remark that contradicts `Rubric.md` goes into the PDF only after the user says so, and then say that the bot's

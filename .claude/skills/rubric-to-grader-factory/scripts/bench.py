@@ -1,4 +1,4 @@
-"""The bench: a rubric's grading skill against the system, work by work (grading-skill-maker, Step 3).
+"""The bench: a rubric's grading skill against the system, work by work (rubric-to-grader-factory, Step 3).
 
     python bench.py run <moodle id> --skill grade-linear-0 --round R (--numbers 0012 0040 ... | --n N) [--parallel 3]
     python bench.py run ... --arm generic          the same works through exercise-grader, the rubric given as Rubric.md

@@ -1,4 +1,4 @@
-"""A grading skill per rubric (tools/assignment_skill.py, the skill grading-skill-maker): the skeleton (exercise-grader:
+"""A grading skill per rubric (tools/assignment_skill.py, the skill rubric-to-grader-factory): the skeleton (exercise-grader:
 grading/skill/SKILL.md and the grading engine) with one assignment's frozen rubric dressed on it.
 The rubric package in <course>/Grading skills/<name>/ grades exactly like the assignment folder and holds nothing of the
 students; every computer assembles the skill from its own skeleton, so a newer skeleton reaches every rubric's skill,

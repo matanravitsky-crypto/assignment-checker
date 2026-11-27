@@ -1,5 +1,5 @@
 ---
-name: grading-skill-maker
+name: rubric-to-grader-factory
 description: Turn a rubric (מחוון) of assignment X into a grading skill for X, through two loops - a short, strict inner loop of trained agents (dress the rubric on the grading skeleton, grade a small sample of real works, judge every section against the rubric, fix, re-grade only what changed) and then a loop with the user (they look at graded works, give remarks, every remark goes where it belongs and the affected works are re-graded), as many times as they want, until they approve and it is published to the team. Use when someone uploads or names a rubric and says "תכין סקיל בדיקה לעבודה X", "הנה המחוון של הגשה X", "תלביש את המחוון על השלד", "מקצה שיפורים", "יש לי הערות על הבדיקה", "תריץ עוד סבב", "תשווה לסקיל ש...", "המחוון השתנה", "איזה סקילי בדיקה יש". Not for building a rubric from nothing (rubric-builder) or for grading itself (the assignment's grade-<course>-<N>, or exercise-grader).
 ---
 
