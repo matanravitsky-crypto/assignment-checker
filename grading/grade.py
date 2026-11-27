@@ -823,11 +823,14 @@ def course_grade(g: Graded, ctx: Context, copies: list[str] | None = None) -> No
 
 # "כתבו" ו-"רשמו" נקראים גם כהוראה וגם כ"הם כתבו" (נדב, 2026-11-15). ההוראות אוסרות אותם; כאן תיקון אחרון לצורה
 # הנפוצה, הוראה בתחילת משפט או אחרי פסיק, ל-"יש לכתוב" / "יש לרשום"
-_AMBIGUOUS = re.compile(r"(^|[.:;!?\n]\s*|-\s+|,\s+)(כתבו|רשמו)(?=\s)")
+# 2026-11-27 (the improvement round of LA1): also "הציבו", "בדקו" and the like, which a student reads both ways too
+_INSTEAD = {"כתבו": "יש לכתוב", "רשמו": "יש לרשום", "הציבו": "יש להציב", "בדקו": "יש לבדוק", "חשבו": "יש לחשב",
+            "הוכיחו": "יש להוכיח", "הראו": "יש להראות", "נמקו": "יש לנמק", "פתרו": "יש לפתור", "סמנו": "יש לסמן"}
+_AMBIGUOUS = re.compile(r"(^|[.:;!?\n]\s*|-\s+|,\s+)(" + "|".join(_INSTEAD) + r")(?=\s)")
 
 
 def plain(text: str) -> str:
-    return _AMBIGUOUS.sub(lambda m: m.group(1) + ("יש לכתוב" if m.group(2) == "כתבו" else "יש לרשום"), text)
+    return _AMBIGUOUS.sub(lambda m: m.group(1) + _INSTEAD[m.group(2)], text)
 
 
 PLACEHOLDER = "placeholder"

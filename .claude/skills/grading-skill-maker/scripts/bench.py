@@ -191,7 +191,10 @@ def _points(raw) -> list[float] | None:
     try:
         return [float(x) for x in json.loads(raw)] if raw else None
     except (ValueError, TypeError):
-        return None
+        try:  # "3;3;8;..." as Grades by <name>.csv keeps it
+            return [float(x) for x in str(raw).split(";")] if raw else None
+        except ValueError:
+            return None
 
 
 def summary(assignment_id: str, name: str) -> dict:
@@ -213,7 +216,8 @@ def summary(assignment_id: str, name: str) -> dict:
         nf = assignment / paths.NOTES / f"{num}.json"
         if nf.is_file():
             note = json.loads(nf.read_text(encoding="utf-8"))
-        sp = _points(note.get("points")) or _points(s.get("points"))
+        # a TA-approved row is the gold: its own points (the latest edit), not the notes from before the approval
+        sp = (_points(s.get("points")) if grades.is_approved(s) else None) or _points(note.get("points"))             or _points(s.get("points"))
         d = None
         if r["ok"] and s.get("grade") not in (None, ""):
             d = float(r["grade"]) - float(s["grade"])

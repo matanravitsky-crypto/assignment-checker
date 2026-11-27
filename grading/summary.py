@@ -9,6 +9,8 @@ import re
 
 import pymupdf
 
+from moodle import grades
+
 from . import rtl
 from .grade import (Context, Graded, _FONT, _pts, assigned, part_name, shown_labels)
 
@@ -304,6 +306,15 @@ def course_text(g: Graded, ctx: Context) -> str:
         return f"{exam} בציון הקורס נספר 0: {g.course_why}."
     labels = [q.label for q in ctx.questions]
     done = list(g.submitted) + [False] * (len(labels) - len(g.submitted))
+    if str((ctx.policy or {}).get("per_question") or "") == "any":  # by questions handed in (LA1 on, 2026-11-27)
+        groups: dict[str, bool] = {}
+        for label, d in zip(labels, done):
+            q_ = grades._question(label)
+            groups[q_] = groups.get(q_, False) or bool(d)
+        gone = [q_ for q_, d in groups.items() if not d]
+        tail = f" (לא הוגשו: {', '.join(gone)})" if gone else ""
+        return (f"{exam} בציון הקורס נספר {course}: לפי השאלות שהוגשו, ללא תלות בנכונות; הוגשו "
+                f"{len(groups) - len(gone)} מתוך {len(groups)} שאלות{tail}.")
     missing = [part_name(label) for label, d in zip(labels, done) if not d]
     if not missing:
         return f"{exam} בציון הקורס נספר {course}: הוגשו כל {len(labels)} הסעיפים."

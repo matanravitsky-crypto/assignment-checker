@@ -63,3 +63,18 @@ def test_moodle_grade_per_question_any_gives_a_whole_question_for_one_part():
     assert grades.course_grade(labels, no_16, per_question="any") == 83
     assert grades.course_grade(labels, no_14c) == 94                       # the default stays as it was (LA0)
     assert grades.course_grade(labels, every, zero=True, per_question="any") == 0
+
+
+def test_imperatives_a_student_reads_both_ways_become_instructions():
+    assert grade.plain("הציבו את הנקודה במשוואה") == "יש להציב את הנקודה במשוואה"
+    assert grade.plain("שגוי: 3. בדקו את הסימן") == "שגוי: 3. יש לבדוק את הסימן"
+    assert grade.plain("הסטודנט בדקו") == "הסטודנט בדקו"  # not at the start of a sentence: left alone
+
+
+def test_the_summary_explains_a_per_question_course_grade_by_questions():
+    from grading import summary
+    ctx = grade.Context("הגשה 1", "לינארית", [grade.Question(l, 7) for l in ("8א", "8ב", "16")], policy={"basis": "submission", "per_question": "any"})
+    g = grade.Graded([7, 0, 0], ["", "", ""], 50, "", [], submitted=[True, False, False])
+    g.course = 50
+    text = summary.course_text(g, ctx)
+    assert "לפי השאלות שהוגשו" in text and "1 מתוך 2 שאלות" in text and "16" in text
