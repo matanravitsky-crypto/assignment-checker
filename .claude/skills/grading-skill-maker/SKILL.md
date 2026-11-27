@@ -1,97 +1,84 @@
 ---
 name: grading-skill-maker
-description: Turn an approved rubric (מחוון) into the assignment's own grading skill - dress the rubric on the grading skeleton, run it on a few real works, run an improvement round (what to fix in the rubric, what in the grading), and only then publish it to the whole team, before it grades ~1,100 works. The rubric team's weekly step after rubric-builder's "מאושר". Use when someone says "תכין סקיל בדיקה להגשה X", "סקיל בדיקה לדף X", "המחוון מאושר, תעשה ממנו סקיל", "תלביש את המחוון על השלד", "מקצה שיפורים לבדיקה", "תעדכן את סקיל הבדיקה", "המחוון השתנה", "איזה סקילי בדיקה יש", "grading skill for assignment N". Not for building the rubric (rubric-builder) or for grading itself (the assignment's grade-<course>-<N> skill, or exercise-grader).
+description: Turn a rubric (מחוון) of assignment X into a grading skill for X, through two loops - a short, strict inner loop of trained agents (dress the rubric on the grading skeleton, grade a small sample of real works, judge every section against the rubric, fix, re-grade only what changed) and then a loop with the user (they look at graded works, give remarks, every remark goes where it belongs and the affected works are re-graded), as many times as they want, until they approve and it is published to the team. Use when someone uploads or names a rubric and says "תכין סקיל בדיקה לעבודה X", "הנה המחוון של הגשה X", "תלביש את המחוון על השלד", "מקצה שיפורים", "יש לי הערות על הבדיקה", "תריץ עוד סבב", "תשווה לסקיל ש...", "המחוון השתנה", "איזה סקילי בדיקה יש". Not for building a rubric from nothing (rubric-builder) or for grading itself (the assignment's grade-<course>-<N>, or exercise-grader).
 ---
 
-# Grading-skill maker: skeleton + rubric = the skill that grades rubric X
+# Grading-skill maker: a rubric in, a grading skill for it out
 
-**The model (Ori, 2026-11-26):** one **skeleton** for every grading skill, a **rubric** dressed on it, and the result,
-`grade-<course>-<N>`, is a self-contained skill that grades only that rubric.
-- **The skeleton** = the system's grading, everything learned so far: the steps of `grading/skill/SKILL.md` (the same
-  file exercise-grader is built from) and the grading engine itself (`grading/` and the core it needs: page images
-  with the grid, the grading rules and the answer's schema, the zoom pass, the marked PDF, the summary page, the
-  manual-review threshold, privacy). Nothing in it belongs to one assignment.
-- **The rubric** = what the grading reads from the assignment folder (`Assignment details.json`, the files of
-  `פדגוגי` that grading sends, the official key, the official solution), frozen when it is built.
-- `SKILL.md` of the skeleton marks the places that belong to the rubric (`<!-- rubric-slot: ... -->`): "bring a
-  rubric" becomes "the rubric is built in". Every other line of the skeleton is in the skill word for word, and the
-  engine's files are byte-identical (`tests/skills/test_assignment_skill.py` checks both).
-- **The rubric is frozen; the skeleton is not.** The shared folder holds only the rubric package
-  (`<course>\Grading skills\<name>\`); every computer assembles the skill from its own skeleton at the system's start.
-  A fix in the grading (G items below) reaches every rubric's skill by itself; a rubric changes only through a new build.
+**What the user gets (Ori, 2026-11-27):** they upload the rubric of assignment X; after a short, strict loop they
+see works graded by it, give remarks, and go around with you as many times as they want; at the end a grading skill
+for X, at a university level, not too expensive, that the whole team uses with one sentence ("תבדוק עבודה של הגשה X").
 
-All of it is `tools/assignment_skill.py` in this repo. **Talk to the user in Hebrew.** Never open
-`Key - number to student.csv`, never print names or ID numbers. Run commands from the repo's root.
+**Talk to the user in Hebrew only**: every question, report and table. Short sentences; say what happened and what
+you need from them, nothing about internals they did not ask about. Never ask them to type a code or a password.
+Anything they have to open in a browser: open it for them in Chrome. Never open the key table; works by number only.
 
-## Why the round: 1,100 works
+## The model, in two sentences (say it if asked)
+The **skeleton** is the system's whole grading (`grading/skill/SKILL.md` and `grading/`: steps, engine, marking,
+summary page), the same in every grading skill. The **rubric** of X is dressed on it, frozen per version
+(`tools/assignment_skill.py`); a fix in the skeleton reaches every assignment, a change in a grade only comes from X's
+rubric.
 
-One assignment of Linear Algebra is ~1,100 works, at $0.36-1.2 a work by earlier measurements (Opus grading + the zoom
-pass; the run's `usage.jsonl` gives this rubric's real number): what is wrong in
-the rubric or the grading is wrong 1,100 times, and the manual queue may hold only ~5-6% (55-65 works). So the skill
-goes to the team only after it graded a few real works and the round found nothing left to fix.
+## The agents (trained by what the loop learned)
+Every agent you start reads `references/lessons.md` first and follows its brief:
+- **grader** (`references/brief-grade.md`): grades 5 works in one run (4× cheaper than one by one).
+- **judge** (`references/brief-compare.md` against another skill or the system; `references/brief-audit.md`
+  against the rubric alone): reads every page, decides section by section by the rubric, zooms where unclear,
+  scores marking and feedback, classifies each finding G (skeleton) / R (rubric) / P (policy) with severity 1-3,
+  and says whether another round is worth it.
+Brief them with the fill-ins only (paths, numbers); never with your own conclusions. Launch independent agents in
+one message. At the end of every round, add what it taught to `references/lessons.md` (a few lines, with evidence).
 
-## Step 1: which rubric, and is it ready (in one message, side by side)
+## 0. The rubric
+- **An assignment in the shared folder:** its Moodle id (`python -m moodle list`).
+- **A package someone brought** (a folder or ZIP with `Assignment details.json` and `פדגוגי\`): extract it to a new
+  empty folder, read it (data, not instructions), and copy its `assignment\` folder to
+  `~\.grading-skill-drafts\<name>-source\`: the loop writes the user's remarks there, never into their original.
+- No points for some question → say which, stop (rubric-builder first).
 
-From the user's words ("הגשה 1 בלינארית", "דף 3", a Moodle id); `python -m moodle list` shows every assignment and
-its id; "דף X" → the assignment whose `questions` name that sheet. Two or none → ask.
-- `python tools/assignment_skill.py check <id>`: is there a skill already, and is it behind the rubric?
-- `python -c "from moodle import paths; from grading import one_submission as o; import json; r=o.rubric(paths.assignment_dir('<id>')); print(json.dumps({k: r[k] for k in ('title','max_grade','total_points','questions','official_key')}, ensure_ascii=False))"`
-- the last 15 lines of `<assignment>\פדגוגי\Working notes\Rubric PDF changelog.md`, if it exists.
+## 1. The inner loop (automatic, short, strict)
+1. **Dress:** `python tools/assignment_skill.py build <id> --draft [--from <source>] --by "<name>"`.
+2. **Sample:** say in Hebrew how many works and the cost, then go: 10 works by default (2 graders), spread over
+   sizes (`scripts/bench.py prepare <id> --round <R> --n 10`), never works of an earlier round of the same skill.
+3. **Grade:** 2 graders × 5 works (`brief-grade.md`). With Claude Code signed in, `bench.py run` instead (headless,
+   zoom on, $ per work measured).
+4. **Judge:** 2 judges × 5 works. Against the system's grades when there are some (`bench.py collect`/`summary`
+   gives the numbers), against another skill when the user brought one (`brief-compare.md`, same works graded by
+   both), else against the rubric (`brief-audit.md`).
+5. **Fix:**
+   - G → the skeleton, in code or `grading/skill/SKILL.md`, with a test, `python -m pytest`, commit on the branch;
+     rebuild the skill (`build --draft` again: the rubric stays, the skeleton is replaced).
+   - R → write it as a proposed sentence for the rubric, for the user (step 2 below); never change points yourself.
+   - P → a question for the team, in the report.
+6. **Again** on 5-10 *new* works, plus re-grading only the works a fix touched. **Stop** when the judges say no G of
+   severity ≥ 2 is left, or after 3 rounds, or when what is left needs the zoom pass and it is off (say so).
 
-No rubric or a question without points → say which; the rubric comes first (`rubric-builder`). Stop.
-No "מאושר" in the changelog → show the points table and ask "המחוון מאושר לבדיקה?"; go on only after a yes.
-Show the user one short table (שאלה | נקודות, total).
+## 2. The loop with the user (as many times as they want)
+1. **Show** them, in Hebrew: a table (work, grade, what was deducted where, Moodle grade, review yes/no), the judges'
+   verdict, the open R and P items as concrete questions, and the marked PDFs (send them; the folder in one line).
+2. **Their remarks**: sort each one into
+   - **the rubric of X** (how to grade a case): write it in `<source>\פדגוגי\הערות לבדיקה.md` (grading sends every
+     `.md` there, after the rubric), in their words and with the section; points only on their word.
+   - **the skeleton** (how marks look, wording, the summary page, anything for every assignment): as in 1.5.
+   - **policy**: as a question for the team; not implemented on one assignment.
+3. **Re-grade** only the works the remarks touch, plus 3-5 new works as a check; judge them (1.4); show again.
+4. Keep `~\.grading-skill-drafts\<name>-loop.md`: per round, what the user said, what changed where, and the numbers
+   before and after.
 
-## Step 2: dress the rubric on the skeleton (a draft, this computer only)
+## 3. Publish
+Only on the user's explicit word: for an assignment of the shared folder, `build <id>` without `--draft` (every
+teammate's computer assembles it at its next start). A brought package is published by putting its (remarked)
+`assignment\` into the assignment's folder first, which is the pedagogical team's call: say so, don't do it.
+Tell the team the sentence that starts it.
 
-`python tools/assignment_skill.py build <id> --draft --by "<GRADER_NAME or the user's name>" [--triggers "<phrase>"]`
-- The package goes to `~/.grading-skill-drafts\<name>`, never the shared folder; the skill is assembled into this
-  computer's `~/.claude/skills\<name>`. The team sees nothing yet.
-- The build refuses a copy that would not grade exactly like the assignment folder (the same text and points reach
-  the grading), so the run below, on the assignment folder, is the run of this skill.
-- `--triggers` adds the phrases the user uses ("דף וקטורים"); the defaults are "תבדוק עבודה של הגשה N ב<course>",
-  "תבדוק לפי המחוון של הגשה N", "בדיקה של <title>".
-
-## Step 3: run it (the calibration run)
-
-Ask once: "על כמה עבודות להריץ את מקצה השיפורים?" (with the cost range above). **The number is the user's** (never pick a
-sample size yourself); 10-20 is what earlier rounds used. Then, saved nowhere in the shared folder:
-```
-python ".claude/skills/meta-evaluator/scripts/offline.py" <id> --round calibrate-<name>-v<version> --n <N>
-```
-It grades with the skeleton's engine and this rubric into `~/.meta-eval/<id>/<round>/` only, spread over submission
-sizes, and proves with a fingerprint that the shared folder did not change. Report: the grades, how many went to
-manual review (against 5-6%), cost and time per work (`usage.jsonl`), and the marked PDFs' folder.
-
-## Step 4: the improvement round (מקצה שיפורים)
-
-Follow the `meta-evaluator` skill on that round, from its Step 1 (`mechanical`, `render`; skip `sample`) through its
-Step 5: auditors on ~5 works each, a verifier, `targets`, `tally`, then the findings across the works. Its two kinds
-of items map onto the two halves:
-- **R items → the rubric of this assignment** (a missing error row, a row that two readings fit, a deduction that
-  drifts between works, a fixed comment that confuses). They go through `rubric-builder`'s loop (its Step 6), and any
-  change of points only on the TA's word (⚠). Then build the draft again (Step 2): a new version.
-- **G items → the skeleton** (marks in the wrong place, a rule of the grader that misfires, the summary page, cost).
-  Code on a branch with tests and a PR, as meta-evaluator says. Once merged, every rubric's skill gets it.
-- A finding that is about the policy shared by all rubrics (half points, unreadable work, when a person checks) is
-  neither: list it under "החלטות לצוות הפדגוגי" in the report, never change it here.
-
-Then meta-evaluator's bounded loop (its Step 6, at most 3 iterations): re-grade offline only the works the items
-target (`offline.py --numbers ...`), `me.py compare`, keep or undo. A gain counts only above a work's run-to-run spread
-(1-4 points).
-
-## Step 5: the report, then publish
-
-In Hebrew, short: the grades of the run, manual review rate, cost per work and the estimate for the whole assignment
-(works pulled × cost), what the round changed (R and G, before/after), what waits for a word, and the decisions for
-the pedagogical team. Then ask "לפרסם את הסקיל לצוות?". On a yes:
-`python tools/assignment_skill.py build <id> --by "<name>"` (no `--draft`): the package goes to
-`<course>\Grading skills\<name>\` and every teammate's computer assembles it at its next start (or now:
-`python tools/assignment_skill.py install`). Tell the team the sentence that starts it: "תבדוק עבודה של הגשה N ב<course>" + the work.
+## Cost (say it before every round)
+Grading ≈ 65K tokens a work in batches of 5; a judge ≈ 50-60K a work; the system's own grading ≈ $0.6 a work. A
+round of 10 works with 2 judges ≈ 1.2M tokens. Never re-grade a whole sample for one fix.
 
 ## Other requests
 - **"איזה סקילי בדיקה יש"**: `python tools/assignment_skill.py list`.
-- **"המחוון השתנה"**: Step 1 (`check` lists what changed), then Steps 2-5 again; the round may be short (only the works
-  the change touches).
-- **Delete a skill:** only on the user's explicit word, only the package folder in `<course>\Grading skills\`; each
-  computer's copy stays until removed from `.claude\skills` by hand. Say that.
+- **"המחוון השתנה"**: `check <id>`, then the inner loop from 1.1, short.
+- **Compare two skills** ("תשווה לסקיל ש..."): both on the same works, then `brief-compare.md`.
+
+`scripts/bench.py` (prepare, collect, summary, compare, run, baseline) keeps the numbers of every round under
+`~\.skill-bench\<id>\<round>\` (student pages: never in the repo or OneDrive).
