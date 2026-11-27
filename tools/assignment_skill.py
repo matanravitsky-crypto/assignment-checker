@@ -150,13 +150,19 @@ DRAFTS = Path.home() / ".grading-skill-drafts"  # a draft's package: this comput
 
 
 def build(assignment_id: str, name: str | None = None, by: str | None = None, triggers: list[str] | None = None,
-          install_to: Path | None = None, draft: bool = False, drafts: Path | None = None) -> dict:
+          install_to: Path | None = None, draft: bool = False, drafts: Path | None = None,
+          source: Path | None = None) -> dict:
     """Freezes the assignment's rubric into <course>/Grading skills/<name>/ and assembles the skill on this computer
     (`install_to`, default ~/.claude/skills). Refuses a rubric without points for every question, and a copy that would
     not grade exactly like the assignment folder. `draft`: the package goes to ~/.grading-skill-drafts/ (this computer
     only), for the calibration round before the team gets it; the same build without it publishes."""
-    folder = paths.assignment_dir(assignment_id)
-    name = name or default_name(folder)
+    home = paths.assignment_dir(assignment_id)  # the assignment the skill is for (its course, its slot, its works)
+    # `source`: a rubric package someone brought (the pedagogical team's assignment folder: Assignment details.json and
+    # פדגוגי/), dressed instead of the shared folder's own; a draft only, never published from here
+    folder = Path(source) if source else home
+    if source and not draft:
+        raise SystemExit("a rubric brought from outside is built as a --draft; publish only from the assignment folder")
+    name = name or default_name(home)
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,62}", name):
         raise SystemExit(f"{name}: a skill name is lowercase letters, digits and '-'")
     try:
@@ -174,14 +180,15 @@ def build(assignment_id: str, name: str | None = None, by: str | None = None, tr
     old = _manifest(dest)
     if dest.exists() and any(dest.iterdir()) and old is None:
         raise SystemExit(f"{dest} exists and was not built by this tool: not touching it")
-    slot = _slot(folder)
-    title = _clean(info.get("hebrew_title") or info.get("title") or folder.name)
-    course_he = COURSE_HE.get(folder.parent.name, folder.parent.name)
+    slot = _slot(home)
+    title = _clean(info.get("hebrew_title") or info.get("title") or home.name)
+    course_he = COURSE_HE.get(home.parent.name, home.parent.name)
     phrases = ([f"תבדוק עבודה של הגשה {slot} ב{course_he}", f"תבדוק לפי המחוון של הגשה {slot}"] if slot is not None
                else []) + [f"בדיקה של {title}"]
     phrases += [t for t in (triggers or []) if t and t not in phrases]
-    manifest = {"kind": KIND, "skill": name, "assignment_id": str(info.get("id")),
-                "assignment": f"{folder.parent.name}/{folder.name}", "title": title, "course": course_he,
+    manifest = {"kind": KIND, "skill": name, "assignment_id": str(paths.read_info(home).get("id")),
+                "assignment": f"{home.parent.name}/{home.name}", "title": title, "course": course_he,
+                "source": str(Path(source).resolve()) if source else None,
                 "triggers": phrases, "version": (old or {}).get("version", 0) + 1,
                 "built_at": datetime.now().isoformat(timespec="seconds"),
                 "built_by": by or os.environ.get("GRADER_NAME") or os.environ.get("USERNAME") or os.environ.get("USER") or "?",
@@ -199,6 +206,7 @@ def build(assignment_id: str, name: str | None = None, by: str | None = None, tr
     d = json.loads(snap_info.read_text(encoding="utf-8-sig"))
     d["title"] = d.get("title") or folder.name
     d["course_title"] = d.get("course_title") or folder.parent.name
+    d.setdefault("id", manifest["assignment_id"])
     snap_info.write_text(json.dumps(d, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
     (tmp / MANIFEST).write_text(json.dumps(manifest, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
     same = one_submission.rubric(tmp / SNAPSHOT)
@@ -219,7 +227,7 @@ def stale(package: Path) -> list[str]:
     m = _manifest(package)
     if m is None:
         raise SystemExit(f"{package} is not a rubric package")
-    folder = paths.assignment_dir(m["assignment_id"])
+    folder = Path(m["source"]) if m.get("source") else paths.assignment_dir(m["assignment_id"])
     now = {rel: _sha(f) for rel, f in sources(folder).items()}
     return sorted(rel for rel in set(now) | set(m["files"]) if now.get(rel) != m["files"].get(rel))
 
@@ -338,13 +346,14 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--by")
     b.add_argument("--triggers", action="append", default=[], help="another phrase that starts the skill")
     b.add_argument("--draft", action="store_true", help="this computer only, for the calibration round")
+    b.add_argument("--from", dest="source", type=Path, help="a rubric package brought from outside (with --draft)")
     c = sub.add_parser("check")
     c.add_argument("id")
     sub.add_parser("list")
     sub.add_parser("install")
     a = p.parse_args(argv)
     if a.cmd == "build":
-        print(json.dumps(build(a.id, a.name, a.by, a.triggers, draft=a.draft), ensure_ascii=False, indent=1))
+        print(json.dumps(build(a.id, a.name, a.by, a.triggers, draft=a.draft, source=a.source), ensure_ascii=False, indent=1))
         return 0
     if a.cmd == "check":
         want = str(paths.read_info(paths.assignment_dir(a.id)).get("id"))

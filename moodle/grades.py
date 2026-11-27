@@ -121,15 +121,19 @@ def _question(label: str) -> str:
     return re.sub(r"(?<=\d)\s*(?:\(\s*[א-ת]['׳]?\s*\)|[א-ת]['׳]?)$", "", s).strip() or s
 
 
-def course_grade(labels: list[str], submitted: list[bool], max_grade: float = 100, zero: bool = False) -> float:
+def course_grade(labels: list[str], submitted: list[bool], max_grade: float = 100, zero: bool = False,
+                 per_question: str = "share") -> float:
     """What Moodle gets under course_policy: max_grade / (number of questions) for each question, times the share of
-    its parts handed in, rounded to a whole number (a half up). 0 when `zero` (typed, identical to another's)."""
+    its parts handed in (`per_question` "share", the default: LA Assignment 0), or all of it when at least one part was
+    handed in (`"any"`: `moodle_grade.per_question` in Assignment details.json, the pedagogical team on 2026-11-27, from
+    LA Assignment 1 on), rounded to a whole number (a half up). 0 when `zero` (typed, identical to another's)."""
     if zero or not labels:
         return 0
     groups: dict[str, list[bool]] = {}
     for label, done in zip(labels, list(submitted) + [False] * (len(labels) - len(submitted))):
         groups.setdefault(_question(label), []).append(bool(done))
-    total = sum(max_grade / len(groups) * sum(g) / len(g) for g in groups.values())
+    share = (lambda g: 1 if any(g) else 0) if per_question == "any" else (lambda g: sum(g) / len(g))
+    total = sum(max_grade / len(groups) * share(g) for g in groups.values())
     return math.floor(total + 0.5 + 1e-9)
 
 

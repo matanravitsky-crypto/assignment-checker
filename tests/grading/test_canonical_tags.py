@@ -38,3 +38,28 @@ def test_an_ambiguous_start_or_a_paraphrase_stays_as_written():
     assert grade.canonical_tag("טעות חשבון אחת", rows) == "טעות חשבון אחת"  # the start of two rows
     assert grade.canonical_tag("שכח סוגריים", rows) == "שכח סוגריים"
     assert grade.canonical_tag("anything", ()) == "anything"
+
+
+def test_a_mark_finds_its_section_when_the_bot_numbered_or_shortened_it():
+    labels = ["קבוצות 11ב", "קבוצות 11ג", "מרוכבים 6ב"]
+    assert grade.part_label("3. קבוצות 11ג", labels) == "קבוצות 11ג"
+    assert grade.part_label("11ג", labels) == "קבוצות 11ג"
+    assert grade.part_label("קבוצות 11ב", labels) == "קבוצות 11ב"
+    assert grade.part_label("6ב", labels) == "מרוכבים 6ב"
+    assert grade.part_label("ב", labels) == "ב"          # the end of no label as a word: stays
+    assert grade.part_label("", labels) == ""
+
+
+def test_moodle_grade_per_question_any_gives_a_whole_question_for_one_part():
+    from moodle import grades
+    labels = ["8א", "8ב", "11א", "11ב", "11ג", "13א", "13ב", "13ג", "14א", "14ב", "14ג", "15א", "15ב", "16"]
+    every = [True] * 14
+    only_first = [l.endswith("א") or l == "16" for l in labels]
+    no_14c = [l != "14ג" for l in labels]
+    no_16 = [l != "16" for l in labels]
+    assert grades.course_grade(labels, every, per_question="any") == 100
+    assert grades.course_grade(labels, no_14c, per_question="any") == 100
+    assert grades.course_grade(labels, only_first, per_question="any") == 100
+    assert grades.course_grade(labels, no_16, per_question="any") == 83
+    assert grades.course_grade(labels, no_14c) == 94                       # the default stays as it was (LA0)
+    assert grades.course_grade(labels, every, zero=True, per_question="any") == 0

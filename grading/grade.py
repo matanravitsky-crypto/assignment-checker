@@ -765,12 +765,26 @@ def parse_answer(text: str, ctx: Context, pages: int) -> Graded:
         # « ... / ... » בהערה קבועה של המחוון = שתי שורות ("שגוי: ... / נכון: ...")
         mark = _box(a, pages, plain(text).replace(" / ", "\n"))
         if mark is not None:
-            mark.part = " ".join(str(a.get("part") or "").split())
+            mark.part = part_label(a.get("part"), [q.label for q in ctx.questions])
             mark.deduct = max(_num(a.get("deduct")), 0.0)
             marks.append(mark)
     see_first(marks, [q.label for q in ctx.questions])
     return Graded(points, [plain(c) for c in comments], compute_grade(points, ctx), plain(str(data.get("feedback") or "").strip()),
                   marks, review.strip(), mistakes, unsure, kind, places, lost, firsts, submitted, data.get("typed") is True)
+
+
+def part_label(raw, labels: list[str]) -> str:
+    """The question label a mark belongs to, as the bot wrote it or nearly: "3. קבוצות 11ג" (the number of its place in
+    the list) and "11ג" (the end of the label, when only one label ends so) are "קבוצות 11ג". LA0, 1,078 works: 9 marks
+    named "3. קבוצות 11ג" lost their section, so the "-1" next to them was not drawn. Anything else stays as written."""
+    part = " ".join(str(raw or "").split())
+    if not part or part in labels:
+        return part
+    bare = re.sub(r"^\d+[.)]\s*", "", part)
+    if bare in labels:
+        return bare
+    ends = [l for l in labels if " ".join(l.split()).endswith(" " + bare) or " ".join(l.split()) == bare]
+    return ends[0] if len(ends) == 1 else part
 
 
 def part_name(label: str) -> str:
@@ -802,7 +816,8 @@ def course_grade(g: Graded, ctx: Context, copies: list[str] | None = None) -> No
         return
     why = ("העבודה זהה לעבודה אחרת שהוגשה" if copies else
            "העבודה מוקלדת, וההגשה צריכה להיות בכתב יד" if g.typed else "")
-    g.course = grades.course_grade([q.label for q in ctx.questions], g.submitted, ctx.max_grade, zero=bool(why))
+    g.course = grades.course_grade([q.label for q in ctx.questions], g.submitted, ctx.max_grade, zero=bool(why),
+                                   per_question=str(ctx.policy.get("per_question") or "share"))
     g.course_why = why
 
 

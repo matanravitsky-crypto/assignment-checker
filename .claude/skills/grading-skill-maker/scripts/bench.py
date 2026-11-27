@@ -237,8 +237,8 @@ def summary(assignment_id: str, name: str) -> dict:
            "question_mean_abs_diff": round(statistics.mean(dq), 2) if dq else None,
            "gold_mean_abs_diff": round(statistics.mean(abs(x) for x in gold), 2) if gold else None, "gold_n": len(gold),
            "manual_review": sum(1 for r in ok if r["review"]),
-           "cost_median": round(statistics.median(cost), 3) if cost else None,
-           "seconds_median": round(statistics.median(r["seconds"] for r in ok)) if ok else None,
+           "cost_median": round(statistics.median(cost), 3) if any(r["cost_usd"] for r in ok) else None,
+           "seconds_median": round(statistics.median(r["seconds"] for r in ok)) if ok and all(r["seconds"] for r in ok) else None,
            "turns_median": statistics.median(r["turns"] or 0 for r in ok) if ok else None,
            "system": _system_cost(paths.data_dir()),
            "system_this_round": {"n": len(off_cost), "cost": round(statistics.median(off_cost.values()), 3)}
@@ -269,6 +269,46 @@ def compare(assignment_id: str, rounds: list[str]) -> dict:
     return out
 
 
+def prepare(assignment_id: str, name: str, numbers: list[str] | None, n: int | None, seed: int,
+            exclude: list[str] | None = None) -> list[dict]:
+    """The works of a round in their own folders (runs/NNNN/in, out), for grading by agents of a running session
+    instead of headless `claude -p` (no sign-in of Claude Code needed). `collect` reads what they wrote."""
+    assignment = paths.assignment_dir(assignment_id)
+    rnd = round_dir(assignment_id, name)
+    rnd.mkdir(parents=True, exist_ok=True)
+    on_disk = paths.files_by_number(assignment / paths.TO_GRADE)
+    if not numbers:
+        graded = grades.read(assignment)
+        pool = sorted(x for x in (graded or on_disk) if on_disk.get(x) and x not in set(exclude or []))
+        numbers = sorted(random.Random(seed).sample(pool, min(n or 0, len(pool))))
+    out = []
+    for num in numbers:
+        work = rnd / "runs" / num
+        (work / "in").mkdir(parents=True, exist_ok=True)
+        (work / "out").mkdir(exist_ok=True)
+        for f in on_disk.get(num, []):
+            shutil.copyfile(f, work / "in" / f.name)
+        out.append({"number": num, "in": str(work / "in"), "out": str(work / "out")})
+    (rnd / "plan.json").write_text(json.dumps({"numbers": numbers, "via": "agents"}, indent=1), encoding="utf-8")
+    return out
+
+
+def collect(assignment_id: str, name: str) -> int:
+    """bench.jsonl from what `mark` wrote in each work's out folder (agents' rounds: no cost from Claude Code)."""
+    rnd = round_dir(assignment_id, name)
+    rows = []
+    for work in sorted((rnd / "runs").iterdir()):
+        marked = sorted((work / "out").glob("*.json"))
+        s_ = json.loads(marked[-1].read_text(encoding="utf-8")) if marked else None
+        rows.append({"number": work.name, "arm": "agent", "ok": bool(s_), "exit": None, "seconds": None,
+                     "cost_usd": None, "turns": None, "zoom_cost_usd": 0,
+                     "grade": s_ and s_.get("grade"), "review": s_ and s_.get("review"),
+                     "points": s_ and [q["points"] for q in s_["questions"]],
+                     "labels": s_ and [q["label"] for q in s_["questions"]]})
+    (rnd / "bench.jsonl").write_text("".join(json.dumps(r, ensure_ascii=False) + chr(10) for r in rows), encoding="utf-8")
+    return sum(1 for r in rows if r["ok"])
+
+
 def main(argv: list[str] | None = None) -> int:
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
@@ -289,6 +329,16 @@ def main(argv: list[str] | None = None) -> int:
     bl.add_argument("id")
     bl.add_argument("--round", required=True)
     bl.add_argument("--parallel", type=int, default=3)
+    pr = sub.add_parser("prepare")
+    pr.add_argument("id")
+    pr.add_argument("--round", required=True)
+    pr.add_argument("--numbers", nargs="*")
+    pr.add_argument("--n", type=int)
+    pr.add_argument("--seed", type=int, default=7)
+    pr.add_argument("--exclude", nargs="*")
+    co = sub.add_parser("collect")
+    co.add_argument("id")
+    co.add_argument("--round", required=True)
     cp = sub.add_parser("compare")
     cp.add_argument("id")
     cp.add_argument("--rounds", nargs="+", required=True)
@@ -304,6 +354,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if a.cmd == "baseline":
         return baseline(a.id, a.round, a.parallel)
+    if a.cmd == "prepare":
+        print(json.dumps(prepare(a.id, a.round, a.numbers, a.n, a.seed, a.exclude), indent=1))
+        return 0
+    if a.cmd == "collect":
+        print(f"{collect(a.id, a.round)} works graded")
+        return 0
     if a.cmd == "compare":
         print(json.dumps(compare(a.id, a.rounds), ensure_ascii=False, indent=1))
         return 0
