@@ -1357,6 +1357,9 @@ def _note_rect(box: pymupdf.Rect, page: pymupdf.Rect, text: str = "", size: floa
     return min(pool, key=cost)  # בשוויון נשארת הראשונה: מתחת למלבן
 
 
+NOTE_BACKDROP = 0.55  # how white the light backdrop under a note is: the red text reads, the handwriting shows through
+
+
 def _write(page: pymupdf.Page, rect: pymupdf.Rect, note: _Note, archive, backdrop: bool = True) -> bool:
     """כותב הערה (_html) במקום שמחושב לפי העמוד כפי שהוא מוצג (גם אם העמוד מסובב). מחזיר False כשהכתיבה נכשלה.
     הרקע הלבן שקוף ברובו ונמצא רק במקום שנבחר כי הוא פנוי מכתב יד: הטקסט נקרא על נייר משבצות, והעבודה לא מוסתרת.
@@ -1370,8 +1373,8 @@ def _write(page: pymupdf.Page, rect: pymupdf.Rect, note: _Note, archive, backdro
         got = rtl.fit(note.text, rect, note.size, bold=note.bold, lh=note.lh, math=note.math)
         if got is None:
             return False
-        if backdrop:
-            page.draw_rect(box, color=None, fill=(1, 1, 1), fill_opacity=0.8, overlay=True)
+        if backdrop:  # 0.55, not 0.8 (2026-11-27: the judges and the pedagogical team saw notes hide handwriting)
+            page.draw_rect(box, color=None, fill=(1, 1, 1), fill_opacity=NOTE_BACKDROP, overlay=True)
         size, lay = got
         lay = rtl.balance(note.text, rect.width, size, bold=note.bold, math=note.math)  # שורות שוות, בלי מילה לבד בסוף
         rtl.write(page, rect, lay, size, note.color, bold=note.bold, lh=note.lh)

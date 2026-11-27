@@ -51,3 +51,9 @@ its part. Never a student's name; works by number only.
   (§G.14: "L=", a mis-copied given) were missed in 4 of 5 works: a last pass over them, with their tags; (2) a
   "missing" note when the thing is there in another form (t,s∈ℝ³) is false: look again first; (3) a 0-point note
   still gets its tag in `mistakes`, or the statistics miss it.
+- 2026-11-27, decisiveness (Ori: "שההחלטיות תשתפר"): LA1 0586 went to a person with 9 points of ranges, mostly 14א
+  with no row, while another grader priced the same slip in 0485 by 15א's row and decided. The skeleton now says:
+  a mistake with no row in its section takes the row of the same mistake elsewhere, with no range; a range only for
+  one real doubt. Judges: a range that a row elsewhere would have closed is a G finding (severity 2).
+- 2026-11-27, finish: notes' white backdrop lowered from 0.8 to 0.55 so handwriting shows through (judges in 4
+  works, and the pedagogical team's request).
