@@ -130,6 +130,12 @@ person with 9 points of ranges where the rubric of another section already had t
 A step of the rubric's table is earned only when it is done on the page: a rule stated in words ("if the ratio is the
 same, the lines are parallel") without the computation the step asks for does not earn it. Every point taken off has
 its row's tag in `mistakes`, or the statistics never see it.
+**Check the student's claim on the student's own numbers before pricing it.** When a step or a row is about a fact
+you can compute (the points are not on one line, a vector is a multiple of another, a point satisfies an equation, a
+determinant is not 0), compute it from what is written, then choose the row: "did not show X" and "X is false" are
+different rows at different prices (2026-11-28: three points on one line priced as "did not show they are not on a
+line", 3 points too many). A missing step of this section's table is tagged in the step's own words ("חסר: ..."); a
+row of another section is borrowed only for the same mistake, never to describe a missing step.
 
 Read, **in one message, one Read call per file side by side**: the files of `read_first` (if any), then **every** page
 image from `pages.json`. Nothing else. The page number is the number in the file name (page_003 = page 3). The pages

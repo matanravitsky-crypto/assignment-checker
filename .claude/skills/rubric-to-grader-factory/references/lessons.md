@@ -62,3 +62,9 @@ its part. Never a student's name; works by number only.
   with no tag in `mistakes` is invisible to the statistics (0586 14א). Re-grade of 0586 with the decisiveness rule:
   80 with 9 points of ranges and manual review became 82 with no range and no review, the same grade as the
   pedagogical package's run.
+- 2026-11-28, the rubric PDF path (grade-linear-1-pdf, LA1): the transcription lost nothing (the judge compared it word
+  for word with the pedagogical package in every disputed section; 100 error rows in both). Round 1, 10 works: 7
+  matched the settled grade, and 0762 8ב was right where both earlier skills had erred. The miss: 0232 8א, three
+  points on one line priced as "did not show they are not on a line" (−1 instead of −4): the grader never computed it.
+  Skeleton fix: compute a checkable claim on the student's own numbers before choosing the row; a missing step is
+  tagged in the step's own words, not by another section's row.
