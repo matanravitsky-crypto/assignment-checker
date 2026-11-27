@@ -57,3 +57,8 @@ its part. Never a student's name; works by number only.
   one real doubt. Judges: a range that a row elsewhere would have closed is a G finding (severity 2).
 - 2026-11-27, finish: notes' white backdrop lowered from 0.8 to 0.55 so handwriting shows through (judges in 4
   works, and the pedagogical team's request).
+- 2026-11-27, round 3 judges (judge 4-5): a rule stated in words without the computation the step asks for
+  ("same ratio, so parallel") got full points (0645 11ב): a step is earned only when done on the page. A deduction
+  with no tag in `mistakes` is invisible to the statistics (0586 14א). Re-grade of 0586 with the decisiveness rule:
+  80 with 9 points of ranges and manual review became 82 with no range and no review, the same grade as the
+  pedagogical package's run.

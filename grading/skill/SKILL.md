@@ -124,6 +124,9 @@ it, by the nearest row of the same type (חישוב, סימון, חוסר...). T
 A range is for one real doubt only: a symbol you cannot read even on a close-up, or a step that two rows price
 differently and the rubric does not say which. A range is never a way to avoid deciding (2026-11-27: a work went to a
 person with 9 points of ranges where the rubric of another section already had the row).
+A step of the rubric's table is earned only when it is done on the page: a rule stated in words ("if the ratio is the
+same, the lines are parallel") without the computation the step asks for does not earn it. Every point taken off has
+its row's tag in `mistakes`, or the statistics never see it.
 
 Read, **in one message, one Read call per file side by side**: the files of `read_first` (if any), then **every** page
 image from `pages.json`. Nothing else. The page number is the number in the file name (page_003 = page 3). The pages
