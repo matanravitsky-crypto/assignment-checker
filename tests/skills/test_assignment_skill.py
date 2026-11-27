@@ -157,3 +157,16 @@ def test_the_front_matter_is_valid_yaml(data, tmp_path):
     md = (tmp_path / "skills" / "grade-linear-1" / "SKILL.md").read_text(encoding="utf-8")
     front = yaml.safe_load(md.split("---\n")[1])
     assert front["name"] == "grade-linear-1" and "Not for other assignments: each" in front["description"]
+
+
+def test_a_brought_rubric_gets_the_assignments_solutions_not_its_rubric(data, tmp_path):
+    (assignment(data) / "פדגוגי" / "Solution methods.md").write_text("# דרכים\n", encoding="utf-8")
+    (assignment(data) / S.grade.SOLUTION).write_bytes(b"%PDF solution")
+    src = tmp_path / "from-pdf"
+    (src / "פדגוגי").mkdir(parents=True)
+    (src / "פדגוגי" / "Rubric.md").write_text("# מחוון מה-PDF\n| שאלה | נק' |\n|---|---|\n| 8 | 50 |\n| 11 | 50 |\n", encoding="utf-8")
+    (src / paths.INFO).write_text(json.dumps({"title": "הגשה 1", "rubric": {"questions": [{"label": l, "points": 50} for l in LABELS]}},
+                                             ensure_ascii=False), encoding="utf-8")
+    added = S.supplement(src, assignment(data))
+    assert sorted(added) == [S.grade.SOLUTION, "פדגוגי/Solution methods.md", "פדגוגי/Solutions.md"]
+    assert "מה-PDF" in (src / "פדגוגי" / "Rubric.md").read_text(encoding="utf-8")   # the brought rubric stays

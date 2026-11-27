@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<title>{{TITLE}}</title>
+<style>
+@page { size: A4; margin: 16mm 16mm 17mm 16mm; }
+:root { --ink:#1b2320; --muted:#5b6662; --line:#d6dcd9; --soft:#f2f5f3; --acc:#1f6f5c; --pol:#8a5a00; }
+* { box-sizing: border-box; }
+body { font-family: "Segoe UI", "Arial", sans-serif; color: var(--ink); font-size: 10.5pt; line-height: 1.6; margin: 0; }
+h1 { font-size: 22pt; margin: 0 0 2mm; line-height: 1.2; }
+h2 { font-size: 14pt; margin: 8mm 0 2.5mm; padding-bottom: 1.2mm; border-bottom: 1.5pt solid var(--acc); break-after: avoid; }
+p { margin: 0 0 2.4mm; }
+ul { margin: 0 0 3mm; padding-inline-start: 6mm; } li { margin-bottom: 1.2mm; }
+.eyebrow { color: var(--acc); font-weight: 700; font-size: 9.5pt; }
+.meta { color: var(--muted); font-size: 9pt; margin-bottom: 4mm; }
+.kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 3mm; margin: 4mm 0; }
+.kpi { border: 1pt solid var(--line); border-radius: 2mm; padding: 3mm; break-inside: avoid; }
+.kpi b { display: block; font-size: 16pt; color: var(--acc); font-variant-numeric: tabular-nums; }
+.kpi span { font-size: 8.5pt; color: var(--muted); }
+table { width: 100%; border-collapse: collapse; margin: 2mm 0 4mm; font-size: 9.3pt; }
+th, td { border-bottom: .6pt solid var(--line); padding: 1.5mm 2mm; text-align: start; vertical-align: top; }
+th { background: var(--soft); font-size: 8.6pt; color: var(--muted); }
+tr { break-inside: avoid; }
+</style>
+</head>
+<body>
+<div class="eyebrow">בודק חכם · מפעל סקילי בדיקה · {{DATE}}</div>
+<h1>{{TITLE}}</h1>
+<div class="meta">סקיל הבדיקה: {{SKILL}} · הופק ב-Google Chrome</div>
+
+<h2>1. תקציר מנהלים ותמונת מצב</h2>
+<div class="kpis">{{KPIS}}</div>
+{{SUMMARY}}
+
+<h2>2. מה היה לפני כן ומה השתפר</h2>
+{{HISTORY}}
+
+<h2>3. פירוט מהלך הבדיקות וההשוואות</h2>
+{{TESTS}}
+
+<h2>4. רמת הגימור האקדמית והחלטיות הבדיקה</h2>
+{{RIGOR}}
+
+<h2>5. ניתוח ביצועים ועלויות טוקנים</h2>
+{{COST}}
+
+<h2>6. נקודות פתוחות להחלטת הבודק</h2>
+{{OPEN}}
+</body>
+</html>

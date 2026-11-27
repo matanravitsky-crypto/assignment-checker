@@ -160,6 +160,8 @@ def build(assignment_id: str, name: str | None = None, by: str | None = None, tr
     # `source`: a rubric package someone brought (the pedagogical team's assignment folder: Assignment details.json and
     # פדגוגי/), dressed instead of the shared folder's own; a draft only, never published from here
     folder = Path(source) if source else home
+    if source:
+        supplement(Path(source), home)
     if source and not draft:
         raise SystemExit("a rubric brought from outside is built as a --draft; publish only from the assignment folder")
     name = name or default_name(home)
@@ -219,6 +221,30 @@ def build(assignment_id: str, name: str | None = None, by: str | None = None, tr
     return {"skill": name, "package": str(dest), "version": manifest["version"], "files": len(files),
             "questions": rubric["questions"], "total_points": rubric["total_points"],
             "approved": manifest["approved"], "draft": draft, "installed": install_one(dest, install_to)}
+
+
+SUPPORT = ("Solutions", "Solution methods")  # files of פדגוגי that are not the rubric: the solutions and accepted methods
+
+
+def supplement(source: Path, home: Path) -> list[str]:
+    """A rubric brought from outside (a PDF made into a package) gets the assignment's own solutions from the shared
+    folder: Solutions.md, Solution methods.md and Official solution.pdf, when the package has none of its own. The
+    rubric stays the one that was brought; only what grading needs beside it is added (2026-11-28, Ori: "יש לך את כל
+    העבודה בוואן דרייב")."""
+    added = []
+    ped_home = next((home / d for d in paths.PEDAGOGY if (home / d).is_dir()), None)
+    ped_src = next((source / d for d in paths.PEDAGOGY if (source / d).is_dir()), source / paths.PEDAGOGY[1])
+    if ped_home:
+        for f in sorted(ped_home.iterdir()):
+            if f.is_file() and f.suffix.lower() in (".md", ".txt") and any(f.stem.startswith(s) for s in SUPPORT)                     and not (ped_src / f.name).exists():
+                ped_src.mkdir(parents=True, exist_ok=True)
+                (ped_src / f.name).write_bytes(f.read_bytes())
+                added.append(f"{ped_src.name}/{f.name}")
+    sol = home / grade.SOLUTION
+    if sol.is_file() and not (source / grade.SOLUTION).exists():
+        (source / grade.SOLUTION).write_bytes(sol.read_bytes())
+        added.append(grade.SOLUTION)
+    return added
 
 
 def stale(package: Path) -> list[str]:
