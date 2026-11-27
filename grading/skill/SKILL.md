@@ -105,9 +105,12 @@ read for sure goes in that table with "?" and you ask about it.
 
 ## 3. The pages
 
-`prepare` writes `submission.pdf`, `page_001.png`... (cropped to the handwriting, with the grid: exactly the images the
-system sends) and `pages.json`. Files it can't read (e.g. .docx) are listed in `skipped`: grade the rest, and tell
-the user which files were not graded.
+`prepare` writes `submission.pdf`, one image per page (cropped to the handwriting, with the grid: exactly the images
+the system sends) and `pages.json`. **The pages are the ones `pages.json` lists, and only those: some are `.png` and
+some `.jpg`**, so never count them by one extension (2026-11-27: a grader counted the .png files, read 3 pages of
+10 and gave 29 instead of 99). `mark` refuses a work with parts "not found" while some page carries no answer and no
+mark; read that page, and only if it really holds nothing of them add `--all-pages-read`. Files it can't read (e.g.
+.docx) are listed in `skipped`: grade the rest, and tell the user which files were not graded.
 
 ## 4. Grade
 

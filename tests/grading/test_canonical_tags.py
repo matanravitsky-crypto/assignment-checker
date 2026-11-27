@@ -83,3 +83,16 @@ def test_the_summary_explains_a_per_question_course_grade_by_questions():
 def test_an_imperative_before_a_colon_or_at_the_end_is_an_instruction_too():
     assert grade.plain("בדקו: האם הכיוונים מקבילים") == "יש לבדוק: האם הכיוונים מקבילים"
     assert grade.plain("נקודה אחת לא נבדקה. בדקו") == "נקודה אחת לא נבדקה. יש לבדוק"
+
+
+def test_a_part_not_found_with_an_unread_page_stops_the_mark():
+    import pytest
+    from grading import one_submission as o
+    g = grade.Graded([0, 7], ["", ""], 50, "", [grade.Mark(1, 1, 1, 9, 9, "x", "8א")],
+                     places=[grade.Mark(0, 0, 0, 0, 0, "8א"), grade.Mark(2, 1, 1, 9, 9, "8ב")],
+                     submitted=[False, True])
+    with pytest.raises(o.PagesNotRead):
+        o.unseen_pages(g, 3)                       # page 3 carries nothing, and 8א is "not found"
+    assert o.unseen_pages(g, 3, all_read=True) == [3]
+    g.submitted = [True, True]
+    assert o.unseen_pages(g, 3) == [3]            # nothing missing: a blank page is fine

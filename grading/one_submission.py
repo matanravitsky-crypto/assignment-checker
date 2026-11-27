@@ -164,7 +164,25 @@ def zoom_ask():
         return None
 
 
-def mark(work: Path, source: Path, answer_file: Path, output: Path, ask=zoom_ask) -> dict:
+class PagesNotRead(ValueError):
+    """A part is "not found" while some page of the work carries no answer and no mark: the page was probably never
+    read (2026-11-27, LA1 1035: a grader counted only the .png pages, 3 of 10, and gave 29 instead of 99)."""
+
+
+def unseen_pages(g: grade.Graded, pages: int, all_read: bool = False) -> list[int]:
+    """The pages no answer starts on and no mark sits on. With a part not handed in among them, refuses (PagesNotRead)
+    unless the grader says every page was read (`--all-pages-read`: a cover page, a blank page)."""
+    used = {m.page for m in g.places if m.page} | {m.page for m in g.marks if m.page}
+    unseen = [p for p in range(1, pages + 1) if p not in used]
+    missing = [i for i, s in enumerate(g.submitted) if not s]
+    if unseen and missing and not all_read:
+        raise PagesNotRead(f"{len(missing)} parts are 'not found', and pages {unseen} carry no answer and no mark. "
+                           "Read those pages (pages.json lists every page, .png and .jpg) and grade again; if they "
+                           "really hold nothing of these parts, run mark again with --all-pages-read.")
+    return unseen
+
+
+def mark(work: Path, source: Path, answer_file: Path, output: Path, ask=zoom_ask, all_read: bool = False) -> dict:
     """ask: how the zoom pass reaches Claude (a function returning an Ask, or None for none). The pass places every
     mark again on a close-up of the page, and a part's start the marks contradict (locate.py), as in the system: on
     graph paper the rough boxes were off by a fifth of the page (2026-11-16, Nadav: 0093)."""
@@ -174,6 +192,7 @@ def mark(work: Path, source: Path, answer_file: Path, output: Path, ask=zoom_ask
     images = [render.PageImage(p["page"], b"", p.get("width") or 0, p.get("height") or 0,
                                tuple(p["clip"]) if p.get("clip") else None) for p in info["pages"]]
     g = grade.parse_answer(Path(answer_file).read_text(encoding="utf-8-sig"), ctx, len(images))
+    unseen_pages(g, len(images), all_read)
     g.marks = grade.marks_to_page(g.marks, images)
     g.places = grade.marks_to_page(g.places, images)
     submission = (work / SUBMISSION).read_bytes()
@@ -266,8 +285,9 @@ def main(argv: list[str]) -> int:
             out = grade.SCHEMA
         elif cmd == "rubric" and len(args) == 1:
             out = rubric(Path(args[0]))
-        elif cmd == "mark" and len(args) in (4, 5) and (len(args) == 4 or args[4] == "--no-zoom"):
-            out = mark(*(Path(a) for a in args[:4]), ask=None if len(args) == 5 else zoom_ask)
+        elif cmd == "mark" and len(args) >= 4 and set(args[4:]) <= {"--no-zoom", "--all-pages-read"}:
+            out = mark(*(Path(a) for a in args[:4]), ask=None if "--no-zoom" in args[4:] else zoom_ask,
+                       all_read="--all-pages-read" in args[4:])
         elif cmd == "zoom" and len(args) in (2, 6):
             out = zoom(Path(args[0]), int(args[1]), [float(a) for a in args[2:]] or None)
         elif cmd == "preview" and len(args) >= 2:
@@ -278,6 +298,9 @@ def main(argv: list[str]) -> int:
     except grade.NoRubric as e:
         print(str(e), file=sys.stderr)
         return 2
+    except PagesNotRead as e:
+        print(str(e), file=sys.stderr)
+        return 3
     except (grade.GradingError, OSError, ValueError) as e:
         print(str(e), file=sys.stderr)
         return 1
