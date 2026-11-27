@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import base64
 import csv
+import functools
 import json
 import math
 import os
@@ -725,13 +726,14 @@ def parse_answer(text: str, ctx: Context, pages: int) -> Graded:
         review = "Claude ביקש שאדם יבדוק את העבודה."
     kind = (kind if kind in REVIEW_KINDS else "other") if review else ""
     points, comments, mistakes, unsure, over, places, firsts, submitted = [], [], [], [], [], [], [], []
+    rows = rubric_rows(ctx.rubric_text)
     for q, answer in zip(ctx.questions, got):
         p = _round_half_up(_num(answer.get("points")))
         if p > q.points:  # יותר ממה שהמחוון נותן לשאלה: נחתך, ואדם מסתכל
             over.append(f"{q.label}: {_pts(p)} מתוך {_pts(q.points)}")
         points.append(min(p, q.points))
         comments.append(str(answer.get("comment") or "").strip())
-        mistakes.append(_mistakes(answer.get("mistakes")))
+        mistakes.append(_mistakes(answer.get("mistakes"), rows))
         unsure.append(answer.get("unsure") is True)
         places.append(_box(answer, pages, q.label) or Mark(0, 0, 0, 0, 0, q.label))
         firsts.append(" ".join(str(answer.get("first") or "").split()))
@@ -869,12 +871,58 @@ def _clip_mistake(text: str, limit: int = MISTAKE_MAX) -> str:
     return head.rstrip(" .,;:-$") + "…"
 
 
-def _mistakes(raw) -> list[str]:
-    """סוגי הטעויות בשאלה: בלי כפילויות ובלי סימני פיסוק בסוף, כדי שאותה טעות תיספר יחד בכל העבודות.
+# "(נראה ב-9 הגשות)" בשורת טעות של המחוון הוא מקור השורה (rubric-builder), לא חלק מהתגית
+_SEEN = re.compile(r"\s*\((?:נראה|נראתה|נראו) ב-?\s*\d+ הגשות\)")
+
+
+def _row_text(text: str) -> str:
+    return " ".join(_SEEN.sub("", str(text).replace("**", "")).split()).strip(" .,;:")
+
+
+@functools.lru_cache(maxsize=16)
+def rubric_rows(rubric_text: str) -> tuple[str, ...]:
+    """The error rows of the rubric's tables (the first cell under a "| טעות |" header), as tags: the text the bot
+    copies word for word, without the row's "(נראה ב-N הגשות)"."""
+    rows: list[str] = []
+    table = False
+    for line in rubric_text.splitlines():
+        s = line.strip()
+        if not s.startswith("|"):
+            table = False
+            continue
+        cells = [c.strip() for c in s.strip("|").split("|")]
+        if cells and cells[0].replace("*", "").strip() == "טעות":
+            table = True
+            continue
+        if table and cells and not set(cells[0]) <= set("-: "):
+            row = _row_text(cells[0])
+            if row and row not in rows:
+                rows.append(row)
+    return tuple(rows)
+
+
+def canonical_tag(tag: str, rows: tuple[str, ...]) -> str:
+    """The rubric's own row for a tag the bot wrote shorter (LA0, 1,078 works: 37% of the tags were not the row word for
+    word, so one mistake was counted under several names): the row without its "(נראה ב-N הגשות)", or a tag that is the
+    start of exactly one row, up to a comma, a colon or a bracket ("רישול סימון בהוכחה נכונה" for "רישול סימון בהוכחה
+    נכונה, כמו ...: הערה בלבד"). Anything else stays as written: a paraphrase is never guessed."""
+    t = _row_text(tag)
+    if not rows or t in rows:
+        return t
+    if len(t) >= 8:
+        starts = [r for r in rows if r.startswith(t) and (len(r) == len(t) or not r[len(t)].isalnum())]
+        if len(starts) == 1 and starts[0][len(t):len(t) + 2] in (",", ":", " (", ", ", ": ", " -"):
+            return starts[0]  # the start of exactly one row (the start of two rows is no answer)
+    return t
+
+
+def _mistakes(raw, rows: tuple[str, ...] = ()) -> list[str]:
+    """סוגי הטעויות בשאלה: בלי כפילויות ובלי סימני פיסוק בסוף, כדי שאותה טעות תיספר יחד בכל העבודות. תגית שהיא
+    שורה של המחוון בקיצור הופכת לשורה עצמה (`canonical_tag`).
     ארוך מ-`MISTAKE_MAX` נחתך בסוף מילה ומסתיים ב-"…" (`_clip_mistake`)."""
     out: list[str] = []
     for m in raw if isinstance(raw, list) else []:
-        text = _clip_mistake(" ".join(str(m).split()).strip(" .,;:"))
+        text = _clip_mistake(canonical_tag(" ".join(str(m).split()).strip(" .,;:"), rows))
         if text and text not in out:
             out.append(text)
     return out
