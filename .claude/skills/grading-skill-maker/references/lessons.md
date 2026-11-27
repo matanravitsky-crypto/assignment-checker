@@ -43,3 +43,11 @@ its part. Never a student's name; works by number only.
 - 2026-11-27, LA0 (grade-linear-0) rounds 1-2, LA1 (grade-linear-1, the pedagogical package) rounds 1-2: the
   lessons above. Skeleton fixes: tags snapped to rows, numbered part names, imperatives (also before ":"), Moodle
   grade per question and its wording, final copy check, own work folder only.
+- 2026-11-27, LA1 comparison, grade-linear-1 vs the pedagogical package run with exercise-grader, 20 works (15
+  judged, 210 sections): points by the rubric 208 vs 205, marking 2.47 vs 2.33, feedback 2.67 vs 2.47; grades equal
+  on 16 of 20, mean gap 0.25. Where they differed the rubric backed grade-linear-1, or the rubric itself let two
+  readings through (8ב "בכל סדר כתיבה" vs 8ב.7). The package's run invented a deduction with no row (0511 8ב) and
+  explained the Moodle grade by sections. Lessons for graders: (1) the rubric's 0-point rows and fixed notes
+  (§G.14: "L=", a mis-copied given) were missed in 4 of 5 works: a last pass over them, with their tags; (2) a
+  "missing" note when the thing is there in another form (t,s∈ℝ³) is false: look again first; (3) a 0-point note
+  still gets its tag in `mistakes`, or the statistics miss it.

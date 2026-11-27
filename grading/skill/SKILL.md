@@ -125,7 +125,11 @@ Only when you could not make out a symbol: `PY "<skill>\scripts\run.py" zoom <wo
 
 Before writing it, one last look per section that got full points: the final answer against the line it was copied
 from, sign by sign and coordinate by coordinate (2026-11-27: a minus lost between the last line and the boxed answer
-got 7/7 and the comment "satisfies the plane").
+got 7/7 and the comment "satisfies the plane"). Then the rubric's 0-point rows and fixed notes once more, section by
+section: each one that applies gets its note on the page and its tag in `mistakes`, even when nothing was deducted
+(the comparison of 2026-11-27 found them missed in 4 of 5 works). And before a note that says something is missing
+("יש לכתוב t,s∈ℝ"), look at the page again: if it is there in another form (t,s∈ℝ³), the note is about that form, or
+there is none.
 
 Write the answer to `<work folder>\answer.json`, exactly the schema `rules` printed (no other keys):
 ```json
