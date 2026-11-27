@@ -1,6 +1,8 @@
 """The bench: a rubric's grading skill against the system, work by work (grading-skill-maker, Step 3).
 
     python bench.py run <moodle id> --skill grade-linear-0 --round R (--numbers 0012 0040 ... | --n N) [--parallel 3]
+    python bench.py run ... --arm generic          the same works through exercise-grader, the rubric given as Rubric.md
+    python bench.py baseline <moodle id> --round R the system's engine on the round's works (when it has no grades)
     python bench.py summary <moodle id> --round R
 
 `run` grades each work the way a teammate would: one headless `claude -p` that is asked, in Hebrew, to grade that work
@@ -38,9 +40,13 @@ from moodle import claude_code, grades, paths, shared_folder  # noqa: E402
 BENCH = Path.home() / ".skill-bench"
 TIMEOUT_S = 30 * 60
 BUDGET_USD = "6"
-PROMPT = ("תבדוק את העבודה שבתיקייה {inp} עם הסקיל {skill}. "
-          "את העבודה הבדוקה שמור בתיקייה {out} (לא בשולחן העבודה), ואל תפתח את התיקייה בסייר. "
-          "בסוף כתוב רק את הציון ואת הנתיב של ה-PDF.")
+END = ("את העבודה הבדוקה שמור בתיקייה {out} (לא בשולחן העבודה), ואל תפתח את התיקייה בסייר. "
+       "בסוף כתוב רק את הציון ואת הנתיב של ה-PDF.")
+# the two arms: the rubric's own skill (the rubric built in), and the original skill with the rubric as a teammate
+# gives it (the assignment's Rubric.md, a copy in the run's folder)
+PROMPTS = {"skill": "תבדוק את העבודה שבתיקייה {inp} עם הסקיל {skill}. " + END,
+           "generic": "תבדוק את העבודה שבתיקייה {inp} עם הסקיל exercise-grader, לפי המחוון {rubric}. " + END}
+SYSTEM_ROUND = "{round}-system"  # the system's engine on the same works (meta-evaluator offline.py), when it has no grade
 
 
 def _root() -> Path:
@@ -63,7 +69,10 @@ def round_dir(assignment_id: str, name: str) -> Path:
 
 
 def _usage(folder: Path) -> list[dict]:
-    f = folder / paths.USAGE_LOG
+    return _usage_file(folder / paths.USAGE_LOG)
+
+
+def _usage_file(f: Path) -> list[dict]:
     out = []
     if f.is_file():
         for line in f.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -74,7 +83,7 @@ def _usage(folder: Path) -> list[dict]:
     return out
 
 
-def run_one(assignment: Path, number: str, skill: str, rnd: Path, model: str | None) -> dict:
+def run_one(assignment: Path, number: str, skill: str, rnd: Path, model: str | None, arm: str = "skill") -> dict:
     work = rnd / "runs" / number
     if work.exists():
         shutil.rmtree(work)
@@ -83,6 +92,13 @@ def run_one(assignment: Path, number: str, skill: str, rnd: Path, model: str | N
     out.mkdir()
     for f in paths.files_by_number(assignment / paths.TO_GRADE).get(number, []):
         shutil.copyfile(f, inp / f.name)
+    rubric = work / "rubric" / "Rubric.md"
+    if arm == "generic":
+        src = next((assignment / d / "Rubric.md" for d in paths.PEDAGOGY if (assignment / d / "Rubric.md").is_file()), None)
+        if src is None:
+            raise SystemExit("the generic arm needs the assignment's Rubric.md")
+        rubric.parent.mkdir()
+        shutil.copyfile(src, rubric)
     exe = claude_code.find_claude()
     if not exe:
         raise SystemExit("Claude Code is not installed here")
@@ -93,7 +109,7 @@ def run_one(assignment: Path, number: str, skill: str, rnd: Path, model: str | N
     env = {**os.environ, "ASSIGNMENT_DATA": str(work), "PYTHONIOENCODING": "utf-8"}
     started = time.monotonic()
     try:
-        p = subprocess.run(cmd, input=PROMPT.format(inp=inp, out=out, skill=skill), cwd=work, env=env,
+        p = subprocess.run(cmd, input=PROMPTS[arm].format(inp=inp, out=out, skill=skill, rubric=rubric), cwd=work, env=env,
                            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=TIMEOUT_S)
         raw, code = p.stdout, p.returncode
     except subprocess.TimeoutExpired:
@@ -107,7 +123,7 @@ def run_one(assignment: Path, number: str, skill: str, rnd: Path, model: str | N
     marked = sorted(out.glob("*.json"))
     summary = json.loads(marked[-1].read_text(encoding="utf-8")) if marked else None
     zoom = [u for u in _usage(work) if u.get("purpose") == "locate"]
-    row = {"number": number, "ok": bool(summary) and not res.get("is_error"), "exit": code, "seconds": seconds,
+    row = {"number": number, "arm": arm, "ok": bool(summary) and not res.get("is_error"), "exit": code, "seconds": seconds,
            "cost_usd": res.get("total_cost_usd"), "turns": res.get("num_turns"),
            "input": usage.get("input_tokens"), "cache_write": usage.get("cache_creation_input_tokens"),
            "cache_read": usage.get("cache_read_input_tokens"), "output": usage.get("output_tokens"),
@@ -124,19 +140,38 @@ def run_one(assignment: Path, number: str, skill: str, rnd: Path, model: str | N
 
 
 def run(assignment_id: str, skill: str, name: str, numbers: list[str] | None, n: int | None, parallel: int,
-        model: str | None, seed: int) -> None:
+        model: str | None, seed: int, arm: str = "skill") -> None:
     assignment = paths.assignment_dir(assignment_id)
     rnd = round_dir(assignment_id, name)
     rnd.mkdir(parents=True, exist_ok=True)
     have = grades.read(assignment)
     if not numbers:
         on_disk = paths.files_by_number(assignment / paths.TO_GRADE)  # one listing: the folder has ~1,100 files
-        pool = sorted(n_ for n_ in have if on_disk.get(n_))
+        pool = sorted(n_ for n_ in (have or on_disk) if on_disk.get(n_))  # no grades yet (LA1): any submission
         numbers = sorted(random.Random(seed).sample(pool, min(n or 0, len(pool))))
-    (rnd / "plan.json").write_text(json.dumps({"skill": skill, "numbers": numbers, "model": model}, indent=1),
+    (rnd / "plan.json").write_text(json.dumps({"skill": skill, "arm": arm, "numbers": numbers, "model": model}, indent=1),
                                    encoding="utf-8")
     with ThreadPoolExecutor(max_workers=max(1, parallel)) as pool_:
-        list(pool_.map(lambda num: run_one(assignment, num, skill, rnd, model), numbers))
+        list(pool_.map(lambda num: run_one(assignment, num, skill, rnd, model, arm), numbers))
+
+
+def baseline(assignment_id: str, name: str, parallel: int) -> int:
+    """The system's engine on the round's works, into ~/.meta-eval/<id>/<round>-system (nothing in the shared folder)."""
+    plan = json.loads((round_dir(assignment_id, name) / "plan.json").read_text(encoding="utf-8"))
+    offline = Path(__file__).resolve().parents[2] / "meta-evaluator" / "scripts" / "offline.py"
+    return subprocess.run([sys.executable, str(offline), str(assignment_id), "--round",
+                           SYSTEM_ROUND.format(round=name), "--parallel", str(parallel), "--numbers", *plan["numbers"]],
+                          cwd=REPO).returncode
+
+
+def _offline(assignment_id: str, name: str) -> tuple[dict, dict]:
+    """The baseline round's grades and its cost per work (grade + zoom), or empty."""
+    d = Path.home() / ".meta-eval" / str(assignment_id) / SYSTEM_ROUND.format(round=name)
+    g = json.loads((d / "grades.json").read_text(encoding="utf-8")) if (d / "grades.json").is_file() else {}
+    cost: dict[str, float] = {}
+    for u in _usage_file(d / "usage.jsonl"):
+        cost[u.get("work", "")] = cost.get(u.get("work", ""), 0) + (u.get("cost_usd") or 0)
+    return g, cost
 
 
 def _system_cost(root: Path) -> dict:
@@ -167,6 +202,10 @@ def summary(assignment_id: str, name: str) -> dict:
         r = json.loads(line)
         rows[r["number"]] = r  # the last run of a number counts
     sysg = grades.read(assignment)
+    off, off_cost = _offline(assignment_id, name)
+    for num, row in off.items():  # the engine's own run, where the system has no grade
+        if not (sysg.get(num) or {}).get("grade"):
+            sysg[num] = {"grade": row["grade"], "points": [float(x) for x in str(row["points"]).split(";") if x]}
     out_rows, dg, dq, gold = [], [], [], []
     for num, r in sorted(rows.items()):
         s = sysg.get(num) or {}
@@ -201,9 +240,33 @@ def summary(assignment_id: str, name: str) -> dict:
            "cost_median": round(statistics.median(cost), 3) if cost else None,
            "seconds_median": round(statistics.median(r["seconds"] for r in ok)) if ok else None,
            "turns_median": statistics.median(r["turns"] or 0 for r in ok) if ok else None,
-           "system": _system_cost(paths.data_dir()), "rows": out_rows}
+           "system": _system_cost(paths.data_dir()),
+           "system_this_round": {"n": len(off_cost), "cost": round(statistics.median(off_cost.values()), 3)}
+           if off_cost else None, "rows": out_rows}
     (rnd / "summary.json").write_text(json.dumps(res, ensure_ascii=False, indent=1), encoding="utf-8")
     return res
+
+
+def compare(assignment_id: str, rounds: list[str]) -> dict:
+    """Two or more rounds on the same works (the rubric's skill, exercise-grader, ...) side by side, with the system."""
+    sums = {r: summary(assignment_id, r) for r in rounds}
+    by = {r: {row["number"]: row for row in s_["rows"]} for r, s_ in sums.items()}
+    common = sorted(set.intersection(*(set(b) for b in by.values())))
+    table = [{"number": n, "system": by[rounds[0]][n]["system"],
+              **{r: by[r][n]["skill"] for r in rounds}, **{f"{r}_cost": by[r][n]["cost"] for r in rounds}} for n in common]
+    pairs = {}
+    for i, a in enumerate(rounds):
+        for b in rounds[i + 1:]:
+            d = [abs(float(t[a]) - float(t[b])) for t in table if t[a] is not None and t[b] is not None]
+            pairs[f"{a} vs {b}"] = round(statistics.mean(d), 2) if d else None
+    out = {"works": len(common), "between": pairs,
+           "per_round": {r: {k: s_[k] for k in ("graded", "failed", "grade_mean_abs_diff", "grade_mean_diff", "within_4",
+                                                 "over_10", "question_mean_abs_diff", "manual_review", "cost_median",
+                                                 "seconds_median", "turns_median")} for r, s_ in sums.items()},
+           "table": table}
+    (BENCH / str(assignment_id) / ("compare-" + "-".join(rounds) + ".json")).write_text(
+        json.dumps(out, ensure_ascii=False, indent=1), encoding="utf-8")
+    return out
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -221,6 +284,14 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--parallel", type=int, default=3)
     r.add_argument("--model")
     r.add_argument("--seed", type=int, default=7)
+    r.add_argument("--arm", choices=sorted(PROMPTS), default="skill")
+    bl = sub.add_parser("baseline")
+    bl.add_argument("id")
+    bl.add_argument("--round", required=True)
+    bl.add_argument("--parallel", type=int, default=3)
+    cp = sub.add_parser("compare")
+    cp.add_argument("id")
+    cp.add_argument("--rounds", nargs="+", required=True)
     s = sub.add_parser("summary")
     s.add_argument("id")
     s.add_argument("--round", required=True)
@@ -229,7 +300,12 @@ def main(argv: list[str] | None = None) -> int:
     if a.cmd == "run":
         if not a.numbers and not a.n:
             p.error("--numbers or --n (how many is the user's call)")
-        run(a.id, a.skill, a.round, a.numbers, a.n, a.parallel, a.model, a.seed)
+        run(a.id, a.skill, a.round, a.numbers, a.n, a.parallel, a.model, a.seed, a.arm)
+        return 0
+    if a.cmd == "baseline":
+        return baseline(a.id, a.round, a.parallel)
+    if a.cmd == "compare":
+        print(json.dumps(compare(a.id, a.rounds), ensure_ascii=False, indent=1))
         return 0
     res = summary(a.id, a.round)
     print(json.dumps({k: v for k, v in res.items() if k != "rows"}, ensure_ascii=False, indent=1))

@@ -328,6 +328,8 @@ def main(argv: list[str] | None = None) -> int:
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8")
+    from moodle import shared_folder
+    shared_folder.use_for_commands()  # the synced shared folder, like every other command (moodle, grading, copying)
     p = argparse.ArgumentParser(prog="python tools/assignment_skill.py", description="A grading skill per rubric")
     sub = p.add_subparsers(dest="cmd", required=True)
     b = sub.add_parser("build")
