@@ -78,3 +78,8 @@ def test_the_summary_explains_a_per_question_course_grade_by_questions():
     g.course = 50
     text = summary.course_text(g, ctx)
     assert "לפי השאלות שהוגשו" in text and "1 מתוך 2 שאלות" in text and "16" in text
+
+
+def test_an_imperative_before_a_colon_or_at_the_end_is_an_instruction_too():
+    assert grade.plain("בדקו: האם הכיוונים מקבילים") == "יש לבדוק: האם הכיוונים מקבילים"
+    assert grade.plain("נקודה אחת לא נבדקה. בדקו") == "נקודה אחת לא נבדקה. יש לבדוק"

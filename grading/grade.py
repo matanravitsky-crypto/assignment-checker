@@ -826,7 +826,7 @@ def course_grade(g: Graded, ctx: Context, copies: list[str] | None = None) -> No
 # 2026-11-27 (the improvement round of LA1): also "הציבו", "בדקו" and the like, which a student reads both ways too
 _INSTEAD = {"כתבו": "יש לכתוב", "רשמו": "יש לרשום", "הציבו": "יש להציב", "בדקו": "יש לבדוק", "חשבו": "יש לחשב",
             "הוכיחו": "יש להוכיח", "הראו": "יש להראות", "נמקו": "יש לנמק", "פתרו": "יש לפתור", "סמנו": "יש לסמן"}
-_AMBIGUOUS = re.compile(r"(^|[.:;!?\n]\s*|-\s+|,\s+)(" + "|".join(_INSTEAD) + r")(?=\s)")
+_AMBIGUOUS = re.compile(r"(^|[.:;!?\n]\s*|-\s+|,\s+)(" + "|".join(_INSTEAD) + r")(?=[\s:;,.!?)]|$)")  # round 2: "בדקו:" too
 
 
 def plain(text: str) -> str:
