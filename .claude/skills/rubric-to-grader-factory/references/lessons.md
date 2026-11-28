@@ -87,3 +87,6 @@ its part. Never a student's name; works by number only.
   The same work graded in rounds 1 and 2 differed by 2.4 on average: the gap is mostly a grader's own noise. The
   bias left: two deductions in one section for one mistake (a wrong pair, then the A≠B it cost; 11ג in 12 works).
   Rule 6 of the decision order: one mistake, one deduction; a missing conclusion is deducted only by its own row.
+- 2026-11-28, decisive round 3 (rule 6 added; the 12 works furthest from the TA in round 2): queue 0, mean gap to the
+  TA 4.3 -> 2.4, the size of a grader's own run-to-run noise; 0427 76 = TA (85 in round 1, 72 in round 2). The one
+  large gap left (0954, 5 points) is a section where the TA gave 8/8 against the rubric's row.
