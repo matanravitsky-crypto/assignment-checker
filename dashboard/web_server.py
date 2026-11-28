@@ -435,6 +435,12 @@ class Handler(SimpleHTTPRequestHandler):
                 parallel = max(1, min(int(body.get("parallel") or grading.DEFAULT_PARALLEL), 20))
             except (TypeError, ValueError):
                 parallel = grading.DEFAULT_PARALLEL
+            # תמיד על הגרסה האחרונה: יש חדש ב-GitHub? השרת מתעדכן עכשיו, והאתר שולח את הבדיקה שוב כשהוא חוזר (updater)
+            to = updater.update_now()
+            if to:
+                return self._json({"updating": True, "version": updater.version(), "to": to[:7],
+                                   "error": "יש גרסה חדשה של המערכת. היא מתעדכנת עכשיו, והבדיקה תתחיל מעצמה בעוד דקה-שתיים."},
+                                  HTTPStatus.SERVICE_UNAVAILABLE)
             try:
                 job = actions.start_grading(root, course, assignment, ids, model=model, parallel=parallel,
                                             instructions=str(body.get("instructions") or "")[:5000],

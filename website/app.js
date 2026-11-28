@@ -2999,7 +2999,7 @@
     return fetch(BASE + path, { cache: "no-store", ...opts, headers: { "Content-Type": "application/json", "X-Assignment-Checker": "1" } })
       .then(async (r) => {
         const data = await r.json().catch(() => ({}));
-        if (!r.ok) throw Object.assign(new Error(data.error || `המערכת במחשב החזירה שגיאה ${r.status}`), { status: r.status });
+        if (!r.ok) throw Object.assign(new Error(data.error || `המערכת במחשב החזירה שגיאה ${r.status}`), { status: r.status, data });
         return data;
       }, () => { throw new Error("אין חיבור למערכת במחשב. אם המחשב נדלק עכשיו, מחכים דקה; אחרת מפעילים את " + START_FILE + "."); });
   }
@@ -3200,10 +3200,21 @@
     render(); refreshDrawer();
     try {
       const c = state.claude;
-      await api("api/grade", { method: "POST", body: JSON.stringify({
+      const send = () => api("api/grade", { method: "POST", body: JSON.stringify({
         course: A.courseFolder, assignment: A.folder, ids,
         model: c.model, parallel: c.parallel, sendSolution: c.sendSolution, instructions: state.instr.grade,
       }) });
+      try {
+        await send();
+      } catch (e) {
+        // יש גרסה חדשה ב-GitHub: השרת מתעדכן לפני הבדיקה (dashboard/updater.py update_now). מחכים שיחזור בגרסה
+        // החדשה ושולחים שוב, פעם אחת. בדיקה על קוד ישן נכשלה אחרי ש-Claude כבר בדק (2026-11-18)
+        if (!e.data?.updating) throw e;
+        run.progress = "יש גרסה חדשה של המערכת. מעדכן לפני הבדיקה, בערך דקה עד שלוש…";
+        render();
+        await waitForVersion(e.data.version);
+        await send();
+      }
       run.steps[0] = "done"; run.steps[1] = "running";
       await followGrade(A, run);
     } catch (e) {
@@ -3212,6 +3223,18 @@
       refreshDrawer();
       toast(e.message, ICON.warn);
     }
+  }
+
+  // מחכה שהשרת יחזור אחרי עדכון, בגרסה אחרת מ-`old`. עד 5 דקות (start.bat מושך, מעדכן ומעלה, בדרך כלל 1-3)
+  async function waitForVersion(old) {
+    const until = Date.now() + 5 * 60 * 1000;
+    while (Date.now() < until) {
+      await new Promise((r) => setTimeout(r, 3000));
+      const h = await api("api/health").catch(() => null);
+      // LOCAL.version נשאר הישן: כשהבדיקה נגמרת, pollChanges רואה גרסה חדשה וטוען את הדף, כדי שגם האתר יהיה החדש
+      if (h?.version && h.version !== old) { LOCAL.health = h; return; }
+    }
+    throw new Error("העדכון של המערכת לא הסתיים תוך 5 דקות. מפעילים את start.bat ולוחצים שוב על \"בדוק\".");
   }
 
   // שואל את השרת על הבדיקה שרצה עד שהיא נגמרת. גם בדיקה שהתחילה לפני שהדף נטען (ואז אפשר לעצור אותה מכאן)

@@ -157,12 +157,43 @@ def tick(busy, *, waiting=waiting_update, watchdog=watchdog_running, tried=tried
     return target, 0
 
 
+_hooks: tuple | None = None  # (stop_server, lock, busy) של השרת הזה, כש-start הפעיל את העדכון העצמי
+STOP_DELAY_S = 1.0  # עצירה אחרי שהתשובה ל"בדוק" יצאה לאתר
+
+
+def update_now() -> str | None:
+    """רגע לפני בדיקה ("בדוק" באתר): אם ב-GitHub יש גרסה חדשה של main ואפשר לעבור אליה עכשיו, עוצרים מיד במקום לחכות
+    לבדיקה של כל שעה, ו-autostart.vbs מעלה את השרת מעודכן תוך דקה. מחזיר את ה-commit שאליו עוברים (השרת נעצר והאתר
+    מחכה לגרסה החדשה ושולח את הבדיקה שוב), או None כשבודקים על הגרסה הזו: אין חדש, משהו רץ, אין watchdog, העדכון כבוי,
+    או שכבר ניסינו לעבור לאותה גרסה ולא הצליח (בלי מעגל).
+    למה (2026-11-18): שרת שעוד רץ על הקוד של 15.11 נכשל בבדיקה רק אחרי ש-Claude כבר בדק (כ-$0.9 לכל ניסיון, בלי ציון)."""
+    if _hooks is None:
+        return None
+    stop_server, lock, busy = _hooks
+    if not lock.acquire(blocking=False):  # משיכה או העלאה באמצע: בודקים על הגרסה הזו
+        return None
+    try:
+        target, _ = tick(busy)
+    except Exception:  # noqa: BLE001 - בלי רשת או git: בודקים על הגרסה הזו
+        target = None
+    if not target:
+        lock.release()
+        return None
+    remember_try(target)
+    _say(f"נלחץ \"בדוק\" ויש גרסה חדשה ב-GitHub ({target[:7]}). השרת נעצר, ו-autostart.vbs יעלה אותו מעודכן תוך דקה.")
+    # הנעילה נשארת תפוסה עד שהתהליך נגמר, כמו בעדכון של כל שעה: שום כפתור לא מתחיל בינתיים
+    threading.Timer(STOP_DELAY_S, stop_server).start()
+    return target
+
+
 def start(port: int, stop_server, lock: threading.Lock, busy) -> threading.Thread | None:
     """תהליכון ברקע של השרת. `stop_server` עוצר את השרת (httpd.shutdown). `lock` הוא הנעילה של הכפתורים: מחזיקים
     אותה מהבדיקה האחרונה ועד העצירה, כדי שמשיכה לא תתחיל באמצע. `busy()` מחזיר מה רץ (ריק = כלום)."""
+    global _hooks
     if not enabled() or port != WATCHED_PORT:
         return None
     version()  # הגרסה שהשרת עלה איתה, לפני ש-git pull ידני ישנה את התיקייה
+    _hooks = (stop_server, lock, busy)
 
     def loop() -> None:
         wait, sleeper = min(FIRST_CHECK_S, check_s()), threading.Event()
