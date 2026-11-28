@@ -35,7 +35,7 @@ HEADER = "X-Assignment-Checker"
 # האתר הציבורי ב-Vercel: רק הכתובת הזו בדיוק (לא כתובות תצוגה מקדימה של Vercel)
 SITE_ORIGINS = ("https://bodek-hacham.vercel.app",)
 # הוואן דרייב של המרצה: סקריפט בלשונית שלו (onedrive/sync.js) קורא מכאן את קובצי הקורס ומעלה רק מה שהשתנה.
-# המקור הזה מקבל CORS רק לכתובות /api/sync/, ורק לקריאה
+# המקור הזה מקבל CORS רק לכתובות /api/sync/: קריאה, ובכיוון השני (Mac) גם put/state, עם הכותרת שלנו (sync.write_file)
 SYNC_ORIGIN = "https://bgu365-my.sharepoint.com"
 SYNC_PREFIX = "/api/sync/"
 _lock = threading.Lock()  # משיכה אחת בכל פעם
@@ -92,7 +92,7 @@ class Handler(SimpleHTTPRequestHandler):
         if not self._host_ok() or (origin not in SITE_ORIGINS and not sync):
             return self.send_error(HTTPStatus.FORBIDDEN)
         self.send_response(HTTPStatus.NO_CONTENT)
-        self.send_header("Access-Control-Allow-Methods", "GET" if sync else "GET, POST")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST")
         self.send_header("Access-Control-Allow-Headers", f"Content-Type, {HEADER}")
         self.send_header("Access-Control-Allow-Private-Network", "true")
         self.send_header("Access-Control-Max-Age", "600")
@@ -310,7 +310,13 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             course = query.get("course", [""])[0]
             if url.path == SYNC_PREFIX + "list":
-                return self._json({"course": course, "files": sync.list_files(course)})
+                # בלי תיקיית נתונים עדיין (Mac שעוד לא הוריד כלום): רשימה ריקה, והסקריפט מוריד הכל
+                try:
+                    files = sync.list_files(course)
+                except FileNotFoundError:
+                    files = []
+                return self._json({"course": course, "files": files, "state": sync.read_state(course),
+                                   "writable": sync.writable() is None, "notWritable": sync.writable()})
             if url.path == SYNC_PREFIX + "file":
                 data = sync.read_file(course, query.get("path", [""])[0])
                 self.send_response(HTTPStatus.OK)
@@ -325,7 +331,29 @@ class Handler(SimpleHTTPRequestHandler):
         return self.send_error(HTTPStatus.NOT_FOUND)
 
     # ---------- POST ----------
+    def _sync_post(self, url) -> None:
+        """הכיוון השני של onedrive/sync.js: קובץ שהגיע מהוואן דרייב (put), ומה סונכרן עכשיו (state).
+        רק מהלשונית של הוואן דרייב, עם הכותרת שלנו (אתר אחר לא יכול לשלוח אותה בלי preflight שנדחה)."""
+        query = parse_qs(url.query)
+        course = query.get("course", [""])[0]
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+            data = self.rfile.read(n) if n > 0 else b""
+            if url.path == SYNC_PREFIX + "put":
+                return self._json(sync.write_file(course, query.get("path", [""])[0], data,
+                                                  int(query.get("mtime", ["0"])[0]), query.get("expect", [""])[0]))
+            if url.path == SYNC_PREFIX + "state":
+                return self._json({"recorded": sync.record_state(course, json.loads(data or b"{}"))})
+        except sync.Refused as e:
+            return self._json({"error": str(e)}, HTTPStatus.CONFLICT)
+        except (ValueError, FileNotFoundError) as e:
+            return self._json({"error": str(e)}, HTTPStatus.BAD_REQUEST)
+        return self.send_error(HTTPStatus.NOT_FOUND)
+
     def do_POST(self):
+        if (self._host_ok() and self.headers.get(HEADER) == "1" and self.headers.get("Origin") == SYNC_ORIGIN
+                and self.path.startswith(SYNC_PREFIX)):
+            return self._sync_post(urlparse(self.path))
         if not self._host_ok() or not self._write_ok():
             self._discard_body()  # else Windows may reset the connection before the client reads the 403
             return self.send_error(HTTPStatus.FORBIDDEN)

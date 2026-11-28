@@ -73,6 +73,76 @@
     return out;
   }
 
+  // ---------- בשני הכיוונים (2026-11-20, בשביל Mac) ----------
+  // ב-Mac אפליקציית OneDrive לא יכולה לסנכרן את התיקייה של המרצה (חשבונות הצוות אורחים ב-BGU, ו-BGU דורשת מהם
+  // אימות דו-שלבי שהאפליקציה לא מציגה). הדפדפן כן מציג אותו, אז הסקריפט גם מוריד: מה שחדש בוואן דרייב נשמר במחשב
+  // דרך השרת המקומי (/api/sync/put), שמסרב לדרוס קובץ שהשתנה במחשב מאז ההשוואה.
+  // base: {נתיב: {local: [גודל, זמן], remote: [גודל, זמן]}} מהסנכרון האחרון במחשב הזה. איתו יודעים מי השתנה:
+  //   רק המחשב → מעלים. רק הוואן דרייב → מורידים. שניהם → התנגשות: לא נוגעים באף צד, ומדווחים.
+  //   סונכרן פעם ונעלם מצד אחד (נמחק או הועבר שם) → לא מחזירים אותו: מדווחים (goneRemote / goneLocal).
+  // בלי base (קובץ שעוד לא סונכרן מהמחשב הזה): גודל שונה → הצד שנשמר אחרון, בהפרש של יותר מ-CLOCK_SLACK_MS; אחרת
+  //   התנגשות. אותו גודל → כמו קודם: עולה אם הוא חדש יותר במחשב, ואחרת זהה (ונרשם ב-base מעכשיו).
+  const LOCK = /(^|\/)[^/]* in progress\.txt$/i;
+  const LOCK_FRESH_MS = 30 * 60 * 1000;
+  const sameAs = (a, b) => Array.isArray(b) && a[0] === b[0] && Math.abs(a[1] - b[1]) <= 1000;
+  // מטלות שבוואן דרייב רצה בהן עכשיו משיכה, בדיקה או העלאה (מנעול טרי שמחשב מסונכרן העלה): לא מורידים מהן
+  function busyRemote(remote, now = Date.now()) {
+    const out = new Set();
+    for (const [path, r] of Object.entries(remote)) {
+      if (LOCK.test(path) && path.includes("/") && now - r.mtime < LOCK_FRESH_MS) out.add(path.slice(0, path.indexOf("/")));
+    }
+    return out;
+  }
+  function plan2(local, remote, base = {}, { up = true, down = true, now = Date.now() } = {}) {
+    const out = { upload: [], download: [], same: [], conflict: [], remoteNewer: [], localNewer: [], skipped: [],
+      archived: [], goneRemote: [], goneLocal: [], busy: [], record: {} };
+    const archived = archivedAt(remote);
+    const busy = busyRemote(remote, now);
+    const seen = new Set();
+    const get = (f, r, why) => {
+      const assignment = f.path.includes("/") ? f.path.slice(0, f.path.indexOf("/")) : "";
+      if (!down) { if (f.size !== undefined) out.remoteNewer.push(f.path); }  // רק בוואן דרייב: כמו קודם, לא מדווחים
+      else if (busy.has(assignment)) out.busy.push(f.path);
+      else out.download.push({ path: f.path, size: r.size, mtime: r.mtime, expect: f.size === undefined ? "none" : `${f.size}:${f.mtime}`, why });
+    };
+    const put = (f, why) => { if (up) out.upload.push({ ...f, why }); else out.localNewer.push(f.path); };
+    for (const f of local) {
+      seen.add(f.path);
+      if (SKIP.test(f.path)) { out.skipped.push(f.path); continue; }
+      const r = remote[f.path], b = base[f.path];
+      const slash = f.path.indexOf("/"), assignment = f.path.slice(0, slash);
+      if (!r) {
+        if (b) out.goneRemote.push(f.path);
+        else if (slash > 0 && archived[assignment] !== undefined && GRADING_OUTPUT.test(f.path.slice(slash + 1))
+            && f.mtime <= archived[assignment] + CLOCK_SLACK_MS) out.archived.push(f.path);
+        else put(f, "new");
+        continue;
+      }
+      const L = [f.size, f.mtime], R = [r.size, r.mtime];
+      if (b) {
+        const lc = !sameAs(L, b.local), rc = !sameAs(R, b.remote);
+        if (!lc && !rc) out.same.push(f.path);
+        else if (lc && !rc) put(f, "changed");
+        else if (!lc && rc) get(f, r, "changed");
+        else out.conflict.push(f.path);
+        continue;
+      }
+      const localNewer = f.mtime > r.mtime + CLOCK_SLACK_MS, remoteNewer = r.mtime > f.mtime + CLOCK_SLACK_MS;
+      if (f.size === r.size) {
+        if (localNewer) put(f, "changed");
+        else { out.same.push(f.path); out.record[f.path] = { local: L, remote: R }; }
+      } else if (localNewer) put(f, "changed");
+      else if (remoteNewer) get(f, r, "changed");
+      else out.conflict.push(f.path);
+    }
+    for (const [path, r] of Object.entries(remote)) {
+      if (seen.has(path) || SKIP.test(path) || LOCK.test(path)) continue;
+      if (base[path]) { out.goneLocal.push(path); continue; }
+      get({ path }, r, "new");
+    }
+    return out;
+  }
+
   // ---------- טבלת המפתח בין מחשבים ----------
   // כל אחד בצוות יכול למשוך, כל אחד למחשב שלו. אם שני מחשבים משכו את אותה מטלה, לכל אחד טבלת מפתח משלו, ומי שמעלה
   // אחרון היה דורס את השנייה: סטודנטים נעלמים מהטבלה המשותפת, או ששני סטודנטים מקבלים אותו מספר, וקובץ 0481.pdf של
@@ -135,8 +205,11 @@
     return upload.filter((f) => !bad.some((dir) => f.path === dir || f.path.startsWith(dir + "/")));
   }
 
-  if (typeof window === "undefined") { module.exports = { plan, SKIP, keyProblems, withoutConflicts, csvRows }; return; }
+  if (typeof window === "undefined") {
+    module.exports = { plan, plan2, busyRemote, SKIP, keyProblems, withoutConflicts, csvRows }; return;
+  }
   window.__ecsPlan = plan;  // לבדיקות
+  window.__ecsPlan2 = plan2;
   window.__ecsKeyProblems = keyProblems;
   window.__ecsWithoutConflicts = withoutConflicts;
 
@@ -229,6 +302,66 @@
     return r.json();
   }
 
+  // ---------- הורדה: מהוואן דרייב למחשב ----------
+  async function listFolders(folder) {
+    const data = await api(`GetFolderByServerRelativeUrl('${q(folder)}')/Folders?$select=Name`);
+    return (data.value || []).map((d) => d.Name).filter((n) => n !== "Forms");
+  }
+  async function remoteText(base, path) {
+    const r = await fetch(SITE + `/_api/web/GetFileByServerRelativeUrl('${q(base + "/" + path)}')/$value`);
+    if (!r.ok) throw new Error(`${r.status} ${path}`);
+    return r;
+  }
+  const localPost = (what, body) => fetch(LOCAL + what, {
+    method: "POST", headers: { "X-Assignment-Checker": "1", "Content-Type": "application/octet-stream" }, body });
+  // טבלת מפתח שמורידים חייבת להכיל כל סטודנט שבטבלה שבמחשב, עם אותו מספר (ההפך מההעלאה). אחרת לא מורידים כלום מהמטלה
+  async function downloadKeyCheck(base, c, download, local) {
+    const out = {};
+    const byPath = new Map(local.map((f) => [f.path, f]));
+    for (const f of download) {
+      if (!(f.path === KEY_NAME || f.path.endsWith("/" + KEY_NAME)) || f.expect === "none") continue;
+      const dir = f.path.slice(0, Math.max(0, f.path.length - KEY_NAME.length - 1));
+      try {
+        const there = await (await remoteText(base, f.path)).text();
+        out[dir] = keyProblems(there, new TextDecoder().decode(await localBytes({ ...byPath.get(f.path), course: c })));
+      } catch (e) { out[dir] = [`אי אפשר להשוות את טבלאות המפתח (${e.message})`]; }
+    }
+    return out;
+  }
+  const keyDownReport = (problems) => Object.entries(problems).filter(([, p]) => p.length)
+    .map(([dir, p]) => `${dir || "התיקייה"}: לא הורדה. טבלת המפתח בוואן דרייב לא מכילה את כל מה שבמחשב הזה: ${p.join("; ")}.` +
+      " צריך לאחד את הטבלאות, אחרת סטודנטים היו נעלמים או מקבלים מספר של מישהו אחר.");
+  // מוריד רשימה, PARALLEL בכל פעם. השרת המקומי מסרב (409) לקובץ שהשתנה במחשב מאז ההשוואה: לא מנסים אותו שוב
+  async function runDownload(base, c, todo, progress) {
+    const queue = [...todo], done = [], failed = [], refused = [];
+    async function one(f) {
+      const body = await (await remoteText(base, f.path)).arrayBuffer();
+      if (body.byteLength !== f.size) throw new Error("השתנה בוואן דרייב בזמן ההורדה");
+      const r = await localPost(`put?course=${encodeURIComponent(c)}&path=${encodeURIComponent(f.path)}` +
+        `&mtime=${f.mtime}&expect=${encodeURIComponent(f.expect)}`, body);
+      const j = await r.json().catch(() => ({}));
+      if (r.status === 409) return refused.push([f.path, j.error || "נדחה"]);
+      if (!r.ok) throw new Error(j.error || `${r.status} local put`);
+      done.push({ path: f.path, local: [j.size, j.mtime], remote: [f.size, f.mtime] });
+    }
+    async function worker() {
+      while (queue.length) {
+        const f = queue.shift();
+        try { await one(f); } catch (e) {
+          try { await one(f); } catch (e2) { failed.push([f.path, String(e2.message)]); }
+        }
+        progress(done.length + failed.length + refused.length, todo.length);
+      }
+    }
+    await Promise.all(Array.from({ length: PARALLEL }, worker));
+    return { done, failed, refused };
+  }
+  async function recordState(c, entries) {
+    if (!Object.keys(entries).length) return;
+    const r = await localPost(`state?course=${encodeURIComponent(c)}`, JSON.stringify(entries));
+    if (!r.ok) throw new Error(`${r.status} local state`);
+  }
+
   // מעלה רשימה, PARALLEL בכל פעם, ובסוף בודק שהכל בוואן דרייב באותו גודל. מחזיר מה שנכשל ומה שלא הגיע
   async function runUpload(base, todo, progress, recursive = true) {
     const queue = [...todo], failed = [];
@@ -244,7 +377,7 @@
     }
     await Promise.all(Array.from({ length: PARALLEL }, worker));
     const remote = await listRemote(base, recursive);
-    return { failed, missing: todo.filter((f) => !remote[f.path] || remote[f.path].size !== f.size).map((f) => f.path) };
+    return { failed, remote, missing: todo.filter((f) => !remote[f.path] || remote[f.path].size !== f.size).map((f) => f.path) };
   }
 
   // ---------- החלון בדף ----------
@@ -256,12 +389,13 @@
     "background:#fff;color:#222;border:2px solid #0f6cbd;border-radius:10px;padding:14px;font:14px Segoe UI,Arial,sans-serif;box-shadow:0 6px 24px #0003";
   box.innerHTML = `
     <div style="display:flex;justify-content:space-between;align-items:center">
-      <b style="font-size:16px">העלאה לוואן דרייב: רק מה שהשתנה</b>
+      <b style="font-size:16px">סנכרון עם הוואן דרייב: רק מה שהשתנה</b>
       <button id="ecs-close" style="border:0;background:none;font-size:18px;cursor:pointer">×</button>
     </div>
-    <p style="margin:8px 0">"סנכרון מהמחשב" לוקח את הקבצים מ-start.bat. אם הוא לא רץ, בוחרים את תיקיית הקורס ביד.</p>
+    <p style="margin:8px 0">"סנכרון מהמחשב" מעלה מ-start.bat (ב-Mac: start.sh). "בשני הכיוונים" גם מוריד למחשב את מה שחדש בוואן דרייב. אם השרת לא רץ, בוחרים את תיקיית הקורס ביד.</p>
     <input id="ecs-pick" type="file" webkitdirectory multiple style="display:none">
     <button id="ecs-auto" style="background:#0f6cbd;color:#fff;border:0;border-radius:6px;padding:8px 14px;cursor:pointer">סנכרון מהמחשב</button>
+    <button id="ecs-both" style="background:#0f6cbd;color:#fff;border:0;border-radius:6px;padding:8px 14px;cursor:pointer">בשני הכיוונים</button>
     <button id="ecs-choose" style="background:#fff;color:#0f6cbd;border:1px solid #0f6cbd;border-radius:6px;padding:8px 14px;cursor:pointer">בחירת תיקיית קורס</button>
     <div id="ecs-status" style="margin-top:10px;white-space:pre-line"></div>
     <button id="ecs-go" style="display:none;margin-top:10px;background:#107c10;color:#fff;border:0;border-radius:6px;padding:8px 14px;cursor:pointer"></button>`;
@@ -319,43 +453,97 @@
   };
 
   // ---------- אוטומטי: כל הקורסים, מהשרת המקומי ----------
-  // dryRun: רק משווה ומדווח מה היה עולה, בלי להעלות כלום
-  async function syncAll({ dryRun = false } = {}) {
+  // dryRun: רק משווה ומדווח מה היה עולה ויורד, בלי לגעת בכלום.
+  // down: גם מוריד מהוואן דרייב את מה שחדש שם (ב-Mac, ובכל מחשב שלא מסנכרן את התיקייה באפליקציית OneDrive).
+  // up: false = רק מוריד. ברירת המחדל כמו קודם: רק מעלה
+  async function syncAll({ dryRun = false, down = false, up = true } = {}) {
     const report = [];
     Object.assign(state, { stage: dryRun ? "dry run" : "auto", report });
     let courses;
     try { courses = (await localJson("courses")).courses; } catch (e) {
-      Object.assign(state, { stage: "error", error: "השרת המקומי לא עונה. צריך להפעיל את start.bat. (" + e.message + ")" });
+      Object.assign(state, { stage: "error", error: "השרת המקומי לא עונה. צריך להפעיל את start.bat (ב-Mac: start.sh). (" + e.message + ")" });
       say(state.error); return state;
     }
+    if (down) {
+      try { courses = [...new Set([...courses, ...await listFolders(ROOT)])].sort(); } catch (e) {
+        Object.assign(state, { stage: "error", error: "אי אפשר לקרוא את התיקיות בוואן דרייב: " + e.message });
+        say(state.error); return state;
+      }
+    }
+    const ms = (list) => (list.reduce((s, f) => s + f.size, 0) / 1e6).toFixed(1);
     // "" הוא התיקייה הראשית: רק הקבצים שבה (README, הפרוטוקול, "Pull only on this computer.txt"), בלי הקורסים
     for (const c of ["", ...courses]) {
       const cbase = c ? ROOT + "/" + c : ROOT;
       const label = c || "התיקייה הראשית";
       say(`${label}: משווה...`);
-      const local = (await localJson(`list?course=${encodeURIComponent(c)}`)).files.map((f) => ({ ...f, course: c }));
-      const remote = await listRemote(cbase, c !== "");
-      const p = plan(local, remote);
-      const kp = await keyCheck(cbase, local, remote);
-      p.upload = withoutConflicts(p.upload, kp);
-      const row = { course: label, local: local.length, new: p.upload.filter((f) => f.why === "new").length,
-        changed: p.upload.filter((f) => f.why === "changed").length, same: p.same.length, remoteNewer: p.remoteNewer,
-        archived: p.archived.length, keyConflicts: keyReport(kp) };
+      const compare = async () => {
+        const l = await localJson(`list?course=${encodeURIComponent(c)}`);
+        const local = l.files.map((f) => ({ ...f, course: c }));
+        const remote = await listRemote(cbase, c !== "");
+        const canDown = down && l.writable !== false;
+        return { l, local, remote, p: plan2(local, remote, l.state || {}, { up, down: canDown }) };
+      };
+      let { l, local, remote, p } = await compare();
+      const row = { course: label, local: local.length, same: p.same.length, conflict: p.conflict,
+        goneRemote: p.goneRemote.length, goneLocal: p.goneLocal.length, busy: p.busy.length, archived: p.archived.length,
+        remoteNewer: p.remoteNewer, keyConflicts: [], new: 0, changed: 0, downNew: 0, downChanged: 0 };
+      if (down && l.writable === false) row.notWritable = l.notWritable;
       report.push(row);
-      if (dryRun) row.wouldUpload = p.upload.map((f) => [f.path, f.why]);
-      else if (p.upload.length) {
-        const r = await runUpload(cbase, p.upload, (done, total) => say(`${label}: מעלה ${done} מתוך ${total}...\nלא לסגור את הלשונית ולא לעבור דף.`), c !== "");
-        Object.assign(row, { failed: r.failed, missing: r.missing });
+      // קודם מורידים: טבלת מפתח חדשה יותר מהוואן דרייב צריכה להגיע לפני שמשווים את הטבלה להעלאה
+      if (p.download.length) {
+        const kd = await downloadKeyCheck(cbase, c, p.download, local);
+        p.download = withoutConflicts(p.download, kd);
+        row.keyConflicts.push(...keyDownReport(kd));
+        row.downNew = p.download.filter((f) => f.why === "new").length;
+        row.downChanged = p.download.length - row.downNew;
+        row.downMB = ms(p.download);
+        if (dryRun) row.wouldDownload = p.download.map((f) => [f.path, f.why]);
+        else {
+          const r = await runDownload(cbase, c, p.download, (done, total) => say(`${label}: מוריד ${done} מתוך ${total}...\nלא לסגור את הלשונית ולא לעבור דף.`));
+          await recordState(c, Object.fromEntries(r.done.map((d) => [d.path, { local: d.local, remote: d.remote }])));
+          Object.assign(row, { downFailed: r.failed, refused: r.refused });
+          if (r.done.length) ({ l, local, remote, p } = await compare());
+        }
+      }
+      if (!dryRun) await recordState(c, p.record);
+      if (up) {
+        const kp = await keyCheck(cbase, local, remote);
+        p.upload = withoutConflicts(p.upload, kp);
+        row.keyConflicts.push(...keyReport(kp));
+        row.new = p.upload.filter((f) => f.why === "new").length;
+        row.changed = p.upload.length - row.new;
+        if (dryRun) row.wouldUpload = p.upload.map((f) => [f.path, f.why]);
+        else if (p.upload.length) {
+          const r = await runUpload(cbase, p.upload, (done, total) => say(`${label}: מעלה ${done} מתוך ${total}...\nלא לסגור את הלשונית ולא לעבור דף.`), c !== "");
+          Object.assign(row, { failed: r.failed, missing: r.missing });
+          // מה שהגיע נרשם כמסונכרן, עם הזמן שלו בוואן דרייב אחרי ההעלאה (אחרת הוא היה נראה "חדש יותר שם" ויורד בחזרה)
+          if (r.remote) {
+            const bad = new Set([...r.missing, ...r.failed.map(([path]) => path)]);
+            await recordState(c, Object.fromEntries(p.upload.filter((f) => !bad.has(f.path) && r.remote[f.path])
+              .map((f) => [f.path, { local: [f.size, f.mtime], remote: [r.remote[f.path].size, r.remote[f.path].mtime] }])));
+          }
+        }
       }
     }
     state.stage = "done";
-    say(report.map((r) => `${r.course}: ${r.new} חדשים, ${r.changed} השתנו, ${r.same} זהים` +
+    say(report.map((r) => `${r.course}: ` + [
+      up ? `${r.new} חדשים ו-${r.changed} שהשתנו עלו` : "",
+      down ? `${r.downNew} חדשים ו-${r.downChanged} שהשתנו ירדו` + (r.downMB ? ` (${r.downMB} MB)` : "") : "",
+      `${r.same} זהים`].filter(Boolean).join(", ") +
       (r.remoteNewer.length ? `, ${r.remoteNewer.length} חדשים יותר בוואן דרייב (לא נדרסו)` : "") +
+      (r.notWritable ? `\n  ${r.notWritable}` : "") +
+      (r.conflict.length ? `\n  ${r.conflict.length} קבצים השתנו גם במחשב וגם בוואן דרייב, ולא נגעתי באף צד: ${r.conflict.slice(0, 8).join(", ")}` : "") +
+      (r.busy ? `\n  ${r.busy} קבצים לא ירדו: במטלה שלהם רצה עכשיו משיכה, בדיקה או העלאה במחשב אחר` : "") +
+      (r.goneRemote ? `\n  ${r.goneRemote} קבצים נמחקו או הועברו בוואן דרייב: לא הועלו שוב` : "") +
+      (r.goneLocal ? `\n  ${r.goneLocal} קבצים נמחקו או הועברו במחשב: לא הורדו שוב` : "") +
       (r.archived ? `\n  ${ARCHIVED_NOTE(r.archived)}` : "") +
-      (r.missing && r.missing.length ? `\n  לא הגיעו: ${r.missing.length}` : "") +
+      (r.missing && r.missing.length ? `\n  לא הגיעו לוואן דרייב: ${r.missing.length}` : "") +
+      (r.downFailed && r.downFailed.length ? `\n  לא ירדו: ${r.downFailed.length}` : "") +
+      (r.refused && r.refused.length ? `\n  ${r.refused.map(([, why]) => why).slice(0, 5).join("\n  ")}` : "") +
       (r.keyConflicts.length ? "\n  " + r.keyConflicts.join("\n  ") : "")).join("\n") + "\n\nהסתיים.");
     return state;
   }
   window.__ecsSyncAll = syncAll;
   $("ecs-auto").onclick = () => syncAll();
+  $("ecs-both").onclick = () => syncAll({ down: true });
 })();
