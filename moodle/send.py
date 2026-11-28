@@ -133,12 +133,12 @@ def check_can_prepare(assignment_dir: Path) -> None:
 
 
 def prepare_batch(assignment_dir: Path, max_bytes: int = upload.CLAUDE_MAX_ZIP_BYTES,
-                  worksheet: Path | None = None, per_zip: int | None = None) -> BatchSummary:
+                  worksheet: Path | None = None, per_zip: int | None = upload.PER_ZIP) -> BatchSummary:
     """`worksheet`: Moodle's grading worksheet a person downloaded (Actions > download the grading worksheet; needs
     "Offline grading worksheet" on). Then the grades are filled into it too, by participant id, never by row order,
     as "Grades for Moodle worksheet.csv", and a copy without anything that identifies a person is kept in the
     assignment folder (moodle_table.save_worksheet). The downloaded file itself (names, emails) is left where it is.
-    `per_zip`: at most that many students in a ZIP (upload.plan_parts), for lighter imports."""
+    `per_zip`: at most that many students in a ZIP (upload.plan_parts; 100 by default, 0/None = no limit)."""
     check_can_prepare(assignment_dir)
 
     mapping = anonymize.read_mapping(assignment_dir)

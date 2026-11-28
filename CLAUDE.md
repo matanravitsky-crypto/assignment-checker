@@ -354,7 +354,8 @@ There is **no Moodle API**. Claude in Chrome works in the user's own logged-in C
   immediately, with no confirmation list (file → student) before it. Moodle then lands on the grading page with a
   message saying how many files were imported; that count against the files in the ZIP is the only check.
   `Upload steps.txt` there has the steps and a checklist. That page takes .zip only, up to **750 MB** ("הגודל המירבי לקבצים חדשים"; it was 31 MB when checked on assignment 3438636 on 2026-10-22, and 750 MB on 2026-11-15, read from the page), so ZIPs are split at 730 MB
-  (`--max-mb` to change; `MAX_ZIP_BYTES` in `moodle/upload.py`, used by the site's "Prepare return" and by `python -m moodle upload`; the automatic upload keeps 9 MB, Claude in Chrome's limit). The course's max upload size is a course setting, capped by the site.
+  (`--max-mb` to change; `MAX_ZIP_BYTES` in `moodle/upload.py`, used by the site's "Prepare return" and by `python -m moodle upload`; the automatic upload keeps 9 MB, Claude in Chrome's limit), and at **100 students per ZIP**
+  (`PER_ZIP`, Ori 2026-11-18: lighter imports; the default of "Prepare return", `python -m moodle upload` and the skill; `--per-zip N`, 0 = size only). The course's max upload size is a course setting, capped by the site.
 - Grades upload needs **"Offline grading worksheet"** turned on in the assignment's feedback types (not on yet in
   assignment 3438636; the lecturer turns it on, we never change settings): it is the only page where Moodle takes
   many grades by participant id. The pull downloads it too (`actions._worksheet_with_pull`): `Moodle grading worksheet.csv`

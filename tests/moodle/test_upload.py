@@ -4,7 +4,7 @@ import zipfile
 from pathlib import Path
 
 from moodle import paths
-from moodle.upload import (GRADES_FOR_MOODLE, INSTRUCTIONS_FILE, build_feedback_zips, participant_from_identifier,
+from moodle.upload import (GRADES_FOR_MOODLE, INSTRUCTIONS_FILE, PER_ZIP, build_feedback_zips, participant_from_identifier,
                            plan_parts, prepare_upload, write_zips)
 
 MAPPING = [
@@ -170,6 +170,22 @@ def test_find_worksheet_takes_chromes_copy_too(tmp_path):
         os.utime(tmp_path / name, (1_700_000_000 + i, 1_700_000_000 + i))
     assert find_worksheet("3438636", tmp_path).name == "ציונים-x-הגשה 0-3438636 (1).csv"
     assert find_worksheet("3500000", tmp_path) is None
+
+
+def test_hundred_students_per_zip_is_the_default_everywhere(tmp_path):
+    # Ori, 2026-11-18: the site's "Prepare return", `python -m moodle upload` and the skill all split at 100 works a ZIP
+    assert PER_ZIP == 100
+    marked = tmp_path / "marked"
+    marked.mkdir()
+    mapping = {}
+    for i in range(1, 231):
+        (marked / f"{i:04d}.pdf").write_bytes(b"x")
+        mapping[f"{i:04d}"] = {"original_folder": f"s_{i}_assignsubmission_file"}
+    assert [len(p) for p in plan_parts(marked, mapping, 10_000_000)[0]] == [100, 100, 30]
+    (tmp_path / "up").mkdir()
+    zips, too_big = build_feedback_zips(marked, tmp_path / "up", mapping)
+    assert [z.name for z in zips] == ["Graded - part 01.zip", "Graded - part 02.zip", "Graded - part 03.zip"]
+    assert [len(p) for p in plan_parts(marked, mapping, 10_000_000, per_zip=0)[0]] == [230]  # 0 = size only
 
 
 def test_plan_parts_per_zip_limits_the_students_in_a_part():

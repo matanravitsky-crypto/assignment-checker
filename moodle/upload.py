@@ -32,6 +32,9 @@ FEEDBACK_HEADERS = {"Feedback comments", "הערות למשוב", "משוב"}
 
 # BGU Moodle's feedback ZIP page said "750 MB" on 2026-11-15 (it was 31 MB on 2026-10-22); leave some room
 MAX_ZIP_BYTES = 730_000_000
+# At most this many students in one ZIP, so Moodle's import stays light (Ori, 2026-11-18: 100 works per ZIP everywhere:
+# the site's "Prepare return", `python -m moodle upload` and the skill). `--per-zip 0` lifts it; the size cap still wins
+PER_ZIP = 100
 # When Claude uploads through Claude in Chrome, each file can be at most 10 MB
 CLAUDE_MAX_ZIP_BYTES = 9_000_000
 
@@ -172,7 +175,7 @@ def fill_for_upload(worksheet: Path, out: Path, results: dict, mapping: dict, ma
 
 
 def plan_parts(
-    marked: Path, mapping: dict, max_bytes: int, numbers: set[str] | None = None, per_zip: int | None = None
+    marked: Path, mapping: dict, max_bytes: int, numbers: set[str] | None = None, per_zip: int | None = PER_ZIP
 ) -> tuple[list[list[tuple[Path, str]]], list[str]]:
     """Split the marked files into parts, each under max_bytes: a list of (source file, name inside the ZIP).
 
@@ -181,7 +184,7 @@ def plan_parts(
     max_bytes on its own, that file can't go through Moodle, so its name is returned in the second
     list (to be saved smaller) and none of the number's files is in any part.
     `per_zip`: at most that many students (numbers) in a part, so the parts are light for Moodle's import
-    (say 100 per ZIP); a part still never goes over max_bytes.
+    (PER_ZIP = 100 by default; None or 0 = no limit); a part still never goes over max_bytes.
     """
     parts: list[list[tuple[Path, str]]] = [[]]
     too_big = []
@@ -234,7 +237,7 @@ def write_zips(upload_dir: Path, parts: list[list[tuple[Path, str]]]) -> list[Pa
 
 
 def build_feedback_zips(
-    marked: Path, upload: Path, mapping: dict, max_bytes: int = MAX_ZIP_BYTES
+    marked: Path, upload: Path, mapping: dict, max_bytes: int = MAX_ZIP_BYTES, per_zip: int | None = PER_ZIP
 ) -> tuple[list[Path], list[str]]:
     """Zip marked files under each student's original Moodle folder name.
 
@@ -243,8 +246,9 @@ def build_feedback_zips(
     upload to the earlier ones. A student whose marked file is bigger than
     max_bytes on its own can't go through Moodle at all: that file is returned
     by name, to be saved smaller, and the student's other files stay out too.
+    At most `per_zip` students in a ZIP (100 by default), so each import in Moodle stays light.
     """
-    parts, too_big = plan_parts(marked, mapping, max_bytes)
+    parts, too_big = plan_parts(marked, mapping, max_bytes, per_zip=per_zip)
     return write_zips(upload, parts), too_big
 
 
@@ -327,7 +331,8 @@ def write_shortcut(path: Path, url: str) -> None:
         path.write_text(f"[InternetShortcut]\r\nURL={url}\r\n", encoding="ascii")
 
 
-def prepare_upload(assignment_dir: Path, worksheet: Path | None = None, max_bytes: int = MAX_ZIP_BYTES) -> dict:
+def prepare_upload(assignment_dir: Path, worksheet: Path | None = None, max_bytes: int = MAX_ZIP_BYTES,
+                   per_zip: int | None = PER_ZIP) -> dict:
     mapping = anonymize.read_mapping(assignment_dir)
     results = read_results(assignment_dir)
     upload = assignment_dir / paths.UPLOAD
@@ -354,6 +359,6 @@ def prepare_upload(assignment_dir: Path, worksheet: Path | None = None, max_byte
         report["grades_skipped_invalid"] = sorted(set(report["grades_skipped_invalid"]) | set(left.get("invalid_grade", [])))
     marked = assignment_dir / paths.MARKED
     if marked.is_dir():
-        report["feedback_zips"], report["too_big"] = build_feedback_zips(marked, upload, mapping, max_bytes)
+        report["feedback_zips"], report["too_big"] = build_feedback_zips(marked, upload, mapping, max_bytes, per_zip)
     write_instructions(upload / INSTRUCTIONS_FILE, report, max_bytes)
     return report
