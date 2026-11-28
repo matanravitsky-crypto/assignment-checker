@@ -68,3 +68,22 @@ its part. Never a student's name; works by number only.
   points on one line priced as "did not show they are not on a line" (−1 instead of −4): the grader never computed it.
   Skeleton fix: compute a checkable claim on the student's own numbers before choosing the row; a missing step is
   tagged in the step's own words, not by another section's row.
+- 2026-11-28, the manual queue measured against people (LA0, 1,099 works, 33 queued = 3%; a TA approved all 33).
+  Of the 30 with a grade, the system's own grade was within 2 points of the TA's in 26 (10 identical, mean gap 1.2).
+  The queue's reasons: which of two rows applies (most), a symbol read two ways, a mistake no row names, and 3 works
+  photographed as one long page (259 px wide at MAX_SIDE: unreadable; one got 100 where the TA gave 92). Fixes: the
+  engine cuts a page more than twice as tall as wide into about-A4 pages on blank rows (`grade.split_tall`, in
+  `submission_pdf`, so grading, the marked PDF and the site agree); the rules' decision order (סדר ההכרעה): the row
+  whose condition matches the page most literally, then the smaller deduction; a reading by what the student did
+  with it next, then in the student's favour; a mistake with no row by the same mistake's row elsewhere; one number,
+  no range; a self-check of every deduction before answering.
+- 2026-11-28, decisive round 1 (the 32 queued works + 8 controls, agents, grade-linear-0): queue 32 → 0, but against
+  the TA the mean gap rose from 1.2 to 2.2, always upward (46 sections above the TA, 28 below). "The smaller
+  deduction when tied" and "in the student's favour" were wrong: the TAs took the row that names the mistake even
+  when it deducts more (11ג: set equal to a point, same parameter), deducted a conclusion not written (A=B after one
+  inclusion, "ℝ" for A∩B) and gave nothing for a computation whose result cannot be seen. Fixed in the decision
+  order; never infer a tie-break from which way people moved the bot without reading their notes.
+- 2026-11-28, decisive round 2 (the 30 works with a TA grade): queue 0, mean gap to the TA 2.2, now downward (-1.1).
+  The same work graded in rounds 1 and 2 differed by 2.4 on average: the gap is mostly a grader's own noise. The
+  bias left: two deductions in one section for one mistake (a wrong pair, then the A≠B it cost; 11ג in 12 works).
+  Rule 6 of the decision order: one mistake, one deduction; a missing conclusion is deducted only by its own row.

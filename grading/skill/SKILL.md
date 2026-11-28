@@ -116,17 +116,22 @@ mark; read that page, and only if it really holds nothing of them add `--all-pag
 
 `rules` prints the system's grading instructions and the answer's JSON schema, word for word. Grade by them; where
 they speak of "the site's manual review queue", that is the user here. **Only the rubric, the assignment's grading
-material and these rules decide.** Add no deduction, note or preference of your own. A case they don't decide gets the
-most likely points and its range (`points_low`, `points_high`); only a doubt of more than 3 points over the whole
-work goes to a person (`needs_review`), and the code checks that sum itself. An unreadable spot, a missing part or a
-submission off the rules is decided by the rules, never sent to a person.
+material and these rules decide.** Add no deduction, note or preference of your own. Every doubt is decided by the
+rules' decision order (סדר ההכרעה): the row that names this very mistake, never a general row chosen to be lenient;
+a doubtful reading by what the student did with it on the next line, and what cannot be seen on the page earns
+nothing; a conclusion not written (A=B after one inclusion, the set the question asks for) is not done when the rubric has
+a row for it; one mistake, one deduction (a conclusion lost because of a mistake already deducted in that section is
+not deducted again); a mistake with no row here by the same mistake's row elsewhere. The points are one number (`points_low` =
+`points_high` = `points`). Only a doubt of more than 3 points over the whole work goes to a person (`needs_review`),
+the code checks that sum itself, and after the decision order there is almost never one. An unreadable spot, a
+missing part or a submission off the rules is decided by the rules, never sent to a person.
 
 **Decide, like a TA who knows the rubric.** A mistake this section's rows don't name is priced by the row of the same
 mistake in another section ("same mistake, same price"), and it gets no range for that alone; when no section has
-it, by the nearest row of the same type (חישוב, סימון, חוסר...). Two rows that fit: the more specific one, no range.
-A range is for one real doubt only: a symbol you cannot read even on a close-up, or a step that two rows price
-differently and the rubric does not say which. A range is never a way to avoid deciding (2026-11-27: a work went to a
-person with 9 points of ranges where the rubric of another section already had the row).
+it, by the nearest row of the same type (חישוב, סימון, חוסר...). Two rows that fit: the one that names this very mistake,
+even when it deducts more. No range for any of these. A range is never a way to avoid deciding (2026-11-27: a
+work went to a person with 9 points of ranges where the rubric of another section already had the row; LA0: of 30
+works a TA approved from the queue, 26 changed by 2 points or less, so the doubts were not worth a person's time).
 A step of the rubric's table is earned only when it is done on the page: a rule stated in words ("if the ratio is the
 same, the lines are parallel") without the computation the step asks for does not earn it. Every point taken off has
 its row's tag in `mistakes`, or the statistics never see it.
