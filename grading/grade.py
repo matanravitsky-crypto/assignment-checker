@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import base64
 import csv
+import functools
 import json
 import math
 import os
@@ -423,7 +424,15 @@ SYSTEM = """אתה מתרגל שבודק תרגילי בית במתמטיקה (�
 
 איך בודקים:
 - בודקים רק לפי המחוון, חומר הבדיקה של המטלה (הפתרונות, דרכי הפתרון, כללי הבדיקה הידנית) וההוראות האלה. לא מחליטים לבד: לא מוסיפים דרישה, ניכוי, הערה או העדפה משלכם (דרך "עדיפה", סגנון כתיבה, נושא שלא נלמד), ולא מקלים מעבר למה שכתוב.
-- מקרה שהמחוון והכללים לא מכריעים בו, או טעות שהמחוון לא מכסה: לא ממציאים כלל. נותנים בשאלה את הניקוד הסביר ביותר, בלי ניכוי שלא כתוב במחוון, ורושמים בה את הטווח: points_low ו-points_high, הניקוד הנמוך והגבוה שאפשר לתת. אם אין ספק, שניהם שווים ל-points. העבודה עוברת לבדיקה ידנית רק לפי הכלל של 3 הנקודות (ראו "בדיקה ידנית").
+- מכריעים לבד, כמו מתרגל ותיק, בכל סעיף, לפי סדר ההכרעה הזה. אין "לא יודע": לכל ספק יש כאן תשובה.
+  1. שתי שורות במחוון יכולות לחול על אותה טעות: השורה שהתנאי שלה מתאר את מה שכתוב בדף הכי מילולית, כלומר זו שמתארת את הטעות המסוימת הזו ("השווה קבוצה לנקודה", "אותו פרמטר") ולא שורה כללית ("רישול סימון"). כל טעות שהשורה שלה מתקיימת מורידה, גם כשיש לידה טעות קלה יותר. לא בוחרים שורה כדי להקל: מתרגלים שהכריעו בעבודות כאלה (הגשה 0) בחרו בשורה המסוימת, גם כשהורידה יותר.
+  2. ספק בקריאה של סימן, ספרה או סוגר: קודם מגדילים. אחר כך קוראים לפי ההקשר: מה הסטודנט עשה עם זה בשורה הבאה (ממשיך מ-3 ולא מ-8? אז כתוב 3). אם גם ההקשר לא מכריע: מה שלא ניתן לראות בדף לא מזכה. חישוב שלא רואים את התוצאה שלו לא נעשה, וערך שלא ניתן לקרוא לא נחשב נכון. בהערה "לא ניתן לקרוא את ..., ולכן ...".
+  3. טעות שאין לה שורה בסעיף הזה: השורה של אותה טעות בסעיף אחר במחוון (אותו סוג טעות, אותו ניכוי), ואחריה "כללים לכל מחוון". אם אין בכלל שורה כזו: לא מורידים, ואם הכללים אומרים להעיר, הערה עם deduct 0.
+  4. צעד שנעשה בדרך אחרת או בכתיב אחר (מילים במקום סימנים, סדר אחר): אם הוא נכון מתמטית ומלא, הוא נעשה. אבל מסקנה שלא נכתבה לא נעשתה: הוכחת הכלה אחת בלי "ולכן A=B", חישוב בלי תשובה סופית כקבוצה, תשובה "ℝ" או משוואה במקום הקבוצה שהשאלה מבקשת. על אלה מורידים כשיש להם שורה במחוון (כמו "חסרה מסקנה A=B"), לפי השורה שלהם.
+  6. טעות אחת, ניכוי אחד: מסקנה שחסרה או שגויה בגלל טעות שכבר הורדה באותו סעיף (זוג שגוי ולכן אין A≠B, ערך שגוי שנגרר לתבנית) לא מורידה שוב. שני ניכויים באותו סעיף רק על שתי טעויות נפרדות, שלכל אחת שורה משלה. (הגשה 0: בודק הוריד גם על הזוג וגם על המסקנה שנובעת ממנו, והמתרגלים הורידו פעם אחת.)
+  5. מקום שבאמת אי אפשר לקרוא גם אחרי הגדלה: לפי הכלל של כתב לא קריא למטה, ולא טווח.
+  אחרי ההכרעה הניקוד הוא מספר אחד: points_low = points_high = points. טווח (points_low קטן מ-points_high) נשאר רק למקרה שאין לו שום כלל כאן, וזה כמעט אף פעם.
+- בדיקה עצמית לפני שעונים, לכל סעיף שלא קיבל ניקוד מלא: (א) איזו שורה במחוון הורידה, ומה בדף מקיים את התנאי שלה; (ב) האם הניכוי הוא בדיוק מה שכתוב בשורה; (ג) האם אותה טעות כבר הורדה בסעיף הזה. ולכל סעיף שקיבל ניקוד מלא: האם כל צעד שהמחוון דורש באמת כתוב בדף. מה שלא עומד בבדיקה מתקנים לפני שעונים.
 - אם מצורף המכוון הרשמי של המרצה, בודקים לפיו: הוא קובע את הניקוד, מה נחשב תשובה מלאה ובכמה מורידים על כל טעות, והוא גובר על כל מחוון או פתרון אחר.
 - הניקוד ניתן אך ורק לפי המחוון. הניקוד של כל שאלה הוא מה שכתוב לה במחוון, ולא מחלקים את הציון בין השאלות בדרך אחרת.
 - כתיבה פורמלית בכל שורה, לא רק בתשובה הסופית (נדב, 2026-11-16). לפני שנותנים ניקוד לסעיף, עוברים על כל שורה שיש בה "=", "∈" או "⊆" ובודקים ששני הצדדים מאותו סוג: קבוצה שווה רק לקבוצה, בסוגריים מסולסלים (A=(a,b,2a+b) שגוי, צריך A={(a,b,2a+b) | a,b∈ℝ}); זוג או שלשה בסוגריים עגולים; איבר שייך לקבוצה ב-"∈" ולא ב-"="; מספר שווה למספר. שורה כזו היא טעות גם כשהתשובה הסופית נכונה: מסמנים אותה במקום שבו נכתבה, ומנקדים לפי השורה במחוון או הכלל שמכסה אותה (סימון שגוי, שורת ביניים שגויה, קבוצה פגומה). אם המחוון לא מכסה אותה, לפי הכלל של מקרה שהמחוון לא מכריע.
@@ -441,14 +450,14 @@ questions: אחד לכל שאלה במטלה, באותו סדר ועם אותה 
 - comment: לסטודנט, עד 25 מילים. כשכללי המחוון קובעים אורך ("משפט אחד קצר"), זה משפט אחד של עד 15 מילים: מה שגוי ולמה, והפירוט עובר להערה על העבודה ולמשוב. תשובה נכונה: מה בדיוק נעשה נכון (הצעד המכריע או השיטה), לא רק "נכון". טעות: מה שגוי ולמה (העיקרון שנפגע), ורמז איך למצוא או לבדוק את זה לבד (הצבה, דוגמה נגדית). את הפתרון הנכון כותבים רק כשהמחוון מתיר, למשל טעות חישוב בסוף הדרך.
 - page, x0, y0, x1, y1: איפה התשובה לשאלה מתחילה: המלבן סביב השורה הראשונה של התשובה, עם מספר הסעיף אם הסטודנט כתב אותו שם (באותן אלפיות כמו annotations). לידו יצויר הניקוד של הסעיף. שאלה שלא נמצאה: page 0 וכל השאר 0.
 - first: מה שכתוב בשורה הזאת, כמו שהוא כתוב (למשל "ג. (1+i)x+2y=2+2i"), כדי שהקוד ימצא אותה שוב בתמונה מוגדלת. שאלה שלא נמצאה: "".
-- mistakes: סוגי הטעויות בתשובה, ריק אם היא נכונה. כל טעות בניסוח קצר וכללי, 2 עד 6 מילים, שלא תלוי בעבודה הזו, כך שאותה טעות אצל סטודנטים שונים תקבל בדיוק אותו ניסוח (למשל "חסר נימוק להכלה ההפוכה"). אם במחוון יש לשאלה טעויות מוכרות, משתמשים בניסוח שלהן מילה במילה ומורידים כמו שכתוב שם. תגית רק משורה של הסעיף הזה (או לפי "כללים לכל מחוון" כשיש ניכוי), ולא שורה שהתנאי שלה לא מתקיים. הערה בלי ניכוי רק כשהמחוון או הכללים אומרים להעיר עליה (שורת "הערה"); טעות שהמחוון לא מכסה: נותנים את הניקוד הסביר ביותר ורושמים טווח (points_low, points_high). לא כותבים הערה מדעתכם.
-- points_low, points_high: הניקוד הנמוך והגבוה שאפשר לתת לשאלה, כשהמחוון לא מכריע או שיש ספק בקריאה של מקום שלא משנה את המשך הסעיף. בלי ספק: שניהם שווים ל-points.
-- unsure: true כשיש ספק בניקוד, כלומר points_high גדול מ-points_low.
+- mistakes: סוגי הטעויות בתשובה, ריק אם היא נכונה. כל טעות בניסוח קצר וכללי, 2 עד 6 מילים, שלא תלוי בעבודה הזו, כך שאותה טעות אצל סטודנטים שונים תקבל בדיוק אותו ניסוח (למשל "חסר נימוק להכלה ההפוכה"). אם במחוון יש לשאלה טעויות מוכרות, משתמשים בניסוח שלהן מילה במילה ומורידים כמו שכתוב שם. תגית רק משורה של הסעיף הזה (או לפי "כללים לכל מחוון" כשיש ניכוי), ולא שורה שהתנאי שלה לא מתקיים. הערה בלי ניכוי רק כשהמחוון או הכללים אומרים להעיר עליה (שורת "הערה"); טעות שהמחוון לא מכסה: לפי סדר ההכרעה (סעיף 3). לא כותבים הערה מדעתכם.
+- points_low, points_high: שווים ל-points אחרי ההכרעה. שונים רק כשסדר ההכרעה באמת לא חל.
+- unsure: true רק כש-points_high גדול מ-points_low.
 - submitted: true כשיש בהגשה ניסיון אמיתי לפתור את הסעיף, גם שגוי או לא גמור. false כשהסעיף ריק, כשיש בו רק העתקה של השאלה או של הנתונים, או כשהתוכן לא קשור לסעיף (למשל שאלה אחרת מהחוברת). משייכים לפי התוכן ולא לפי הכותרת, ועוברים על כל העמודים לפני שקובעים false. זה לא הניקוד: סעיף שהוגש ושגוי לגמרי הוא submitted=true עם 0 נקודות.
 
 typed: true כשתשובה של הסטודנט, ולו בסעיף אחד, מוקלדת (Word, LaTeX, טקסט מוקלד) ולא כתובה ביד. נוסח שאלה מודפס או דף שאלות שצורף לא נחשבים, וכתב יד על טאבלט הוא כתב יד. עבודה מוקלדת נבדקת לפי המחוון כרגיל; את ציון הקורס קובע הקוד.
 
-בדיקה ידנית: מבקשים אותה (needs_review=true, review_kind "uncertain") רק כשסכום הטווחים בכל ההגשה, כלומר סכום ההפרשים points_high פחות points_low בכל הסעיפים, גדול מ-3 נקודות. בכל מקרה אחר needs_review=false: כתב לא קריא, סעיף חסר, הגשה לא לפי הכללים וספק של עד 3 נקודות מטופלים לפי הכללים למעלה. מחליטים לבד, כמו מתרגל: את הניקוד הסביר ביותר. (הקוד מחשב את הסכום מהטווחים בעצמו, ובקשה לבדיקה ידנית בלי טווח כזה לא נכנסת לתור.)
+בדיקה ידנית: מבקשים אותה (needs_review=true, review_kind "uncertain") רק כשסכום הטווחים בכל ההגשה, כלומר סכום ההפרשים points_high פחות points_low בכל הסעיפים, גדול מ-3 נקודות. בכל מקרה אחר needs_review=false: כתב לא קריא, סעיף חסר, הגשה לא לפי הכללים, בחירה בין שורות וספק בקריאה מוכרעים לפי סדר ההכרעה, ולא נשלחים לאדם. מתרגל שאישר עבודות שנשלחו אליו בגלל ספק כזה (הגשה 0, 30 עבודות) שינה את הציון ב-2 נקודות או פחות ב-26 מהן: הספק לא היה שווה את הזמן שלו. (הקוד מחשב את הסכום מהטווחים בעצמו, ובקשה לבדיקה ידנית בלי טווח כזה לא נכנסת לתור.)
 - review_reason אומר בדיוק מה הבעיה ואיפה: איזה סעיף, איזה עמוד, ומה הטווח. למשל: "12ו, עמוד 3: 1 עד 3 מתוך 4, לפי איזו שורה במחוון חלה; 8ד, עמוד 5: 2 עד 4 מתוך 6".
 - review_kind: "uncertain" כשמבקשים, ומחרוזת ריקה כשלא.
 - גם כשמבקשים בדיקה ידנית נותנים את הניקוד הסביר ביותר ואת הסימונים, כדי שלמתרגל יהיה ממה להתחיל.
@@ -725,13 +734,14 @@ def parse_answer(text: str, ctx: Context, pages: int) -> Graded:
         review = "Claude ביקש שאדם יבדוק את העבודה."
     kind = (kind if kind in REVIEW_KINDS else "other") if review else ""
     points, comments, mistakes, unsure, over, places, firsts, submitted = [], [], [], [], [], [], [], []
+    rows = rubric_rows(ctx.rubric_text)
     for q, answer in zip(ctx.questions, got):
         p = _round_half_up(_num(answer.get("points")))
         if p > q.points:  # יותר ממה שהמחוון נותן לשאלה: נחתך, ואדם מסתכל
             over.append(f"{q.label}: {_pts(p)} מתוך {_pts(q.points)}")
         points.append(min(p, q.points))
         comments.append(str(answer.get("comment") or "").strip())
-        mistakes.append(_mistakes(answer.get("mistakes")))
+        mistakes.append(_mistakes(answer.get("mistakes"), rows))
         unsure.append(answer.get("unsure") is True)
         places.append(_box(answer, pages, q.label) or Mark(0, 0, 0, 0, 0, q.label))
         firsts.append(" ".join(str(answer.get("first") or "").split()))
@@ -763,12 +773,26 @@ def parse_answer(text: str, ctx: Context, pages: int) -> Graded:
         # « ... / ... » בהערה קבועה של המחוון = שתי שורות ("שגוי: ... / נכון: ...")
         mark = _box(a, pages, plain(text).replace(" / ", "\n"))
         if mark is not None:
-            mark.part = " ".join(str(a.get("part") or "").split())
+            mark.part = part_label(a.get("part"), [q.label for q in ctx.questions])
             mark.deduct = max(_num(a.get("deduct")), 0.0)
             marks.append(mark)
     see_first(marks, [q.label for q in ctx.questions])
     return Graded(points, [plain(c) for c in comments], compute_grade(points, ctx), plain(str(data.get("feedback") or "").strip()),
                   marks, review.strip(), mistakes, unsure, kind, places, lost, firsts, submitted, data.get("typed") is True)
+
+
+def part_label(raw, labels: list[str]) -> str:
+    """The question label a mark belongs to, as the bot wrote it or nearly: "3. קבוצות 11ג" (the number of its place in
+    the list) and "11ג" (the end of the label, when only one label ends so) are "קבוצות 11ג". LA0, 1,078 works: 9 marks
+    named "3. קבוצות 11ג" lost their section, so the "-1" next to them was not drawn. Anything else stays as written."""
+    part = " ".join(str(raw or "").split())
+    if not part or part in labels:
+        return part
+    bare = re.sub(r"^\d+[.)]\s*", "", part)
+    if bare in labels:
+        return bare
+    ends = [l for l in labels if " ".join(l.split()).endswith(" " + bare) or " ".join(l.split()) == bare]
+    return ends[0] if len(ends) == 1 else part
 
 
 def part_name(label: str) -> str:
@@ -800,17 +824,21 @@ def course_grade(g: Graded, ctx: Context, copies: list[str] | None = None) -> No
         return
     why = ("העבודה זהה לעבודה אחרת שהוגשה" if copies else
            "העבודה מוקלדת, וההגשה צריכה להיות בכתב יד" if g.typed else "")
-    g.course = grades.course_grade([q.label for q in ctx.questions], g.submitted, ctx.max_grade, zero=bool(why))
+    g.course = grades.course_grade([q.label for q in ctx.questions], g.submitted, ctx.max_grade, zero=bool(why),
+                                   per_question=str(ctx.policy.get("per_question") or "share"))
     g.course_why = why
 
 
 # "כתבו" ו-"רשמו" נקראים גם כהוראה וגם כ"הם כתבו" (נדב, 2026-11-15). ההוראות אוסרות אותם; כאן תיקון אחרון לצורה
 # הנפוצה, הוראה בתחילת משפט או אחרי פסיק, ל-"יש לכתוב" / "יש לרשום"
-_AMBIGUOUS = re.compile(r"(^|[.:;!?\n]\s*|-\s+|,\s+)(כתבו|רשמו)(?=\s)")
+# 2026-11-27 (the improvement round of LA1): also "הציבו", "בדקו" and the like, which a student reads both ways too
+_INSTEAD = {"כתבו": "יש לכתוב", "רשמו": "יש לרשום", "הציבו": "יש להציב", "בדקו": "יש לבדוק", "חשבו": "יש לחשב",
+            "הוכיחו": "יש להוכיח", "הראו": "יש להראות", "נמקו": "יש לנמק", "פתרו": "יש לפתור", "סמנו": "יש לסמן"}
+_AMBIGUOUS = re.compile(r"(^|[.:;!?\n]\s*|-\s+|,\s+)(" + "|".join(_INSTEAD) + r")(?=[\s:;,.!?)]|$)")  # round 2: "בדקו:" too
 
 
 def plain(text: str) -> str:
-    return _AMBIGUOUS.sub(lambda m: m.group(1) + ("יש לכתוב" if m.group(2) == "כתבו" else "יש לרשום"), text)
+    return _AMBIGUOUS.sub(lambda m: m.group(1) + _INSTEAD[m.group(2)], text)
 
 
 PLACEHOLDER = "placeholder"
@@ -869,12 +897,58 @@ def _clip_mistake(text: str, limit: int = MISTAKE_MAX) -> str:
     return head.rstrip(" .,;:-$") + "…"
 
 
-def _mistakes(raw) -> list[str]:
-    """סוגי הטעויות בשאלה: בלי כפילויות ובלי סימני פיסוק בסוף, כדי שאותה טעות תיספר יחד בכל העבודות.
+# "(נראה ב-9 הגשות)" בשורת טעות של המחוון הוא מקור השורה (rubric-builder), לא חלק מהתגית
+_SEEN = re.compile(r"\s*\((?:נראה|נראתה|נראו) ב-?\s*\d+ הגשות\)")
+
+
+def _row_text(text: str) -> str:
+    return " ".join(_SEEN.sub("", str(text).replace("**", "")).split()).strip(" .,;:")
+
+
+@functools.lru_cache(maxsize=16)
+def rubric_rows(rubric_text: str) -> tuple[str, ...]:
+    """The error rows of the rubric's tables (the first cell under a "| טעות |" header), as tags: the text the bot
+    copies word for word, without the row's "(נראה ב-N הגשות)"."""
+    rows: list[str] = []
+    table = False
+    for line in rubric_text.splitlines():
+        s = line.strip()
+        if not s.startswith("|"):
+            table = False
+            continue
+        cells = [c.strip() for c in s.strip("|").split("|")]
+        if cells and cells[0].replace("*", "").strip() == "טעות":
+            table = True
+            continue
+        if table and cells and not set(cells[0]) <= set("-: "):
+            row = _row_text(cells[0])
+            if row and row not in rows:
+                rows.append(row)
+    return tuple(rows)
+
+
+def canonical_tag(tag: str, rows: tuple[str, ...]) -> str:
+    """The rubric's own row for a tag the bot wrote shorter (LA0, 1,078 works: 37% of the tags were not the row word for
+    word, so one mistake was counted under several names): the row without its "(נראה ב-N הגשות)", or a tag that is the
+    start of exactly one row, up to a comma, a colon or a bracket ("רישול סימון בהוכחה נכונה" for "רישול סימון בהוכחה
+    נכונה, כמו ...: הערה בלבד"). Anything else stays as written: a paraphrase is never guessed."""
+    t = _row_text(tag)
+    if not rows or t in rows:
+        return t
+    if len(t) >= 8:
+        starts = [r for r in rows if r.startswith(t) and (len(r) == len(t) or not r[len(t)].isalnum())]
+        if len(starts) == 1 and starts[0][len(t):len(t) + 2] in (",", ":", " (", ", ", ": ", " -"):
+            return starts[0]  # the start of exactly one row (the start of two rows is no answer)
+    return t
+
+
+def _mistakes(raw, rows: tuple[str, ...] = ()) -> list[str]:
+    """סוגי הטעויות בשאלה: בלי כפילויות ובלי סימני פיסוק בסוף, כדי שאותה טעות תיספר יחד בכל העבודות. תגית שהיא
+    שורה של המחוון בקיצור הופכת לשורה עצמה (`canonical_tag`).
     ארוך מ-`MISTAKE_MAX` נחתך בסוף מילה ומסתיים ב-"…" (`_clip_mistake`)."""
     out: list[str] = []
     for m in raw if isinstance(raw, list) else []:
-        text = _clip_mistake(" ".join(str(m).split()).strip(" .,;:"))
+        text = _clip_mistake(canonical_tag(" ".join(str(m).split()).strip(" .,;:"), rows))
         if text and text not in out:
             out.append(text)
     return out
@@ -1291,6 +1365,9 @@ def _note_rect(box: pymupdf.Rect, page: pymupdf.Rect, text: str = "", size: floa
     return min(pool, key=cost)  # בשוויון נשארת הראשונה: מתחת למלבן
 
 
+NOTE_BACKDROP = 0.55  # how white the light backdrop under a note is: the red text reads, the handwriting shows through
+
+
 def _write(page: pymupdf.Page, rect: pymupdf.Rect, note: _Note, archive, backdrop: bool = True) -> bool:
     """כותב הערה (_html) במקום שמחושב לפי העמוד כפי שהוא מוצג (גם אם העמוד מסובב). מחזיר False כשהכתיבה נכשלה.
     הרקע הלבן שקוף ברובו ונמצא רק במקום שנבחר כי הוא פנוי מכתב יד: הטקסט נקרא על נייר משבצות, והעבודה לא מוסתרת.
@@ -1304,8 +1381,8 @@ def _write(page: pymupdf.Page, rect: pymupdf.Rect, note: _Note, archive, backdro
         got = rtl.fit(note.text, rect, note.size, bold=note.bold, lh=note.lh, math=note.math)
         if got is None:
             return False
-        if backdrop:
-            page.draw_rect(box, color=None, fill=(1, 1, 1), fill_opacity=0.8, overlay=True)
+        if backdrop:  # 0.55, not 0.8 (2026-11-27: the judges and the pedagogical team saw notes hide handwriting)
+            page.draw_rect(box, color=None, fill=(1, 1, 1), fill_opacity=NOTE_BACKDROP, overlay=True)
         size, lay = got
         lay = rtl.balance(note.text, rect.width, size, bold=note.bold, math=note.math)  # שורות שוות, בלי מילה לבד בסוף
         rtl.write(page, rect, lay, size, note.color, bold=note.bold, lh=note.lh)
@@ -1745,9 +1822,72 @@ def submission_pdf(files: list[Path]) -> tuple[bytes, list[str]]:
                 skipped.append(f.name)
         except (RuntimeError, ValueError):  # קובץ פגום
             skipped.append(f.name)
+    if out.page_count:
+        out = split_tall(out)
     data = out.tobytes(garbage=3, deflate=True) if out.page_count else b""
     out.close()
     return data, skipped
+
+
+TALL_RATIO = 2.0    # גובה חלקי רוחב: מעל זה העמוד נחתך לכמה עמודים
+STRIP_RATIO = 1.45  # בערך A4: היחס שאליו מכוונים כל חתיכה
+CUT_WINDOW = 0.18   # כמה מגובה החתיכה מותר להזיז את החיתוך כדי שייפול על שורה ריקה
+
+
+def _quiet_rows(page: pymupdf.Page) -> list[float]:
+    """For each row of a grayscale render of the page, how dark it is on average (0 = white). Continuous, not a count
+    of dark pixels: at this size a pen stroke is light gray, and a fixed threshold saw every row of real scans as
+    blank (LA0 0232, 1050)."""
+    import numpy as np
+    scale = 1800 / max(page.rect.height, 1)
+    pix = page.get_pixmap(matrix=pymupdf.Matrix(scale, scale), colorspace=pymupdf.csGRAY, alpha=False)
+    rows = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.stride)[:, :pix.width]
+    dark = 255.0 - rows.astype(np.float32)
+    dark -= np.median(dark)  # the paper's own shade (gray scans) is not ink
+    return np.clip(dark, 0, None).mean(axis=1).tolist()
+
+
+def tall_cuts(heights_ink: list[float], parts: int) -> list[float]:
+    """Where to cut a tall page into `parts` pieces, as fractions of its height: near each even cut, the blankest row
+    (a gap between lines of handwriting), so no line is cut in half."""
+    h = len(heights_ink)
+    cuts = []
+    for k in range(1, parts):
+        ideal = k * h / parts
+        reach = int(CUT_WINDOW * h / parts)
+        lo, hi = max(1, int(ideal) - reach), min(h - 1, int(ideal) + reach)
+        best = min(range(lo, hi + 1), key=lambda y: (heights_ink[y], abs(y - ideal)))
+        cuts.append(best / h)
+    return cuts
+
+
+def split_tall(doc: pymupdf.Document) -> pymupdf.Document:
+    """Every page much taller than it is wide (a whole work photographed or stitched into one long page) becomes several
+    pages of about A4 shape, cut on blank rows. Claude sees each page at MAX_SIDE pixels on its long side, so a page 5
+    times taller than wide was read at ~300 px across and its handwriting could not be read (LA0, 1,099 works: 3 works,
+    0232, 0779 and 1050, went to a person for that alone, one of them graded 100 where the TA gave 92). Pages are cut
+    the same way everywhere (grading, the marked PDF, the site's view), so page numbers always agree."""
+    if not any(p.rect.height / max(p.rect.width, 1) > TALL_RATIO for p in doc):
+        return doc
+    out = pymupdf.open()
+    for page in doc:
+        r = page.rect
+        ratio = r.height / max(r.width, 1)
+        if ratio <= TALL_RATIO:
+            out.insert_pdf(doc, from_page=page.number, to_page=page.number)
+            continue
+        parts = math.ceil(ratio / STRIP_RATIO)
+        try:
+            cuts = tall_cuts(_quiet_rows(page), parts)
+        except Exception:  # רינדור נכשל: חיתוך שווה
+            cuts = [k / parts for k in range(1, parts)]
+        edges = [0.0, *cuts, 1.0]
+        for top, bottom in zip(edges, edges[1:]):
+            clip = pymupdf.Rect(r.x0, r.y0 + top * r.height, r.x1, r.y0 + bottom * r.height)
+            new = out.new_page(width=clip.width, height=clip.height)
+            new.show_pdf_page(new.rect, doc, page.number, clip=clip)
+    doc.close()
+    return out
 
 
 def pending(assignment_dir: Path) -> list[str]:

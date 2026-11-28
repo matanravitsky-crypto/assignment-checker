@@ -19,8 +19,9 @@ def assignment_dir(ident: str) -> Path:
     p = Path(ident)
     if p.is_dir():
         return p
-    from moodle import paths
-    return paths.assignment_dir(ident)
+    from moodle import paths, shared_folder
+    shared_folder.use_for_commands()  # the synced shared folder, like the system's commands (until 2026-11-27 the local
+    return paths.assignment_dir(ident)  # ~/Exercise Checking System: 107 of LA0's 1,078 graded works)
 
 
 def assignment_id(a: Path) -> str:
