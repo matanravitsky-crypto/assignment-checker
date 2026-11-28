@@ -309,7 +309,7 @@ def course_text(g: Graded, ctx: Context) -> str:
     if str((ctx.policy or {}).get("per_question") or "") == "any":  # by questions handed in (LA1 on, 2026-11-27)
         groups: dict[str, bool] = {}
         for label, d in zip(labels, done):
-            q_ = grades._question(label)
+            q_ = grades.question_of(label)
             groups[q_] = groups.get(q_, False) or bool(d)
         gone = [q_ for q_, d in groups.items() if not d]
         tail = f" (לא הוגשו: {', '.join(gone)})" if gone else ""

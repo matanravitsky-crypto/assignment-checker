@@ -115,7 +115,7 @@ def course_policy(details: dict | None) -> dict | None:
     return None
 
 
-def _question(label: str) -> str:
+def question_of(label: str) -> str:
     """The question a part belongs to: "קבוצות 12ב" and "שאלה 3 (ב)" -> "קבוצות 12", "שאלה 3"."""
     s = " ".join(str(label).split())
     return re.sub(r"(?<=\d)\s*(?:\(\s*[א-ת]['׳]?\s*\)|[א-ת]['׳]?)$", "", s).strip() or s
@@ -131,7 +131,7 @@ def course_grade(labels: list[str], submitted: list[bool], max_grade: float = 10
         return 0
     groups: dict[str, list[bool]] = {}
     for label, done in zip(labels, list(submitted) + [False] * (len(labels) - len(submitted))):
-        groups.setdefault(_question(label), []).append(bool(done))
+        groups.setdefault(question_of(label), []).append(bool(done))
     share = (lambda g: 1 if any(g) else 0) if per_question == "any" else (lambda g: sum(g) / len(g))
     total = sum(max_grade / len(groups) * share(g) for g in groups.values())
     return math.floor(total + 0.5 + 1e-9)
